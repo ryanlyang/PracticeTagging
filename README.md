@@ -18,7 +18,7 @@ Boosted top tagging is an essential binary classification task for experiments a
 - A training weight
 - A signal (1) vs background (0) label
 
-There is one rule in using this data set: the contribution to a loss function from any jet should **always** be [weighted by the training weight](https://github.com/kgreif24/ATLAS-top-tagging-open-data/blob/main/train.py#L270-L287). Apart from this a model should separate the signal jets from background by whatever means necessary. Happy tagging!
+There is one rule in using this data set: the contribution to a loss function from any jet should **always** be [weighted by the training weight](https://gitlab.cern.ch/atlas/ATLAS-top-tagging-open-data/-/blob/master/train.py#L272-293). Apart from this a model should separate the signal jets from background by whatever means necessary. Happy tagging!
 
 ## Introduction to Boosted Top Tagging at the LHC
 
