@@ -133,6 +133,6 @@ For more information on these baselines, see the public note released with this 
 
 ## How to Cite
 
-If you use this data in a research paper, please cite: (link to pub note)
+If you use this data in a research paper, please cite: [https://cds.cern.ch/record/2825328](https://cds.cern.ch/record/2825328)
 
 
