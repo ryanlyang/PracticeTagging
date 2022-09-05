@@ -2,6 +2,8 @@
 
 Machine Learning techniques have revolutionized the identification of top quark decay signatures in experiments at the Large Hadron Collider. This repository describes how to use a public data set for the development of machine learning based top tagging methods, and contribute to the project of discovering new fundamental physics.
 
+Link to dataset: http://opendata.cern.ch/record/15013
+
 <p align="center">
 <img src="https://user-images.githubusercontent.com/27929701/183285418-b041833f-2249-495a-b3d0-37ae38a1d3a7.png" width=800 class="centerImage" alt="Hits in a particle detector can be represented as images. Here we show such images for single background and signal jets, as well as the averaged background and signal jets. Even for a human, telling signal from background is not easy!">
 </p>
