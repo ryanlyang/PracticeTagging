@@ -4,5 +4,5 @@ numpy
 # See https://www.tensorflow.org/install/source#gpu
 tensorflow > 2
 energyflow
-sklearn
+scikit-learn
 matplotlib
