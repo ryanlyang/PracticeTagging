@@ -5,10 +5,11 @@
 train.py - This is an example script for training constituent based taggers
 on the ATLAS Top Tagging Open Data set.
 
-For details of the data set and performance baselines, see (*CDS pub note link*).
+For details of the data set and performance baselines, see:
+                       https://cds.cern.ch/record/2825328
 
 Author: Kevin Greif
-Last updated 8/1/2022
+Last updated 1/27/2023
 Written in python 3
 
 ################################################################################
