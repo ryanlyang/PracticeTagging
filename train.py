@@ -16,6 +16,7 @@ Written in python 3
 """
 
 import sys
+from pathlib import Path
 
 # Data I/O and numerical imports
 import h5py
@@ -40,8 +41,9 @@ import preprocessing
 # parameters, see "Build Tagger and Datasets" section
 
 # Paths to data files. Point these to local download of training / testing sets
-train_path = '/scratch/whiteson_group/kgreif/train_public.h5'
-test_path = '/scratch/whiteson_group/kgreif/test_public.h5'
+data_path = Path("/scratch") / "whiteson_group" / "kgreif"
+train_path = data_path / "train_public.h5"
+test_path = data_path / "test_public.h5"
 
 # Set the amount of data to be used in training and testing. The full training
 # set is very large (130 GB) and will not fit in memory all at once. Here, we
@@ -61,6 +63,10 @@ tagger_type = 'efn'
 # Training parameters
 num_epochs = 20
 batch_size = 256
+
+# Path for generated figures
+figure_dir = Path().cwd() / "plots"
+figure_dir.mkdir(parents=True, exist_ok=True)
 
 ########################### Data Preparation ###################################
 print("Read data and prepare for tagger training")
@@ -311,7 +317,7 @@ plt.plot(train_history.history['val_loss'], label='Validation')
 plt.ylabel('Cross-entropy Loss')
 plt.xlabel('Training Epoch')
 plt.legend()
-plt.savefig('./plots/loss.png', dpi=300)
+plt.savefig(figure_dir / 'loss.png', dpi=300)
 plt.clf()
 
 ############################### Evaluate Tagger ################################
@@ -345,7 +351,7 @@ plt.plot(tpr, 1 / fpr)
 plt.yscale('log')
 plt.ylabel('Background rejection')
 plt.xlabel('Signal efficiency')
-plt.savefig('./plots/roc.png', dpi=300)
+plt.savefig(figure_dir / 'roc.png', dpi=300)
 plt.clf()
 
 # Finally make a plot of the background rejection versus jet pT. Start by making
@@ -384,4 +390,4 @@ plt.step(plot_bins, br_point8_array, '--', where='post', label=r'$\epsilon_{sig}
 plt.ylabel('Background rejection')
 plt.xlabel('Jet pT (TeV)')
 plt.legend()
-plt.savefig('./plots/br_vs_pt.png', dpi=300)
+plt.savefig(figure_dir / 'br_vs_pt.png', dpi=300)
