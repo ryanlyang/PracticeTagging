@@ -12,15 +12,15 @@ Link to data set: http://opendata.cern.ch/record/15013
 
 ## One Minute Introduction
 
-Boosted top tagging is an essential binary classification task for experiments at the Large Hadron Collider (LHC) to measure the properties of the top quark. The ATLAS Top Tagging Open Data Set (*link to public set*) is a publicly available data set for the development of Machine Learning (ML) based boosted top tagging algorithms. The data is split into two orthogonal sets, named *train* and *test* and stored in the HDF5 file format, containing 42 million and 2.5 million jets respectively. Both sets are composed of equal parts signal (jets initiated by a boosted top quark) and background (jets initiated by light quarks or gluons). For each jet, the data set contains:
+Boosted top tagging is an essential binary classification task for experiments at the Large Hadron Collider (LHC) to measure the properties of the top quark. The ATLAS Top Tagging Open Data Set (*link to public set*) is a publicly available dataset for the development of Machine Learning (ML) based boosted top tagging algorithms. The dataset consists of a nominal piece used for the training and evaluation of algorithms, and a systematic piece used for estimating the size of systematic uncertainties produced by an algorithm. The nominal data is split into two orthogonal sets, named *train* and *test* and stored in the HDF5 file format, containing 42 million and 2.5 million jets respectively. Both sets are composed of equal parts signal (jets initiated by a boosted top quark) and background (jets initiated by light quarks or gluons). For each jet, the datasets contain:
 
 - The four vectors of constituent particles
-- 15 high level summary quantities evaluated on the jet 
+- 15 high level summary quantities evaluated on the jet (nominal only)
 - The four vector of the whole jet
-- A training weight
+- A training weight (nominal only)
 - A signal (1) vs background (0) label
 
-There is one rule in using this data set: the contribution to a loss function from any jet should **always** be [weighted by the training weight](https://gitlab.cern.ch/atlas/ATLAS-top-tagging-open-data/-/blob/master/train.py#L272-293). Apart from this a model should separate the signal jets from background by whatever means necessary. Happy tagging!
+There are two rules for using this data set: the contribution to a loss function from any jet should **always** be [weighted by the training weight](https://gitlab.cern.ch/atlas/ATLAS-top-tagging-open-data/-/blob/master/train.py#L272-293), and any performance claim is incomplete without an estimate of the systematic uncertainties. The ideal model shows high performance but also small systematic uncertainties. Happy tagging!
 
 ## Introduction to Boosted Top Tagging at the LHC
 
