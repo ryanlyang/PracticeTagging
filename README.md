@@ -50,7 +50,7 @@ Efficient simulation of background events requires introducing unphysical bumps 
 
 ## Data Set Contents
 
-The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The directories named `train` and `test` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them.
+The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The directories named `train` and `test` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. These datasets are produced with a **systematic variation** that slightly modifies the kinematic properties of the jet kinematics within a given systematic uncertainty. The differences between a tagger's performance on the nominal and the systematic varied datasets can be used to estimate the systematic uncertainties produced by the tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them, and the README and scripts contained in the directory `systematics` for instructions on how to use the datasets.
 
 | Systematic Uncertainty      | Description                                               | Datasets                                    |
 |-----------------------------|-----------------------------------------------------------|---------------------------------------------|
@@ -61,6 +61,9 @@ The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nomi
 | Signal parton shower and hadronization modeling | Vary the parton shower and hadronization model for signal jets | `ttbar_pythia.h5`, `ttbar_herwig.h5` |
 | Background parton shower | Vary the parton shower model for background jets | `dijet_herwig_cluster.h5`, `dijet_herwig_string.h5` | 
 | Background hadronization | Vary the hadronization model for background jets | `dijet_sherpa_angular.h5`, `dijet_sherpa_dipole.h5` |
+| Renormalization and factorization scales | Vary the scales for the signal / background jets | Nominal datasets |
+
+Each dataset contains the following information for each jet, except the high level quantities, training weights, and renormalization and factorization scale weights which are only contained in the nominal datasets.
 
 ### Constituent Four-vectors
 
@@ -90,6 +93,8 @@ In addition to the four-vectors of the jet constituents, the data set also inclu
 ### Training Weight (nominal only)
 
 The training weights are contained in the branch `'weights'`. These should always be used to weight the loss function in tagger training. Both tensorflow and pytorch's loss functions support applying such a weighting through a simple key-word argument.
+
+### Renormalization and Factorization Scale Weights
 
 ### Labels
 
