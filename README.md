@@ -33,20 +33,31 @@ The existing top tagging models can be divided into two categories:
 1. High level quantity based: These taggers are trained on a set of *high level quantities* which are observables that can be calculated from the measured properties of the jet constituents. These quantities are hand designed to draw out differences between signal jets and background jets. High level quantity based taggers have already been put to effective use in LHC experiments.
 2. Constituent based: Instead of training on a set of high level quantities, these taggers are trained directly on the measured properties of the jet constituents. They have access to a superset of the information contained in any set of high level quantities, so in principle they can achieve higher performance. However these models need to learn to classify jets essentially from scratch, which necessitates more powerful ML models. This data set is designed for the development of constituent based taggers.
 
+**Paragraph below needs updating!**
+
 Many existing constituent based taggers showed impressive performance in [previous studies](https://arxiv.org/abs/1902.09914). However these studies trained the taggers on data sets generated with simplified methods for reconstructing jets from constituent particles and simulating the detector response. LHC experiments like CMS and ATLAS have developed highly detailed simulations of their detector based on software framework known as Geant 4. These simulations are the gold standard in modeling the response of a real particle detector, and are used to generate the simulated proton-proton collisions necessary for essentially all analyses of LHC data. A study of existing constituent based top taggers on the ATLAS Top Tagging Open Data Set that accompanys this data's release found that several constituent-based taggers easily surpassed the performance of a high level quantity based tagger, but some taggers which showed promise in previous studies failed to perform in this more realistic setting. Clearly future top tagger development and evaluation should happen in a highly realistic setting. This data set is meant to provide such a setting.
 
 ## Data Set Generation
 
-The ATLAS Top Tagging Open Data Set consists of jets taken from simulated collisions of protons at a center of mass energy of 13 TeV. The signal and background jets come from simulations of two different processes:
+The ATLAS Top Tagging Open Data Set consists of jets taken from simulated collisions of protons at a center of mass energy of 13 TeV. The nominal signal and background jets come from simulated collision events containing two different processes:
 
 - Signal: A heavy Z boson (termed Z') with mass of 2 tera-electron-volts decaying to a top anti-top quark pair.
 - Background: Jets initiated by light quarks and gluons. These particles are copious by-products of proton-proton collisions at the LHC.
 
-To be included in the data set, all jets are required to satisfy several conditions which produce sharp cut-offs in the distributions of some of the quantities contained in the data set (the jet pseudo-rapidity for example). For details of these requirements see the public note released in tandem with this data set.
+Additionally, the dataset used to estimate some systematic uncertainties contains jets taken from collisions containing the standard model production of top / anti-top quark pairs. To be included in the data set, all jets are required to satisfy several conditions which produce sharp cut-offs in the distributions of some of the quantities contained in the data set (the jet pseudo-rapidity for example). For details of these requirements see the public note released in tandem with this data set.
 
 Efficient simulation of background events requires introducing unphysical bumps in the distribution of the background jet's p<sub>T</sub>. To get rid of these bumps, the background jet p<sub>T</sub> spectrum could be reweighted to what is actually observed in LHC collisions, but these weights would cover many orders of magnitude and make the training of a top tagger difficult. Luckily there is no reason the background jet p<sub>T</sub> spectrum needs to be physical in a data set only used for training a top tagger. Searches for new physics at the LHC often bin events by quantities like jet p<sub>T</sub>, and if the tagger learns to associate a particular jet p<sub>T</sub> with signal jets, it can assign background jets as signal because they happen to have the correct p<sub>T</sub>. This effect is known as *background scultping*, and can produce false positive results in a search for new physics if not controlled properly. A first order method for eliminating this effect is to reweight the signal and background jet p<sub>T</sub> spectrum to be identical. The solution to both of these problems is to reweight the background jet p<sub>T</sub> spectrum to match the signal spectrum. This is the purpose of the training weights included in the data set.
 
 ## Data Set Contents
+
+The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The directories named `train` and `test` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them.
+
+| Systematic Uncertainty      | Description                                               | Datasets                                    |
+|-----------------------------|-----------------------------------------------------------|---------------------------------------------|
+| Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `ces_up.h5`, `ces_down.h5` |
+| Cluster energy resolution | Vary the energy resolution of jet constituents reconstructed with the calorimeter | `cer.h5` |
+| Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `track_fake_loose.h5`, `track_fake_jet.h5` |
+| Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `track_eff_global.h5`, `track_eff_jet.h5` |
 
 ### Constituent Four-vectors
 
@@ -61,7 +72,7 @@ The constituent four-vectors are contained in branches named `['fjet_clus_pt', '
 
 Lastly the angular coordinates (&eta; and &phi;) are unitless, while the p<sub>T</sub> and energy are given in units of mega-electron-volts. This choice of units means these quantities can have large magnitudes (some constituents have energies upwards of 300,000 MeV). This large scale should be dealt with in pre-processing to stabilize training (see below).
 
-### High Level Quantities
+### High Level Quantities (nominal only)
 
 15 high level quantities are included in this data set. These variables were chosen in two separate studies of high level quantity based top taggers carried out by the ATLAS collaboration: https://cds.cern.ch/record/2259646, https://cds.cern.ch/record/2776782. It suffices to say they "summarize" the information contained in the data describing the jet constituents. They are contained in the following branches:
 
@@ -73,7 +84,7 @@ Lastly the angular coordinates (&eta; and &phi;) are unitless, while the p<sub>T
 
 In addition to the four-vectors of the jet constituents, the data set also includes the four vector of the jet as a whole. The four quantities are stored in branches named `['fjet_pt', 'fjet_eta', 'fjet_phi', fjet_m']`. Notice the four vector of the jet contains the jet mass, as opposed to the energy given for the jet constituents. For the interested user, the jet energy can be calculated from these quantities fairly easily.
 
-### Training Weight
+### Training Weight (nominal only)
 
 The training weights are contained in the branch `'weights'`. These should always be used to weight the loss function in tagger training. Both tensorflow and pytorch's loss functions support applying such a weighting through a simple key-word argument.
 
