@@ -96,6 +96,13 @@ The training weights are contained in the branch `'weights'`. These should alway
 
 ### Renormalization and Factorization Scale Weights
 
+The renormalization and factorization scale weights are contained in the branch `mu_weights`. Each jet contains 4 weights which perform the following variations:
+
+1. Initial state radiation (ISR) scales up by 2x
+2. ISR scales down by 2x
+3. Final state radiation (FSR) scales up by 2x
+4. FSR scales down by 2x 
+
 ### Labels
 
 Labels are stored in the branch `'labels'` and take the value of 1 for a signal jet and 0 for a background jet.
