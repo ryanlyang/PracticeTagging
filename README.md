@@ -146,7 +146,9 @@ The training and testing sets require 130GB and 7.6GB respectively when stored o
 
 Scripts for estimating the systematic uncertainties by a tagger first trained on the nominal datasets can be found in the `systematics` sub-directory. They run inference over each systematic varied dataset, and then use the outputs to calculate a systematic uncertainty on the performance metrics described above. The scripts implement the recommended method for calculating a systematic uncertainty on the performance metrics. For easy comparison of systematic uncertainties between taggers, it is recommended to always use this procedure although other procedures are possible. Further details on the procedure is provided by the documentation contained in the sub-directory and the [paper](https://www.youtube.com/watch?v=dQw4w9WgXcQ) that accompanies this data release.
 
-## Performance Baselines of Existing Taggers
+## Performance and Uncertainty Baselines of Existing Taggers
+
+**Add uncertainty table!**
 
 <p align="center">
 <img src="https://user-images.githubusercontent.com/27929701/166083546-f24d34cf-89b2-4bb3-bc2d-f2ba08b07dfa.png" width=700 class="centerImage" alt="Performance baselines of existing top taggers on the ATLAS top tagging open data set. These are the numbers to beat.">
