@@ -16,12 +16,10 @@ Written in python 3
 
 """
 
-import sys
 from pathlib import Path
 
-# Data I/O and numerical imports
-import h5py
-import numpy as np
+# Plotting imports
+import matplotlib.pyplot as plt
 
 # ML imports
 import tensorflow as tf
@@ -30,8 +28,6 @@ from energyflow.archs import EFN, PFN
 import sklearn.metrics as metrics
 from sklearn.model_selection import train_test_split
 
-# Plotting imports
-import matplotlib.pyplot as plt
 
 # Custom imports
 import preprocessing
@@ -41,16 +37,20 @@ import preprocessing
 # Settings used for data preparation and network training. For model hyper-
 # parameters, see "Build Tagger and Datasets" section
 
-# Paths to data files. Point these to local download of training / testing sets
-data_path = Path("/scratch") / "whiteson_group" / "kgreif"
-train_path = data_path / "train_public.h5"
-test_path = data_path / "test_public.h5"
+# Paths to data files. Point these to local directory containing train / test files
+data_path = Path("/pub/kgreif/samples/h5dat")
+train_path = data_path / "public_train_nominal"
+test_path = data_path / "public_path_nominal"
+
+# For glob of the training / test set files
+train_files = sorted(list(train_path.glob("*.h5")))
+test_files = sorted(list(test_path.glob("*.h5")))
 
 # Set the amount of data to be used in training and testing. The full training
-# set is very large (130 GB) and will not fit in memory all at once. Here, we
+# set is very large (97 GB) and will not fit in memory all at once. Here, we
 # take a subset  of the data. Using the full set will require piping.
-n_train_jets = 3000000
-n_test_jets = -1
+n_train_jets = 30000
+n_test_jets = -10000
 
 # Set the fraction of the training data which will be reserved for validation
 valid_fraction = 0.2
@@ -62,7 +62,7 @@ max_constits = 80
 tagger_type = 'efn'
 
 # Training parameters
-num_epochs = 20
+num_epochs = 1
 batch_size = 256
 
 # Path for generated figures
@@ -72,42 +72,23 @@ figure_dir.mkdir(parents=True, exist_ok=True)
 ########################### Data Preparation ###################################
 print("Read data and prepare for tagger training")
 
-# Load data from files using h5py
-train = h5py.File(train_path, 'r')
-test = h5py.File(test_path, 'r')
+# Load data using the functions in preprocessing.py
+train_data, train_labels, train_weights, _ = preprocessing.load_from_files(
+    train_files,
+    max_jets=n_train_jets,
+    get_hl=True if tagger_type == 'hldnn' else False,
+    max_constits=max_constits
+)
 
-# Find names of appropriate names of numpy arrays from h5py file objects.
-if tagger_type == 'hldnn':
-    data_vector_names = train.attrs.get('hl')
-else:
-    data_vector_names = train.attrs.get('constit')
+test_data, test_labels, test_weights, jet_pt = preprocessing.load_from_files(
+    test_files,
+    max_jets=n_test_jets,
+    get_hl=True if tagger_type == 'hldnn' else False,
+    max_constits=max_constits
+)
 
-# Load data into a python dictionary for pass into pre-processing functions
-train_dict = {key: train[key][:n_train_jets,...] for key in data_vector_names}
-test_dict = {key: test[key][:n_test_jets,...] for key in data_vector_names}
-
-# Pass dictionaries to preprocessing functions
-if tagger_type == 'hldnn':
-    # Data shapes: (n_jets, 15)
-    print("Processing high level quantity information")
-    train_data = preprocessing.high_level(train_dict)
-    test_data = preprocessing.high_level(test_dict)
-    num_data_features = train_data.shape[-1]
-else:
-    # Data shapes: (n_jets, max_constits, 7)
-    print("Processing constituent information")
-    train_data = preprocessing.constituent(train_dict, max_constits)
-    test_data = preprocessing.constituent(test_dict, max_constits)
-    num_data_features = train_data.shape[-1]
-
-# Load labels and training weights
-train_labels = train['labels'][:n_train_jets]
-train_weights = train['weights'][:n_train_jets]
-test_labels = test['labels'][:n_test_jets]
-test_weights = test['labels'][:n_test_jets]
-
-# Load testing set jet pT for plotting purposes
-jet_pt = test['fjet_pt'][:n_test_jets]
+# Find the number of data features
+num_data_features = train_data.shape[-1]
 
 ####################### Build Tagger and Datasets  #############################
 print("Building tagger and datasets")
@@ -211,7 +192,7 @@ else:
     elif tagger_type == 'dnn':
 
         # For DNN, we also need to flatten constituent data into shape:
-        # (n_jets, max_constits * 7)
+        # (n_jets, max_constits * num_data_features)
         train_data = train_data.reshape(-1, max_constits * num_data_features)
         test_data = test_data.reshape(-1, max_constits * num_data_features)
 
@@ -302,10 +283,18 @@ else:
 ############################### Train Tagger ###################################
 print("Starting tagger training")
 
-# Train tagger with keras fit function. Use validation_split argument to
-# partition the training data into train/validation sets.
+# Callback for storing checkpoints
+checkpoint_path = Path().cwd() / "checkpoints"
+checkpoint_path.mkdir(parents=True, exist_ok=True)
+checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+    filepath=checkpoint_path / '{epoch:02d}-{val_loss:.2f}.keras',
+    save_best_only=True
+)
+
+# Train tagger with keras fit function
 train_history = model.fit(
     train_dataset,
+    callbacks=[checkpoint_callback],
     validation_data=valid_dataset,
     batch_size=batch_size,
     epochs=num_epochs,
@@ -321,74 +310,74 @@ plt.legend()
 plt.savefig(figure_dir / 'loss.png', dpi=300)
 plt.clf()
 
-############################### Evaluate Tagger ################################
-print("Run tagger evaluation")
+# ############################### Evaluate Tagger ################################
+# print("Run tagger evaluation")
 
-# Run prediction on the testing set. Make cut on tagger output at 0.5 to
-# evaluate accuracy metric
-predictions = model.predict(test_dataset, batch_size=batch_size)[:,0]
-discrete_predictions = (predictions > 0.5).astype(int)
+# # Run prediction on the testing set. Make cut on tagger output at 0.5 to
+# # evaluate accuracy metric
+# predictions = model.predict(test_dataset, batch_size=batch_size)[:,0]
+# discrete_predictions = (predictions > 0.5).astype(int)
 
-# Evaluate metrics
-auc = metrics.roc_auc_score(test_labels, predictions)
-acc = metrics.accuracy_score(test_labels, discrete_predictions)
+# # Evaluate metrics
+# auc = metrics.roc_auc_score(test_labels, predictions)
+# acc = metrics.accuracy_score(test_labels, discrete_predictions)
 
-# Evaluate background rejection at fixed signal efficiency working points
-fpr, tpr, thresholds = metrics.roc_curve(test_labels, predictions)
-point5_index = np.argmax(tpr > 0.5)
-br_point5 = 1 / fpr[point5_index]
-point8_index = np.argmax(tpr > 0.8)
-br_point8 = 1 / fpr[point8_index]
+# # Evaluate background rejection at fixed signal efficiency working points
+# fpr, tpr, thresholds = metrics.roc_curve(test_labels, predictions)
+# point5_index = np.argmax(tpr > 0.5)
+# br_point5 = 1 / fpr[point5_index]
+# point8_index = np.argmax(tpr > 0.8)
+# br_point8 = 1 / fpr[point8_index]
 
-# Print metric results
-print('\nPerformance metrics evaluated over testing set:')
-print('AUC score:', auc)
-print('ACC score:', acc)
-print('Background rejection at 0.5 signal efficiency:', br_point5)
-print('Background rejection at 0.8 signal efficiency:', br_point8)
+# # Print metric results
+# print('\nPerformance metrics evaluated over testing set:')
+# print('AUC score:', auc)
+# print('ACC score:', acc)
+# print('Background rejection at 0.5 signal efficiency:', br_point5)
+# print('Background rejection at 0.8 signal efficiency:', br_point8)
 
-# Plot ROC curve
-plt.plot(tpr, 1 / fpr)
-plt.yscale('log')
-plt.ylabel('Background rejection')
-plt.xlabel('Signal efficiency')
-plt.savefig(figure_dir / 'roc.png', dpi=300)
-plt.clf()
+# # Plot ROC curve
+# plt.plot(tpr, 1 / fpr)
+# plt.yscale('log')
+# plt.ylabel('Background rejection')
+# plt.xlabel('Signal efficiency')
+# plt.savefig(figure_dir / 'roc.png', dpi=300)
+# plt.clf()
 
-# Finally make a plot of the background rejection versus jet pT. Start by making
-# a set of pT bins and empty vectors to accept B.R. values. Note pt bin array
-# defines bin edges
-pt_bins = np.linspace(350000, 3150000, 15)
-br_point5_array = np.zeros(len(pt_bins) - 1)
-br_point8_array = np.zeros(len(pt_bins) - 1)
+# # Finally make a plot of the background rejection versus jet pT. Start by making
+# # a set of pT bins and empty vectors to accept B.R. values. Note pt bin array
+# # defines bin edges
+# pt_bins = np.linspace(350000, 3150000, 15)
+# br_point5_array = np.zeros(len(pt_bins) - 1)
+# br_point8_array = np.zeros(len(pt_bins) - 1)
 
-# Loop through pT bins
-for i in range(len(pt_bins) - 1):
+# # Loop through pT bins
+# for i in range(len(pt_bins) - 1):
 
-    # Find the indeces of the jets that lie in this pT bin
-    condition = np.logical_and(jet_pt > pt_bins[i], jet_pt < pt_bins[i+1])
-    bin_indeces = condition.nonzero()[0]
+#     # Find the indeces of the jets that lie in this pT bin
+#     condition = np.logical_and(jet_pt > pt_bins[i], jet_pt < pt_bins[i+1])
+#     bin_indeces = condition.nonzero()[0]
 
-    # Now take predictions and labels which fall in this pT bin
-    bin_predictions = predictions[bin_indeces]
-    bin_labels = test_labels[bin_indeces]
+#     # Now take predictions and labels which fall in this pT bin
+#     bin_predictions = predictions[bin_indeces]
+#     bin_labels = test_labels[bin_indeces]
 
-    # Calculate the background rejection at fixed signal efficiency
-    fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_predictions)
-    bin_point5_index = np.argmax(tpr > 0.5)
-    br_point5_array[i] = 1 / fpr[bin_point5_index]
-    bin_point8_index = np.argmax(tpr > 0.8)
-    br_point8_array[i] = 1 / fpr[bin_point8_index]
+#     # Calculate the background rejection at fixed signal efficiency
+#     fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_predictions)
+#     bin_point5_index = np.argmax(tpr > 0.5)
+#     br_point5_array[i] = 1 / fpr[bin_point5_index]
+#     bin_point8_index = np.argmax(tpr > 0.8)
+#     br_point8_array[i] = 1 / fpr[bin_point8_index]
 
-# Duplicate last entry in background rejection arrays
-br_point5_array = np.concatenate((br_point5_array, br_point5_array[-1:]))
-br_point8_array = np.concatenate((br_point8_array, br_point8_array[-1:]))
+# # Duplicate last entry in background rejection arrays
+# br_point5_array = np.concatenate((br_point5_array, br_point5_array[-1:]))
+# br_point8_array = np.concatenate((br_point8_array, br_point8_array[-1:]))
 
-# Make a plot using matplotlib's step function
-plot_bins = pt_bins / 1e6 # Set plot on TeV scale
-plt.step(plot_bins, br_point5_array, '-', where='post', label=r'$\epsilon_{sig} = 0.5$')
-plt.step(plot_bins, br_point8_array, '--', where='post', label=r'$\epsilon_{sig} = 0.8$')
-plt.ylabel('Background rejection')
-plt.xlabel('Jet pT (TeV)')
-plt.legend()
-plt.savefig(figure_dir / 'br_vs_pt.png', dpi=300)
+# # Make a plot using matplotlib's step function
+# plot_bins = pt_bins / 1e6 # Set plot on TeV scale
+# plt.step(plot_bins, br_point5_array, '-', where='post', label=r'$\epsilon_{sig} = 0.5$')
+# plt.step(plot_bins, br_point8_array, '--', where='post', label=r'$\epsilon_{sig} = 0.8$')
+# plt.ylabel('Background rejection')
+# plt.xlabel('Jet pT (TeV)')
+# plt.legend()
+# plt.savefig(figure_dir / 'br_vs_pt.png', dpi=300)

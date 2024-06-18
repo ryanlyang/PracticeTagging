@@ -2,12 +2,12 @@
 
 ######################### ATLAS Top Tagging Open Data ##########################
 
-preprocessing.py - This script defines two functions. One applies a standard
-pre-processing scheme to the constituent inputs, and the other standardizes the
-high level quantity inputs. These functions are applied in script train.py
+preprocessing.py - This script defines functions for dealing with the loading
+of top tagger training and testing data from .h5 files, and the preprocessing
+of that data into the format expected by the taggers.
 
 For a description of the pre-processing and resulting distributions, see
-(*CDS pub note link*).
+TODO: Add link to the paper
 
 Author: Kevin Greif
 Last updated 4/21/2022
@@ -17,11 +17,11 @@ Written in python 3
 
 """
 
-# Numerical imports
 import numpy as np
+import h5py
 
 
-def constituent(data_dict, max_constits):
+def constituent(data_dict, max_constits=200):
     """ constituent - This function applies a standard preprocessing to the
     jet data contained in train_dict. It will operate on the raw constituent
     level quantities and return 7 constituent level quantities which can be
@@ -32,7 +32,8 @@ def constituent(data_dict, max_constits):
     the constituent level quantities. Standard naming conventions will be
     assumed.
     max_constits (int) - The maximum number of constituents to consider in
-    preprocessing. Cut jet constituents at this number.
+    preprocessing. Cut jet constituents at this number. The maximum is 200,
+    which is the maximum number of constituents stored in the .h5 files
 
     Returns:
     (np array) - The seven constituent level quantities, stacked along the last
@@ -53,38 +54,48 @@ def constituent(data_dict, max_constits):
 
     ########################## Angular Coordinates #############################
 
+    print("Preprocessing angular coordinates...")
+    print("Applying shift")
+
     # 1. Center hardest constituent in eta/phi plane. First find eta and
     # phi shifts to be applied
     eta_shift = eta[:,0]
     phi_shift = phi[:,0]
 
     # Apply them using np.newaxis
-    eta_center = eta - eta_shift[:,np.newaxis]
-    phi_center = phi - phi_shift[:,np.newaxis]
+    eta -= eta_shift[:,np.newaxis]
+    phi -= phi_shift[:,np.newaxis]
 
     # Fix discontinuity in phi at +/- pi using np.where
-    phi_center = np.where(phi_center > np.pi, phi_center - 2*np.pi, phi_center)
-    phi_center = np.where(phi_center < -np.pi, phi_center + 2*np.pi, phi_center)
+    phi = np.where(phi > np.pi, phi - 2*np.pi, phi)
+    phi = np.where(phi < -np.pi, phi + 2*np.pi, phi)
 
     # 2. Rotate such that 2nd hardest constituent sits on negative phi axis
-    second_eta = eta_center[:,1]
-    second_phi = phi_center[:,1]
+    print("Applying rotation")
+    second_eta = eta[:,1]
+    second_phi = phi[:,1]
+    print("Calculating angle")
     alpha = np.arctan2(second_phi, second_eta) + np.pi/2
-    eta_rot = (eta_center * np.cos(alpha[:,np.newaxis]) +
-               phi_center * np.sin(alpha[:,np.newaxis]))
-    phi_rot = (-eta_center * np.sin(alpha[:,np.newaxis]) +
-               phi_center * np.cos(alpha[:,np.newaxis]))
+    print("Calculating eta")
+    eta = (eta * np.cos(alpha[:,np.newaxis]) +
+               phi * np.sin(alpha[:,np.newaxis]))
+    print("Calculating phi")
+    phi = (-eta * np.sin(alpha[:,np.newaxis]) +
+               phi * np.cos(alpha[:,np.newaxis]))
 
     # 3. If needed, reflect so 3rd hardest constituent is in positive eta
-    third_eta = eta_rot[:,2]
+    print("Applying flip")
+    third_eta = eta[:,2]
     parity = np.where(third_eta < 0, -1, 1)
-    eta_flip = (eta_rot * parity[:,np.newaxis]).astype(np.float32)
+    eta = (eta * parity[:,np.newaxis]).astype(np.float32)
     # Cast to float32 needed to keep numpy from turning eta to double precision
 
     # 4. Calculate R with pre-processed eta/phi
-    radius = np.sqrt(eta_flip ** 2 + phi_rot ** 2)
+    radius = np.sqrt(eta ** 2 + phi ** 2)
 
     ############################# pT and Energy ################################
+
+    print("Preprocessing pT and energy...")
 
     # Take the logarithm, ignoring -infs which will be set to zero later
     log_pt = np.log(pt)
@@ -100,9 +111,11 @@ def constituent(data_dict, max_constits):
 
     ########################### Finalize and Return ############################
 
+    print("Stacking preprocessed data...")
+
     # Reset all of the original zero entries to zero
-    eta_flip[mask] = 0
-    phi_rot[mask] = 0
+    eta[mask] = 0
+    phi[mask] = 0
     log_pt[mask] = 0
     log_energy[mask] = 0
     lognorm_pt[mask] = 0
@@ -110,7 +123,7 @@ def constituent(data_dict, max_constits):
     radius[mask] = 0
 
     # Stack along last axis
-    features = [eta_flip, phi_rot, log_pt, log_energy,
+    features = [eta, phi, log_pt, log_energy,
                 lognorm_pt, lognorm_energy, radius]
     stacked_data = np.stack(features, axis=-1)
 
@@ -161,3 +174,95 @@ def high_level(data_dict):
     stacked_data = np.stack(features, axis=-1)
 
     return stacked_data
+
+
+def load_from_files(files, max_jets, get_hl=False, **kwargs):
+    """ load_from_files - This function loops through a list of strings that 
+    give the path to a set of .h5 files containing jet data. It will read the 
+    jets from the .h5 files, and return either the constituent or high level
+    data, along with the corresponding labels and training weights.
+
+    Arguments:
+    files (list of str) - The list of file paths to read jet data from.
+    max_jets (int) - The maximum number of jets to read
+    get_hl (bool) - If true, get the hl data instead of the constituent data
+
+    Returns:
+    data (np array) - The preprocessed jet data
+    labels (np array) - The labels for each jet
+    weights (np array) - The weights for each jet
+    pt (np array) - The pT of each jet
+    """
+
+    # Define counter for number of jets read, a list fo accepting the
+    # data, labels, weights, and pt
+    jets_read = 0
+    data_list = []
+    label_list = []
+    weight_list = []
+    pt_list = []
+
+    # Loop through list of files
+    for fname in files:
+
+        print("Loading data from file: ", fname)
+
+        # Open file
+        f = h5py.File(fname, 'r')
+
+        # Find appropriate names of numpy arrays to read from file attributes
+        if get_hl:
+            data_vector_names = f.attrs.get('hl')
+        else:
+            data_vector_names = f.attrs.get('constit')
+
+        # Load data into a python dictionary
+        print("Loading data vectors: ", data_vector_names)
+        data_dict = {}
+        for key in data_vector_names:
+            print("Loading key: ", key, " from file.")
+            data_dict[key] = f[key][:,...]
+        # data_dict = {key: f[key][:,...] for key in data_vector_names}
+
+        # Preprocess data
+        if get_hl:
+            file_data = high_level(data_dict)
+        else:
+            file_data = constituent(data_dict, **kwargs)
+
+        # Load labels, weights, and pt
+        labels = f['labels'][:]
+        weights = f['weights'][:]
+        pt = f['fjet_pt'][:]
+
+        # Truncate data, labels, and weights if necessary
+        if jets_read + file_data.shape[0] > max_jets:
+            file_data = file_data[:max_jets - jets_read]
+            labels = labels[:max_jets - jets_read]
+            weights = weights[:max_jets - jets_read]
+            pt = pt[:max_jets - jets_read]
+        
+        # Append to lists
+        data_list.append(file_data)
+        label_list.append(labels)
+        weight_list.append(weights)
+        pt_list.append(pt)
+
+        # Update counter
+        jets_read += file_data.shape[0]
+
+        # Close file
+        f.close()
+
+        # Break if we have read the maximum number of jets
+        if jets_read >= max_jets:
+            break
+
+    # Concatenate lists of data, labels, and weights
+    data = np.concatenate(data_list, axis=0)
+    labels = np.concatenate(label_list, axis=0)
+    weights = np.concatenate(weight_list, axis=0)
+    pt = np.concatenate(pt_list, axis=0)
+
+    # Return
+    return data, labels, weights, pt
