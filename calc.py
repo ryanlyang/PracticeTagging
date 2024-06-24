@@ -55,22 +55,22 @@ def_dict = {
 # Define the performance metrics to calculate
 metrics_dict = {
     'nominal': {**def_dict, **{
-        'predictions': 'nominal.npz',
+        'predictions': 'public_test_nominal.npz',
     }},
     'esup': {**def_dict, **{
-        'predictions': 'esup.npz',
+        'predictions': 'public_esup.npz',
         'check_nominal_test': True,
     }},
     'esdown': {**def_dict, **{
-        'predictions': 'esdown.npz',
+        'predictions': 'public_esdown.npz',
         'check_nominal_test': True,
     }},
     'cer': {**def_dict, **{
-        'predictions': 'cer.npz',
+        'predictions': 'public_cer.npz',
         'check_nominal_test': True,
     }},
     'cpos': {**def_dict, **{
-        'predictions': 'cpos.npz',
+        'predictions': 'public_cpos.npz',
         'check_nominal_test': True,
     }},
     # 'tfl': {**def_dict, **{
@@ -257,7 +257,7 @@ for name, mdict in metrics_dict.items():
         bin_weights = weights[bin_indeces]
 
         # Now we want to calculate background rejection at working points
-        fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_preds, sample_weight=bin_weights)
+        fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_preds) #, sample_weight=bin_weights)
         fprinv = 1 / fpr
         index = np.argmax(tpr > wp)
         binned_br[i] = fprinv[index]

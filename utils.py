@@ -210,10 +210,7 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
         if get_hl:
             data_vector_names = f.attrs.get('hl')
         else:
-            if 'constit' in f.keys():
-                data_vector_names = ['constit']
-            else:
-                data_vector_names = f.attrs.get('constit')
+            data_vector_names = f.attrs.get('constit')
 
         # Load data into a python dictionary
         data_dict = {key: f[key][:,...] for key in data_vector_names}
@@ -222,10 +219,7 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
         if get_hl:
             file_data = high_level(data_dict)
         else:
-            if 'constit' in f.keys():
-                file_data = data_dict['constit']
-            else:
-                file_data = constituent(data_dict, **kwargs)
+            file_data = constituent(data_dict, **kwargs)
 
         # Load labels and pt
         labels = f['labels'][:max_jets]
