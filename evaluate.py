@@ -10,7 +10,7 @@ For details of the data set and performance baselines, see:
                        https://cds.cern.ch/record/2825328
 
 Author: Kevin Greif
-Last updated 06/19/2024
+Last updated 06/24/2024
 Written in python 3
 
 ################################################################################
@@ -47,9 +47,6 @@ args = parser.parse_args()
 
 ################################# SETTINGS #####################################
 
-# Settings used for data preparation and network training. For model hyper-
-# parameters, see "Build Tagger and Datasets" section
-
 # Paths to data files. Point this to local directory containing the data files
 # in sub-directories
 data_path = Path(args.data)
@@ -64,7 +61,7 @@ max_constits = 80
 batch_size = 256
 
 # The maximum number of jets to use in testing
-max_jets = 1000
+max_jets = 3000000
 
 ########################### Data Preparation ###################################
 print("Read data and prepare for tagger testing")

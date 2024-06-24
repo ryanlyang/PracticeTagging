@@ -9,7 +9,7 @@ For details of the data set and performance baselines, see:
                        https://cds.cern.ch/record/2825328
 
 Author: Kevin Greif
-Last updated 06/19/2024
+Last updated 06/24/2024
 Written in python 3
 
 ################################################################################
@@ -34,9 +34,6 @@ import utils
 
 ################################# SETTINGS #####################################
 
-# Settings used for data preparation and network training. For model hyper-
-# parameters, see "Build Tagger and Datasets" section
-
 # Paths to data files. Point this to local directory containing the data files
 # in sub-directories
 data_path = Path("/DFS-L/DATA/whiteson/kgreif/JetTaggingH5")
@@ -57,10 +54,10 @@ valid_fraction = 0.1
 max_constits = 80
 
 # Tagger to train, supported options are 'hldnn', 'dnn', 'efn', 'pfn'.
-tagger_type = 'pfn'
+tagger_type = 'dnn'
 
 # Training parameters
-num_epochs = 70
+num_epochs = 30
 batch_size = 256
 
 # Path for generated figures
