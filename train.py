@@ -9,7 +9,7 @@ For details of the data set and performance baselines, see:
                        https://cds.cern.ch/record/2825328
 
 Author: Kevin Greif
-Last updated 1/27/2023
+Last updated 06/19/2024
 Written in python 3
 
 ################################################################################
@@ -30,39 +30,37 @@ from sklearn.model_selection import train_test_split
 
 
 # Custom imports
-import preprocessing
+import utils
 
 ################################# SETTINGS #####################################
 
 # Settings used for data preparation and network training. For model hyper-
 # parameters, see "Build Tagger and Datasets" section
 
-# Paths to data files. Point these to local directory containing train / test files
-data_path = Path("/pub/kgreif/samples/h5dat")
+# Paths to data files. Point this to local directory containing the data files
+# in sub-directories
+data_path = Path("/DFS-L/DATA/whiteson/kgreif/JetTaggingH5")
 train_path = data_path / "public_train_nominal"
-test_path = data_path / "public_path_nominal"
 
-# For glob of the training / test set files
+# Make glob of the training set files
 train_files = sorted(list(train_path.glob("*.h5")))
-test_files = sorted(list(test_path.glob("*.h5")))
 
-# Set the amount of data to be used in training and testing. The full training
+# Set the amount of data to be used in training. The full training
 # set is very large (97 GB) and will not fit in memory all at once. Here, we
 # take a subset  of the data. Using the full set will require piping.
-n_train_jets = 30000
-n_test_jets = -10000
+n_train_jets = 6000000
 
 # Set the fraction of the training data which will be reserved for validation
-valid_fraction = 0.2
+valid_fraction = 0.1
 
 # Max constituents to consider in tagger training (must be <= 200)
 max_constits = 80
 
 # Tagger to train, supported options are 'hldnn', 'dnn', 'efn', 'pfn'.
-tagger_type = 'efn'
+tagger_type = 'pfn'
 
 # Training parameters
-num_epochs = 1
+num_epochs = 70
 batch_size = 256
 
 # Path for generated figures
@@ -73,16 +71,9 @@ figure_dir.mkdir(parents=True, exist_ok=True)
 print("Read data and prepare for tagger training")
 
 # Load data using the functions in preprocessing.py
-train_data, train_labels, train_weights, _ = preprocessing.load_from_files(
+train_data, train_labels, train_weights, _, _, _ = utils.load_from_files(
     train_files,
     max_jets=n_train_jets,
-    get_hl=True if tagger_type == 'hldnn' else False,
-    max_constits=max_constits
-)
-
-test_data, test_labels, test_weights, jet_pt = preprocessing.load_from_files(
-    test_files,
-    max_jets=n_test_jets,
     get_hl=True if tagger_type == 'hldnn' else False,
     max_constits=max_constits
 )
@@ -111,7 +102,8 @@ if tagger_type == 'efn':
         optimizer=tf.keras.optimizers.Adam(learning_rate=6.3e-5),
         output_dim=1,
         output_act='sigmoid',
-        summary=False
+        summary=False,
+        compile_opts={'weighted_metrics': [tf.keras.metrics.BinaryAccuracy(name='accuracy')]}
     )
 
     # For EFN, take only eta, phi, and log(pT) quantities, and package into
@@ -121,9 +113,6 @@ if tagger_type == 'efn':
     # This code assumes quantities are ordered (eta, phi, pT, ...)
     train_angular = train_data[:,:,0:2]
     train_pt = train_data[:,:,2]
-
-    test_angular = test_data[:,:,0:2]
-    test_pt = test_data[:,:,2]
 
     # Make train / valid split using sklearn train_test_split function
     (train_angular, valid_angular, train_pt,
@@ -148,12 +137,6 @@ if tagger_type == 'efn':
                         for i in valid_list])
     valid_data = Dataset.zip(valid_sets[:2])
     valid_dataset = Dataset.zip((valid_data,) + valid_sets[2:])
-
-    test_list = [test_pt, test_angular, test_labels, test_weights]
-    test_sets = tuple([Dataset.from_tensor_slices(i).batch(batch_size)
-                       for i in test_list])
-    test_data = Dataset.zip(test_sets[:2])
-    test_dataset = Dataset.zip((test_data,) + test_sets[2:])
 
 # For all other models, data sets can be built using the same process, so
 # these are handled together
@@ -186,7 +169,7 @@ else:
             optimizer=tf.keras.optimizers.Adam(learning_rate=4e-5),
             # from_logits set to False for uniformity with energyflow settings
             loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
-            metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
+            weighted_metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
         )
 
     elif tagger_type == 'dnn':
@@ -194,7 +177,6 @@ else:
         # For DNN, we also need to flatten constituent data into shape:
         # (n_jets, max_constits * num_data_features)
         train_data = train_data.reshape(-1, max_constits * num_data_features)
-        test_data = test_data.reshape(-1, max_constits * num_data_features)
 
         # Build DNN
         model = tf.keras.Sequential()
@@ -224,7 +206,7 @@ else:
             optimizer=tf.keras.optimizers.Adam(learning_rate=1.2e-5),
             # from_logits set to False for uniformity with energyflow settings
             loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
-            metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
+            weighted_metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
         )
 
     elif tagger_type == 'pfn':
@@ -242,7 +224,8 @@ else:
             optimizer=tf.keras.optimizers.Adam(learning_rate=7.9e-5),
             output_dim=1,
             output_act='sigmoid',
-            summary=False
+            summary=False,
+            compile_opts={'weighted_metrics': [tf.keras.metrics.BinaryAccuracy(name='accuracy')]}
         )
 
     else:
@@ -274,20 +257,15 @@ else:
         valid_weights)
     ).batch(batch_size)
 
-    test_dataset = tf.data.Dataset.from_tensor_slices((
-        test_data,
-        test_labels,
-        test_weights)
-    ).batch(batch_size)
-
 ############################### Train Tagger ###################################
 print("Starting tagger training")
 
 # Callback for storing checkpoints
-checkpoint_path = Path().cwd() / "checkpoints"
-checkpoint_path.mkdir(parents=True, exist_ok=True)
+checkpoint_dir = Path().cwd() / "checkpoints"
+checkpoint_dir.mkdir(parents=True, exist_ok=True)
+checkpoint_path = checkpoint_dir / '{epoch:02d}-{val_loss:.2f}.tf'
 checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
-    filepath=checkpoint_path / '{epoch:02d}-{val_loss:.2f}.keras',
+    filepath=str(checkpoint_path),
     save_best_only=True
 )
 
@@ -310,74 +288,3 @@ plt.legend()
 plt.savefig(figure_dir / 'loss.png', dpi=300)
 plt.clf()
 
-# ############################### Evaluate Tagger ################################
-# print("Run tagger evaluation")
-
-# # Run prediction on the testing set. Make cut on tagger output at 0.5 to
-# # evaluate accuracy metric
-# predictions = model.predict(test_dataset, batch_size=batch_size)[:,0]
-# discrete_predictions = (predictions > 0.5).astype(int)
-
-# # Evaluate metrics
-# auc = metrics.roc_auc_score(test_labels, predictions)
-# acc = metrics.accuracy_score(test_labels, discrete_predictions)
-
-# # Evaluate background rejection at fixed signal efficiency working points
-# fpr, tpr, thresholds = metrics.roc_curve(test_labels, predictions)
-# point5_index = np.argmax(tpr > 0.5)
-# br_point5 = 1 / fpr[point5_index]
-# point8_index = np.argmax(tpr > 0.8)
-# br_point8 = 1 / fpr[point8_index]
-
-# # Print metric results
-# print('\nPerformance metrics evaluated over testing set:')
-# print('AUC score:', auc)
-# print('ACC score:', acc)
-# print('Background rejection at 0.5 signal efficiency:', br_point5)
-# print('Background rejection at 0.8 signal efficiency:', br_point8)
-
-# # Plot ROC curve
-# plt.plot(tpr, 1 / fpr)
-# plt.yscale('log')
-# plt.ylabel('Background rejection')
-# plt.xlabel('Signal efficiency')
-# plt.savefig(figure_dir / 'roc.png', dpi=300)
-# plt.clf()
-
-# # Finally make a plot of the background rejection versus jet pT. Start by making
-# # a set of pT bins and empty vectors to accept B.R. values. Note pt bin array
-# # defines bin edges
-# pt_bins = np.linspace(350000, 3150000, 15)
-# br_point5_array = np.zeros(len(pt_bins) - 1)
-# br_point8_array = np.zeros(len(pt_bins) - 1)
-
-# # Loop through pT bins
-# for i in range(len(pt_bins) - 1):
-
-#     # Find the indeces of the jets that lie in this pT bin
-#     condition = np.logical_and(jet_pt > pt_bins[i], jet_pt < pt_bins[i+1])
-#     bin_indeces = condition.nonzero()[0]
-
-#     # Now take predictions and labels which fall in this pT bin
-#     bin_predictions = predictions[bin_indeces]
-#     bin_labels = test_labels[bin_indeces]
-
-#     # Calculate the background rejection at fixed signal efficiency
-#     fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_predictions)
-#     bin_point5_index = np.argmax(tpr > 0.5)
-#     br_point5_array[i] = 1 / fpr[bin_point5_index]
-#     bin_point8_index = np.argmax(tpr > 0.8)
-#     br_point8_array[i] = 1 / fpr[bin_point8_index]
-
-# # Duplicate last entry in background rejection arrays
-# br_point5_array = np.concatenate((br_point5_array, br_point5_array[-1:]))
-# br_point8_array = np.concatenate((br_point8_array, br_point8_array[-1:]))
-
-# # Make a plot using matplotlib's step function
-# plot_bins = pt_bins / 1e6 # Set plot on TeV scale
-# plt.step(plot_bins, br_point5_array, '-', where='post', label=r'$\epsilon_{sig} = 0.5$')
-# plt.step(plot_bins, br_point8_array, '--', where='post', label=r'$\epsilon_{sig} = 0.8$')
-# plt.ylabel('Background rejection')
-# plt.xlabel('Jet pT (TeV)')
-# plt.legend()
-# plt.savefig(figure_dir / 'br_vs_pt.png', dpi=300)
