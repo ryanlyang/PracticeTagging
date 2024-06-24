@@ -40,7 +40,7 @@ Any physics analysis which uses a top tagging algorithm will need to account for
 1. Train a tagger. An example training script is provided in `train.py`. In practice obtaining good performance will require utilizing the full statistics of the training set. See "Training with large datasets" below.
 2. Evaluate the tagger on the nominal testing set, and systematic varied testing sets. The python script `evaluate.py` evaluates any saved tensorflow model over one of these datasets. The bash script `evaluate_all.sh` repeatedly calls the python script to run evaluation over all datasets.
 3. Calculate performance metrics on all sets. The python script `calc.py` does this using the tagger predictions from step 2 stored as .npz files and produced by the `evaluate.py` script.
-4. Plot the performance metrics. The script `plot_everything.py` will produce a set of plots that detail the tagger performance, the size of the systematic uncertainties, and how they compare to the hlDNN and ParticleNet baselines. 
+4. Plot the performance metrics. The script `plot_everything.py` will produce a set of plots that detail the tagger performance, the size of the systematic uncertainties, and how they compare to the hlDNN and ParticleNet baselines. **Important**: This script implements the recommended procedure for setting systematic uncertainties using the raw performance metrics generated in step 3. Though other procedures are possible, it is recommended to always follow this prepscription for easy comparison with the baselines.
 
 ## Dataset generation
 
@@ -146,10 +146,6 @@ The training and testing sets require 130GB and 7.6GB respectively when stored o
 
 - Tensorflow: [Data API](https://www.tensorflow.org/guide/data), [Sequence Class](https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence), [Pipeline Optimization](https://www.tensorflow.org/guide/data_performance)
 - PyTorch: [Datasets and DataLoaders](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)
-
-## Best Practices for Estimating Systematic Uncertainties
-
-Scripts for estimating the systematic uncertainties by a tagger first trained on the nominal datasets can be found in the `systematics` sub-directory. They run inference over each systematic varied dataset, and then use the outputs to calculate a systematic uncertainty on the performance metrics described above. The scripts implement the recommended method for calculating a systematic uncertainty on the performance metrics. For easy comparison of systematic uncertainties between taggers, it is recommended to always use this procedure although other procedures are possible. Further details on the procedure is provided by the documentation contained in the sub-directory and the [paper](https://www.youtube.com/watch?v=dQw4w9WgXcQ) that accompanies this data release.
 
 ## Performance and Uncertainty Baselines of Existing Taggers
 
