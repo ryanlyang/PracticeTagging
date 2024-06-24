@@ -1,4 +1,4 @@
-# LHC Machine Learning Challenge: The Hunt for Boosted Top Quarks
+# LHC machine learning challenge: the hunt for boosted top quarks
 
 Machine Learning techniques have revolutionized the identification of top quark decay signatures in experiments at the Large Hadron Collider. This repository describes how to use a public data set for the development of machine learning based top tagging methods, and contribute to the project of discovering new fundamental physics.
 
@@ -10,7 +10,7 @@ Link to data set: http://opendata.cern.ch/record/15013
 
 *This figure shows individual (top row) and averaged (bottom row) jet images built from the background (left column) and signal (right column) classes.*
 
-## One Minute Introduction
+## One minute introduction
 
 Boosted top tagging is an essential binary classification task for experiments at the Large Hadron Collider (LHC) to measure the properties of the top quark. The [ATLAS Top Tagging Open Data Set](http://opendata.cern.ch/record/15013) is a publicly available dataset for the development of Machine Learning (ML) based boosted top tagging algorithms. The dataset consists of a nominal piece used for the training and evaluation of algorithms, and a systematic piece used for estimating the size of systematic uncertainties produced by an algorithm. The nominal data is split into two orthogonal sets, named *train* and *test* and stored in the HDF5 file format, containing about 92 million and 10 million jets respectively. Both sets are composed of equal parts signal (jets initiated by a boosted top quark) and background (jets initiated by light quarks or gluons). For each jet, the datasets contain:
 
@@ -23,19 +23,26 @@ Boosted top tagging is an essential binary classification task for experiments a
 
 There are two rules for using this data set: the contribution to a loss function from any jet should **always** be [weighted by the training weight](https://gitlab.cern.ch/atlas/ATLAS-top-tagging-open-data/-/blob/master/train.py#L272-293), and any performance claim is incomplete without an estimate of the systematic uncertainties. The ideal model shows high performance but also small systematic uncertainties. Happy tagging!
 
-## Introduction to Boosted Top Tagging at the LHC
+## Introduction to boosted top tagging at the LHC
 
 The top quark is the heaviest known fundamental particle. Its large mass and strong interactions with the Higgs Boson make it an essential piece of the search for new fundamental physics. These quarks are produced in about one in every billion proton-proton collisions at the LHC. Given the rate of collisions, this means a top quark (along with its anti-particle the anti-top quark) is produced every few seconds when the LHC runs at peak luminosity. However its extremely short lifetime makes it a difficult particle to study. A top quark decays well before it could interact with any matter in a particle detector, so the only way to study this particle is to infer its properties from its decay products. When top quarks decay, they most often produce three lighter quarks in the process. These lighter quarks further *hadronize* into many final state particles which can be measured in a detector. Taken together these particles form a *jet*. A common signature of a top quark is then three of these jets. If the top has a large momentum in a direction perpindicular to the beam axis (transverse momentum or p<sub>T</sub>), or has a large *Lorentz boost*, the three jets can overlap and merge into a single large radius jet. 
 
 Light quarks and gluons are produced in copious numbers in LHC collisions. When these particles hadronize they can produce jets that look very similar to jets initiated by boosted top quarks. This means it is difficult to separate the interesting boosted top quark events from the much more numerous light quark and gluon events. To study high momentum top quarks, LHC experiments need to isolate pure samples of boosted top quark jets from the background, requiring dedicated *top tagging* algorithms. These algorithms classify jets as signal or background based on the measured properties of each constituent in the jet. Typically both signal and background jets have around 50 constituent particles, with some jets having as many as 200. Given the high dimensionality of this feature space and the availability of large data sets of jets labeled as signal or background, boosted top tagging is an ideal application of ML techniques.
 
-## Dataset Purpose
+## Dataset purpose
 
 The ATLAS top tagging open dataset is a public dataset for use in the development of ML based top tagging methods. It is the only public top tagging dataset generated with a GEANT4 based detector simulation and state-of-the-art jet reconstruction methods. A study of the performance of existing top tagging methods on this dataset found that some taggers which showed promise in [previous studies performed with simplified detector simulation](https://arxiv.org/abs/1902.09914) failed to perform in this more realistic setting. This dataset allows future top tagger development to occur directly on a highly realistic dataset. 
 
 Any physics analysis which uses a top tagging algorithm will need to account for the systematic uncertainties produced. This is typically done through measuring a scale factor, which corrects the taggers performance in simulated data to its performance in experimental data. Scale factor measurements are time intensive and require access to experimental data. An alternative approach is to study how the tagger's performance behaves under systematic variations in the datasets used to evaluate tagger performance. The differences in performance between the nominal and systematic varied datasets can be used to estimate the size of the systematic uncertainties that would be produced by a tagger if used in a physics analysis. This dataset includes a suite of systematic varied datasets that can be used for this purpose, allowing the size of systematic uncertainties to be considered in the tagger development process in addition to pure performance.
 
-## Dataset Generation
+## Basic recipe for training a tagger and assessing uncertainties
+
+1. Train a tagger. An example training script is provided in `train.py`. In practice obtaining good performance will require utilizing the full statistics of the training set. See "Training with large datasets" below.
+2. Evaluate the tagger on the nominal testing set, and systematic varied testing sets. The python script `evaluate.py` evaluates any saved tensorflow model over one of these datasets. The bash script `evaluate_all.sh` repeatedly calls the python script to run evaluation over all datasets.
+3. Calculate performance metrics on all sets. The python script `calc.py` does this using the tagger predictions from step 2 stored as .npz files and produced by the `evaluate.py` script.
+4. Plot the performance metrics. The script `plot_everything.py` will produce a set of plots that detail the tagger performance, the size of the systematic uncertainties, and how they compare to the hlDNN and ParticleNet baselines. 
+
+## Dataset generation
 
 The ATLAS Top Tagging Open Data Set consists of jets taken from simulated collisions of protons at a center of mass energy of 13 TeV. The nominal signal and background jets come from simulated collision events containing two different processes:
 
@@ -96,7 +103,7 @@ The training weights are contained in the branch `'training_weights'` in the nom
 
 ### PYTHIA Shower Weights
 
-PYTHIA shower weights are stored in the branch `'EventInfo_mcEventWEights'`. These weights can be used to vary the renormalization and factorization scales, and parton distribution functions (PDFs), used in the QCD calculations that generated the datasets. There are 27 floating point numbers in this branch for each jet. The first weight is a `nominal` event weight. The other 26 vary the scales or PDFs. Most of these are not used in the procedure for setting systematic uncertainties on the tagger performance.
+PYTHIA shower weights are stored in the branch `'EventInfo_mcEventWEights'`. These weights can be used to vary the renormalization and factorization scales, and parton distribution functions (PDFs), used in the QCD calculations that generated the datasets. There are 27 floating point numbers in this branch for each jet. The first weight is a `nominal` event weight. The other 26 vary the scales or PDFs. Most of these are not used in the procedure for setting systematic uncertainties on the tagger performance (see above).
 
 ### Labels
 
