@@ -139,7 +139,7 @@ The data set is stored "as simulated" with no pre-processing steps applied other
 - In top tagging the &eta; and &phi; coordinates of the jet have no bearing on whether the jet is signal or background, so tagger performance can often be improved by shifting all of the jets such that they sit at the origin of the &eta;-&phi; plane.
 - Since the p<sub>T</sub> and energy values are given in MeV, they have quite large magnitudes with some constituents having energies above 300,000 MeV. ML training proceeds best with approximately normally distributed (zero mean and unit standard deviation) inputs, so it is advisable to apply some pre-processing to reduce the scale of these inputs.
 
-These are both standard pre-processing tricks, but there are many other ways of pre-processing tagger inputs. The data set is presented with no pre-processing to encourage experimentation in pre-processing schemes, as they can have considerable impact on tagger performance. For the user's reference the pre-processing scheme used in the ATLAS public note accompanying this data release is implemented in `preprocessing.py`.
+These are both standard pre-processing tricks, but there are many other ways of pre-processing tagger inputs. The data set is presented with no pre-processing to encourage experimentation in pre-processing schemes, as they can have considerable impact on tagger performance. For the user's reference the pre-processing scheme used in the paper accompanying this data release is implemented in `utils.py`.
 
 ### Training and Evaluation
 
