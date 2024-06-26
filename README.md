@@ -49,11 +49,11 @@ The ATLAS Top Tagging Open Data Set consists of jets taken from simulated collis
 - Signal: A heavy Z boson (termed Z') with mass of 2 tera-electron-volts decaying to a top anti-top quark pair.
 - Background: Jets initiated by light quarks and gluons. These particles are copious by-products of proton-proton collisions at the LHC.
 
-Additionally, the dataset used to estimate some systematic uncertainties contains jets taken from collisions containing the standard model production of top / anti-top quark pairs. To be included in the data set, all jets are required to satisfy several conditions which produce sharp cut-offs in the distributions of some of the quantities contained in the data set (the jet pseudo-rapidity for example). For details of these requirements see the public note released in tandem with this data set.
+Additionally, the dataset used to estimate some systematic uncertainties contains jets taken from collisions containing the standard model production of top / anti-top quark pairs. To be included in the data set, all jets are required to satisfy several conditions which produce sharp cut-offs in the distributions of some of the quantities contained in the data set (the jet pseudo-rapidity for example). For details of these requirements see the paper released in tandem with this data set.
 
 Efficient simulation of background events requires introducing unphysical bumps in the distribution of the background jet's p<sub>T</sub>. To get rid of these bumps, the background jet p<sub>T</sub> spectrum could be reweighted to what is actually observed in LHC collisions, but these weights would cover many orders of magnitude and make the training of a top tagger difficult. Luckily there is no reason the background jet p<sub>T</sub> spectrum needs to be physical in a data set only used for training a top tagger. Searches for new physics at the LHC often bin events by quantities like jet p<sub>T</sub>, and if the tagger learns to associate a particular jet p<sub>T</sub> with signal jets, it can assign background jets as signal because they happen to have the correct p<sub>T</sub>. This effect is known as *background scultping*, and can produce false positive results in a search for new physics if not controlled properly. A first order method for eliminating this effect is to reweight the signal and background jet p<sub>T</sub> spectrum to be identical. The solution to both of these problems is to reweight the background jet p<sub>T</sub> spectrum to match the signal spectrum. This is the purpose of the training weights included in the data set.
 
-## Data Set Contents
+## Data set contents
 
 The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The directories named `train_nominal` and `test_nominal` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. These datasets are produced with a **systematic variation** that slightly modifies the kinematic properties of the jet constituent kinematics within a given systematic uncertainty. The differences between a tagger's performance on the nominal and the systematic varied datasets can be used to estimate the systematic uncertainties produced by the tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them.
 
@@ -70,7 +70,7 @@ The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nomi
 
 Each dataset contains the following information for each jet, except the training weights and PYTHIA shower weights which are only contained in the nominal datasets:
 
-### Constituent Four-vectors
+### Constituent four-vectors
 
 Each jet can have anywhere between 3 and 200 constituent particles. Each of these particles is described by four quantities, which collectively make up the particle's *four-vector*:
 
@@ -82,6 +82,10 @@ Each jet can have anywhere between 3 and 200 constituent particles. Each of thes
 The constituent four-vectors are contained in branches named `['fjet_clus_pt', 'fjet_clus_eta', 'fjet_clus_phi', 'fjet_clus_E']`. Since jets contain a variable number of constituent particles, these branches have many zero padded entries. Handling the variable length quality of this data is an important challenge in building effective constituent based top taggers. For convenience the constituents are listed in order of decreasing p<sub>T</sub>, but this choice is arbitrary. There is no inherent ordering to the constituents in a jet!
 
 Lastly the angular coordinates (&eta; and &phi;) are unitless, while the p<sub>T</sub> and energy are given in units of mega-electron-volts. This choice of units means these quantities can have large magnitudes (some constituents have energies upwards of 300,000 MeV). This large scale should be dealt with in pre-processing to stabilize training (see below).
+
+### Constituent taste
+
+Each constituent particle also has an associated integer number, called the taste, which can take values of 0, 1, or 2 and are stored in the branch `fjet_clus_taste`. Since zero padded elements are also given a value of 0, the user should use the constituent p<sub>T</sub> to identify masked elements in this branch. The constituent taste signifies how particle-flow and track calo-cluster objects were combined to form unified flow objects within the ATLAS reconstruction software. For more information on the constituent taste, see Section 6.1 of the paper released in tandem with this dataset, and references contained therein.
 
 ### High Level Quantities
 
