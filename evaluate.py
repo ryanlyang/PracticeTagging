@@ -61,7 +61,7 @@ max_constits = 80
 batch_size = 256
 
 # The maximum number of jets to use in testing
-max_jets = 3000000
+max_jets = 5000000
 
 ########################### Data Preparation ###################################
 print("Read data and prepare for tagger testing")
@@ -76,6 +76,12 @@ test_data, test_labels, _, shower_weights, test_jet_pt, test_numbers = utils.loa
     use_numbers=args.store_numbers,
     max_constits=max_constits
 )
+
+# Find number of jets and print warning if it is too low
+num_jets = test_data.shape[0]
+high_stat = ['esup', 'esdown', 'cer', 'cpos', 'tfl', 'tfj', 'teg', 'tej', 'bias']
+if num_jets < 5000000 and any([i in args.data for i in high_stat]):
+    print("Warning: low statistics in test set will make estimate of this systematic uncertainty unreliable!")
 
 # Find the number of data features
 num_data_features = test_data.shape[-1]
