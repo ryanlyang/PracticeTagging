@@ -10,7 +10,7 @@ Link to data set: http://opendata.cern.ch/record/15013
 
 *This figure shows individual (top row) and averaged (bottom row) jet images built from the background (left column) and signal (right column) classes.*
 
-## One minute introduction
+## Two minute introduction
 
 Boosted top tagging is an essential binary classification task for experiments at the Large Hadron Collider (LHC) to measure the properties of the top quark. The [ATLAS Top Tagging Open Data Set](http://opendata.cern.ch/record/15013) is a publicly available dataset for the development of Machine Learning (ML) based boosted top tagging algorithms. The dataset consists of a nominal piece used for the training and evaluation of algorithms, and a systematic piece used for estimating the size of systematic uncertainties produced by an algorithm. The nominal data is split into two orthogonal sets, named *train* and *test* and stored in the HDF5 file format, containing about 92 million and 10 million jets respectively. The systematic varied data is split into many more pieces that should only be used for evaluation in most cases. Both nominal sets are composed of equal parts signal (jets initiated by a boosted top quark) and background (jets initiated by light quarks or gluons). For each jet, the datasets contain:
 
