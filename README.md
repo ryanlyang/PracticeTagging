@@ -164,14 +164,12 @@ The nominal testing set contains 92 million jets. Loading all of them in memory 
 
 ## Performance baselines of existing taggers
 
-**Add uncertainty table!**
-
 <p align="center">
 <img src="./images/perf_baselines.png" width=700 class="centerImage" alt="Performance baselines of existing top taggers on the ATLAS top tagging open data set. These are the numbers to beat.">
 </p>
 
 <p align="center">
-<img src="./images/param_baselines.png" width=300 class="centerImage" alt="Number of parameters and the inference times for the baseline taggers">
+<img src="./images/param_baselines.png" width=350 class="centerImage" alt="Number of parameters and the inference times for the baseline taggers">
 </p>
 
 For more information on these baselines, see the paper released with this data set.
