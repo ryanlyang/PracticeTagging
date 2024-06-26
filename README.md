@@ -85,7 +85,7 @@ Lastly the angular coordinates (&eta; and &phi;) are unitless, while the p<sub>T
 
 ### Constituent taste
 
-Each constituent particle also has an associated integer number, called the taste, which can take values of 0, 1, or 2 and are stored in the branch `fjet_clus_taste`. Since zero padded elements are also given a value of 0, the user should use the constituent p<sub>T</sub> to identify masked elements in this branch. The constituent taste signifies how particle-flow and track calo-cluster objects were combined to form unified flow objects within the ATLAS reconstruction software. For more information on the constituent taste, see Section 6.1 of the paper released in tandem with this dataset, and references contained therein.
+Each constituent particle also has an associated integer number, termed the taste, which take values of 0, 1, or 2 and are stored in the branch `fjet_clus_taste`. Since zero padded elements are also given a value of 0, the user should use the constituent p<sub>T</sub> to identify masked elements in this branch. The constituent taste signifies how particle-flow and track calo-cluster objects were combined to form unified flow objects within the ATLAS reconstruction software. For more information on the constituent taste, see Section 6.1 of the paper released in tandem with this dataset, and references contained therein.
 
 ### High Level Quantities
 
