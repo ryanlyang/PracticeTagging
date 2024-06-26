@@ -114,6 +114,10 @@ PYTHIA shower weights are stored in the branch `'EventInfo_mcEventWEights'`. The
 
 Labels are stored in the branch `'labels'` and take the value of 1 for a signal jet and 0 for a background jet.
 
+### MC event number
+
+Each simulated event is assigned an event number. The number of the event from which a jet is taken is included in the branch `EventInfo_mcEventNumber`. This number is useful for ensuring orthogonality of the training and testing sets. Jets taken with event numbers that are a multiple of 10 are assigned to the testing and systematic varied set, and all other jets are assigned to the training set.
+
 ### Data Set Attributes
 
 For convenience, each data file also contains a set of attributes which can be used to retrieve branch names and other meta data. These attributes are:
