@@ -162,15 +162,19 @@ The nominal testing set contains 92 million jets. Loading all of them in memory 
 - Tensorflow: [Data API](https://www.tensorflow.org/guide/data), [Sequence Class](https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence), [Pipeline Optimization](https://www.tensorflow.org/guide/data_performance)
 - PyTorch: [Datasets and DataLoaders](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)
 
-## Performance and Uncertainty Baselines of Existing Taggers
+## Performance baselines of existing taggers
 
 **Add uncertainty table!**
 
 <p align="center">
-<img src="https://user-images.githubusercontent.com/27929701/166083546-f24d34cf-89b2-4bb3-bc2d-f2ba08b07dfa.png" width=700 class="centerImage" alt="Performance baselines of existing top taggers on the ATLAS top tagging open data set. These are the numbers to beat.">
+<img src="./images/perf_baselines.png" width=700 class="centerImage" alt="Performance baselines of existing top taggers on the ATLAS top tagging open data set. These are the numbers to beat.">
 </p>
 
-For more information on these baselines, see the public note released with this data set.
+<p align="center">
+<img src="./images/param_baselines.png" width=300 class="centerImage" alt="Number of parameters and the inference times for the baseline taggers">
+</p>
+
+For more information on these baselines, see the paper released with this data set.
 
 ## Other Resources
 
