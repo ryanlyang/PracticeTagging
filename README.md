@@ -57,16 +57,16 @@ Efficient simulation of background events requires introducing unphysical bumps 
 
 The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The directories named `train_nominal` and `test_nominal` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. These datasets are produced with a **systematic variation** that slightly modifies the kinematic properties of the jet constituent kinematics within a given systematic uncertainty. The differences between a tagger's performance on the nominal and the systematic varied datasets can be used to estimate the systematic uncertainties produced by the tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them.
 
-| Systematic Uncertainty      | Description                                               | Datasets                                    |
+| Systematic uncertainty      | Description                                               | Dataset directory                                    |
 |-----------------------------|-----------------------------------------------------------|---------------------------------------------|
-| Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `ces_up.h5`, `ces_down.h5` |
-| Cluster energy resolution | Vary the energy resolution of jet constituents reconstructed with the calorimeter | `cer.h5` |
-| Cluster position resolution | Vary the position resolution of jet constituents reconstructed with the calorimeter | `cpos.h5` |
-| Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `track_fake_loose.h5`, `track_fake_jet.h5` |
-| Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `track_eff_global.h5`, `track_eff_jet.h5` |
-| Signal parton shower and hadronization modeling | Vary the parton shower and hadronization model for signal jets | `ttbar_pythia.h5`, `ttbar_herwig.h5` |
-| Background parton shower | Vary the parton shower model for background jets | `dijet_herwig_cluster.h5`, `dijet_herwig_string.h5` | 
-| Background hadronization | Vary the hadronization model for background jets | `dijet_sherpa_angular.h5`, `dijet_sherpa_dipole.h5` |
+| Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `ces_up`, `ces_down` |
+| Cluster energy resolution | Vary the energy resolution of jet constituents reconstructed with the calorimeter | `cer` |
+| Cluster position resolution | Vary the position resolution of jet constituents reconstructed with the calorimeter | `cpos` |
+| Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `track_fake_loose`, `track_fake_jet` |
+| Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `track_eff_global`, `track_eff_jet` |
+| Signal parton shower and hadronization modeling | Vary the parton shower and hadronization model for signal jets | `ttbar_pythia`, `ttbar_herwig` |
+| Background parton shower | Vary the parton shower model for background jets | `dijet_herwig_cluster`, `dijet_herwig_string` | 
+| Background hadronization | Vary the hadronization model for background jets | `dijet_sherpa_angular`, `dijet_sherpa_dipole` |
 | Renormalization and factorization scales | Vary the scales for the signal / background jets | Nominal datasets |
 
 Each dataset contains the following information for each jet, except the training weights and PYTHIA shower weights which are only contained in the nominal datasets:
