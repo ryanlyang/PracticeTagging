@@ -10,9 +10,9 @@ Link to data set: http://opendata.cern.ch/record/15013
 
 *This figure shows individual (top row) and averaged (bottom row) jet images built from the background (left column) and signal (right column) classes.*
 
-## One minute introduction
+## Two minute introduction
 
-Boosted top tagging is an essential binary classification task for experiments at the Large Hadron Collider (LHC) to measure the properties of the top quark. The [ATLAS Top Tagging Open Data Set](http://opendata.cern.ch/record/15013) is a publicly available dataset for the development of Machine Learning (ML) based boosted top tagging algorithms. The dataset consists of a nominal piece used for the training and evaluation of algorithms, and a systematic piece used for estimating the size of systematic uncertainties produced by an algorithm. The nominal data is split into two orthogonal sets, named *train* and *test* and stored in the HDF5 file format, containing about 92 million and 10 million jets respectively. Both sets are composed of equal parts signal (jets initiated by a boosted top quark) and background (jets initiated by light quarks or gluons). For each jet, the datasets contain:
+Boosted top tagging is an essential binary classification task for experiments at the Large Hadron Collider (LHC) to measure the properties of the top quark. The [ATLAS Top Tagging Open Data Set](http://opendata.cern.ch/record/15013) is a publicly available dataset for the development of Machine Learning (ML) based boosted top tagging algorithms. The dataset consists of a nominal piece used for the training and evaluation of algorithms, and a systematic piece used for estimating the size of systematic uncertainties produced by an algorithm. The nominal data is split into two orthogonal sets, named *train* and *test* and stored in the HDF5 file format, containing about 92 million and 10 million jets respectively. The systematic varied data is split into many more pieces that should only be used for evaluation in most cases. Both nominal sets are composed of equal parts signal (jets initiated by a boosted top quark) and background (jets initiated by light quarks or gluons). For each jet, the datasets contain:
 
 - The four vectors of constituent particles
 - 15 high level summary quantities evaluated on the jet
@@ -21,7 +21,7 @@ Boosted top tagging is an essential binary classification task for experiments a
 - PYTHIA shower weights (nominal only)
 - A signal (1) vs background (0) label
 
-There are two rules for using this data set: the contribution to a loss function from any jet should **always** be [weighted by the training weight](https://gitlab.cern.ch/atlas/ATLAS-top-tagging-open-data/-/blob/master/train.py#L272-293), and any performance claim is incomplete without an estimate of the systematic uncertainties. The ideal model shows high performance but also small systematic uncertainties. Happy tagging!
+There are two rules for using this data set: the contribution to a loss function from any jet should **always** be [weighted by the training weight](https://gitlab.cern.ch/atlas/ATLAS-top-tagging-open-data/-/blob/master/train.py#L272-293), and any performance claim is incomplete without an estimate of the systematic uncertainties via the method illustrated in this repository. The ideal model shows high performance but also small systematic uncertainties. Happy tagging!
 
 ## Introduction to boosted top tagging at the LHC
 
@@ -33,14 +33,14 @@ Light quarks and gluons are produced in copious numbers in LHC collisions. When 
 
 The ATLAS top tagging open dataset is a public dataset for use in the development of ML based top tagging methods. It is the only public top tagging dataset generated with a GEANT4 based detector simulation and state-of-the-art jet reconstruction methods. A study of the performance of existing top tagging methods on this dataset found that some taggers which showed promise in [previous studies performed with simplified detector simulation](https://arxiv.org/abs/1902.09914) failed to perform in this more realistic setting. This dataset allows future top tagger development to occur directly on a highly realistic dataset. 
 
-Any physics analysis which uses a top tagging algorithm will need to account for the systematic uncertainties produced. This is typically done through measuring a scale factor, which corrects the taggers performance in simulated data to its performance in experimental data. Scale factor measurements are time intensive and require access to experimental data. An alternative approach is to study how the tagger's performance behaves under systematic variations in the datasets used to evaluate tagger performance. The differences in performance between the nominal and systematic varied datasets can be used to estimate the size of the systematic uncertainties that would be produced by a tagger if used in a physics analysis. This dataset includes a suite of systematic varied datasets that can be used for this purpose, allowing the size of systematic uncertainties to be considered in the tagger development process in addition to pure performance.
+Any physics analysis which uses a top tagging algorithm will need to account for the systematic uncertainties produced. This is typically done through measuring a scale factor, which corrects the taggers performance in simulated data to its performance in experimental data. Scale factor measurements are time intensive and require access to experimental data. An alternative approach is to study how the tagger's performance behaves when systematic variations are applied to simulated datasets. The differences in performance between the nominal and _systematic varied_ datasets can be used to estimate the size of the systematic uncertainties that would be produced by a tagger if used in a physics analysis. This dataset includes a suite of systematic varied datasets that can be used for this purpose, allowing the size of systematic uncertainties to be considered in the tagger development process in addition to pure performance.
 
 ## Basic recipe for training a tagger and assessing uncertainties
 
-1. Train a tagger. An example training script is provided in `train.py`. In practice obtaining good performance will require utilizing the full statistics of the training set. See "Training with large datasets" below.
-2. Evaluate the tagger on the nominal testing set, and systematic varied testing sets. The python script `evaluate.py` evaluates any saved tensorflow model over one of these datasets. The bash script `evaluate_all.sh` repeatedly calls the python script to run evaluation over all datasets.
-3. Calculate performance metrics on all sets. The python script `calc.py` does this using the tagger predictions from step 2 stored as .npz files and produced by the `evaluate.py` script.
-4. Plot the performance metrics. The script `plot_everything.py` will produce a set of plots that detail the tagger performance, the size of the systematic uncertainties, and how they compare to the hlDNN and ParticleNet baselines. **Important**: This script implements the recommended procedure for setting systematic uncertainties using the raw performance metrics generated in step 3. Other methods of setting systematic uncertainties with this dataset are not supported.
+1. **Train a tagger**: An example training script is provided in `train.py`. In practice obtaining good performance will require utilizing the full statistics of the training set. See "Training with large datasets" below.
+2. **Evaluate the tagger**: This should be done on the nominal testing set and the systematic varied testing sets. The python script `evaluate.py` evaluates any saved tensorflow model over one of these datasets. The bash script `evaluate_all.sh` repeatedly calls the python script to run evaluation over all datasets.
+3. **Calculate performance metrics**: The python script `calc.py` does this using the tagger predictions from step 2 stored as .npz files and produced by the `evaluate.py` script.
+4. **Plot performance metrics**: The script `plot_everything.py` will produce a set of plots that detail the tagger performance, the size of the systematic uncertainties, and how they compare to the hlDNN and ParticleNet baselines. **Important**: This script implements the recommended procedure for setting systematic uncertainties using the raw performance metrics generated in step 3. Other methods of setting systematic uncertainties with this dataset are not supported.
 
 ## Dataset generation
 
@@ -49,28 +49,29 @@ The ATLAS Top Tagging Open Data Set consists of jets taken from simulated collis
 - Signal: A heavy Z boson (termed Z') with mass of 2 tera-electron-volts decaying to a top anti-top quark pair.
 - Background: Jets initiated by light quarks and gluons. These particles are copious by-products of proton-proton collisions at the LHC.
 
-Additionally, the dataset used to estimate some systematic uncertainties contains jets taken from collisions containing the standard model production of top / anti-top quark pairs. To be included in the data set, all jets are required to satisfy several conditions which produce sharp cut-offs in the distributions of some of the quantities contained in the data set (the jet pseudo-rapidity for example). For details of these requirements see the public note released in tandem with this data set.
+Additionally, the dataset used to estimate some systematic uncertainties contains jets taken from collisions containing the standard model production of top / anti-top quark pairs. To be included in the data set, all jets are required to satisfy several conditions which produce sharp cut-offs in the distributions of some of the quantities contained in the data set (the jet pseudo-rapidity for example). For details of these requirements see the paper released in tandem with this data set.
 
 Efficient simulation of background events requires introducing unphysical bumps in the distribution of the background jet's p<sub>T</sub>. To get rid of these bumps, the background jet p<sub>T</sub> spectrum could be reweighted to what is actually observed in LHC collisions, but these weights would cover many orders of magnitude and make the training of a top tagger difficult. Luckily there is no reason the background jet p<sub>T</sub> spectrum needs to be physical in a data set only used for training a top tagger. Searches for new physics at the LHC often bin events by quantities like jet p<sub>T</sub>, and if the tagger learns to associate a particular jet p<sub>T</sub> with signal jets, it can assign background jets as signal because they happen to have the correct p<sub>T</sub>. This effect is known as *background scultping*, and can produce false positive results in a search for new physics if not controlled properly. A first order method for eliminating this effect is to reweight the signal and background jet p<sub>T</sub> spectrum to be identical. The solution to both of these problems is to reweight the background jet p<sub>T</sub> spectrum to match the signal spectrum. This is the purpose of the training weights included in the data set.
 
-## Data Set Contents
+## Data set contents
 
 The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The directories named `train_nominal` and `test_nominal` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. These datasets are produced with a **systematic variation** that slightly modifies the kinematic properties of the jet constituent kinematics within a given systematic uncertainty. The differences between a tagger's performance on the nominal and the systematic varied datasets can be used to estimate the systematic uncertainties produced by the tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them.
 
-| Systematic Uncertainty      | Description                                               | Datasets                                    |
+| Systematic uncertainty      | Description                                               | Dataset directory                                    |
 |-----------------------------|-----------------------------------------------------------|---------------------------------------------|
-| Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `ces_up.h5`, `ces_down.h5` |
-| Cluster energy resolution | Vary the energy resolution of jet constituents reconstructed with the calorimeter | `cer.h5` |
-| Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `track_fake_loose.h5`, `track_fake_jet.h5` |
-| Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `track_eff_global.h5`, `track_eff_jet.h5` |
-| Signal parton shower and hadronization modeling | Vary the parton shower and hadronization model for signal jets | `ttbar_pythia.h5`, `ttbar_herwig.h5` |
-| Background parton shower | Vary the parton shower model for background jets | `dijet_herwig_cluster.h5`, `dijet_herwig_string.h5` | 
-| Background hadronization | Vary the hadronization model for background jets | `dijet_sherpa_angular.h5`, `dijet_sherpa_dipole.h5` |
+| Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `ces_up`, `ces_down` |
+| Cluster energy resolution | Vary the energy resolution of jet constituents reconstructed with the calorimeter | `cer` |
+| Cluster position resolution | Vary the position resolution of jet constituents reconstructed with the calorimeter | `cpos` |
+| Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `track_fake_loose`, `track_fake_jet` |
+| Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `track_eff_global`, `track_eff_jet` |
+| Signal parton shower and hadronization modeling | Vary the parton shower and hadronization model for signal jets | `ttbar_pythia`, `ttbar_herwig` |
+| Background parton shower | Vary the parton shower model for background jets | `dijet_herwig_cluster`, `dijet_herwig_string` | 
+| Background hadronization | Vary the hadronization model for background jets | `dijet_sherpa_angular`, `dijet_sherpa_dipole` |
 | Renormalization and factorization scales | Vary the scales for the signal / background jets | Nominal datasets |
 
 Each dataset contains the following information for each jet, except the training weights and PYTHIA shower weights which are only contained in the nominal datasets:
 
-### Constituent Four-vectors
+### Constituent four-vectors
 
 Each jet can have anywhere between 3 and 200 constituent particles. Each of these particles is described by four quantities, which collectively make up the particle's *four-vector*:
 
@@ -82,6 +83,10 @@ Each jet can have anywhere between 3 and 200 constituent particles. Each of thes
 The constituent four-vectors are contained in branches named `['fjet_clus_pt', 'fjet_clus_eta', 'fjet_clus_phi', 'fjet_clus_E']`. Since jets contain a variable number of constituent particles, these branches have many zero padded entries. Handling the variable length quality of this data is an important challenge in building effective constituent based top taggers. For convenience the constituents are listed in order of decreasing p<sub>T</sub>, but this choice is arbitrary. There is no inherent ordering to the constituents in a jet!
 
 Lastly the angular coordinates (&eta; and &phi;) are unitless, while the p<sub>T</sub> and energy are given in units of mega-electron-volts. This choice of units means these quantities can have large magnitudes (some constituents have energies upwards of 300,000 MeV). This large scale should be dealt with in pre-processing to stabilize training (see below).
+
+### Constituent taste
+
+Each constituent particle also has an associated integer number, termed the taste, which take values of 0, 1, or 2 and are stored in the branch `fjet_clus_taste`. Since zero padded elements are also given a value of 0, the user should use the constituent p<sub>T</sub> to identify masked elements in this branch. The constituent taste signifies how particle-flow and track calo-cluster objects were combined to form unified flow objects within the ATLAS reconstruction software. For more information on the constituent taste, see Section 6.1 of the paper released in tandem with this dataset, and references contained therein.
 
 ### High Level Quantities
 
@@ -109,6 +114,10 @@ PYTHIA shower weights are stored in the branch `'EventInfo_mcEventWEights'`. The
 
 Labels are stored in the branch `'labels'` and take the value of 1 for a signal jet and 0 for a background jet.
 
+### MC event number
+
+Each simulated event is assigned an event number. The number of the event from which a jet is taken is included in the branch `EventInfo_mcEventNumber`. This number is useful for ensuring orthogonality of the training and testing sets. Jets taken with event numbers that are a multiple of 10 are assigned to the testing and systematic varied set, and all other jets are assigned to the training set.
+
 ### Data Set Attributes
 
 For convenience, each data file also contains a set of attributes which can be used to retrieve branch names and other meta data. These attributes are:
@@ -130,19 +139,25 @@ The data set is stored "as simulated" with no pre-processing steps applied other
 - In top tagging the &eta; and &phi; coordinates of the jet have no bearing on whether the jet is signal or background, so tagger performance can often be improved by shifting all of the jets such that they sit at the origin of the &eta;-&phi; plane.
 - Since the p<sub>T</sub> and energy values are given in MeV, they have quite large magnitudes with some constituents having energies above 300,000 MeV. ML training proceeds best with approximately normally distributed (zero mean and unit standard deviation) inputs, so it is advisable to apply some pre-processing to reduce the scale of these inputs.
 
-These are both standard pre-processing tricks, but there are many other ways of pre-processing tagger inputs. The data set is presented with no pre-processing to encourage experimentation in pre-processing schemes, as they can have considerable impact on tagger performance. For the user's reference the pre-processing scheme used in the ATLAS public note accompanying this data release is implemented in `preprocessing.py`.
+These are both standard pre-processing tricks, but there are many other ways of pre-processing tagger inputs. The data set is presented with no pre-processing to encourage experimentation in pre-processing schemes, as they can have considerable impact on tagger performance. For the user's reference the pre-processing scheme used in the paper accompanying this data release is implemented in `utils.py`.
 
-### Training and Evaluation
+### Training, evaluation, and performance metrics
 
-An example tagger training script can be found in `train.py`. This script can run training for a high level quantity based tagger, a simple deep neural network constituent based tagger, and [two purpose built constituent top taggers](https://arxiv.org/abs/1810.05165): the energy flow network and the particle flow network. The user can select between these taggers by setting the `model_type` keyword. The hyper-parameters for these models are hardcoded to match those used in the accompanying ATLAS public note. The user should feel free to experiment with model hyper-parameters and all other settings in the training script. The setting `max_constits` determines the maximum number of constituents considered for each jet. This is default set to 80 to reduce training time and memory consumption, but can be set to the maximum of 200 if the user wishes to ensure all information contained in the data set is available to the tagger.
+An example tagger training script can be found in `train.py`. This script can run training for a high level quantity based tagger, a simple deep neural network constituent based tagger, and [two purpose built constituent top taggers](https://arxiv.org/abs/1810.05165): the energy flow network and the particle flow network. The user can select between these taggers by setting the `model_type` keyword. The hyper-parameters for these models are hardcoded to match those used in the accompanying paper. The user should feel free to experiment with model hyper-parameters and all other settings in the training script. The setting `max_constits` determines the maximum number of constituents considered for each jet. This is default set to 80 to reduce training time and memory consumption, but can be set to the maximum of 200 if the user wishes to ensure all information contained in the data set is available to the tagger.
 
-The training script reports four tagger performance metrics, for all of which higher numbers correspond to better performance. The AUC (area under the reciever operating characteristic curve) and ACC (accuracy) are standard machine learning performance metrics. Background rejection is particle physics terminology for the inverse of the background efficiency (the fraction of correctly classified background events). The script evaluates the background rejection at two fixed signal efficiencies, or *working points*, of 0.5 and 0.8. These metrics are important because any data analysis which makes use of a top tagger will ultimately need to apply a cut on the tagger output to determine which jets are signal and which are background. The location of this cut is often chosen to produce 0.5 or 0.8 signal efficiency, so the performance of a tagger is evaluated by how much of the background is eliminated at these working points.
+The script `evaluate.py` performs inference over a given dataset, whether nominal testing or systematic varied. The tagger outputs are stored as .npz files, which can in turn be used as inputs to the `calc.py` script. This script reports four tagger performance metrics, for all of which higher numbers correspond to better performance. The AUC (area under the reciever operating characteristic curve) and ACC (accuracy) are standard machine learning performance metrics. Background rejection is particle physics terminology for the inverse of the background efficiency (the fraction of correctly classified background events). The script evaluates the background rejection at a fixed signal efficiency, or *working point*. Typical values are 0.5 and 0.8, but any value can be set by the user. The background rejection at a fixed signal efficiency is important because any data analysis which makes use of a top tagger will ultimately need to apply a cut on the tagger output to determine which jets are signal and which are background. The location of this cut is often chosen to produce 0.5 or 0.8 signal efficiency, so the performance of a tagger is evaluated by how much of the background is eliminated at these working points.
 
-Top tagger performance is also often evaluated in p<sub>T</sub> bins. The training script also produces plots of the background rejection in bins of jet p<sub>T</sub>, which show how the network performance evolves with jet p<sub>T</sub>.
+Top tagger performance is also often evaluated in p<sub>T</sub> bins. The script `plot_everything.py` produces plots of the background rejection in bins of jet p<sub>T</sub>, which show how the network performance evolves with jet p<sub>T</sub>.
 
-### Training with Large Data Sets
+### Systematic uncertainties
 
-The training and testing sets require 130GB and 7.6GB respectively when stored on disk. This makes loading all of the data into memory impossible for the vast majority of users. The example training script solves this problem by only using a fraction of the jets in the training set. The user should tune how many jets are taken from the training set, selecting as many jets as will fit within memory constraints. In most cases, using more than a fraction of training set will require data piping. If the user wishes to pursue this option the following resources may be useful:
+Systematic uncertainties are estimated as the difference in a tagger's background rejection at a fixed signal efficiency, within bins of jet p<sub>T</sub>, between a systematic varied dataset and the nominal dataset. A good estimate of the uncertainty requires that the background rejection is measured with sufficient precision that the difference in this metric between the systematic varied and nominal datasets is meaningful. In particular, the statistical uncertainty on the performance metrics must be smaller than this difference.
+
+In cases where the difference is in general large, such as for the parton shower and hadronization modeling uncertainties, this level of precision can be achieved with the reduced statistics available in the datasets `ttbar_pythia` and `ttbar_herwig`. However in cases where the difference is small, large stats are required. For example it is recommended to use at least 5 million jets in evaluation when calculating the experimental uncertainties. This is why the script `evaluate.py` by default only limits the number of jets used in evaluation if more than 5 million jets are available. In practice this requirement will likely produce out-of-memory errors on many systems. In this case the recommended solution is to run evaluation on each .h5 file individually and then join the resulting predictions, instead of loading all jets into memory at once as is done in `evaluate.py`.
+
+### Training with large data sets
+
+The nominal testing set contains 92 million jets. Loading all of them in memory at once will require more memory than is available on most systems. The example training script solves this problem by only using 6 million of the jets in the training set. The user should tune how many jets are taken from the training set, selecting as many jets as will fit within memory constraints. In practice obtaining state-of-the-art performance will require training on the entire set, which will require data piping. If the user wishes to pursue this option the following resources may be useful:
 
 - Tensorflow: [Data API](https://www.tensorflow.org/guide/data), [Sequence Class](https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence), [Pipeline Optimization](https://www.tensorflow.org/guide/data_performance)
 - PyTorch: [Datasets and DataLoaders](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)
