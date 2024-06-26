@@ -149,9 +149,15 @@ The script `evaluate.py` performs inference over a given dataset, whether nomina
 
 Top tagger performance is also often evaluated in p<sub>T</sub> bins. The script `plot_everything.py` produces plots of the background rejection in bins of jet p<sub>T</sub>, which show how the network performance evolves with jet p<sub>T</sub>.
 
-### Training with Large Data Sets
+### Systematic uncertainties
 
-The training and testing sets require 130GB and 7.6GB respectively when stored on disk. This makes loading all of the data into memory impossible for the vast majority of users. The example training script solves this problem by only using a fraction of the jets in the training set. The user should tune how many jets are taken from the training set, selecting as many jets as will fit within memory constraints. In most cases, using more than a fraction of training set will require data piping. If the user wishes to pursue this option the following resources may be useful:
+Systematic uncertainties are estimated as the difference in a tagger's background rejection at a fixed signal efficiency, within bins of jet p<sub>T</sub>, between a systematic varied dataset and the nominal dataset. A good estimate of the uncertainty requires that the background rejection is measured with sufficient precision that the difference in this metric between the systematic varied and nominal datasets is meaningful. In particular, the statistical uncertainty on the performance metrics must be smaller than this difference.
+
+In cases where the difference is in general large, such as for the parton shower and hadronization modeling uncertainties, this level of precision can be achieved with the reduced statistics available in the datasets `ttbar_pythia` and `ttbar_herwig`. However in cases where the difference is small, large stats are required. For example it is recommended to use at least 5 million jets in evaluation when calculating the experimental uncertainties. This is why the script `evaluate.py` by default only limits the number of jets used in evaluation if more than 5 million jets are available. In practice this requirement will likely produce out-of-memory errors on many systems. In this case the recommended solution is to run evaluation on each .h5 file individually and then join the resulting predictions, instead of loading all jets into memory at once as is done in `evaluate.py`.
+
+### Training with large data sets
+
+The nominal testing set contains 92 million jets. Loading all of them in memory at once will require more memory than is available on most systems. The example training script solves this problem by only using 6 million of the jets in the training set. The user should tune how many jets are taken from the training set, selecting as many jets as will fit within memory constraints. In practice obtaining state-of-the-art performance will require training on the entire set, which will require data piping. If the user wishes to pursue this option the following resources may be useful:
 
 - Tensorflow: [Data API](https://www.tensorflow.org/guide/data), [Sequence Class](https://www.tensorflow.org/api_docs/python/tf/keras/utils/Sequence), [Pipeline Optimization](https://www.tensorflow.org/guide/data_performance)
 - PyTorch: [Datasets and DataLoaders](https://pytorch.org/tutorials/beginner/basics/data_tutorial.html)
