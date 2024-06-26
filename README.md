@@ -61,6 +61,7 @@ The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nomi
 |-----------------------------|-----------------------------------------------------------|---------------------------------------------|
 | Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `ces_up.h5`, `ces_down.h5` |
 | Cluster energy resolution | Vary the energy resolution of jet constituents reconstructed with the calorimeter | `cer.h5` |
+| Cluster position resolution | Vary the position resolution of jet constituents reconstructed with the calorimeter | `cpos.h5` |
 | Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `track_fake_loose.h5`, `track_fake_jet.h5` |
 | Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `track_eff_global.h5`, `track_eff_jet.h5` |
 | Signal parton shower and hadronization modeling | Vary the parton shower and hadronization model for signal jets | `ttbar_pythia.h5`, `ttbar_herwig.h5` |
