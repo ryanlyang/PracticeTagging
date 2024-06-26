@@ -61,7 +61,7 @@ max_constits = 80
 batch_size = 256
 
 # The maximum number of jets to use in testing
-max_jets = 5000000
+max_jets = 6000000
 
 ########################### Data Preparation ###################################
 print("Read data and prepare for tagger testing")

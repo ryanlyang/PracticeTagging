@@ -45,7 +45,6 @@ args = parser.parse_args()
 
 # Define some default settings
 def_dict = {
-    'check_nominal_test': False,
     'add_nominal_bkg': False,
     'add_nominal_sig': False,
     'apply_weight': False,
@@ -59,60 +58,52 @@ metrics_dict = {
     }},
     'esup': {**def_dict, **{
         'predictions': 'public_esup.npz',
-        'check_nominal_test': True,
     }},
     'esdown': {**def_dict, **{
         'predictions': 'public_esdown.npz',
-        'check_nominal_test': True,
     }},
     'cer': {**def_dict, **{
         'predictions': 'public_cer.npz',
-        'check_nominal_test': True,
     }},
     'cpos': {**def_dict, **{
         'predictions': 'public_cpos.npz',
-        'check_nominal_test': True,
     }},
-    # 'tfl': {**def_dict, **{
-    #     'predictions': 'public_tfl.npz',
-    #     'check_nominal_test': True,
-    # }},
-    # 'tfj': {**def_dict, **{
-    #     'predictions': 'public_tfj.npz',
-    #     'check_nominal_test': True,
-    # }},
-    # 'teg': {**def_dict, **{
-    #     'predictions': 'public_teg.npz',
-    #     'check_nominal_test': True,
-    # }},
-    # 'tej': {**def_dict, **{
-    #     'predictions': 'public_tej.npz',
-    #     'check_nominal_test': True,
-    # }},
-    # 'ttbar_pythia': {**def_dict, **{
-    #     'predictions': 'public_ttbar_pythia.npz',
-    #     'add_nominal_bkg': True,
-    # }},
-    # 'ttbar_herwig': {**def_dict, **{
-    #     'predictions': 'public_ttbar_herwig.npz',
-    #     'add_nominal_bkg': True,
-    # }},
-    # 'cluster': {**def_dict, **{
-    #     'predictions': 'public_cluster.npz',
-    #     'add_nominal_sig': True,
-    # }},
-    # 'string': {**def_dict, **{
-    #     'predictions': 'public_string.npz',
-    #     'add_nominal_sig': True,
-    # }},
-    # 'angular': {**def_dict, **{
-    #     'predictions': 'public_angular.npz',
-    #     'add_nominal_sig': True,
-    # }},
-    # 'dipole': {**def_dict, **{
-    #     'predictions': 'public_dipole.npz',
-    #     'add_nominal_sig': True,
-    # }},
+    'tfl': {**def_dict, **{
+        'predictions': 'public_tfl.npz',
+    }},
+    'tfj': {**def_dict, **{
+        'predictions': 'public_tfj.npz',
+    }},
+    'teg': {**def_dict, **{
+        'predictions': 'public_teg.npz',
+    }},
+    'tej': {**def_dict, **{
+        'predictions': 'public_tej.npz',
+    }},
+    'ttbar_pythia': {**def_dict, **{
+        'predictions': 'public_ttbar_pythia.npz',
+        'add_nominal_bkg': True,
+    }},
+    'ttbar_herwig': {**def_dict, **{
+        'predictions': 'public_ttbar_herwig.npz',
+        'add_nominal_bkg': True,
+    }},
+    'cluster': {**def_dict, **{
+        'predictions': 'public_cluster.npz',
+        'add_nominal_sig': True,
+    }},
+    'string': {**def_dict, **{
+        'predictions': 'public_string.npz',
+        'add_nominal_sig': True,
+    }},
+    'angular': {**def_dict, **{
+        'predictions': 'public_angular.npz',
+        'add_nominal_sig': True,
+    }},
+    'dipole': {**def_dict, **{
+        'predictions': 'public_dipole.npz',
+        'add_nominal_sig': True,
+    }},
     # 'sig_ISRx2': {**def_dict, **{
     #     'predictions': 'public_test_nominal.npz',
     #     'apply_weight': 4,
@@ -164,7 +155,6 @@ nom_pfile = np.load(Path(args.checkpoint) / 'public_test_nominal.npz')
 nom_preds = nom_pfile['predictions']
 nom_labels = nom_pfile['labels']
 nom_weights = nom_pfile['shower_weights']
-nom_numbers = nom_pfile['numbers']
 nom_pt = nom_pfile['pt']
 
 # Loop through the metrics dict
@@ -179,16 +169,6 @@ for name, mdict in metrics_dict.items():
     pt = pfile['pt']
     if mdict['check_nominal_test']:
         numbers = pfile['numbers']
-
-    # Check if we need to drop jets not contained in the nominal set
-    if mdict['check_nominal_test']:
-        num_check = np.isin(numbers, nom_numbers)
-        pt_check = utils.isin_tolerance(pt, nom_pt, 1)
-        mask = np.logical_and(num_check, pt_check)
-        print(f'Number of jets in common with nominal test set: {mask.sum()}')
-        preds = preds[mask]
-        labels = labels[mask]
-        pt = pt[mask]
 
     # Check if we need to append nominal jets to the predictions
     if mdict['add_nominal_bkg'] or mdict['add_nominal_sig']:
