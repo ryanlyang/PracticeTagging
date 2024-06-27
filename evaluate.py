@@ -39,8 +39,6 @@ parser = argparse.ArgumentParser(description='Test a tagger on the ATLAS Top Tag
 parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint file')
 parser.add_argument('--data', type=str, help='Path to the directory containing data files')
 parser.add_argument('--type', type=str, help='Type of tagger to test', choices=['dnn', 'efn', 'pfn', 'hldnn'])
-parser.add_argument('--store_weights', action='store_true', help='Store shower weights in the output file')
-parser.add_argument('--store_numbers', action='store_true', help='Store shower numbers in the output file')
 
 # Parse the command line arguments
 args = parser.parse_args()
@@ -50,6 +48,12 @@ args = parser.parse_args()
 # Paths to data files. Point this to local directory containing the data files
 # in sub-directories
 data_path = Path(args.data)
+
+# If this is the nominal dataset we want to store shower weights
+if 'nominal' in str(data_path):
+    store_weights = True
+else:
+    store_weights = False
 
 # Make glob of the testing set files
 test_files = sorted(list(data_path.glob("*.h5")))
@@ -67,13 +71,12 @@ max_jets = 6000000
 print("Read data and prepare for tagger testing")
 
 # Load data using the functions in preprocessing.py
-test_data, test_labels, _, shower_weights, test_jet_pt, test_numbers = utils.load_from_files(
+test_data, test_labels, _, shower_weights, test_jet_pt = utils.load_from_files(
     test_files,
     max_jets=max_jets,
     get_hl=True if args.type == 'hldnn' else False,
     use_train_weights=False,
-    use_shower_weights=args.store_weights,
-    use_numbers=args.store_numbers,
+    use_shower_weights=store_weights,
     max_constits=max_constits
 )
 
@@ -125,14 +128,10 @@ test_labels = test_labels[~nan_mask]
 test_jet_pt = test_jet_pt[~nan_mask]
 if args.store_weights:
     shower_weights = shower_weights[~nan_mask]
-if args.store_numbers:
-    test_numbers = test_numbers[~nan_mask]
 
 # Save the data
 save_path = Path(args.checkpoint) / (str(data_path.name) + ".npz")
 save_dict = {'labels': test_labels, 'predictions': predictions, 'pt': test_jet_pt}
 if args.store_weights:
     save_dict['shower_weights'] = shower_weights
-if args.store_numbers:
-    save_dict['numbers'] = test_numbers
 np.savez(save_path, **save_dict)

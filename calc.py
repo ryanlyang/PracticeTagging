@@ -49,6 +49,7 @@ def_dict = {
     'add_nominal_sig': False,
     'apply_weight': False,
     'weight_bkg': False,
+    'extrapolate': False,
 }
 
 # Define the performance metrics to calculate
@@ -80,13 +81,18 @@ metrics_dict = {
     'tej': {**def_dict, **{
         'predictions': 'public_tej.npz',
     }},
+    'bias': {**def_dict, **{
+        'predictions': 'public_bias.npz',
+    }},
     'ttbar_pythia': {**def_dict, **{
         'predictions': 'public_ttbar_pythia.npz',
         'add_nominal_bkg': True,
+        'extrapolate': True,
     }},
     'ttbar_herwig': {**def_dict, **{
         'predictions': 'public_ttbar_herwig.npz',
         'add_nominal_bkg': True,
+        'extrapolate': True,
     }},
     'cluster': {**def_dict, **{
         'predictions': 'public_cluster.npz',
@@ -104,46 +110,46 @@ metrics_dict = {
         'predictions': 'public_dipole.npz',
         'add_nominal_sig': True,
     }},
-    # 'sig_ISRx2': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 4,
-    # }},
-    # 'sig_ISRxp5': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 9,
-    # }},
-    # 'sig_FSRx2': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 6,
-    # }},
-    # 'sig_FSRxp5': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 7,
-    # }},
-    # 'bkg_ISRx2': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 4,
-    #     'weight_bkg': True,
-    # }},
-    # 'bkg_ISRxp5': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 9,
-    #     'weight_bkg': True,
-    # }},
-    # 'bkg_FSRx2': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 6,
-    #     'weight_bkg': True,
-    # }},
-    # 'bkg_FSRxp5': {**def_dict, **{
-    #     'predictions': 'public_test_nominal.npz',
-    #     'apply_weight': 7,
-    #     'weight_bkg': True,
-    # }},
+    'sig_ISRx2': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 4,
+    }},
+    'sig_ISRxp5': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 9,
+    }},
+    'sig_FSRx2': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 6,
+    }},
+    'sig_FSRxp5': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 7,
+    }},
+    'bkg_ISRx2': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 4,
+        'weight_bkg': True,
+    }},
+    'bkg_ISRxp5': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 9,
+        'weight_bkg': True,
+    }},
+    'bkg_FSRx2': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 6,
+        'weight_bkg': True,
+    }},
+    'bkg_FSRxp5': {**def_dict, **{
+        'predictions': 'public_test_nominal.npz',
+        'apply_weight': 7,
+        'weight_bkg': True,
+    }},
 }
 
 # Define bins of jet pt in which to calculate performance metrics
-pt_bins = np.linspace(350000, 3150000, 15)
+full_bins = np.linspace(350000, 3150000, 15)
 
 # Define fixed signal efficiency working point at which to evaluate metrics
 wp = 0.5
@@ -154,7 +160,8 @@ wp = 0.5
 nom_pfile = np.load(Path(args.checkpoint) / 'public_test_nominal.npz')
 nom_preds = nom_pfile['predictions']
 nom_labels = nom_pfile['labels']
-nom_weights = nom_pfile['shower_weights']
+shower_weights = nom_pfile['shower_weights']
+nominal_weights = shower_weights[:,0]  # Nominal MC weight is the first shower weight
 nom_pt = nom_pfile['pt']
 
 # Loop through the metrics dict
@@ -167,8 +174,6 @@ for name, mdict in metrics_dict.items():
     preds = pfile['predictions']
     labels = pfile['labels']
     pt = pfile['pt']
-    if mdict['check_nominal_test']:
-        numbers = pfile['numbers']
 
     # Check if we need to append nominal jets to the predictions
     if mdict['add_nominal_bkg'] or mdict['add_nominal_sig']:
@@ -187,11 +192,11 @@ for name, mdict in metrics_dict.items():
     weights = np.ones(labels.shape)
     if mdict['apply_weight']:
         assert 'nominal' in mdict['predictions']
-        shower_weights = pfile['shower_weights'][:,mdict['apply_weight']]
-        if mdict['weight_sig']:
-            weights[labels == 1] = shower_weights[labels == 1]
-        elif mdict['weight_bkg']:
-            weights[labels == 0] = shower_weights[labels == 0]
+        var_weights = shower_weights[:,mdict['apply_weight']] / nominal_weights
+        if mdict['weight_bkg']:
+            weights[nom_labels == 0] = var_weights[nom_labels == 0]
+        else:
+            weights[nom_labels == 1] = var_weights[nom_labels == 1]
 
     # Evaluate metrics
     auc = metrics.roc_auc_score(labels, preds, sample_weight=weights)
@@ -219,6 +224,15 @@ for name, mdict in metrics_dict.items():
     print('ACC score:', acc)
     print(f'Background rejection at {wp} signal efficiency: {br}')
 
+    # If we are evaluating over SM ttbar datasets, limit binned BR measurement
+    # to below 1.5 TeV
+    if mdict['extrapolate']:
+        high_bin_edge = np.argwhere(full_bins > 1500000)[0][0]
+        print("Edge of highest pT bin:", full_bins[high_bin_edge])
+        pt_bins = full_bins[:high_bin_edge]
+    else:
+        pt_bins = full_bins
+
     # Now calculate background rejection metric in bins of jet pt
     # Initialize array to accept information
     binned_br = np.zeros(len(pt_bins))
@@ -237,7 +251,7 @@ for name, mdict in metrics_dict.items():
         bin_weights = weights[bin_indeces]
 
         # Now we want to calculate background rejection at working points
-        fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_preds) #, sample_weight=bin_weights)
+        fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_preds, sample_weight=bin_weights)
         fprinv = 1 / fpr
         index = np.argmax(tpr > wp)
         binned_br[i] = fprinv[index]

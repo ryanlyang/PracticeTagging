@@ -68,7 +68,7 @@ figure_dir.mkdir(parents=True, exist_ok=True)
 print("Read data and prepare for tagger training")
 
 # Load data using the functions in preprocessing.py
-train_data, train_labels, train_weights, _, _, _ = utils.load_from_files(
+train_data, train_labels, train_weights, _, _ = utils.load_from_files(
     train_files,
     max_jets=n_train_jets,
     get_hl=True if tagger_type == 'hldnn' else False,

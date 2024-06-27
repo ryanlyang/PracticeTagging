@@ -163,7 +163,7 @@ def high_level(data_dict):
     return stacked_data
 
 
-def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, use_shower_weights=False, use_numbers=False, **kwargs):
+def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, use_shower_weights=False, **kwargs):
     """ load_from_files - This function loops through a list of strings that 
     give the path to a set of .h5 files containing jet data. It will read the 
     jets from the .h5 files, and return either the constituent or high level
@@ -174,7 +174,6 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
     max_jets (int) - The maximum number of jets to read, if left to None use all
     use_train_weights (bool) - If false, don't load training weights and return vector of 1's
     use_shower_weights (bool) - If false, don't load shower weights and return vector of 1's
-    use_numbers (bool) - If true, return the event numbers for each jet
     get_hl (bool) - If true, get the hl data instead of the constituent data
 
     Returns:
@@ -182,7 +181,6 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
     labels (np array) - The labels for each jet
     train_weights (np array) - The training weights for each jet
     shower_weights (np array) - The shower weights for each jet
-    numbers (np array) - The event numbers for each jet
     pt (np array) - The pT of each jet
     """
 
@@ -190,14 +188,13 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
     if max_jets is None:
         max_jets = np.inf
 
-    # Define counter for number of jets read, a list fo accepting the
-    # data, labels, weights, and pt
+    # Define counter for number of jets read, and lists for accepting
+    # all of the different data
     jets_read = 0
     data_list = []
     label_list = []
     train_weight_list = []
     shower_weight_list = []
-    number_list = []
     pt_list = []
 
     # Loop through list of files
@@ -235,19 +232,12 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
         else:
             shower_weights = np.ones(labels.shape)
 
-        # Load numbers
-        if use_numbers:
-            numbers = f['EventInfo_mcEventNumber'][:max_jets]
-        else:
-            numbers = np.zeros(labels.shape)
-
         # Truncate data, labels, and weights if necessary
         if jets_read + file_data.shape[0] > max_jets:
             file_data = file_data[:max_jets - jets_read]
             labels = labels[:max_jets - jets_read]
             train_weights = train_weights[:max_jets - jets_read]
             shower_weights = shower_weights[:max_jets - jets_read]
-            numbers = numbers[:max_jets - jets_read]
             pt = pt[:max_jets - jets_read]
         
         # Append to lists
@@ -255,7 +245,6 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
         label_list.append(labels)
         train_weight_list.append(train_weights)
         shower_weight_list.append(shower_weights)
-        number_list.append(numbers)
         pt_list.append(pt)
 
         # Update counter
@@ -273,11 +262,10 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
     labels = np.concatenate(label_list, axis=0)
     train_weights = np.concatenate(train_weight_list, axis=0)
     shower_weights = np.concatenate(shower_weight_list, axis=0)
-    numbers = np.concatenate(number_list, axis=0)
     pt = np.concatenate(pt_list, axis=0)
 
     # Return
-    return data, labels, train_weights, shower_weights, pt, numbers
+    return data, labels, train_weights, shower_weights, pt
 
 
 def isin_tolerance(A, B, tol):
