@@ -9,7 +9,7 @@ For details of the data set and performance baselines, see:
                        https://cds.cern.ch/record/2825328
 
 Author: Kevin Greif
-Last updated 06/24/2024
+Last updated 06/27/2024
 Written in python 3
 
 ################################################################################
@@ -36,8 +36,7 @@ import utils
 
 # Paths to data files. Point this to local directory containing the data files
 # in sub-directories
-data_path = Path("/DFS-L/DATA/whiteson/kgreif/JetTaggingH5")
-train_path = data_path / "public_train_nominal"
+train_path = Path("/pub/kgreif/samples/h5dat/public_train_nominal")
 
 # Make glob of the training set files
 train_files = sorted(list(train_path.glob("*.h5")))
@@ -45,7 +44,7 @@ train_files = sorted(list(train_path.glob("*.h5")))
 # Set the amount of data to be used in training. The full training
 # set is very large (97 GB) and will not fit in memory all at once. Here, we
 # take a subset  of the data. Using the full set will require piping.
-n_train_jets = 6000000
+n_train_jets = 4000000
 
 # Set the fraction of the training data which will be reserved for validation
 valid_fraction = 0.1
@@ -53,8 +52,8 @@ valid_fraction = 0.1
 # Max constituents to consider in tagger training (must be <= 200)
 max_constits = 80
 
-# Tagger to train, supported options are 'hldnn', 'dnn', 'efn', 'pfn'.
-tagger_type = 'dnn'
+# Tagger to train, supported options are 'dnn', 'efn', 'pfn'.
+tagger_type = 'efn'
 
 # Training parameters
 num_epochs = 30
@@ -71,7 +70,6 @@ print("Read data and prepare for tagger training")
 train_data, train_labels, train_weights, _, _ = utils.load_from_files(
     train_files,
     max_jets=n_train_jets,
-    get_hl=True if tagger_type == 'hldnn' else False,
     max_constits=max_constits
 )
 
@@ -81,9 +79,8 @@ num_data_features = train_data.shape[-1]
 ####################### Build Tagger and Datasets  #############################
 print("Building tagger and datasets")
 
-# Due to EFN's data shape requirements, the EFN data set build is separate
-# from the other models.
-
+# Due to EFN's requirement for an "angular" and "pT" dataset, we need to
+# construct tensorflow datasets differently than for DNN/PFN
 if tagger_type == 'efn':
 
     # Build and compile EFN
@@ -135,43 +132,12 @@ if tagger_type == 'efn':
     valid_data = Dataset.zip(valid_sets[:2])
     valid_dataset = Dataset.zip((valid_data,) + valid_sets[2:])
 
-# For all other models, data sets can be built using the same process, so
-# these are handled together
-
+# DNN and PFN datasets can be constructed similarly
 else:
 
-    if tagger_type == 'hldnn':
+    # DNN requires flattening the constituent data
+    if tagger_type == 'dnn':
 
-        # Build hlDNN
-        model = tf.keras.Sequential()
-        model.add(tf.keras.Input(shape=train_data.shape[1:]))
-
-        # Hidden layers
-        for _ in range(5):
-            model.add(tf.keras.layers.Dense(
-                180,
-                activation='relu',
-                kernel_initializer='glorot_uniform')
-            )
-
-        # Output layer
-        model.add(tf.keras.layers.Dense(
-            1,
-            activation='sigmoid',
-            kernel_initializer='glorot_uniform')
-        )
-
-        # Compile hlDNN
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=4e-5),
-            # from_logits set to False for uniformity with energyflow settings
-            loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
-            weighted_metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
-        )
-
-    elif tagger_type == 'dnn':
-
-        # For DNN, we also need to flatten constituent data into shape:
         # (n_jets, max_constits * num_data_features)
         train_data = train_data.reshape(-1, max_constits * num_data_features)
 
@@ -258,7 +224,7 @@ else:
 print("Starting tagger training")
 
 # Callback for storing checkpoints
-checkpoint_dir = Path().cwd() / "checkpoints"
+checkpoint_dir = Path().cwd() / "checkpoints/efn"
 checkpoint_dir.mkdir(parents=True, exist_ok=True)
 checkpoint_path = checkpoint_dir / '{epoch:02d}-{val_loss:.2f}.tf'
 checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(

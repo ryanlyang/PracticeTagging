@@ -38,7 +38,7 @@ import utils
 parser = argparse.ArgumentParser(description='Test a tagger on the ATLAS Top Tagging Open Data set')
 parser.add_argument('--checkpoint', type=str, help='Path to the checkpoint file')
 parser.add_argument('--data', type=str, help='Path to the directory containing data files')
-parser.add_argument('--type', type=str, help='Type of tagger to test', choices=['dnn', 'efn', 'pfn', 'hldnn'])
+parser.add_argument('--type', type=str, help='Type of tagger to test', choices=['dnn', 'efn', 'pfn'])
 
 # Parse the command line arguments
 args = parser.parse_args()
@@ -74,7 +74,6 @@ print("Read data and prepare for tagger testing")
 test_data, test_labels, _, shower_weights, test_jet_pt = utils.load_from_files(
     test_files,
     max_jets=max_jets,
-    get_hl=True if args.type == 'hldnn' else False,
     use_train_weights=False,
     use_shower_weights=store_weights,
     max_constits=max_constits
@@ -126,12 +125,12 @@ nan_mask = np.isnan(predictions)
 predictions = predictions[~nan_mask]
 test_labels = test_labels[~nan_mask]
 test_jet_pt = test_jet_pt[~nan_mask]
-if args.store_weights:
+if store_weights:
     shower_weights = shower_weights[~nan_mask]
 
 # Save the data
 save_path = Path(args.checkpoint) / (str(data_path.name) + ".npz")
 save_dict = {'labels': test_labels, 'predictions': predictions, 'pt': test_jet_pt}
-if args.store_weights:
+if store_weights:
     save_dict['shower_weights'] = shower_weights
 np.savez(save_path, **save_dict)

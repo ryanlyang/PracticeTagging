@@ -117,65 +117,18 @@ def constituent(data_dict, max_constits=200):
     return stacked_data
 
 
-def high_level(data_dict):
-    """ high_level - This function "standardizes" each of the high level
-    quantities contained in data_dict (subtract off mean and divide by
-    standard deviation).
-
-    Arguments:
-    data_dict (dict of np arrays) - The python dictionary containing all of
-    the high level quantities. No naming conventions assumed.
-
-    Returns:
-    (array) - The high level quantities, stacked along the last dimension.
-    """
-
-    # Empty list to accept pre-processed high level quantities
-    features = []
-
-    # Loop through quantities in data dict
-    for quant in data_dict.values():
-
-        # Some high level quantities have large orders of magnitude. Can divide
-        # off these large exponents before evaluating mean and standard
-        # deviation
-        if 1e5 < quant.max() <= 1e11:
-            # Quantity on scale TeV (sqrt{d12}, sqrt{d23}, ECF1, Qw)
-            quant /= 1e6
-        elif 1e11 < quant.max() <= 1e17:
-            # Quantity on scale TeV^2 (ECF2)
-            quant /= 1e12
-        elif quant.max() > 1e17:
-            # Quantity on scale TeV^3 (ECF3)
-            quant /= 1e18
-
-        # Calculated mean and standard deviation
-        mean = quant.mean()
-        stddev = quant.std()
-
-        # Standardize and append to list
-        standard_quant = (quant - mean) / stddev
-        features.append(standard_quant)
-
-    # Stack quantities and return
-    stacked_data = np.stack(features, axis=-1)
-
-    return stacked_data
-
-
-def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, use_shower_weights=False, **kwargs):
+def load_from_files(files, max_jets=None, use_train_weights=True, use_shower_weights=False, **kwargs):
     """ load_from_files - This function loops through a list of strings that 
     give the path to a set of .h5 files containing jet data. It will read the 
-    jets from the .h5 files, and return either the constituent or high level
-    data, along with the corresponding labels and training weights.
+    jets from the .h5 files, and return either the constituent data, along 
+    with the corresponding labels and training weights.
 
     Arguments:
     files (list of str) - The list of file paths to read jet data from.
     max_jets (int) - The maximum number of jets to read, if left to None use all
     use_train_weights (bool) - If false, don't load training weights and return vector of 1's
     use_shower_weights (bool) - If false, don't load shower weights and return vector of 1's
-    get_hl (bool) - If true, get the hl data instead of the constituent data
-
+x
     Returns:
     data (np array) - The preprocessed jet data
     labels (np array) - The labels for each jet
@@ -204,19 +157,13 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
         f = h5py.File(fname, 'r')
 
         # Find appropriate names of numpy arrays to read from file attributes
-        if get_hl:
-            data_vector_names = f.attrs.get('hl')
-        else:
-            data_vector_names = f.attrs.get('constit')
+        data_vector_names = f.attrs.get('constit')
 
         # Load data into a python dictionary
         data_dict = {key: f[key][:,...] for key in data_vector_names}
 
         # Preprocess data
-        if get_hl:
-            file_data = high_level(data_dict)
-        else:
-            file_data = constituent(data_dict, **kwargs)
+        file_data = constituent(data_dict, **kwargs)
 
         # Load labels and pt
         labels = f['labels'][:max_jets]
@@ -266,23 +213,3 @@ def load_from_files(files, max_jets=None, get_hl=False, use_train_weights=True, 
 
     # Return
     return data, labels, train_weights, shower_weights, pt
-
-
-def isin_tolerance(A, B, tol):
-    A = np.asarray(A)
-    B = np.asarray(B)
-
-    Bs = np.sort(B)
-    idx = np.searchsorted(Bs, A)
-
-    linvalid_mask = idx==len(B)
-    idx[linvalid_mask] = len(B)-1
-    lval = Bs[idx] - A
-    lval[linvalid_mask] *=-1
-
-    rinvalid_mask = idx==0
-    idx1 = idx-1
-    idx1[rinvalid_mask] = 0
-    rval = A - Bs[idx1]
-    rval[rinvalid_mask] *=-1
-    return np.minimum(lval, rval) <= tol
