@@ -9,19 +9,17 @@ For details of the data set and performance baselines, see:
                        https://cds.cern.ch/record/2825328
 
 Author: Kevin Greif
-Last updated 1/27/2023
+Last updated 06/27/2024
 Written in python 3
 
 ################################################################################
 
 """
 
-import sys
 from pathlib import Path
 
-# Data I/O and numerical imports
-import h5py
-import numpy as np
+# Plotting imports
+import matplotlib.pyplot as plt
 
 # ML imports
 import tensorflow as tf
@@ -30,39 +28,35 @@ from energyflow.archs import EFN, PFN
 import sklearn.metrics as metrics
 from sklearn.model_selection import train_test_split
 
-# Plotting imports
-import matplotlib.pyplot as plt
 
 # Custom imports
-import preprocessing
+import utils
 
 ################################# SETTINGS #####################################
 
-# Settings used for data preparation and network training. For model hyper-
-# parameters, see "Build Tagger and Datasets" section
+# Paths to data files. Point this to local directory containing the data files
+# in sub-directories
+train_path = Path("/pub/kgreif/samples/h5dat/public_train_nominal")
 
-# Paths to data files. Point these to local download of training / testing sets
-data_path = Path("/scratch") / "whiteson_group" / "kgreif"
-train_path = data_path / "train_public.h5"
-test_path = data_path / "test_public.h5"
+# Make glob of the training set files
+train_files = sorted(list(train_path.glob("*.h5")))
 
-# Set the amount of data to be used in training and testing. The full training
-# set is very large (130 GB) and will not fit in memory all at once. Here, we
+# Set the amount of data to be used in training. The full training
+# set is very large (97 GB) and will not fit in memory all at once. Here, we
 # take a subset  of the data. Using the full set will require piping.
-n_train_jets = 3000000
-n_test_jets = -1
+n_train_jets = 4000000
 
 # Set the fraction of the training data which will be reserved for validation
-valid_fraction = 0.2
+valid_fraction = 0.1
 
 # Max constituents to consider in tagger training (must be <= 200)
 max_constits = 80
 
-# Tagger to train, supported options are 'hldnn', 'dnn', 'efn', 'pfn'.
+# Tagger to train, supported options are 'dnn', 'efn', 'pfn'.
 tagger_type = 'efn'
 
 # Training parameters
-num_epochs = 20
+num_epochs = 30
 batch_size = 256
 
 # Path for generated figures
@@ -72,49 +66,21 @@ figure_dir.mkdir(parents=True, exist_ok=True)
 ########################### Data Preparation ###################################
 print("Read data and prepare for tagger training")
 
-# Load data from files using h5py
-train = h5py.File(train_path, 'r')
-test = h5py.File(test_path, 'r')
+# Load data using the functions in preprocessing.py
+train_data, train_labels, train_weights, _, _ = utils.load_from_files(
+    train_files,
+    max_jets=n_train_jets,
+    max_constits=max_constits
+)
 
-# Find names of appropriate names of numpy arrays from h5py file objects.
-if tagger_type == 'hldnn':
-    data_vector_names = train.attrs.get('hl')
-else:
-    data_vector_names = train.attrs.get('constit')
-
-# Load data into a python dictionary for pass into pre-processing functions
-train_dict = {key: train[key][:n_train_jets,...] for key in data_vector_names}
-test_dict = {key: test[key][:n_test_jets,...] for key in data_vector_names}
-
-# Pass dictionaries to preprocessing functions
-if tagger_type == 'hldnn':
-    # Data shapes: (n_jets, 15)
-    print("Processing high level quantity information")
-    train_data = preprocessing.high_level(train_dict)
-    test_data = preprocessing.high_level(test_dict)
-    num_data_features = train_data.shape[-1]
-else:
-    # Data shapes: (n_jets, max_constits, 7)
-    print("Processing constituent information")
-    train_data = preprocessing.constituent(train_dict, max_constits)
-    test_data = preprocessing.constituent(test_dict, max_constits)
-    num_data_features = train_data.shape[-1]
-
-# Load labels and training weights
-train_labels = train['labels'][:n_train_jets]
-train_weights = train['weights'][:n_train_jets]
-test_labels = test['labels'][:n_test_jets]
-test_weights = test['labels'][:n_test_jets]
-
-# Load testing set jet pT for plotting purposes
-jet_pt = test['fjet_pt'][:n_test_jets]
+# Find the number of data features
+num_data_features = train_data.shape[-1]
 
 ####################### Build Tagger and Datasets  #############################
 print("Building tagger and datasets")
 
-# Due to EFN's data shape requirements, the EFN data set build is separate
-# from the other models.
-
+# Due to EFN's requirement for an "angular" and "pT" dataset, we need to
+# construct tensorflow datasets differently than for DNN/PFN
 if tagger_type == 'efn':
 
     # Build and compile EFN
@@ -130,7 +96,8 @@ if tagger_type == 'efn':
         optimizer=tf.keras.optimizers.Adam(learning_rate=6.3e-5),
         output_dim=1,
         output_act='sigmoid',
-        summary=False
+        summary=False,
+        compile_opts={'weighted_metrics': [tf.keras.metrics.BinaryAccuracy(name='accuracy')]}
     )
 
     # For EFN, take only eta, phi, and log(pT) quantities, and package into
@@ -140,9 +107,6 @@ if tagger_type == 'efn':
     # This code assumes quantities are ordered (eta, phi, pT, ...)
     train_angular = train_data[:,:,0:2]
     train_pt = train_data[:,:,2]
-
-    test_angular = test_data[:,:,0:2]
-    test_pt = test_data[:,:,2]
 
     # Make train / valid split using sklearn train_test_split function
     (train_angular, valid_angular, train_pt,
@@ -168,52 +132,14 @@ if tagger_type == 'efn':
     valid_data = Dataset.zip(valid_sets[:2])
     valid_dataset = Dataset.zip((valid_data,) + valid_sets[2:])
 
-    test_list = [test_pt, test_angular, test_labels, test_weights]
-    test_sets = tuple([Dataset.from_tensor_slices(i).batch(batch_size)
-                       for i in test_list])
-    test_data = Dataset.zip(test_sets[:2])
-    test_dataset = Dataset.zip((test_data,) + test_sets[2:])
-
-# For all other models, data sets can be built using the same process, so
-# these are handled together
-
+# DNN and PFN datasets can be constructed similarly
 else:
 
-    if tagger_type == 'hldnn':
+    # DNN requires flattening the constituent data
+    if tagger_type == 'dnn':
 
-        # Build hlDNN
-        model = tf.keras.Sequential()
-        model.add(tf.keras.Input(shape=train_data.shape[1:]))
-
-        # Hidden layers
-        for _ in range(5):
-            model.add(tf.keras.layers.Dense(
-                180,
-                activation='relu',
-                kernel_initializer='glorot_uniform')
-            )
-
-        # Output layer
-        model.add(tf.keras.layers.Dense(
-            1,
-            activation='sigmoid',
-            kernel_initializer='glorot_uniform')
-        )
-
-        # Compile hlDNN
-        model.compile(
-            optimizer=tf.keras.optimizers.Adam(learning_rate=4e-5),
-            # from_logits set to False for uniformity with energyflow settings
-            loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
-            metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
-        )
-
-    elif tagger_type == 'dnn':
-
-        # For DNN, we also need to flatten constituent data into shape:
-        # (n_jets, max_constits * 7)
+        # (n_jets, max_constits * num_data_features)
         train_data = train_data.reshape(-1, max_constits * num_data_features)
-        test_data = test_data.reshape(-1, max_constits * num_data_features)
 
         # Build DNN
         model = tf.keras.Sequential()
@@ -243,7 +169,7 @@ else:
             optimizer=tf.keras.optimizers.Adam(learning_rate=1.2e-5),
             # from_logits set to False for uniformity with energyflow settings
             loss=tf.keras.losses.BinaryCrossentropy(from_logits=False),
-            metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
+            weighted_metrics=[tf.keras.metrics.BinaryAccuracy(name='accuracy')]
         )
 
     elif tagger_type == 'pfn':
@@ -261,7 +187,8 @@ else:
             optimizer=tf.keras.optimizers.Adam(learning_rate=7.9e-5),
             output_dim=1,
             output_act='sigmoid',
-            summary=False
+            summary=False,
+            compile_opts={'weighted_metrics': [tf.keras.metrics.BinaryAccuracy(name='accuracy')]}
         )
 
     else:
@@ -293,19 +220,22 @@ else:
         valid_weights)
     ).batch(batch_size)
 
-    test_dataset = tf.data.Dataset.from_tensor_slices((
-        test_data,
-        test_labels,
-        test_weights)
-    ).batch(batch_size)
-
 ############################### Train Tagger ###################################
 print("Starting tagger training")
 
-# Train tagger with keras fit function. Use validation_split argument to
-# partition the training data into train/validation sets.
+# Callback for storing checkpoints
+checkpoint_dir = Path().cwd() / "checkpoints/efn"
+checkpoint_dir.mkdir(parents=True, exist_ok=True)
+checkpoint_path = checkpoint_dir / '{epoch:02d}-{val_loss:.2f}.tf'
+checkpoint_callback = tf.keras.callbacks.ModelCheckpoint(
+    filepath=str(checkpoint_path),
+    save_best_only=True
+)
+
+# Train tagger with keras fit function
 train_history = model.fit(
     train_dataset,
+    callbacks=[checkpoint_callback],
     validation_data=valid_dataset,
     batch_size=batch_size,
     epochs=num_epochs,
@@ -321,74 +251,3 @@ plt.legend()
 plt.savefig(figure_dir / 'loss.png', dpi=300)
 plt.clf()
 
-############################### Evaluate Tagger ################################
-print("Run tagger evaluation")
-
-# Run prediction on the testing set. Make cut on tagger output at 0.5 to
-# evaluate accuracy metric
-predictions = model.predict(test_dataset, batch_size=batch_size)[:,0]
-discrete_predictions = (predictions > 0.5).astype(int)
-
-# Evaluate metrics
-auc = metrics.roc_auc_score(test_labels, predictions)
-acc = metrics.accuracy_score(test_labels, discrete_predictions)
-
-# Evaluate background rejection at fixed signal efficiency working points
-fpr, tpr, thresholds = metrics.roc_curve(test_labels, predictions)
-point5_index = np.argmax(tpr > 0.5)
-br_point5 = 1 / fpr[point5_index]
-point8_index = np.argmax(tpr > 0.8)
-br_point8 = 1 / fpr[point8_index]
-
-# Print metric results
-print('\nPerformance metrics evaluated over testing set:')
-print('AUC score:', auc)
-print('ACC score:', acc)
-print('Background rejection at 0.5 signal efficiency:', br_point5)
-print('Background rejection at 0.8 signal efficiency:', br_point8)
-
-# Plot ROC curve
-plt.plot(tpr, 1 / fpr)
-plt.yscale('log')
-plt.ylabel('Background rejection')
-plt.xlabel('Signal efficiency')
-plt.savefig(figure_dir / 'roc.png', dpi=300)
-plt.clf()
-
-# Finally make a plot of the background rejection versus jet pT. Start by making
-# a set of pT bins and empty vectors to accept B.R. values. Note pt bin array
-# defines bin edges
-pt_bins = np.linspace(350000, 3150000, 15)
-br_point5_array = np.zeros(len(pt_bins) - 1)
-br_point8_array = np.zeros(len(pt_bins) - 1)
-
-# Loop through pT bins
-for i in range(len(pt_bins) - 1):
-
-    # Find the indeces of the jets that lie in this pT bin
-    condition = np.logical_and(jet_pt > pt_bins[i], jet_pt < pt_bins[i+1])
-    bin_indeces = condition.nonzero()[0]
-
-    # Now take predictions and labels which fall in this pT bin
-    bin_predictions = predictions[bin_indeces]
-    bin_labels = test_labels[bin_indeces]
-
-    # Calculate the background rejection at fixed signal efficiency
-    fpr, tpr, thresholds = metrics.roc_curve(bin_labels, bin_predictions)
-    bin_point5_index = np.argmax(tpr > 0.5)
-    br_point5_array[i] = 1 / fpr[bin_point5_index]
-    bin_point8_index = np.argmax(tpr > 0.8)
-    br_point8_array[i] = 1 / fpr[bin_point8_index]
-
-# Duplicate last entry in background rejection arrays
-br_point5_array = np.concatenate((br_point5_array, br_point5_array[-1:]))
-br_point8_array = np.concatenate((br_point8_array, br_point8_array[-1:]))
-
-# Make a plot using matplotlib's step function
-plot_bins = pt_bins / 1e6 # Set plot on TeV scale
-plt.step(plot_bins, br_point5_array, '-', where='post', label=r'$\epsilon_{sig} = 0.5$')
-plt.step(plot_bins, br_point8_array, '--', where='post', label=r'$\epsilon_{sig} = 0.8$')
-plt.ylabel('Background rejection')
-plt.xlabel('Jet pT (TeV)')
-plt.legend()
-plt.savefig(figure_dir / 'br_vs_pt.png', dpi=300)
