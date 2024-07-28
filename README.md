@@ -37,6 +37,7 @@ Any physics analysis which uses a top tagging algorithm will need to account for
 
 ## Basic recipe for training a tagger and assessing uncertainties
 
+1. **Download and unzip the data**: All data are stored in the HDF5 file format. They are provided in a compressed format for easy downloading. Once all required data is downloaded, decompress the files via `gzip -d <file_names.h5>`.
 1. **Train a tagger**: An example training script is provided in `train.py`. In practice obtaining good performance will require utilizing the full statistics of the training set. See "Training with large datasets" below.
 2. **Evaluate the tagger**: This should be done on the nominal testing set and the systematic varied testing sets. The python script `evaluate.py` evaluates any saved tensorflow model over one of these datasets. The bash script `evaluate_all.sh` repeatedly calls the python script to run evaluation over all datasets.
 3. **Calculate performance metrics**: The python script `calc.py` does this using the tagger predictions from step 2 stored as .npz files and produced by the `evaluate.py` script.
