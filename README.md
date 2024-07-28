@@ -55,18 +55,18 @@ Efficient simulation of background events requires introducing unphysical bumps 
 
 ## Data set contents
 
-The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The directories named `train_nominal` and `test_nominal` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. These datasets are produced with a **systematic variation** that slightly modifies the kinematic properties of the jet constituent kinematics within a given systematic uncertainty. The differences between a tagger's performance on the nominal and the systematic varied datasets can be used to estimate the systematic uncertainties produced by the tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them.
+The ATLAS Top Tagging Open Dataset consists of two pieces. The first is a **nominal** dataset used for the training and evaluation of top taggers. The indices named `train_nominal` and `test_nominal` contain HDF5 files that make up the training and testing datasets respecitvely. These sets together make the nominal dataset. The second piece is a suite of datasets that can be used to estimate the systematic uncertainties produced by a top tagger. These datasets are produced with a **systematic variation** that slightly modifies the kinematic properties of the jet constituent kinematics within a given systematic uncertainty. The differences between a tagger's performance on the nominal and the systematic varied datasets can be used to estimate the systematic uncertainties produced by the tagger. See the table below for a list of the systematic uncertainties and the datasets that are used to estimate them.
 
 | Systematic uncertainty      | Description                                               | Dataset directory                                    |
 |-----------------------------|-----------------------------------------------------------|---------------------------------------------|
-| Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `ces_up`, `ces_down` |
+| Cluster energy scale | Vary the energy scale of jet constituents reconstructed with the calorimeter | `esup`, `esdown` |
 | Cluster energy resolution | Vary the energy resolution of jet constituents reconstructed with the calorimeter | `cer` |
 | Cluster position resolution | Vary the position resolution of jet constituents reconstructed with the calorimeter | `cpos` |
-| Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `track_fake_loose`, `track_fake_jet` |
-| Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `track_eff_global`, `track_eff_jet` |
+| Track fake rate | Vary the rate of fake jet constiuents produced by the tracking detector | `tfl`, `tfj` |
+| Track efficiency | Vary the efficiency of jet constituents reconstructed by the tracking detector | `teg`, `tej` |
 | Signal parton shower and hadronization modeling | Vary the parton shower and hadronization model for signal jets | `ttbar_pythia`, `ttbar_herwig` |
-| Background parton shower | Vary the parton shower model for background jets | `dijet_herwig_cluster`, `dijet_herwig_string` | 
-| Background hadronization | Vary the hadronization model for background jets | `dijet_sherpa_angular`, `dijet_sherpa_dipole` |
+| Background parton shower | Vary the parton shower model for background jets | `cluster`, `string` | 
+| Background hadronization | Vary the hadronization model for background jets | `angular`, `dipole` |
 | Renormalization and factorization scales | Vary the scales for the signal / background jets | Nominal datasets |
 
 Each dataset contains the following information for each jet, except the training weights and PYTHIA shower weights which are only contained in the nominal datasets:
