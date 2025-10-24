@@ -1,0 +1,236 @@
+
+
+
+
+##################
+# JET IMAGE CNN
+##################
+
+import numpy as np
+
+class JetImage_Dataset(Dataset):
+    def __init__(self, jet_data, labels, weights, grid_size=32):
+        # jet_data has shape (n_jets, n_constits, n_features)
+        # features are [eta, phi, pt, ...]
+        self.jet_data = jet_data
+        self.labels = torch.as_tensor(labels, dtype=torch.float32)
+        self.weights = torch.as_tensor(weights, dtype=torch.float32)
+        self.grid_size = grid_size
+
+        # Define the eta-phi range for binning
+        # self.eta_range = (-0.8, 0.8)
+        # self.phi_range = (-0.8, 0.8)
+        self.eta_range = (-1.0, 1.0)
+        self.phi_range = (-1.0, 1.0)
+
+    def __len__(self):
+        return self.labels.shape[0]
+
+    def __getitem__(self, idx):
+        # Get jet constituents
+        jet = self.jet_data[idx]  # Shape: (n_constits, n_features)
+
+        # Extract eta, phi, pt from the features
+        eta = jet[:, 0]  # First column is eta
+        phi = jet[:, 1]  # Second column is phi
+        pt = jet[:, 2]   # Third column is pt
+
+        # Create image by binning
+        # image = np.zeros((self.grid_size, self.grid_size), dtype=np.float32)
+        image = np.zeros((self.grid_size, self.grid_size))
+
+        # Loop through constituents (inefficient but readable)
+        for i in range(len(eta)):
+            # Check if constituent is valid (non-zero pt)
+            if pt[i] > 0:
+                # if pt[i] > 1e-6:  # maybe filter low pt?
+
+                # Find bin indices
+                eta_idx = int((eta[i] - self.eta_range[0]) / (self.eta_range[1] - self.eta_range[0]) * self.grid_size)
+                phi_idx = int((phi[i] - self.phi_range[0]) / (self.phi_range[1] - self.phi_range[0]) * self.grid_size)
+
+                # Check bounds
+                if 0 <= eta_idx < self.grid_size and 0 <= phi_idx < self.grid_size:
+                    # Add pt to the pixel
+                    image[eta_idx, phi_idx] += pt[i]
+                    # image[eta_idx, phi_idx] += pt[i] / 1000.0  # normalize?
+                # else:
+                #     # constituent outside bounds, skip
+                #     pass
+
+        # Convert to tensor and add channel dimension
+        image_tensor = torch.tensor(image, dtype=torch.float32).unsqueeze(0)  # Shape: (1, grid_size, grid_size)
+
+        # Maybe normalize the image?
+        # image_tensor = image_tensor / (image_tensor.sum() + 1e-10)
+
+        return image_tensor, self.labels[idx], self.weights[idx]
+
+
+class JetImageCNN(nn.Module):
+    def __init__(self, input_channels=1, output_dim=1):
+        super().__init__()
+
+        # Simple CNN architecture
+        # self.conv1 = nn.Conv2d(input_channels, 32, kernel_size=3, padding=1)
+        # self.conv2 = nn.Conv2d(32, 64, kernel_size=3, padding=1)
+        # self.conv3 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
+
+        self.features = nn.Sequential(
+            nn.Conv2d(input_channels, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),  # 32x32 -> 16x16
+            # nn.Dropout2d(0.1),
+
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),  # 16x16 -> 8x8
+            # nn.Dropout2d(0.2),
+
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),  # 8x8 -> 4x4
+            # nn.Dropout2d(0.2),
+        )
+
+        # Calculate flattened size: 128 channels * 4 * 4 = 2048
+        # self.fc_input_size = 128 * 4 * 4
+        self.fc_input_size = 2048
+
+        self.classifier = nn.Sequential(
+            nn.Linear(self.fc_input_size, 256),
+            nn.ReLU(),
+            # nn.Dropout(0.3),
+
+            nn.Linear(256, 128),
+            nn.ReLU(),
+            # nn.Dropout(0.3),
+
+            nn.Linear(128, output_dim)
+        )
+
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        x = self.features(x)
+
+        # Flatten
+        x = x.view(x.size(0), -1)
+        # x = x.reshape(x.size(0), -1)
+
+        x = self.classifier(x)
+        x = self.sigmoid(x)
+
+        return x
+
+
+if tagger_type == 'jet_image':
+
+    # Use the raw constituent data to create jet images
+    print("Creating jet image dataset...")
+
+    (train_jet_data, valid_jet_data, train_labels, valid_labels,
+     train_weights, valid_weights) = train_test_split(
+        train_data,
+        train_labels,
+        train_weights,
+        test_size=valid_fraction
+    )
+
+    # Create datasets with jet image conversion
+    # grid_size = 32  # 32x32 pixel images
+    grid_size = 32
+    dataset = JetImage_Dataset(train_jet_data, train_labels, train_weights, grid_size=grid_size)
+    train_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
+    valid_dataset = JetImage_Dataset(valid_jet_data, valid_labels, valid_weights, grid_size=grid_size)
+    valid_loader = DataLoader(valid_dataset, batch_size=batch_size, shuffle=False)
+
+    print(f"Created jet image dataset with grid size {grid_size}x{grid_size}")
+
+    # Create the CNN model
+    jetimage_model = JetImageCNN(input_channels=1)
+
+    # opt = torch.optim.Adam(jetimage_model.parameters(), lr=1e-4)
+    opt = torch.optim.Adam(jetimage_model.parameters(), lr=8e-5)
+    # opt = torch.optim.SGD(jetimage_model.parameters(), lr=1e-3, momentum=0.9)
+
+    criterion = nn.BCELoss(reduction='none')
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    jetimage_model = jetimage_model.to(device)
+
+    print(f"Training Jet Image CNN on {device}")
+
+
+    for epoch in range(num_epochs):
+        jetimage_model.train()
+        total_right = 0
+        total = 0
+
+        running_train_loss = 0
+
+        for images, labels, weights in train_loader:
+            images = images.to(device)
+            labels = labels.to(device)
+            weights = weights.to(device)
+
+            forward_pass = jetimage_model.forward(images)
+
+            # Loss calculation
+
+            new_forward_pass = forward_pass.squeeze(-1)
+
+            loss_raw = criterion(new_forward_pass, labels)
+
+            loss_weighted = loss_raw * weights
+
+            loss = (loss_weighted).mean()
+
+            running_train_loss += loss.item()
+
+            # Accuracy Calculation
+            predictions = (new_forward_pass >= 0.5).float()
+
+            num_right = (predictions == labels).sum().item()
+            total_right += num_right
+            total += len(predictions)
+
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+
+        train_accuracy = total_right / total
+
+        # Validation
+        jetimage_model.eval()
+
+        total_right = 0
+        total = 0
+        running_val_loss = 0
+
+        for images, labels, weights in valid_loader:
+            with torch.no_grad():
+                images = images.to(device)
+                labels = labels.to(device)
+                weights = weights.to(device)
+
+                forward_pass = jetimage_model.forward(images)
+
+                new_forward_pass = forward_pass.squeeze(-1)
+
+                loss_raw = criterion(new_forward_pass, labels)
+
+                loss_weighted = loss_raw * weights
+
+                loss = (loss_weighted).mean()
+
+                running_val_loss += loss.item()
+
+                predictions = (new_forward_pass >= 0.5).float()
+
+                num_right = (predictions == labels).sum().item()
+                total_right += num_right
+                total += len(predictions)
+
+        val_accuracy = total_right / total
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {running_val_loss/len(valid_loader):.4f}, Val Acc: {val_accuracy:.4f}")
