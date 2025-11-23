@@ -12,9 +12,8 @@ from torch.utils.data import Dataset, DataLoader
 import sklearn.metrics as metrics
 from sklearn.model_selection import train_test_split
 
-
-# Custom imports
 import utils
+from smearing import smear_dataset
 
 
 
@@ -61,6 +60,10 @@ train_data, train_labels, train_weights, _, _ = utils.load_from_files(
     max_constits=max_constits,
     use_train_weights=False
 )
+
+
+print("Applying Gaussian smearing to data (15% eta/phi smear)")
+train_data = smear_dataset(train_data, eta_smear_factor=0.15, phi_smear_factor=0.15)
 
 # Find the number of data features
 num_data_features = train_data.shape[-1]
