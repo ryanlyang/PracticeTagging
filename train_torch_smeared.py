@@ -11,6 +11,8 @@ from torch.utils.data import Dataset, DataLoader
 # from energyflow.archs import EFN, PFN
 import sklearn.metrics as metrics
 from sklearn.model_selection import train_test_split
+import argparse
+
 
 import utils
 from smearing import smear_dataset
@@ -20,9 +22,15 @@ from smearing import smear_dataset
 ## Same setup as train.py
 
 ################################# SETTINGS #####################################
+parser = argparse.ArgumentParser(description='Train top tagging model')
+parser.add_argument('--train_path', type=str,
+                    default="/home/ryan/ComputerScience/ATLAS/ATLAS-top-tagging-open-data/data",
+                    help='Path to directory containing training data files')
+args = parser.parse_args()
+
 # Paths to data files. Point this to local directory containing the data files
 # in sub-directories
-train_path = Path("/home/ryan/ComputerScience/ATLAS/ATLAS-top-tagging-open-data/data")
+train_path = Path(args.train_path)
 
 # Make glob of the training set files
 train_files = sorted(list(train_path.glob("*.h5")))
