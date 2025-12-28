@@ -31,7 +31,7 @@ train_files = sorted(list(train_path.glob("*.h5")))
 # Set the amount of data to be used in training. The full training
 # set is very large (97 GB) and will not fit in memory all at once. Here, we
 # take a subset  of the data. Using the full set will require piping.
-n_train_jets = 50000
+n_train_jets = 500000
 
 # Set the fraction of the training data which will be reserved for validation
 valid_fraction = 0.1
@@ -43,7 +43,7 @@ max_constits = 40
 tagger_type = 'efn'
 
 # Training parameters
-num_epochs = 15
+num_epochs = 30
 batch_size = 64
 
 # Path for generated figures

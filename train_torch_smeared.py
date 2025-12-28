@@ -62,8 +62,8 @@ train_data, train_labels, train_weights, _, _ = utils.load_from_files(
 )
 
 
-print("Applying Gaussian smearing to data (15% eta/phi smear)")
-train_data = smear_dataset(train_data, eta_smear_factor=0.15, phi_smear_factor=0.15)
+print("Applying Gaussian smearing to data (10% eta/phi smear)")
+train_data = smear_dataset(train_data, eta_smear_factor=0.15, phi_smear_factor=0.10)
 
 # Find the number of data features
 num_data_features = train_data.shape[-1]
