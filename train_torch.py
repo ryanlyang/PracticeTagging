@@ -41,7 +41,7 @@ valid_fraction = 0.1
 max_constits = 80
 
 # Tagger to train, supported options are 'dnn', 'efn', 'pfn'.
-tagger_type = 'dnn'
+tagger_type = 'efn'
 
 # Training parameters
 num_epochs = 30
@@ -170,7 +170,11 @@ if tagger_type == 'efn':
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     efn_model = efn_model.to(device)
-    
+
+    # Setup checkpoint directory
+    checkpoint_dir = Path().cwd() / "checkpoints" / "efn"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_val_loss = float('inf')
 
 
     for epoch in range(num_epochs):

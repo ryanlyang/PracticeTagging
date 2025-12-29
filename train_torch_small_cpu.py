@@ -1,5 +1,6 @@
 from pathlib import Path
 import argparse
+import numpy as np
 
 # Plotting imports
 import matplotlib.pyplot as plt
@@ -38,10 +39,12 @@ train_files = sorted(list(train_path.glob("*.h5")))
 # Set the amount of data to be used in training. The full training
 # set is very large (97 GB) and will not fit in memory all at once. Here, we
 # take a subset  of the data. Using the full set will require piping.
-n_train_jets = 50000
+n_train_jets = 75000
 
 # Set the fraction of the training data which will be reserved for validation
-valid_fraction = 0.1
+# After removing 15% for test, we split remaining 85% into ~82% train and ~18% val
+# This gives us approximately 70/15/15 overall split
+valid_fraction = 0.176  # 15/(100-15) = 0.176 to get 15% of original data
 
 # Max constituents to consider in tagger training (must be <= 200)
 max_constits = 40
@@ -62,12 +65,39 @@ figure_dir.mkdir(parents=True, exist_ok=True)
 print("Read data and prepare for tagger training")
 
 # Load data using the functions in preprocessing.py
-train_data, train_labels, train_weights, _, _ = utils.load_from_files(
+all_data, all_labels, all_weights, _, all_pt = utils.load_from_files(
     train_files,
     max_jets=n_train_jets,
     max_constits=max_constits,
     use_train_weights=False
 )
+
+# Split: 70% train, 15% validation (handled by train_test_split), 15% test
+# First split off 15% for test, save it immediately, then delete from memory
+test_fraction = 0.15
+test_size = int(len(all_data) * test_fraction)
+test_idx = len(all_data) - test_size
+
+print(f"Data split: {test_idx} for train+val (will be split 70/15), {test_size} for test")
+
+# Save test data for later evaluation
+test_data_dir = Path().cwd() / "test_split"
+test_data_dir.mkdir(exist_ok=True)
+np.savez(test_data_dir / "test_data.npz",
+         data=all_data[test_idx:],
+         labels=all_labels[test_idx:],
+         weights=all_weights[test_idx:],
+         pt=all_pt[test_idx:])
+print(f"Saved {test_size} test jets to {test_data_dir / 'test_data.npz'}")
+
+
+train_data = all_data[:test_idx].copy()
+train_labels = all_labels[:test_idx].copy()
+train_weights = all_weights[:test_idx].copy()
+
+del all_data, all_labels, all_weights, all_pt
+
+print(f"Remaining {len(train_data)} jets will be split into train/validation by train_test_split")
 
 # Find the number of data features
 num_data_features = train_data.shape[-1]
@@ -177,7 +207,11 @@ if tagger_type == 'efn':
 
     device = torch.device('cpu')
     efn_model = efn_model.to(device)
-    
+
+    # Setup checkpoint directory
+    checkpoint_dir = Path().cwd() / "checkpoints" / "efn"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_val_loss = float('inf')
 
 
     for epoch in range(num_epochs):
@@ -263,8 +297,16 @@ if tagger_type == 'efn':
         # running_val_loss /= len(train_loader)
 
         val_accuracy = total_right / total
+        val_loss_avg = running_val_loss/len(valid_loader)
         # print(f"Val Loss: {running_loss} Accuracy: {accuracy}")
-        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {running_val_loss/len(valid_loader):.4f}, Val Acc: {val_accuracy:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {val_loss_avg:.4f}, Val Acc: {val_accuracy:.4f}")
+
+        # Save checkpoint if validation loss improved
+        if val_loss_avg < best_val_loss:
+            best_val_loss = val_loss_avg
+            checkpoint_path = checkpoint_dir / f"best_model.pt"
+            torch.save(efn_model.state_dict(), checkpoint_path)
+            print(f"  → Saved checkpoint: {checkpoint_path} (val_loss: {val_loss_avg:.4f})")
 
 
 
@@ -404,7 +446,11 @@ if tagger_type == 'dnn':
     # device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     device = torch.device('cpu')
     dnn_model = dnn_model.to(device)
-    
+
+    # Setup checkpoint directory
+    checkpoint_dir = Path().cwd() / "checkpoints" / "dnn"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_val_loss = float('inf')
 
 
     for epoch in range(num_epochs):
@@ -517,8 +563,16 @@ if tagger_type == 'dnn':
         # running_val_loss /= len(train_loader)
 
         val_accuracy = total_right / total
+        val_loss_avg = running_val_loss/len(valid_loader)
         # print(f"Val Loss: {running_loss} Accuracy: {accuracy}")
-        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {running_val_loss/len(valid_loader):.4f}, Val Acc: {val_accuracy:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {val_loss_avg:.4f}, Val Acc: {val_accuracy:.4f}")
+
+        # Save checkpoint if validation loss improved
+        if val_loss_avg < best_val_loss:
+            best_val_loss = val_loss_avg
+            checkpoint_path = checkpoint_dir / f"best_model.pt"
+            torch.save(dnn_model.state_dict(), checkpoint_path)
+            print(f"  → Saved checkpoint: {checkpoint_path} (val_loss: {val_loss_avg:.4f})")
 
 
 
@@ -612,7 +666,11 @@ if tagger_type == 'pfn':
 
     device = torch.device('cpu')
     pfn_model = pfn_model.to(device)
-    
+
+    # Setup checkpoint directory
+    checkpoint_dir = Path().cwd() / "checkpoints" / "pfn"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    best_val_loss = float('inf')
 
 
     for epoch in range(num_epochs):
@@ -696,8 +754,16 @@ if tagger_type == 'pfn':
         # running_val_loss /= len(train_loader)
 
         val_accuracy = total_right / total
+        val_loss_avg = running_val_loss/len(valid_loader)
         # print(f"Val Loss: {running_loss} Accuracy: {accuracy}")
-        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {running_val_loss/len(valid_loader):.4f}, Val Acc: {val_accuracy:.4f}")
+        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {val_loss_avg:.4f}, Val Acc: {val_accuracy:.4f}")
+
+        # Save checkpoint if validation loss improved
+        if val_loss_avg < best_val_loss:
+            best_val_loss = val_loss_avg
+            checkpoint_path = checkpoint_dir / f"best_model.pt"
+            torch.save(pfn_model.state_dict(), checkpoint_path)
+            print(f"  → Saved checkpoint: {checkpoint_path} (val_loss: {val_loss_avg:.4f})")
 
 
 
