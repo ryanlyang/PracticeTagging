@@ -1,8 +1,28 @@
-h5py
-numpy
-# Note the correct version of tensorflow will depend on the CUDA version
+# Core data processing
+h5py>=3.8.0
+numpy>=1.24.0
+pandas>=2.0.0
+
+# PyTorch (for transformer models)
+# Install from conda-forge or pytorch channel - see setup instructions below
+torch>=2.0.0
+torchvision>=0.15.0
+
+# TensorFlow (for EFN models)
+# Note: The correct version depends on CUDA version
 # See https://www.tensorflow.org/install/source#gpu
-tensorflow > 2
-energyflow > 1.3.3
-scikit-learn
-matplotlib
+tensorflow>=2.12.0
+
+# Physics ML libraries
+energyflow>=1.3.3
+
+# Machine learning utilities
+scikit-learn>=1.3.0
+scipy>=1.10.0
+
+# Plotting
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Progress bars
+tqdm>=4.65.0

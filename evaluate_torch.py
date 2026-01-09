@@ -52,7 +52,7 @@ print("Loading test data...")
 test_split = np.load(args.test_data)
 test_data = test_split['data']
 test_labels = test_split['labels']
-test_weights = test_split['weights']
+test_weights = test_split.get('weights', np.ones(len(test_labels)))  # Default to ones if not present
 test_jet_pt = test_split['pt']
 
 print(f"Loaded {len(test_data)} test jets")

@@ -1,6 +1,7 @@
 from pathlib import Path
 import argparse
 import numpy as np
+import random
 
 # Plotting imports
 import matplotlib.pyplot as plt
@@ -20,6 +21,16 @@ import utils
 
 import copy
 
+# Set random seeds for reproducibility
+RANDOM_SEED = 42
+random.seed(RANDOM_SEED)
+np.random.seed(RANDOM_SEED)
+torch.manual_seed(RANDOM_SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(RANDOM_SEED)
+    torch.cuda.manual_seed_all(RANDOM_SEED)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 
 ## Same setup as train.py
@@ -41,7 +52,7 @@ train_files = sorted(list(train_path.glob("*.h5")))
 # Set the amount of data to be used in training. The full training
 # set is very large (97 GB) and will not fit in memory all at once. Here, we
 # take a subset  of the data. Using the full set will require piping.
-n_train_jets = 30000
+n_train_jets = 10000
 
 # Set the fraction of the training data which will be reserved for validation
 # After removing 15% for test, we split remaining 85% into ~82% train and ~18% val
@@ -270,7 +281,9 @@ if tagger_type == 'efn':
     # Setup checkpoint directory
     checkpoint_dir = Path().cwd() / "checkpoints" / "efn_teaching"
     checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    best_val_loss = float('inf')
+
+    best_val_loss_unsmeared = float('inf')
+    best_val_loss_smeared = float('inf')
 
 
     for epoch in range(num_epochs):
@@ -280,9 +293,11 @@ if tagger_type == 'efn':
         total_right_unsmeared = 0
         total_right_smeared = 0
 
-        total = 0
+        total_unsmeared = 0
+        total_smeared = 0
 
-        running_train_loss = 0
+        running_train_loss_unsmeared = 0
+        running_train_loss_smeared = 0
 
         for unsmeared, smeared, labels, weights in train_loader:
             # Unpack unsmeared and smeared inputs
@@ -296,43 +311,78 @@ if tagger_type == 'efn':
             weights = weights.to(device)
 
             # For now, just use unsmeared data (you can modify this for student-teacher training)
-            forward_pass = efn_model.forward(inputs_unsmeared)
+            forward_pass_unsmeared = efn_unsmeared.forward(inputs_unsmeared)
+
+            forward_pass_smeared = efn_smeared.forward(inputs_smeared)
 
             #Loss calculation
 
-            new_forward_pass = forward_pass.squeeze(-1)
+            new_forward_pass_unsmeared = forward_pass_unsmeared.squeeze(-1)
 
-            loss_raw = criterion(new_forward_pass, labels)
+            new_forward_pass_smeared = forward_pass_smeared.squeeze(-1)
 
 
-            loss_weighted = loss_raw * weights
+            loss_raw_unsmeared = criterion_unsmeared(new_forward_pass_unsmeared, labels)
+            loss_raw_smeared = criterion_smeared(new_forward_pass_smeared, labels)
 
-            loss = (loss_weighted).mean()
 
-            running_train_loss += loss.item()
+            # loss_weighted_unsmeared = loss_raw_unsmeared * weights
+
+            loss_unsmeared = (loss_raw_unsmeared).mean()
+
+            loss_smeared = (loss_raw_smeared).mean()
+
+            running_train_loss_unsmeared += loss_unsmeared.item()
+
+            running_train_loss_smeared += loss_smeared.item()
+
 
                 
             # Accuracy Calculation
-            predictions = (new_forward_pass >= 0.5).float()
-
-            num_right = (predictions == labels).sum().item()
-            total_right += num_right
-            total += len(predictions)
+            predictions_unsmeared = (new_forward_pass_unsmeared >= 0.5).float()
+            predictions_smeared = (new_forward_pass_smeared >= 0.5).float()
 
 
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+            num_right_unsmeared = (predictions_unsmeared == labels).sum().item()
+            num_right_smeared = (predictions_smeared == labels).sum().item()
+
+            total_right_unsmeared += num_right_unsmeared
+            total_right_smeared += num_right_smeared
+
+            total_unsmeared += len(predictions_unsmeared)
+            total_smeared += len(predictions_smeared)
+
+
+
+            opt_unsmeared.zero_grad()
+            opt_smeared.zero_grad()
+
+            loss_unsmeared.backward()
+            loss_smeared.backward()
+
+
+            opt_unsmeared.step()
+            opt_smeared.step()
 
         # running_train_loss /= len(train_loader)
-        train_accuracy = total_right / total
+        train_accuracy_unsmeared = total_right_unsmeared / total_unsmeared
+        train_accuracy_smeared = total_right_smeared / total_smeared
+
         # print(f"Train Epoch {epoch} Loss: {running_loss} Accuracy: {accuracy}")
 
-        efn_model.eval()
+        efn_unsmeared.eval()
+        efn_smeared.eval()
 
-        total_right = 0
-        total = 0
-        running_val_loss = 0
+
+        total_right_unsmeared = 0
+        total_right_smeared = 0
+
+        total_unsmeared = 0
+        total_smeared = 0
+
+
+        running_val_loss_unsmeared = 0
+        running_val_loss_smeared = 0
 
         for unsmeared, smeared, labels, weights in valid_loader:
             with torch.no_grad():
@@ -347,36 +397,60 @@ if tagger_type == 'efn':
                 weights = weights.to(device)
 
                 # For now, just use unsmeared data (you can modify this for student-teacher training)
-                forward_pass = efn_model.forward(inputs_unsmeared)
+                forward_pass_unsmeared = efn_unsmeared.forward(inputs_unsmeared)
+                forward_pass_smeared = efn_smeared.forward(inputs_smeared)
 
-                new_forward_pass = forward_pass.squeeze(-1)
+                new_forward_pass_unsmeared = forward_pass_unsmeared.squeeze(-1)
+                new_forward_pass_smeared = forward_pass_smeared.squeeze(-1)
 
-                loss_raw = criterion(new_forward_pass, labels)
+                loss_raw_unsmeared = criterion_unsmeared(new_forward_pass_unsmeared, labels)
+                loss_raw_smeared = criterion_smeared(new_forward_pass_smeared, labels)
 
-                loss_weighted = loss_raw * weights
+                # loss_weighted_unsmeared = loss_raw * weights
 
-                loss = (loss_weighted).mean()
-
-                running_val_loss += loss.item()
-
+                loss_unsmeared = (loss_raw_unsmeared).mean()
+                loss_smeared = (loss_raw_smeared).mean()
 
 
-                predictions = (new_forward_pass >= 0.5).float()
+                running_val_loss_unsmeared += loss_unsmeared.item()
+                running_val_loss_smeared += loss_smeared.item()
 
-                num_right = (predictions == labels).sum().item()
-                total_right += num_right
-                total += len(predictions)
+
+                predictions_unsmeared = (new_forward_pass_unsmeared >= 0.5).float()
+                predictions_smeared = (new_forward_pass_smeared >= 0.5).float()
+
+                num_right_unsmeared = (predictions_unsmeared == labels).sum().item()
+                num_right_smeared = (predictions_smeared == labels).sum().item()
+
+                total_right_unsmeared += num_right_unsmeared
+                total_right_smeared += num_right_smeared
+
+                total_unsmeared += len(predictions_unsmeared)
+                total_smeared += len(predictions_smeared)
 
         # running_val_loss /= len(train_loader)
 
-        val_accuracy = total_right / total
-        val_loss_avg = running_val_loss/len(valid_loader)
+        val_accuracy_unsmeared = total_right_unsmeared / total_unsmeared
+        val_accuracy_smeared = total_right_smeared / total_smeared
+
+
+        val_loss_avg_unsmeared = running_val_loss_unsmeared/len(valid_loader)
+        val_loss_avg_smeared = running_val_loss_smeared/len(valid_loader)
+
+
         # print(f"Val Loss: {running_loss} Accuracy: {accuracy}")
-        print(f"Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss/len(train_loader):.4f}, Train Acc: {train_accuracy:.4f} | Val Loss: {val_loss_avg:.4f}, Val Acc: {val_accuracy:.4f}")
+        print(f"UNSMEARED Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss_unsmeared/len(train_loader):.4f}, Train Acc: {train_accuracy_unsmeared:.4f} | Val Loss: {val_loss_avg_unsmeared:.4f}, Val Acc: {val_accuracy_unsmeared:.4f}")
+        print(f"SMEARED Epoch {epoch+1}/{num_epochs} - Train Loss: {running_train_loss_smeared/len(train_loader):.4f}, Train Acc: {train_accuracy_smeared:.4f} | Val Loss: {val_loss_avg_smeared:.4f}, Val Acc: {val_accuracy_smeared:.4f}")
 
         # Save checkpoint if validation loss improved
-        if val_loss_avg < best_val_loss:
-            best_val_loss = val_loss_avg
-            checkpoint_path = checkpoint_dir / f"best_model.pt"
-            torch.save(efn_model.state_dict(), checkpoint_path)
-            print(f"  → Saved checkpoint: {checkpoint_path} (val_loss: {val_loss_avg:.4f})")
+        if val_loss_avg_unsmeared < best_val_loss_unsmeared:
+            best_val_loss_unsmeared = val_loss_avg_unsmeared
+            checkpoint_path = checkpoint_dir / f"best_model_unsmeared.pt"
+            torch.save(efn_unsmeared.state_dict(), checkpoint_path)
+            print(f"UNSMEARED  → Saved checkpoint: {checkpoint_path} (val_loss: {val_loss_avg_unsmeared:.4f})")
+
+        if val_loss_avg_smeared < best_val_loss_smeared:
+            best_val_loss_smeared = val_loss_avg_smeared
+            checkpoint_path = checkpoint_dir / f"best_model_smeared.pt"
+            torch.save(efn_smeared.state_dict(), checkpoint_path)
+            print(f"SMEARED  → Saved checkpoint: {checkpoint_path} (val_loss: {val_loss_avg_smeared:.4f})")
