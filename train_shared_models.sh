@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --partition=tier3
+#SBATCH --gres=gpu:1
 
 # This script trains the teacher and baseline models ONCE
 # These will be reused for all hyperparameter search runs

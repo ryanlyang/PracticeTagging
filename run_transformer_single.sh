@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --partition=tier3
+#SBATCH --gres=gpu:1
 
 # Create log directory
 mkdir -p transformer_logs
