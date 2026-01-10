@@ -66,7 +66,10 @@ CMD="python transformer_runner.py \
     --save_dir checkpoints/transformer_search \
     --run_name $RUN_NAME \
     --temp_init $TEMP_INIT \
-    --alpha_init $ALPHA_INIT"
+    --alpha_init $ALPHA_INIT \
+    --teacher_checkpoint checkpoints/transformer_search/shared_models/teacher.pt \
+    --baseline_checkpoint checkpoints/transformer_search/shared_models/baseline.pt \
+    --skip_save_models"
 
 # Add optional temperature final
 if [ -n "$TEMP_FINAL" ]; then

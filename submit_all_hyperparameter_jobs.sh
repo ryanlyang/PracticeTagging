@@ -8,6 +8,32 @@ echo "Submitting Hyperparameter Search Jobs"
 echo "=========================================="
 echo ""
 
+# Check if shared models exist
+TEACHER_MODEL="checkpoints/transformer_search/shared_models/teacher.pt"
+BASELINE_MODEL="checkpoints/transformer_search/shared_models/baseline.pt"
+
+if [ ! -f "$TEACHER_MODEL" ] || [ ! -f "$BASELINE_MODEL" ]; then
+    echo "ERROR: Shared models not found!"
+    echo ""
+    echo "You must first train the shared teacher and baseline models:"
+    echo "  sbatch train_shared_models.sh"
+    echo ""
+    echo "Wait for that job to complete, then run this script."
+    echo ""
+    echo "Expected files:"
+    echo "  $TEACHER_MODEL"
+    echo "  $BASELINE_MODEL"
+    echo ""
+    exit 1
+fi
+
+echo "Found shared models:"
+echo "  Teacher:  $TEACHER_MODEL"
+echo "  Baseline: $BASELINE_MODEL"
+echo ""
+echo "All jobs will reuse these models (saves ~2/3 training time per job!)"
+echo ""
+
 # Create directories
 mkdir -p transformer_logs
 mkdir -p checkpoints/transformer_search

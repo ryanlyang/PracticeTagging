@@ -554,6 +554,11 @@ def main():
     parser.add_argument("--alpha_final", type=float, default=None, help="Final alpha_kd weight (if scheduling)")
     parser.add_argument("--run_name", type=str, default="default", help="Unique name for this hyperparameter run")
 
+    # Pre-trained model loading (for hyperparameter search efficiency)
+    parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to pre-trained teacher model (skips teacher training)")
+    parser.add_argument("--baseline_checkpoint", type=str, default=None, help="Path to pre-trained baseline model (skips baseline training)")
+    parser.add_argument("--skip_save_models", action="store_true", help="Skip saving model weights (save space during hyperparameter search)")
+
     args = parser.parse_args()
 
     # Create unique save directory for this hyperparameter run
@@ -667,36 +672,50 @@ def main():
     print("=" * 70)
 
     teacher = ParticleTransformerKD(input_dim=7, **CONFIG["model"]).to(device)
-    opt = torch.optim.AdamW(teacher.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
-    sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
-    best_auc_teacher, best_state, no_improve = 0.0, None, 0
-    history_teacher = []
+    if args.teacher_checkpoint is not None:
+        # Load pre-trained teacher
+        print(f"Loading pre-trained teacher from: {args.teacher_checkpoint}")
+        ckpt = torch.load(args.teacher_checkpoint, map_location=device)
+        teacher.load_state_dict(ckpt["model"])
+        best_auc_teacher = ckpt["auc"]
+        history_teacher = ckpt.get("history", [])
+        print(f"Loaded teacher with AUC={best_auc_teacher:.4f}")
+    else:
+        # Train teacher from scratch
+        opt = torch.optim.AdamW(teacher.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+        sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
-    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Teacher"):
-        train_loss, train_auc = train_standard(teacher, train_loader, opt, device, "off", "mask_off")
-        val_auc, _, _ = evaluate(teacher, val_loader, device, "off", "mask_off")
-        sch.step()
+        best_auc_teacher, best_state, no_improve = 0.0, None, 0
+        history_teacher = []
 
-        history_teacher.append((ep + 1, train_loss, train_auc, val_auc))
+        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Teacher"):
+            train_loss, train_auc = train_standard(teacher, train_loader, opt, device, "off", "mask_off")
+            val_auc, _, _ = evaluate(teacher, val_loader, device, "off", "mask_off")
+            sch.step()
 
-        if val_auc > best_auc_teacher:
-            best_auc_teacher = val_auc
-            best_state = {k: v.detach().cpu().clone() for k, v in teacher.state_dict().items()}
-            no_improve = 0
+            history_teacher.append((ep + 1, train_loss, train_auc, val_auc))
+
+            if val_auc > best_auc_teacher:
+                best_auc_teacher = val_auc
+                best_state = {k: v.detach().cpu().clone() for k, v in teacher.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (ep + 1) % 5 == 0:
+                print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_teacher:.4f}")
+
+            if no_improve >= CONFIG["training"]["patience"]:
+                print(f"Early stopping teacher at epoch {ep+1}")
+                break
+
+        teacher.load_state_dict(best_state)
+        if not args.skip_save_models:
+            torch.save({"model": teacher.state_dict(), "auc": best_auc_teacher, "history": history_teacher}, teacher_path)
+            print(f"Saved teacher: {teacher_path} (best val AUC={best_auc_teacher:.4f})")
         else:
-            no_improve += 1
-
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_teacher:.4f}")
-
-        if no_improve >= CONFIG["training"]["patience"]:
-            print(f"Early stopping teacher at epoch {ep+1}")
-            break
-
-    teacher.load_state_dict(best_state)
-    torch.save({"model": teacher.state_dict(), "auc": best_auc_teacher, "history": history_teacher}, teacher_path)
-    print(f"Saved teacher: {teacher_path} (best val AUC={best_auc_teacher:.4f})")
+            print(f"Skipped saving teacher model (best val AUC={best_auc_teacher:.4f})")
 
     # Freeze teacher
     teacher.eval()
@@ -709,36 +728,50 @@ def main():
     print("=" * 70)
 
     baseline = ParticleTransformerKD(input_dim=7, **CONFIG["model"]).to(device)
-    opt = torch.optim.AdamW(baseline.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
-    sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
-    best_auc_baseline, best_state, no_improve = 0.0, None, 0
-    history_baseline = []
+    if args.baseline_checkpoint is not None:
+        # Load pre-trained baseline
+        print(f"Loading pre-trained baseline from: {args.baseline_checkpoint}")
+        ckpt = torch.load(args.baseline_checkpoint, map_location=device)
+        baseline.load_state_dict(ckpt["model"])
+        best_auc_baseline = ckpt["auc"]
+        history_baseline = ckpt.get("history", [])
+        print(f"Loaded baseline with AUC={best_auc_baseline:.4f}")
+    else:
+        # Train baseline from scratch
+        opt = torch.optim.AdamW(baseline.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+        sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
-    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Baseline"):
-        train_loss, train_auc = train_standard(baseline, train_loader, opt, device, "hlt", "mask_hlt")
-        val_auc, _, _ = evaluate(baseline, val_loader, device, "hlt", "mask_hlt")
-        sch.step()
+        best_auc_baseline, best_state, no_improve = 0.0, None, 0
+        history_baseline = []
 
-        history_baseline.append((ep + 1, train_loss, train_auc, val_auc))
+        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Baseline"):
+            train_loss, train_auc = train_standard(baseline, train_loader, opt, device, "hlt", "mask_hlt")
+            val_auc, _, _ = evaluate(baseline, val_loader, device, "hlt", "mask_hlt")
+            sch.step()
 
-        if val_auc > best_auc_baseline:
-            best_auc_baseline = val_auc
-            best_state = {k: v.detach().cpu().clone() for k, v in baseline.state_dict().items()}
-            no_improve = 0
+            history_baseline.append((ep + 1, train_loss, train_auc, val_auc))
+
+            if val_auc > best_auc_baseline:
+                best_auc_baseline = val_auc
+                best_state = {k: v.detach().cpu().clone() for k, v in baseline.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (ep + 1) % 5 == 0:
+                print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_baseline:.4f}")
+
+            if no_improve >= CONFIG["training"]["patience"] + 5:
+                print(f"Early stopping baseline at epoch {ep+1}")
+                break
+
+        baseline.load_state_dict(best_state)
+        if not args.skip_save_models:
+            torch.save({"model": baseline.state_dict(), "auc": best_auc_baseline, "history": history_baseline}, baseline_path)
+            print(f"Saved baseline: {baseline_path} (best val AUC={best_auc_baseline:.4f})")
         else:
-            no_improve += 1
-
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_baseline:.4f}")
-
-        if no_improve >= CONFIG["training"]["patience"] + 5:
-            print(f"Early stopping baseline at epoch {ep+1}")
-            break
-
-    baseline.load_state_dict(best_state)
-    torch.save({"model": baseline.state_dict(), "auc": best_auc_baseline, "history": history_baseline}, baseline_path)
-    print(f"Saved baseline: {baseline_path} (best val AUC={best_auc_baseline:.4f})")
+            print(f"Skipped saving baseline model (best val AUC={best_auc_baseline:.4f})")
 
     # ------------------- STEP 3: Student KD (HLT, KD from teacher) ------------------- #
     print("\n" + "=" * 70)
@@ -779,8 +812,11 @@ def main():
             break
 
     student.load_state_dict(best_state)
-    torch.save({"model": student.state_dict(), "auc": best_auc_student, "history": history_student}, student_path)
-    print(f"Saved student: {student_path} (best val AUC={best_auc_student:.4f})")
+    if not args.skip_save_models:
+        torch.save({"model": student.state_dict(), "auc": best_auc_student, "history": history_student}, student_path)
+        print(f"Saved student: {student_path} (best val AUC={best_auc_student:.4f})")
+    else:
+        print(f"Skipped saving student model (best val AUC={best_auc_student:.4f})")
 
     # ------------------- Final evaluation on TEST ------------------- #
     print("\n" + "=" * 70)
