@@ -44,12 +44,12 @@ echo "  Teacher:  $TEACHER_MODEL"
 echo "  Baseline: $BASELINE_MODEL"
 echo ""
 
-# Create directories
-mkdir -p transformer_logs
-mkdir -p checkpoints/transformer_search
+# Create separate directories for Round 2
+mkdir -p transformer_logs_round2
+mkdir -p checkpoints/transformer_search_round2
 
-# Clear/append to summary file
-SUMMARY_FILE="checkpoints/transformer_search/hyperparameter_search_results.txt"
+# Create new summary file for Round 2
+SUMMARY_FILE="checkpoints/transformer_search_round2/hyperparameter_search_results.txt"
 echo "" >> $SUMMARY_FILE
 echo "=======================================================" >> $SUMMARY_FILE
 echo "FOCUSED HYPERPARAMETER SEARCH - ROUND 2" >> $SUMMARY_FILE
@@ -86,7 +86,7 @@ for TEMP in "${TEMPERATURES[@]}"; do
 
         sbatch --export=ALL,TEMP_INIT=$TEMP,ALPHA_INIT=$ALPHA,RUN_NAME=$RUN_NAME \
                --job-name="kd_${RUN_NAME}" \
-               run_transformer_single.sh
+               run_transformer_single_round2.sh
 
         JOB_COUNT=$((JOB_COUNT + 1))
         sleep 0.3
@@ -112,7 +112,7 @@ for TEMP in "${TEMPERATURES[@]}"; do
 
                 sbatch --export=ALL,TEMP_INIT=$TEMP,TEMP_FINAL=$TEMP_FINAL,ALPHA_INIT=$ALPHA,RUN_NAME=$RUN_NAME \
                        --job-name="kd_${RUN_NAME}" \
-                       run_transformer_single.sh
+                       run_transformer_single_round2.sh
 
                 JOB_COUNT=$((JOB_COUNT + 1))
                 sleep 0.3
@@ -139,7 +139,7 @@ for TEMP in "${HIGH_TEMPS[@]}"; do
 
                 sbatch --export=ALL,TEMP_INIT=$TEMP,ALPHA_INIT=$ALPHA,ALPHA_FINAL=$ALPHA_FINAL,RUN_NAME=$RUN_NAME \
                        --job-name="kd_${RUN_NAME}" \
-                       run_transformer_single.sh
+                       run_transformer_single_round2.sh
 
                 JOB_COUNT=$((JOB_COUNT + 1))
                 sleep 0.3
@@ -171,7 +171,7 @@ for TEMP in "${BEST_TEMPS[@]}"; do
 
                     sbatch --export=ALL,TEMP_INIT=$TEMP,TEMP_FINAL=$TEMP_FINAL,ALPHA_INIT=$ALPHA,ALPHA_FINAL=$ALPHA_FINAL,RUN_NAME=$RUN_NAME \
                            --job-name="kd_${RUN_NAME}" \
-                           run_transformer_single.sh
+                           run_transformer_single_round2.sh
 
                     JOB_COUNT=$((JOB_COUNT + 1))
                     sleep 0.3
@@ -205,10 +205,10 @@ echo "Monitor jobs with:"
 echo "  squeue -u \$USER"
 echo ""
 echo "Check logs in:"
-echo "  transformer_logs/"
+echo "  transformer_logs_round2/"
 echo ""
 echo "Results will be saved to:"
-echo "  checkpoints/transformer_search/r2_<strategy>_<config>/"
+echo "  checkpoints/transformer_search_round2/r2_<strategy>_<config>/"
 echo ""
 echo "View summary after jobs complete:"
 echo "  python analyze_hyperparameter_results.py"
