@@ -1,0 +1,172 @@
+====================================================================================================
+DETAILED HYPERPARAMETER COMPARISON
+====================================================================================================
+
+====================================================================================================
+1. SCHEDULING STRATEGIES - HEAD-TO-HEAD COMPARISON
+====================================================================================================
+
+
+Combined (Temp+Alpha):
+  Number of experiments: 56
+  AUC - Mean: 0.8172, Std: 0.0042, Max: 0.8242
+  BKG - Mean: 8.75, Std: 0.47, Max: 9.86
+  Best config: combined_T10.0to1.0_A0.9to0.3
+    - AUC: 0.8242, BKG: 9.44
+    - Temp: 10.0, Alpha: 0.9
+
+Temperature Annealing:
+  Number of experiments: 32
+  AUC - Mean: 0.8186, Std: 0.0027, Max: 0.8230
+  BKG - Mean: 8.84, Std: 0.36, Max: 9.56
+  Best config: tempanneal_T3.0to1.0_A0.9
+    - AUC: 0.8230, BKG: 9.03
+    - Temp: 3.0, Alpha: 0.9
+
+Alpha Scheduling:
+  Number of experiments: 28
+  AUC - Mean: 0.8173, Std: 0.0038, Max: 0.8239
+  BKG - Mean: 8.69, Std: 0.45, Max: 9.73
+  Best config: alphasched_T3.0_A0.9to0.1
+    - AUC: 0.8239, BKG: 8.75
+    - Temp: 3.0, Alpha: 0.9
+
+Baseline (Constant):
+  Number of experiments: 16
+  AUC - Mean: 0.8191, Std: 0.0033, Max: 0.8222
+  BKG - Mean: 8.82, Std: 0.36, Max: 9.44
+  Best config: baseline_T7.0_A0.5
+    - AUC: 0.8222, BKG: 9.44
+    - Temp: 7.0, Alpha: 0.5
+
+====================================================================================================
+2. TEMPERATURE ANNEALING STRATEGIES
+====================================================================================================
+
+Performance by Temperature Annealing Range:
+----------------------------------------------------------------------------------------------------
+Temp Init    Temp Final   Count    AUC Mean     AUC Max      BKG Mean    
+----------------------------------------------------------------------------------------------------
+10.0         2.0          11       0.8198       0.8241       8.99        
+5.0          1.0          11       0.8185       0.8222       8.69        
+10.0         1.0          11       0.8183       0.8242       9.06        
+7.0          1.0          11       0.8181       0.8225       8.82        
+7.0          2.0          11       0.8179       0.8225       8.74        
+5.0          2.0          11       0.8169       0.8207       8.74        
+3.0          2.0          11       0.8163       0.8219       8.61        
+3.0          1.0          11       0.8157       0.8237       8.58        
+
+====================================================================================================
+3. ALPHA SCHEDULING STRATEGIES
+====================================================================================================
+
+Performance by Alpha Scheduling Range:
+----------------------------------------------------------------------------------------------------
+Alpha Init   Alpha Final  Count    AUC Mean     AUC Max      BKG Mean    
+----------------------------------------------------------------------------------------------------
+0.9          0.1          12       0.8208       0.8239       8.95        
+0.9          0.3          12       0.8206       0.8242       9.10        
+0.5          0.3          12       0.8184       0.8207       8.57        
+0.7          0.3          12       0.8171       0.8206       9.06        
+0.7          0.1          12       0.8171       0.8221       8.85        
+0.5          0.1          12       0.8155       0.8186       8.46        
+0.3          0.1          12       0.8110       0.8154       8.10        
+
+====================================================================================================
+4. IMPROVEMENT OVER BASELINE
+====================================================================================================
+
+Baseline Performance (Constant hyperparameters):
+  - Mean AUC: 0.8191
+  - Mean Background Rejection: 8.82
+
+Improvement of Each Strategy Over Baseline:
+----------------------------------------------------------------------------------------------------
+Strategy                  AUC Delta       AUC % Change    BKG Delta       BKG % Change   
+----------------------------------------------------------------------------------------------------
+Temperature Annealing     -0.0004        -0.05%          +0.02           +0.28%         
+Alpha Scheduling          -0.0018        -0.22%          -0.12           -1.37%         
+Combined (Temp+Alpha)     -0.0019        -0.23%          -0.07           -0.79%         
+
+====================================================================================================
+5. FULL RANKINGS - ALL CONFIGURATIONS
+====================================================================================================
+
+Top 30 Configurations by Student AUC:
+----------------------------------------------------------------------------------------------------
+Rank   Run Name                                 AUC        BKG Rej    Strategy            
+----------------------------------------------------------------------------------------------------
+1      combined_T10.0to1.0_A0.9to0.3            0.8242     9.44       Combined            
+2      combined_T10.0to2.0_A0.9to0.3            0.8241     9.37       Combined            
+3      alphasched_T3.0_A0.9to0.1                0.8239     8.75       Alpha Scheduling    
+4      combined_T3.0to1.0_A0.9to0.1             0.8237     8.68       Combined            
+5      alphasched_T10.0_A0.9to0.3               0.8236     9.29       Alpha Scheduling    
+6      combined_T10.0to2.0_A0.9to0.1            0.8233     9.21       Combined            
+7      alphasched_T10.0_A0.9to0.1               0.8231     9.29       Alpha Scheduling    
+8      tempanneal_T3.0to1.0_A0.9                0.8230     9.03       Temperature Annealing
+9      combined_T7.0to1.0_A0.9to0.1             0.8225     8.82       Combined            
+10     combined_T7.0to2.0_A0.9to0.3             0.8225     8.99       Combined            
+11     combined_T7.0to2.0_A0.9to0.1             0.8223     8.82       Combined            
+12     tempanneal_T7.0to1.0_A0.9                0.8222     9.03       Temperature Annealing
+13     baseline_T7.0_A0.5                       0.8222     9.44       Baseline            
+14     combined_T5.0to1.0_A0.9to0.3             0.8222     8.92       Combined            
+15     baseline_T10.0_A0.9                      0.8221     9.03       Baseline            
+16     combined_T10.0to1.0_A0.7to0.1            0.8221     9.10       Combined            
+17     combined_T10.0to2.0_A0.7to0.1            0.8221     9.17       Combined            
+18     baseline_T3.0_A0.7                       0.8220     8.99       Baseline            
+19     alphasched_T3.0_A0.9to0.3                0.8219     9.21       Alpha Scheduling    
+20     tempanneal_T3.0to2.0_A0.7                0.8219     8.82       Temperature Annealing
+21     tempanneal_T5.0to1.0_A0.5                0.8218     8.65       Temperature Annealing
+22     tempanneal_T7.0to2.0_A0.9                0.8218     8.89       Temperature Annealing
+23     tempanneal_T10.0to2.0_A0.7               0.8216     9.14       Temperature Annealing
+24     alphasched_T7.0_A0.9to0.3                0.8216     9.10       Alpha Scheduling    
+25     tempanneal_T5.0to1.0_A0.7                0.8215     8.58       Temperature Annealing
+26     baseline_T5.0_A0.7                       0.8212     8.68       Baseline            
+27     baseline_T10.0_A0.7                      0.8212     9.29       Baseline            
+28     combined_T5.0to1.0_A0.9to0.1             0.8211     8.85       Combined            
+29     tempanneal_T3.0to2.0_A0.9                0.8210     9.14       Temperature Annealing
+30     tempanneal_T10.0to2.0_A0.5               0.8210     8.68       Temperature Annealing
+
+====================================================================================================
+6. VARIANCE AND CONSISTENCY ANALYSIS
+====================================================================================================
+
+Which strategy is most consistent?
+----------------------------------------------------------------------------------------------------
+Strategy                  AUC Std Dev     BKG Std Dev     Consistency Score   
+----------------------------------------------------------------------------------------------------
+Combined (Temp+Alpha)     0.004201        0.4682          192.28              
+Temperature Annealing     0.002700        0.3606          270.25              
+Alpha Scheduling          0.003800        0.4485          208.34              
+Baseline (Constant)       0.003266        0.3580          234.42              
+
+Note: Higher consistency score means more predictable/stable performance
+
+====================================================================================================
+7. DECISION MATRIX - WHICH STRATEGY TO USE?
+====================================================================================================
+
+Recommendation guide based on your priorities:
+
+If you want MAXIMUM AUC:
+  -> Use: combined_T10.0to1.0_A0.9to0.3
+     Temp: 10.0, Alpha: 0.9
+     Expected AUC: 0.8242, BKG: 9.44
+
+If you want MAXIMUM Background Rejection:
+  -> Use: combined_T10.0to2.0_A0.7to0.3
+     Temp: 10.0, Alpha: 0.7
+     Expected AUC: 0.8173, BKG: 9.86
+
+If you want SIMPLICITY and CONSISTENCY:
+  -> Use: baseline_T7.0_A0.5
+     Temp: 7.0, Alpha: 0.5
+     Expected AUC: 0.8222, BKG: 9.44
+     (No scheduling required - constant hyperparameters)
+
+If you want BALANCED Performance:
+  -> Use: combined_T10.0to1.0_A0.9to0.3
+     Temp: 10.0, Alpha: 0.9
+     Expected AUC: 0.8242, BKG: 9.44
+
+====================================================================================================

@@ -1,0 +1,10 @@
+NEXT:
+
+You need to train with many more training jets because you 
+have the available ram now (I think maybe turn up requests)
+
+You need to test higher temperatures
+
+You need to test higher alpha initialization
+
+Maybe just an overall broader hyperparameter sweep, but you're headed in the right direction

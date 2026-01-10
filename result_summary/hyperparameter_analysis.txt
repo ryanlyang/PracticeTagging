@@ -1,0 +1,148 @@
+====================================================================================================
+HYPERPARAMETER ANALYSIS - EFFECTS ON STUDENT MODEL PERFORMANCE
+====================================================================================================
+
+====================================================================================================
+1. TEMPERATURE INITIALIZATION ANALYSIS
+====================================================================================================
+
+Performance by Temperature Init:
+----------------------------------------------------------------------------------------------------
+Temp     Count    AUC Mean     AUC Std      AUC Max      BKG Mean     BKG Max     
+----------------------------------------------------------------------------------------------------
+3.0      33       0.8167       0.0044       0.8239       8.62         9.21        
+5.0      33       0.8176       0.0031       0.8222       8.70         9.44        
+7.0      33       0.8181       0.0031       0.8225       8.75         9.60        
+10.0     33       0.8187       0.0040       0.8242       8.99         9.86        
+
+Key Findings:
+  - Best average AUC: Temp = 10.0 (mean AUC = 0.8187)
+  - Best average Background Rejection: Temp = 10.0 (mean = 8.99)
+  - Temperature range tested: 3.0 - 10.0
+
+====================================================================================================
+2. ALPHA INITIALIZATION ANALYSIS
+====================================================================================================
+
+Performance by Alpha Init:
+----------------------------------------------------------------------------------------------------
+Alpha    Count    AUC Mean     AUC Std      AUC Max      BKG Mean     BKG Max     
+----------------------------------------------------------------------------------------------------
+0.3      24       0.8134       0.0035       0.8186       8.27         8.85        
+0.5      36       0.8175       0.0029       0.8222       8.62         9.44        
+0.7      36       0.8181       0.0027       0.8221       8.96         9.86        
+0.9      36       0.8207       0.0026       0.8242       9.05         9.73        
+
+Key Findings:
+  - Best average AUC: Alpha = 0.9 (mean AUC = 0.8207)
+  - Best average Background Rejection: Alpha = 0.9 (mean = 9.05)
+  - Alpha range tested: 0.3 - 0.9
+
+====================================================================================================
+3. SCHEDULING STRATEGY ANALYSIS
+====================================================================================================
+
+Performance by Scheduling Strategy:
+----------------------------------------------------------------------------------------------------
+Strategy             Count    AUC Mean     AUC Std      AUC Max      BKG Mean     BKG Max     
+----------------------------------------------------------------------------------------------------
+Combined (T+A)       56       0.8172       0.0042       0.8242       8.75         9.86        
+Temp Anneal Only     32       0.8186       0.0027       0.8230       8.84         9.56        
+Alpha Sched Only     28       0.8173       0.0038       0.8239       8.69         9.73        
+Baseline (const)     16       0.8191       0.0033       0.8222       8.81         9.44        
+
+Key Findings:
+  - Best strategy: Baseline (const) (mean AUC = 0.8191)
+  - Worst strategy: Combined (T+A) (mean AUC = 0.8172)
+  - Improvement from best to worst: +0.0019 AUC (0.19%)
+
+====================================================================================================
+4. HYPERPARAMETER INTERACTION ANALYSIS (Temp x Alpha)
+====================================================================================================
+
+Average Student AUC by Temperature and Alpha:
+----------------------------------------------------------------------------------------------------
+temp_init     3.0     5.0     7.0     10.0
+alpha_init                                
+0.3         0.8123  0.8136  0.8145  0.8132
+0.5         0.8147  0.8193  0.8175  0.8186
+0.7         0.8182  0.8172  0.8179  0.8191
+0.9         0.8200  0.8191  0.8214  0.8221
+
+Average Background Rejection by Temperature and Alpha:
+----------------------------------------------------------------------------------------------------
+temp_init   3.0   5.0   7.0   10.0
+alpha_init                        
+0.3         8.24  8.29  8.20  8.35
+0.5         8.49  8.67  8.68  8.62
+0.7         8.81  8.68  8.92  9.44
+0.9         8.80  9.02  9.03  9.34
+
+====================================================================================================
+5. BEST HYPERPARAMETER CONFIGURATIONS
+====================================================================================================
+
+Top 15 Configurations by Average AUC:
+----------------------------------------------------------------------------------------------------
+Rank   Temp     Alpha    Count    AUC Mean     AUC Max      BKG Mean     BKG Max     
+----------------------------------------------------------------------------------------------------
+1      10.0     0.9      9        0.8221       0.8242       9.34         9.73        
+2      7.0      0.9      9        0.8214       0.8225       9.03         9.44        
+3      3.0      0.9      9        0.8200       0.8239       8.80         9.21        
+4      5.0      0.5      9        0.8193       0.8218       8.67         8.92        
+5      5.0      0.9      9        0.8191       0.8222       9.02         9.44        
+6      10.0     0.7      9        0.8191       0.8221       9.44         9.86        
+7      10.0     0.5      9        0.8186       0.8210       8.62         8.85        
+8      3.0      0.7      9        0.8182       0.8220       8.81         9.14        
+9      7.0      0.7      9        0.8179       0.8209       8.92         9.60        
+10     7.0      0.5      9        0.8175       0.8222       8.68         9.44        
+11     5.0      0.7      9        0.8172       0.8215       8.68         8.96        
+12     3.0      0.5      9        0.8147       0.8180       8.49         8.82        
+13     7.0      0.3      6        0.8145       0.8160       8.20         8.30        
+14     5.0      0.3      6        0.8136       0.8174       8.29         8.85        
+15     10.0     0.3      6        0.8132       0.8186       8.35         8.75        
+
+====================================================================================================
+6. STATISTICAL INSIGHTS
+====================================================================================================
+
+Correlation Analysis:
+  - Temperature Init vs Student AUC: +0.1994
+  - Alpha Init vs Student AUC: +0.6194
+  - Temperature Init vs Background Rejection: +0.3182
+  - Alpha Init vs Background Rejection: +0.6578
+
+Performance Variance:
+  - Student AUC variance: 0.000014
+  - Student AUC std dev: 0.003730
+  - Background Rejection variance: 0.1818
+  - Background Rejection std dev: 0.4264
+
+Performance Ranges:
+  - AUC: 0.8077 to 0.8242 (span: 0.0165)
+  - Background Rejection: 7.86 to 9.86 (span: 2.00)
+
+====================================================================================================
+7. RECOMMENDATIONS
+====================================================================================================
+
+Based on the hyperparameter analysis:
+
+For MAXIMUM AUC:
+  - Recommended Temperature Init: 10.0 (most common in top 3)
+  - Recommended Alpha Init: 0.9 (most common in top 3)
+  - Recommended Strategy: Baseline (const)
+
+For MAXIMUM Background Rejection:
+  - Recommended Temperature Init: 10.0 (most common in top 3)
+  - Recommended Alpha Init: 0.7 (most common in top 3)
+  - Note: Lower alpha values (0.7) tend to improve background rejection
+
+General Observations:
+  1. Higher temperature init (10.0) generally improves performance
+  2. Alpha = 0.9 provides best average AUC
+  3. Combined scheduling (temp + alpha) outperforms single-parameter scheduling
+  4. Temperature has a positive correlation with AUC (r=0.199)
+  5. Alpha has a positive correlation with AUC (r=0.619)
+
+====================================================================================================

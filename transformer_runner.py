@@ -542,8 +542,8 @@ def main():
         default="./data",
         help="Directory containing your *.h5 files (default: ./data relative to project root)",
     )
-    parser.add_argument("--n_train_jets", type=int, default=30000)
-    parser.add_argument("--max_constits", type=int, default=40)
+    parser.add_argument("--n_train_jets", type=int, default=4000000)
+    parser.add_argument("--max_constits", type=int, default=80)
     parser.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "transformer_kd"))
     parser.add_argument("--device", type=str, default="cpu")  # Force CPU to avoid GPU driver issues
 
