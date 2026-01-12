@@ -9,16 +9,23 @@ and your jet counts.
 Trains 3 models:
   1) Teacher on OFFLINE (high-quality) view
   2) Baseline on HLT (low-quality) view, no KD
-  3) Student on HLT with KD from teacher (and optional attention distillation)
+  3) Student on HLT with KD from teacher (now with stronger KD strategies)
 
 Saves:
   - test_split/test_features_and_masks.npz   (offline + hlt standardized features, masks, labels, indices)
-  - checkpoints/transformer_kd/teacher.pt, baseline.pt, student.pt  (best checkpoints)
-  - checkpoints/transformer_kd/results.npz, results.png            (preds + ROC plot)
+  - checkpoints/transformer_kd/<run_name>/{teacher,baseline,student}.pt  (best checkpoints)
+  - checkpoints/transformer_kd/<run_name>/results.npz, results.png       (preds + ROC plot)
 
 Assumption about utils.load_from_files output:
   all_data: (N, max_constits, 3) with columns [eta, phi, pt]
 If your columns differ, edit ETA_IDX/PHI_IDX/PT_IDX below.
+
+KD upgrades included (picked for “still helps at large data”):
+  - Confidence-weighted logit KD (KD emphasized where teacher is informative)
+  - Representation alignment on pooled embedding z (cosine loss)
+  - Paired contrastive alignment (InfoNCE on z) using batch negatives
+  - Attention distillation via masked KL on normalized attention (more principled than entropy MSE)
+  - Optional alpha/T scheduling already supported via CLI args
 """
 
 from pathlib import Path
@@ -64,26 +71,21 @@ PHI_IDX = 1
 PT_IDX  = 2
 
 
-# ----------------------------- HLT config (matches your professor) ----------------------------- #
+# ----------------------------- HLT config (matches professor) ----------------------------- #
 CONFIG = {
     "hlt_effects": {
-        # Resolution smearing
         "pt_resolution": 0.10,
         "eta_resolution": 0.03,
         "phi_resolution": 0.03,
 
-        # pT thresholds
         "pt_threshold_offline": 0.5,
         "pt_threshold_hlt": 1.5,
 
-        # Cluster merging
         "merge_enabled": True,
         "merge_radius": 0.01,
 
-        # Efficiency loss
         "efficiency_loss": 0.03,
 
-        # Noise (disabled like his notebook)
         "noise_enabled": False,
         "noise_fraction": 0.0,
     },
@@ -105,10 +107,15 @@ CONFIG = {
         "patience": 15,
     },
 
+    # Defaults are intentionally conservative; tune via CLI if you want.
     "kd": {
         "temperature": 7.0,
-        "alpha_kd": 0.5,
-        "alpha_attn": 0.2,
+        "alpha_kd": 0.5,          # mixes hard vs KD
+        "alpha_attn": 0.05,       # masked KL on attention
+        "alpha_rep": 0.10,        # cosine alignment on pooled embedding z
+        "alpha_nce": 0.10,        # InfoNCE on z (paired off<->hlt)
+        "tau_nce": 0.10,          # InfoNCE temperature
+        "use_conf_weighted_kd": True,
     },
 }
 
@@ -195,16 +202,13 @@ def apply_hlt_effects(const, mask, cfg, seed=42):
     # Effect 3: Resolution smearing
     valid = hlt_mask
 
-    # pT smearing
     pt_noise = np.random.normal(1.0, hcfg["pt_resolution"], (n_jets, max_part))
     pt_noise = np.clip(pt_noise, 0.5, 1.5)
     hlt[:, :, 0] = np.where(valid, hlt[:, :, 0] * pt_noise, 0)
 
-    # eta smearing
     eta_noise = np.random.normal(0, hcfg["eta_resolution"], (n_jets, max_part))
     hlt[:, :, 1] = np.where(valid, np.clip(hlt[:, :, 1] + eta_noise, -5, 5), 0)
 
-    # phi smearing
     phi_noise = np.random.normal(0, hcfg["phi_resolution"], (n_jets, max_part))
     new_phi = hlt[:, :, 2] + phi_noise
     hlt[:, :, 2] = np.where(valid, np.arctan2(np.sin(new_phi), np.cos(new_phi)), 0)
@@ -321,7 +325,7 @@ class JetDataset(Dataset):
         }
 
 
-# ----------------------------- Model (same as professor) ----------------------------- #
+# ----------------------------- Model (same as professor, with embedding return) ----------------------------- #
 class ResidualBlock(nn.Module):
     def __init__(self, dim, dropout=0.1):
         super().__init__()
@@ -385,7 +389,7 @@ class ParticleTransformerKD(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, x, mask, return_attention=False):
+    def forward(self, x, mask, return_attention=False, return_embedding=False):
         batch_size, seq_len, _ = x.shape
 
         h = x.view(-1, self.input_dim)
@@ -402,28 +406,92 @@ class ParticleTransformerKD(nn.Module):
             average_attn_weights=True,
         )
 
-        z = self.norm(pooled.squeeze(1))
-        logits = self.classifier(z)
+        z = self.norm(pooled.squeeze(1))   # (B, D)
+        logits = self.classifier(z)        # (B, 1)
 
+        if return_attention and return_embedding:
+            return logits, attn_weights.squeeze(1), z
         if return_attention:
             return logits, attn_weights.squeeze(1)
+        if return_embedding:
+            return logits, z
         return logits
 
 
-# ----------------------------- KD losses (same as professor) ----------------------------- #
-def kd_loss(student_logits, teacher_logits, T):
+# ----------------------------- KD Losses (upgraded) ----------------------------- #
+def kd_loss_basic(student_logits, teacher_logits, T):
     s_soft = torch.sigmoid(student_logits / T)
     t_soft = torch.sigmoid(teacher_logits / T)
     return F.binary_cross_entropy(s_soft, t_soft) * (T ** 2)
 
 
-def attn_loss(s_attn, t_attn, s_mask, t_mask):
-    eps = 1e-8
-    s_valid = s_attn * s_mask.float()
-    t_valid = t_attn * t_mask.float()
-    s_ent = -(s_valid * torch.log(s_valid + eps)).sum(dim=1)
-    t_ent = -(t_valid * torch.log(t_valid + eps)).sum(dim=1)
-    return F.mse_loss(s_ent, t_ent) + F.mse_loss(s_valid.max(dim=1)[0], t_valid.max(dim=1)[0])
+def kd_loss_conf_weighted(student_logits, teacher_logits, T, eps=1e-8):
+    """
+    Confidence-weighted binary KD.
+    Weight is high when teacher is far from 0.5 (more informative “shape”), low near 0.5.
+    """
+    s_soft = torch.sigmoid(student_logits / T)
+    t_soft = torch.sigmoid(teacher_logits / T)
+
+    # w in [0,1]
+    w = (torch.abs(torch.sigmoid(teacher_logits) - 0.5) * 2.0).detach()
+
+    per = F.binary_cross_entropy(s_soft, t_soft, reduction="none")  # (B,)
+    loss = (w * per).mean() * (T ** 2)
+    return loss
+
+
+def rep_loss_cosine(s_z, t_z):
+    """
+    1 - cosine similarity, averaged over batch.
+    """
+    s = F.normalize(s_z, dim=1)
+    t = F.normalize(t_z, dim=1)
+    return (1.0 - (s * t).sum(dim=1)).mean()
+
+
+def info_nce_loss(s_z, t_z, tau=0.1):
+    """
+    Paired contrastive alignment:
+      positives: (s_i, t_i)
+      negatives: (s_i, t_j) for j != i
+    Symmetric (s->t and t->s).
+    """
+    s = F.normalize(s_z, dim=1)
+    t = F.normalize(t_z, dim=1)
+
+    logits_st = (s @ t.t()) / tau
+    logits_ts = (t @ s.t()) / tau
+
+    labels = torch.arange(s.size(0), device=s.device)
+    loss_st = F.cross_entropy(logits_st, labels)
+    loss_ts = F.cross_entropy(logits_ts, labels)
+    return 0.5 * (loss_st + loss_ts)
+
+
+def attn_kl_loss(s_attn, t_attn, s_mask, t_mask, eps=1e-8):
+    """
+    Masked KL on normalized attention distributions.
+    We compare only on joint-valid tokens so distributions live on the same support.
+    """
+    joint = (s_mask & t_mask).float()  # (B, L)
+
+    # If a sample has no joint-valid tokens, it contributes 0.
+    denom_s = (s_attn * joint).sum(dim=1, keepdim=True)
+    denom_t = (t_attn * joint).sum(dim=1, keepdim=True)
+
+    valid_sample = (denom_s.squeeze(1) > eps) & (denom_t.squeeze(1) > eps)
+    if valid_sample.sum().item() == 0:
+        return torch.zeros((), device=s_attn.device)
+
+    s = (s_attn * joint) / (denom_s + eps)
+    t = (t_attn * joint) / (denom_t + eps)
+
+    s = torch.clamp(s, eps, 1.0)
+    t = torch.clamp(t, eps, 1.0)
+
+    kl = (t * (torch.log(t) - torch.log(s))).sum(dim=1)  # (B,)
+    return kl[valid_sample].mean()
 
 
 # ----------------------------- Train / eval (no weights) ----------------------------- #
@@ -458,7 +526,12 @@ def train_kd(student, teacher, loader, opt, device, cfg, temperature=None, alpha
     # Use provided values or fall back to config
     T = temperature if temperature is not None else cfg["kd"]["temperature"]
     a_kd = alpha_kd if alpha_kd is not None else cfg["kd"]["alpha_kd"]
-    a_attn = cfg["kd"]["alpha_attn"]
+
+    a_attn = cfg["kd"].get("alpha_attn", 0.0)
+    a_rep  = cfg["kd"].get("alpha_rep", 0.0)
+    a_nce  = cfg["kd"].get("alpha_nce", 0.0)
+    tau_nce = cfg["kd"].get("tau_nce", 0.1)
+    use_conf = cfg["kd"].get("use_conf_weighted_kd", True)
 
     total_loss = 0.0
     preds, labs = [], []
@@ -471,19 +544,31 @@ def train_kd(student, teacher, loader, opt, device, cfg, temperature=None, alpha
         y = batch["label"].to(device)
 
         with torch.no_grad():
-            t_logits, t_attn = teacher(x_off, m_off, return_attention=True)
+            t_logits, t_attn, t_z = teacher(x_off, m_off, return_attention=True, return_embedding=True)
+            t_logits = t_logits.squeeze(1)
 
         opt.zero_grad()
-        s_logits, s_attn = student(x_hlt, m_hlt, return_attention=True)
-
-        t_logits = t_logits.squeeze(1)
+        s_logits, s_attn, s_z = student(x_hlt, m_hlt, return_attention=True, return_embedding=True)
         s_logits = s_logits.squeeze(1)
 
-        loss_kd = kd_loss(s_logits, t_logits, T)
+        # Hard label loss (HLT)
         loss_hard = F.binary_cross_entropy_with_logits(s_logits, y)
-        loss_attn = attn_loss(s_attn, t_attn, m_hlt, m_off)
 
-        loss = a_kd * loss_kd + (1 - a_kd) * loss_hard + a_attn * loss_attn
+        # Logit KD (weighted)
+        if use_conf:
+            loss_kd = kd_loss_conf_weighted(s_logits, t_logits, T)
+        else:
+            loss_kd = kd_loss_basic(s_logits, t_logits, T)
+
+        # Embedding alignment + contrastive
+        loss_rep = rep_loss_cosine(s_z, t_z.detach()) if a_rep > 0 else torch.zeros((), device=device)
+        loss_nce = info_nce_loss(s_z, t_z.detach(), tau=tau_nce) if a_nce > 0 else torch.zeros((), device=device)
+
+        # Attention distillation (masked KL on joint support)
+        loss_attn = attn_kl_loss(s_attn, t_attn.detach(), m_hlt, m_off) if a_attn > 0 else torch.zeros((), device=device)
+
+        # Combine
+        loss = (1.0 - a_kd) * loss_hard + a_kd * loss_kd + a_attn * loss_attn + a_rep * loss_rep + a_nce * loss_nce
         loss.backward()
         torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
         opt.step()
@@ -545,21 +630,35 @@ def main():
     parser.add_argument("--n_train_jets", type=int, default=100000)
     parser.add_argument("--max_constits", type=int, default=80)
     parser.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "transformer_kd"))
-    parser.add_argument("--device", type=str, default="cpu")  # Force CPU to avoid GPU driver issues
+    parser.add_argument("--device", type=str, default="cpu")
 
-    # Hyperparameter search arguments
+    # KD schedule args (already in your file)
     parser.add_argument("--temp_init", type=float, default=7.0, help="Initial temperature for KD")
     parser.add_argument("--temp_final", type=float, default=None, help="Final temperature (if annealing)")
     parser.add_argument("--alpha_init", type=float, default=0.5, help="Initial alpha_kd weight")
     parser.add_argument("--alpha_final", type=float, default=None, help="Final alpha_kd weight (if scheduling)")
     parser.add_argument("--run_name", type=str, default="default", help="Unique name for this hyperparameter run")
 
-    # Pre-trained model loading (for hyperparameter search efficiency)
+    # New KD knobs (optional)
+    parser.add_argument("--alpha_attn", type=float, default=CONFIG["kd"]["alpha_attn"], help="Weight for attention KL distillation")
+    parser.add_argument("--alpha_rep", type=float, default=CONFIG["kd"]["alpha_rep"], help="Weight for embedding cosine alignment")
+    parser.add_argument("--alpha_nce", type=float, default=CONFIG["kd"]["alpha_nce"], help="Weight for InfoNCE paired contrastive loss")
+    parser.add_argument("--tau_nce", type=float, default=CONFIG["kd"]["tau_nce"], help="InfoNCE temperature (smaller = harder)")
+    parser.add_argument("--no_conf_kd", action="store_true", help="Disable confidence-weighted KD (use plain KD)")
+
+    # Pre-trained model loading
     parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to pre-trained teacher model (skips teacher training)")
     parser.add_argument("--baseline_checkpoint", type=str, default=None, help="Path to pre-trained baseline model (skips baseline training)")
     parser.add_argument("--skip_save_models", action="store_true", help="Skip saving model weights (save space during hyperparameter search)")
 
     args = parser.parse_args()
+
+    # Apply KD knobs into CONFIG
+    CONFIG["kd"]["alpha_attn"] = float(args.alpha_attn)
+    CONFIG["kd"]["alpha_rep"]  = float(args.alpha_rep)
+    CONFIG["kd"]["alpha_nce"]  = float(args.alpha_nce)
+    CONFIG["kd"]["tau_nce"]    = float(args.tau_nce)
+    CONFIG["kd"]["use_conf_weighted_kd"] = (not args.no_conf_kd)
 
     # Create unique save directory for this hyperparameter run
     save_dir = Path(args.save_dir) / args.run_name
@@ -568,6 +667,8 @@ def main():
     device = torch.device(args.device)
     print(f"Device: {device}")
     print(f"Save dir: {save_dir}")
+    print("KD settings:")
+    print(f"  conf_weighted_kd={CONFIG['kd']['use_conf_weighted_kd']}, alpha_attn={CONFIG['kd']['alpha_attn']}, alpha_rep={CONFIG['kd']['alpha_rep']}, alpha_nce={CONFIG['kd']['alpha_nce']}, tau_nce={CONFIG['kd']['tau_nce']}")
 
     # ------------------- Load your dataset (same style as your code) ------------------- #
     train_path = Path(args.train_path)
@@ -593,7 +694,6 @@ def main():
 
     mask_raw = pt > 0
     E = pt * np.cosh(np.clip(eta, -5, 5))
-
     constituents_raw = np.stack([pt, eta, phi, E], axis=-1).astype(np.float32)
 
     print(f"Avg particles per jet (raw mask): {mask_raw.sum(axis=1).mean():.1f}")
@@ -615,22 +715,18 @@ def main():
     print("Computing features...")
     features_off = compute_features(constituents_off, masks_off)
     features_hlt = compute_features(constituents_hlt, masks_hlt)
-
     print(f"NaN check: Offline={np.isnan(features_off).sum()}, HLT={np.isnan(features_hlt).sum()}")
 
-    # ------------------- Split indices (70/15/15, stratified, professor style) ------------------- #
+    # ------------------- Split indices (70/15/15, stratified) ------------------- #
     idx = np.arange(len(all_labels))
     train_idx, temp_idx = train_test_split(idx, test_size=0.30, random_state=RANDOM_SEED, stratify=all_labels)
     val_idx, test_idx = train_test_split(temp_idx, test_size=0.50, random_state=RANDOM_SEED, stratify=all_labels[temp_idx])
-
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
     # ------------------- Standardize using training OFFLINE stats ------------------- #
     feat_means, feat_stds = get_stats(features_off, masks_off, train_idx)
-
     features_off_std = standardize(features_off, masks_off, feat_means, feat_stds)
     features_hlt_std = standardize(features_hlt, masks_hlt, feat_means, feat_stds)
-
     print(f"Final NaN check: Offline={np.isnan(features_off_std).sum()}, HLT={np.isnan(features_hlt_std).sum()}")
 
     # ------------------- Save test split artifacts (for later curve comparisons) ------------------- #
@@ -674,7 +770,6 @@ def main():
     teacher = ParticleTransformerKD(input_dim=7, **CONFIG["model"]).to(device)
 
     if args.teacher_checkpoint is not None:
-        # Load pre-trained teacher
         print(f"Loading pre-trained teacher from: {args.teacher_checkpoint}")
         ckpt = torch.load(args.teacher_checkpoint, map_location=device)
         teacher.load_state_dict(ckpt["model"])
@@ -682,7 +777,6 @@ def main():
         history_teacher = ckpt.get("history", [])
         print(f"Loaded teacher with AUC={best_auc_teacher:.4f}")
     else:
-        # Train teacher from scratch
         opt = torch.optim.AdamW(teacher.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
         sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
@@ -730,7 +824,6 @@ def main():
     baseline = ParticleTransformerKD(input_dim=7, **CONFIG["model"]).to(device)
 
     if args.baseline_checkpoint is not None:
-        # Load pre-trained baseline
         print(f"Loading pre-trained baseline from: {args.baseline_checkpoint}")
         ckpt = torch.load(args.baseline_checkpoint, map_location=device)
         baseline.load_state_dict(ckpt["model"])
@@ -738,7 +831,6 @@ def main():
         history_baseline = ckpt.get("history", [])
         print(f"Loaded baseline with AUC={best_auc_baseline:.4f}")
     else:
-        # Train baseline from scratch
         opt = torch.optim.AdamW(baseline.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
         sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
@@ -773,7 +865,7 @@ def main():
         else:
             print(f"Skipped saving baseline model (best val AUC={best_auc_baseline:.4f})")
 
-    # ------------------- STEP 3: Student KD (HLT, KD from teacher) ------------------- #
+    # ------------------- STEP 3: Student KD ------------------- #
     print("\n" + "=" * 70)
     print("STEP 3: STUDENT with KD (HLT view + teacher guidance)")
     print("=" * 70)
@@ -786,12 +878,13 @@ def main():
     history_student = []
 
     for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Student KD"):
-        # Get current temperature and alpha based on schedule
         current_temp = get_temperature_schedule(ep, CONFIG["training"]["epochs"], args.temp_init, args.temp_final)
         current_alpha = get_alpha_schedule(ep, CONFIG["training"]["epochs"], args.alpha_init, args.alpha_final)
 
-        train_loss, train_auc = train_kd(student, teacher, train_loader, opt, device, CONFIG,
-                                         temperature=current_temp, alpha_kd=current_alpha)
+        train_loss, train_auc = train_kd(
+            student, teacher, train_loader, opt, device, CONFIG,
+            temperature=current_temp, alpha_kd=current_alpha
+        )
         val_auc, _, _ = evaluate(student, val_loader, device, "hlt", "mask_hlt")
         sch.step()
 
@@ -805,7 +898,7 @@ def main():
             no_improve += 1
 
         if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: loss={train_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_student:.4f}")
+            print(f"Ep {ep+1}: loss={train_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_student:.4f} | T={current_temp:.2f}, alpha_kd={current_alpha:.2f}")
 
         if no_improve >= CONFIG["training"]["patience"] + 5:
             print(f"Early stopping student at epoch {ep+1}")
@@ -843,13 +936,12 @@ def main():
     print(f"  KD Improvement:  {improvement:+.4f}")
     print(f"  Recovery:        {recovery:.1f}%")
 
-    # Save results for later plotting
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
     fpr_s, tpr_s, _ = roc_curve(labs, preds_student)
 
-    # Calculate Background Rejection at 50% signal efficiency (working point)
-    wp = 0.5  # Working point (signal efficiency = TPR)
+    # Background Rejection at 50% signal efficiency
+    wp = 0.5
     idx_t = np.argmax(tpr_t >= wp)
     idx_b = np.argmax(tpr_b >= wp)
     idx_s = np.argmax(tpr_s >= wp)
@@ -877,22 +969,23 @@ def main():
         fpr_teacher=fpr_t, tpr_teacher=tpr_t,
         fpr_baseline=fpr_b, tpr_baseline=tpr_b,
         fpr_student=fpr_s, tpr_student=tpr_s,
+        kd_cfg=np.array([CONFIG["kd"]["alpha_attn"], CONFIG["kd"]["alpha_rep"], CONFIG["kd"]["alpha_nce"], CONFIG["kd"]["tau_nce"]], dtype=np.float32),
     )
 
-    # Plot ROC curves (swapped axes: TPR on x, FPR on y)
+    # Plot ROC curves (TPR on x, FPR on y)
     plt.figure(figsize=(8, 6))
-    plt.plot(tpr_t, fpr_t, "-", label=f"Teacher (AUC={auc_teacher:.3f})", color='crimson', linewidth=2)
-    plt.plot(tpr_b, fpr_b, "--", label=f"Baseline (AUC={auc_baseline:.3f})", color='steelblue', linewidth=2)
-    plt.plot(tpr_s, fpr_s, ":", label=f"Student KD (AUC={auc_student:.3f})", color='forestgreen', linewidth=2)
-    plt.ylabel(r"False Positive Rate", fontsize=12)
-    plt.xlabel(r"True Positive Rate (Signal efficiency)", fontsize=12)
+    plt.plot(tpr_t, fpr_t, "-",  label=f"Teacher (AUC={auc_teacher:.3f})",  color="crimson",     linewidth=2)
+    plt.plot(tpr_b, fpr_b, "--", label=f"Baseline (AUC={auc_baseline:.3f})", color="steelblue",  linewidth=2)
+    plt.plot(tpr_s, fpr_s, ":",  label=f"Student KD (AUC={auc_student:.3f})", color="forestgreen", linewidth=2)
+    plt.ylabel("False Positive Rate", fontsize=12)
+    plt.xlabel("True Positive Rate (Signal efficiency)", fontsize=12)
     plt.legend(fontsize=12, frameon=False)
     plt.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(save_dir / "results.png", dpi=300)
     plt.close()
 
-    # Log hyperparameter run results to a summary file
+    # Log hyperparameter run results
     summary_file = Path(args.save_dir) / "hyperparameter_search_results.txt"
     with open(summary_file, "a") as f:
         f.write(f"\nRun: {args.run_name}\n")
@@ -900,12 +993,13 @@ def main():
         if args.temp_final is not None:
             f.write(f" -> {args.temp_final:.2f} (annealing)\n")
         else:
-            f.write(f" (constant)\n")
+            f.write(" (constant)\n")
         f.write(f"  Alpha_KD: {args.alpha_init:.2f}")
         if args.alpha_final is not None:
             f.write(f" -> {args.alpha_final:.2f} (scheduling)\n")
         else:
-            f.write(f" (constant)\n")
+            f.write(" (constant)\n")
+        f.write(f"  alpha_attn={CONFIG['kd']['alpha_attn']:.3f}, alpha_rep={CONFIG['kd']['alpha_rep']:.3f}, alpha_nce={CONFIG['kd']['alpha_nce']:.3f}, tau_nce={CONFIG['kd']['tau_nce']:.3f}, conf_kd={CONFIG['kd']['use_conf_weighted_kd']}\n")
         f.write(f"  Background Rejection @ 50% efficiency: {br_student:.2f}\n")
         f.write(f"  AUC (Student): {auc_student:.4f}\n")
         f.write(f"  Saved to: {save_dir}\n")
