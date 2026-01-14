@@ -482,9 +482,9 @@ class ParticleTransformer(nn.Module):
         """
         B, M, _ = x.shape
 
-        h = x.view(-1, self.input_dim)
+        h = x.reshape(-1, self.input_dim)
         h = self.input_proj(h)
-        h = h.view(B, M, -1)
+        h = h.reshape(B, M, -1)
 
         h = self.transformer(h, src_key_padding_mask=~mask)
 
