@@ -14,10 +14,10 @@ N_HLT_VIEWS_LIST_STR=${N_HLT_VIEWS_LIST_STR:-"2 3 4"}
 read -r -a N_HLT_VIEWS_LIST <<< "$N_HLT_VIEWS_LIST_STR"
 
 # Fixed consistency knobs (override via environment)
-LAMBDA_PROB=${LAMBDA_PROB:-1.0}
-LAMBDA_EMB=${LAMBDA_EMB:-0.25}
+LAMBDA_PROB=${LAMBDA_PROB:-0.5}
+LAMBDA_EMB=${LAMBDA_EMB:-0.5}
 RAMPUP_FRAC=${RAMPUP_FRAC:-0.2}
-CONF_POWER=${CONF_POWER:-1.0}
+CONF_POWER=${CONF_POWER:-2.0}
 CONF_MIN=${CONF_MIN:-0.0}
 
 # Shared defaults and paths
@@ -112,11 +112,11 @@ if [ "$SWEEP_MODE" = "new_setup" ] || [ "$SWEEP_MODE" = "both" ]; then
     # ----------------------------------------------------------------------
     # BLOCK A: Core KD mechanics (36 runs per view)
     # ----------------------------------------------------------------------
-    TEMP_SCHEDULES=("7.0:" "10.0:4.0" "6.0:2.0")
-    TEMP_NAMES=("T7const" "T10to4" "T6to2")
+    TEMP_SCHEDULES=("5.0:" "8.0:3.0" "6.0:2.0")
+    TEMP_NAMES=("T5const" "T8to3" "T6to2")
 
-    ALPHA_SCHEDULES=("0.20:0.05" "0.50:0.20" "0.70:0.30")
-    ALPHA_NAMES=("A0p20to0p05" "A0p50to0p20" "A0p70to0p30")
+    ALPHA_SCHEDULES=("0.50:0.20" "0.70:0.30" "0.90:0.50")
+    ALPHA_NAMES=("A0p50to0p20" "A0p70to0p30" "A0p90to0p50")
 
     CONF_OPTIONS=(0 1)  # 0=conf ON, 1=conf OFF
     CONF_NAMES=("confON" "confOFF")
@@ -177,10 +177,10 @@ if [ "$SWEEP_MODE" = "new_setup" ] || [ "$SWEEP_MODE" = "both" ]; then
     # ----------------------------------------------------------------------
     # BLOCK B: Rep vs NCE dominance (24 runs per view)
     # ----------------------------------------------------------------------
-    TEMP_INIT_B=10.0
-    TEMP_FINAL_B=4.0
-    ALPHA_INIT_B=0.50
-    ALPHA_FINAL_B=0.20
+    TEMP_INIT_B=8.0
+    TEMP_FINAL_B=3.0
+    ALPHA_INIT_B=0.70
+    ALPHA_FINAL_B=0.30
     ALPHA_ATTN_B=0.05
     TAU_NCE_B=0.10
     NO_CONF_KD_B=0
@@ -237,10 +237,10 @@ if [ "$SWEEP_MODE" = "new_setup" ] || [ "$SWEEP_MODE" = "both" ]; then
     # ----------------------------------------------------------------------
     # BLOCK C: Teacher-trust gating sanity (10 runs per view)
     # ----------------------------------------------------------------------
-    TEMP_INIT_C=10.0
-    TEMP_FINAL_C=4.0
-    ALPHA_INIT_C=0.50
-    ALPHA_FINAL_C=0.20
+    TEMP_INIT_C=8.0
+    TEMP_FINAL_C=3.0
+    ALPHA_INIT_C=0.70
+    ALPHA_FINAL_C=0.30
     ALPHA_ATTN_C=0.05
 
     REGIMES=(
@@ -270,10 +270,10 @@ if [ "$SWEEP_MODE" = "new_setup" ] || [ "$SWEEP_MODE" = "both" ]; then
     # ----------------------------------------------------------------------
     # BLOCK D: Consistency weight sanity (10 runs per view)
     # ----------------------------------------------------------------------
-    TEMP_INIT_D=10.0
-    TEMP_FINAL_D=4.0
-    ALPHA_INIT_D=0.50
-    ALPHA_FINAL_D=0.20
+    TEMP_INIT_D=8.0
+    TEMP_FINAL_D=3.0
+    ALPHA_INIT_D=0.70
+    ALPHA_FINAL_D=0.30
     ALPHA_ATTN_D=0.05
     ALPHA_REP_D=0.10
     ALPHA_NCE_D=0.10
@@ -281,11 +281,11 @@ if [ "$SWEEP_MODE" = "new_setup" ] || [ "$SWEEP_MODE" = "both" ]; then
     NO_CONF_KD_D=0
 
     CONSIST_COMBOS=(
-        "lp0p5_le0p1:0.5:0.1"
-        "lp1p0_le0p25:1.0:0.25"
-        "lp2p0_le0p5:2.0:0.5"
-        "lp1p5_le0p25:1.5:0.25"
-        "lp1p0_le0p5:1.0:0.5"
+        "lp0p3_le0p25:0.3:0.25"
+        "lp0p5_le0p5:0.5:0.5"
+        "lp0p5_le0p75:0.5:0.75"
+        "lp0p75_le0p5:0.75:0.5"
+        "lp0p5_le1p0:0.5:1.0"
     )
     CONF_POWERS_D=(1.0 2.0)
 
