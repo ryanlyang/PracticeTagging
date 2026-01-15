@@ -1120,8 +1120,8 @@ def main():
 
     parser.add_argument("--train_path", type=str, default="./data",
                         help="Directory containing *.h5 files (default: ./data)")
-    parser.add_argument("--n_train_jets", type=int, default=200000)
-    parser.add_argument("--max_constits", type=int, default=160)
+    parser.add_argument("--n_train_jets", type=int, default=100000)
+    parser.add_argument("--max_constits", type=int, default=80)
     parser.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "transformer_twohlt"))
     parser.add_argument("--run_name", type=str, default="default")
     parser.add_argument("--device", type=str, default="cpu")
