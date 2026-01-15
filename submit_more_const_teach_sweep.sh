@@ -21,7 +21,7 @@ CONF_POWER=${CONF_POWER:-1.0}
 CONF_MIN=${CONF_MIN:-0.0}
 
 # Shared defaults and paths
-SAVE_DIR=${SAVE_DIR:-"checkpoints/transformer_twohlt_sweep"}
+SAVE_DIR=${SAVE_DIR:-"checkpoints/more_const_teach_sweep"}
 HLT_SEED_BASE=${HLT_SEED_BASE:-123}
 HLT_SEED_STEP=${HLT_SEED_STEP:-333}
 TRAIN_PATH=${TRAIN_PATH:-""}
@@ -31,7 +31,7 @@ TEACHER_CKPT=${TEACHER_CKPT:-""}
 SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS:-0}
 DEPENDENCY_JOB=${DEPENDENCY_JOB:-""}
 
-mkdir -p transformer_logs
+mkdir -p more_const_logs
 
 case "$SWEEP_MODE" in
     new_setup|round2|both) ;;

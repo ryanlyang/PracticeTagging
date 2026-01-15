@@ -1,8 +1,8 @@
 #!/bin/bash
 
 #SBATCH --job-name=more_const_teach
-#SBATCH --output=transformer_logs/more_const_%j.out
-#SBATCH --error=transformer_logs/more_const_%j.err
+#SBATCH --output=more_const_logs/more_const_%j.out
+#SBATCH --error=more_const_logs/more_const_%j.err
 #SBATCH --time=10:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -11,7 +11,7 @@
 #SBATCH --gres=gpu:1
 
 # Create log directory
-mkdir -p transformer_logs
+mkdir -p more_const_logs
 
 # Print job info
 echo "=========================================="
@@ -59,7 +59,7 @@ HLT_SEEDS=${HLT_SEEDS:-""}
 HLT_SEED_BASE=${HLT_SEED_BASE:-123}
 HLT_SEED_STEP=${HLT_SEED_STEP:-333}
 RUN_NAME=${RUN_NAME:-"default"}
-SAVE_DIR=${SAVE_DIR:-"checkpoints/transformer_twohlt"}
+SAVE_DIR=${SAVE_DIR:-"checkpoints/more_const_teach_sweep"}
 TRAIN_PATH=${TRAIN_PATH:-""}
 N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
 MAX_CONSTITS=${MAX_CONSTITS:-""}
