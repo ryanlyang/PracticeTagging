@@ -117,6 +117,8 @@ CONFIG = {
         "ff_dim": 256,
         "dropout": 0.1,
         "latent_dim": 32,
+        "mix_components": 4,
+        "min_sigma": 1e-3,
         "lr": 5e-4,
         "epochs": 30,
         "lambda_feat": 1.0,
@@ -135,14 +137,25 @@ CONFIG = {
         "mask_threshold": 0.5,
     },
 
+    "consistency": {
+        "conf_power": 2.0,
+        "conf_min": 0.0,
+    },
+
+    "kd": {
+        "temperature": 7.0,
+        "alpha_kd": 0.5,
+        "alpha_attn": 0.05,
+        "alpha_rep": 0.10,
+        "alpha_nce": 0.10,
+        "tau_nce": 0.10,
+        "use_conf_weighted_kd": True,
+    },
+
     "loss": {
         "sup": 1.0,
         "cons_prob": 0.1,
         "cons_emb": 0.05,
-        "kd": 0.5,
-        "kd_temp": 3.0,
-        "emb": 0.2,
-        "attn": 0.0,
     },
 }
 
@@ -451,11 +464,13 @@ class ParticleTransformerKD(nn.Module):
 # ----------------------------- Super-Resolution Generator ----------------------------- #
 class SuperResGenerator(nn.Module):
     def __init__(self, input_dim=7, embed_dim=64, num_heads=4, num_layers=2, ff_dim=256,
-                 dropout=0.1, latent_dim=32):
+                 dropout=0.1, latent_dim=32, n_components=4, min_sigma=1e-3):
         super().__init__()
         self.input_dim = input_dim
         self.embed_dim = embed_dim
         self.latent_dim = latent_dim
+        self.n_components = n_components
+        self.min_sigma = min_sigma
 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
@@ -475,10 +490,6 @@ class SuperResGenerator(nn.Module):
         )
         self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
 
-        self.z_mu = nn.Linear(embed_dim, latent_dim)
-        self.z_logvar = nn.Linear(embed_dim, latent_dim)
-        self.z_proj = nn.Linear(latent_dim, embed_dim)
-
         dec_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
@@ -490,10 +501,13 @@ class SuperResGenerator(nn.Module):
         )
         self.decoder = nn.TransformerEncoder(dec_layer, num_layers=max(1, num_layers))
 
-        self.out_feat = nn.Linear(embed_dim, input_dim)
+        self.comp_logits = nn.Linear(embed_dim, n_components)
+        self.comp_proj = nn.Linear(embed_dim, n_components * embed_dim)
+        self.out_mu = nn.Linear(embed_dim, input_dim)
+        self.out_logsigma = nn.Linear(embed_dim, input_dim)
         self.out_mask = nn.Linear(embed_dim, 1)
 
-    def forward(self, x, mask, z=None):
+    def forward(self, x, mask):
         bsz, seq_len, _ = x.shape
         h = self.input_proj(x.reshape(-1, self.input_dim)).reshape(bsz, seq_len, -1)
         h = self.encoder(h, src_key_padding_mask=~mask)
@@ -502,24 +516,39 @@ class SuperResGenerator(nn.Module):
         denom = mask_f.sum(dim=1, keepdim=True).clamp(min=1.0)
         pooled = (h * mask_f).sum(dim=1) / denom.squeeze(1)
 
-        z_mu = self.z_mu(pooled)
-        z_logvar = self.z_logvar(pooled)
-        if z is None:
-            eps = torch.randn_like(z_mu)
-            z = z_mu + eps * torch.exp(0.5 * z_logvar)
-        z_proj = self.z_proj(z).unsqueeze(1)
+        h_dec = self.decoder(h, src_key_padding_mask=~mask)
 
-        h_dec = self.decoder(h + z_proj, src_key_padding_mask=~mask)
-        x_hat = self.out_feat(h_dec)
+        mix_logits = self.comp_logits(pooled)
+        comp_embed = self.comp_proj(pooled).view(bsz, self.n_components, self.embed_dim)
+
+        mu_list = []
+        log_sigma_list = []
+        for k in range(self.n_components):
+            h_k = h_dec + comp_embed[:, k].unsqueeze(1)
+            mu_list.append(self.out_mu(h_k))
+            log_sigma_list.append(self.out_logsigma(h_k))
+
+        mu = torch.stack(mu_list, dim=1)
+        log_sigma = torch.stack(log_sigma_list, dim=1)
         mask_logits = self.out_mask(h_dec).squeeze(-1)
-        return x_hat, mask_logits, z_mu, z_logvar
+        return mu, log_sigma, mask_logits, mix_logits
+
+    def sample_from_params(self, mu, log_sigma, mix_logits):
+        sigma = F.softplus(log_sigma) + self.min_sigma
+        comp = torch.distributions.Categorical(logits=mix_logits).sample()
+        idx = comp.view(-1, 1, 1, 1).expand(-1, 1, mu.size(2), mu.size(3))
+        mu_sel = torch.gather(mu, 1, idx).squeeze(1)
+        sigma_sel = torch.gather(sigma, 1, idx).squeeze(1)
+        eps = torch.randn_like(mu_sel)
+        return mu_sel + sigma_sel * eps
 
     def sample(self, x, mask, n_samples=1, mask_threshold=0.5):
         views = []
         masks = []
         probs = []
+        mu, log_sigma, mask_logits, mix_logits = self(x, mask)
         for _ in range(n_samples):
-            x_hat, mask_logits, _, _ = self(x, mask)
+            x_hat = self.sample_from_params(mu, log_sigma, mix_logits)
             p_exist = torch.sigmoid(mask_logits)
             x_hat = x_hat * p_exist.unsqueeze(-1)
             m_hat = p_exist > mask_threshold
@@ -555,6 +584,45 @@ def kd_loss(student_logits, teacher_logits, T):
     return F.binary_cross_entropy(s_soft, t_soft) * (T ** 2)
 
 
+def kd_loss_conf_weighted(student_logits, teacher_logits, T):
+    s_soft = safe_sigmoid(student_logits, temp=T)
+    t_soft = safe_sigmoid(teacher_logits, temp=T)
+    w = (torch.abs(safe_sigmoid(teacher_logits) - 0.5) * 2.0).detach()
+    per = F.binary_cross_entropy(s_soft, t_soft, reduction="none")
+    return (w * per).mean() * (T ** 2)
+
+
+def info_nce_loss(s_z, t_z, tau=0.1):
+    s = F.normalize(s_z, dim=1)
+    t = F.normalize(t_z, dim=1)
+    logits_st = (s @ t.t()) / tau
+    logits_ts = (t @ s.t()) / tau
+    labels = torch.arange(s.size(0), device=s.device)
+    loss_st = F.cross_entropy(logits_st, labels)
+    loss_ts = F.cross_entropy(logits_ts, labels)
+    return 0.5 * (loss_st + loss_ts)
+
+
+def mixture_nll(mu, log_sigma, mix_logits, x, mask, min_sigma=1e-3):
+    sigma = F.softplus(log_sigma) + min_sigma
+    log_sigma_val = torch.log(sigma)
+    diff = (x.unsqueeze(1) - mu) / sigma
+    log_prob = -0.5 * diff ** 2 - log_sigma_val - 0.5 * np.log(2.0 * np.pi)
+    log_prob = log_prob.sum(dim=-1)
+    mask_f = mask.float().unsqueeze(1)
+    log_prob = (log_prob * mask_f).sum(dim=-1)
+    denom = mask_f.sum(dim=-1).clamp(min=1.0)
+    log_prob = log_prob / denom
+    log_pi = F.log_softmax(mix_logits, dim=1)
+    log_mix = torch.logsumexp(log_pi + log_prob, dim=1)
+    return -log_mix.mean()
+
+
+def mixture_mean(mu, mix_logits):
+    weights = F.softmax(mix_logits, dim=1).unsqueeze(-1).unsqueeze(-1)
+    return (weights * mu).sum(dim=1)
+
+
 def attn_kl_loss(s_attn, t_attn, s_mask, t_mask, eps=1e-8):
     joint = (s_mask & t_mask).float()
     denom_s = (s_attn * joint).sum(dim=1, keepdim=True)
@@ -577,6 +645,14 @@ def symmetric_kl_bernoulli(p, q, eps=1e-6):
     kl_pq = p * torch.log(p / q) + (1 - p) * torch.log((1 - p) / (1 - q))
     kl_qp = q * torch.log(q / p) + (1 - q) * torch.log((1 - p) / (1 - q))
     return 0.5 * (kl_pq + kl_qp)
+
+
+def confidence_weight_min(p_i, p_j, power=2.0, conf_min=0.0):
+    conf_i = torch.abs(p_i - 0.5) * 2.0
+    conf_j = torch.abs(p_j - 0.5) * 2.0
+    conf = torch.minimum(conf_i, conf_j)
+    conf = torch.clamp(conf ** power, min=conf_min, max=1.0)
+    return conf
 
 
 def cosine_embed_loss(z1, z2, eps=1e-8):
@@ -671,7 +747,6 @@ def train_generator_epoch(generator, loader, opt, device, cfg):
     total_mask = 0.0
     total_mult = 0.0
     total_stats = 0.0
-    total_kl = 0.0
     n_batches = 0
 
     for batch in loader:
@@ -683,23 +758,20 @@ def train_generator_epoch(generator, loader, opt, device, cfg):
         x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
 
         opt.zero_grad()
-        x_hat, mask_logits, z_mu, z_logvar = generator(x_hlt, m_hlt)
+        mu, log_sigma, mask_logits, mix_logits = generator(x_hlt, m_hlt)
         p_exist = torch.sigmoid(mask_logits)
-        x_hat = x_hat * p_exist.unsqueeze(-1)
+        x_mean = mixture_mean(mu, mix_logits) * p_exist.unsqueeze(-1)
 
-        mask_f = m_off.float().unsqueeze(-1)
-        loss_feat = F.l1_loss(x_hat * mask_f, x_off * mask_f)
+        loss_feat = mixture_nll(mu, log_sigma, mix_logits, x_off, m_off, min_sigma=cfg["generator"]["min_sigma"])
         loss_mask = F.binary_cross_entropy_with_logits(mask_logits, m_off.float())
         loss_mult = F.mse_loss(p_exist.sum(dim=1), m_off.float().sum(dim=1))
-        loss_stats = generator_stats_loss(x_hat, x_off, m_off)
-        loss_kl = kl_divergence(z_mu, z_logvar)
+        loss_stats = generator_stats_loss(x_mean, x_off, m_off)
 
         loss = (
             cfg["generator"]["lambda_feat"] * loss_feat
             + cfg["generator"]["lambda_mask"] * loss_mask
             + cfg["generator"]["lambda_mult"] * loss_mult
             + cfg["generator"]["lambda_stats"] * loss_stats
-            + cfg["generator"]["lambda_kl"] * loss_kl
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(generator.parameters(), 1.0)
@@ -710,18 +782,16 @@ def train_generator_epoch(generator, loader, opt, device, cfg):
         total_mask += loss_mask.item()
         total_mult += loss_mult.item()
         total_stats += loss_stats.item()
-        total_kl += loss_kl.item()
         n_batches += 1
 
     if n_batches == 0:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
     return (
         total_loss / n_batches,
         total_feat / n_batches,
         total_mask / n_batches,
         total_mult / n_batches,
         total_stats / n_batches,
-        total_kl / n_batches,
     )
 
 
@@ -733,7 +803,6 @@ def eval_generator(generator, loader, device, cfg):
     total_mask = 0.0
     total_mult = 0.0
     total_stats = 0.0
-    total_kl = 0.0
     n_batches = 0
 
     for batch in loader:
@@ -744,23 +813,20 @@ def eval_generator(generator, loader, device, cfg):
         x_off, m_off = ensure_nonempty_mask(x_off, m_off)
         x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
 
-        x_hat, mask_logits, z_mu, z_logvar = generator(x_hlt, m_hlt)
+        mu, log_sigma, mask_logits, mix_logits = generator(x_hlt, m_hlt)
         p_exist = torch.sigmoid(mask_logits)
-        x_hat = x_hat * p_exist.unsqueeze(-1)
+        x_mean = mixture_mean(mu, mix_logits) * p_exist.unsqueeze(-1)
 
-        mask_f = m_off.float().unsqueeze(-1)
-        loss_feat = F.l1_loss(x_hat * mask_f, x_off * mask_f)
+        loss_feat = mixture_nll(mu, log_sigma, mix_logits, x_off, m_off, min_sigma=cfg["generator"]["min_sigma"])
         loss_mask = F.binary_cross_entropy_with_logits(mask_logits, m_off.float())
         loss_mult = F.mse_loss(p_exist.sum(dim=1), m_off.float().sum(dim=1))
-        loss_stats = generator_stats_loss(x_hat, x_off, m_off)
-        loss_kl = kl_divergence(z_mu, z_logvar)
+        loss_stats = generator_stats_loss(x_mean, x_off, m_off)
 
         loss = (
             cfg["generator"]["lambda_feat"] * loss_feat
             + cfg["generator"]["lambda_mask"] * loss_mask
             + cfg["generator"]["lambda_mult"] * loss_mult
             + cfg["generator"]["lambda_stats"] * loss_stats
-            + cfg["generator"]["lambda_kl"] * loss_kl
         )
 
         total_loss += loss.item()
@@ -768,18 +834,16 @@ def eval_generator(generator, loader, device, cfg):
         total_mask += loss_mask.item()
         total_mult += loss_mult.item()
         total_stats += loss_stats.item()
-        total_kl += loss_kl.item()
         n_batches += 1
 
     if n_batches == 0:
-        return 0.0, 0.0, 0.0, 0.0, 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
     return (
         total_loss / n_batches,
         total_feat / n_batches,
         total_mask / n_batches,
         total_mult / n_batches,
         total_stats / n_batches,
-        total_kl / n_batches,
     )
 
 
@@ -801,7 +865,7 @@ def fit_generator(generator, train_loader, val_loader, device, cfg, save_path=No
             no_improve += 1
 
         if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: val_loss={va[0]:.4f}, feat={va[1]:.4f}, mask={va[2]:.4f}, mult={va[3]:.4f}")
+            print(f"Ep {ep+1}: val_loss={va[0]:.4f}, nll={va[1]:.4f}, mask={va[2]:.4f}, mult={va[3]:.4f}")
 
         if no_improve >= cfg["training"]["patience"]:
             print(f"Early stopping generator at epoch {ep+1}")
@@ -814,7 +878,8 @@ def fit_generator(generator, train_loader, val_loader, device, cfg, save_path=No
     return best_val, history
 
 
-def train_superres_epoch(generator, classifier, teacher, loader, opt, device, cfg, use_kd=False):
+def train_superres_epoch(generator, classifier, teacher, loader, opt, device, cfg,
+                         use_kd=False, temperature=7.0, alpha_kd=0.5):
     generator.train()
     classifier.train()
     if teacher is not None:
@@ -843,18 +908,29 @@ def train_superres_epoch(generator, classifier, teacher, loader, opt, device, cf
 
         views_probs = []
         views_emb = []
-        loss_feat = torch.tensor(0.0, device=device)
         loss_mask = torch.tensor(0.0, device=device)
         loss_mult = torch.tensor(0.0, device=device)
         loss_stats = torch.tensor(0.0, device=device)
-        loss_kl = torch.tensor(0.0, device=device)
         loss_kd = torch.tensor(0.0, device=device)
-        loss_emb = torch.tensor(0.0, device=device)
+        loss_rep = torch.tensor(0.0, device=device)
+        loss_nce = torch.tensor(0.0, device=device)
         loss_attn = torch.tensor(0.0, device=device)
+        use_conf = cfg["kd"]["use_conf_weighted_kd"]
+        a_attn = cfg["kd"]["alpha_attn"]
+        a_rep = cfg["kd"]["alpha_rep"]
+        a_nce = cfg["kd"]["alpha_nce"]
+
+        mu, log_sigma, mask_logits, mix_logits = generator(x_hlt, m_hlt)
+        p_exist = torch.sigmoid(mask_logits)
+        x_mean = mixture_mean(mu, mix_logits) * p_exist.unsqueeze(-1)
+
+        loss_feat = mixture_nll(mu, log_sigma, mix_logits, x_off, m_off, min_sigma=cfg["generator"]["min_sigma"])
+        loss_mask = F.binary_cross_entropy_with_logits(mask_logits, m_off.float())
+        loss_mult = F.mse_loss(p_exist.sum(dim=1), m_off.float().sum(dim=1))
+        loss_stats = generator_stats_loss(x_mean, x_off, m_off)
 
         for _ in range(cfg["superres"]["n_samples"]):
-            x_hat, mask_logits, z_mu, z_logvar = generator(x_hlt, m_hlt)
-            p_exist = torch.sigmoid(mask_logits)
+            x_hat = generator.sample_from_params(mu, log_sigma, mix_logits)
             x_hat = x_hat * p_exist.unsqueeze(-1)
             m_hat = p_exist > cfg["superres"]["mask_threshold"]
             x_hat, m_hat = ensure_nonempty_mask(x_hat, m_hat)
@@ -867,31 +943,26 @@ def train_superres_epoch(generator, classifier, teacher, loader, opt, device, cf
             views_probs.append(p)
             views_emb.append(c_emb)
 
-            mask_f = m_off.float().unsqueeze(-1)
-            loss_feat = loss_feat + F.l1_loss(x_hat * mask_f, x_off * mask_f)
-            loss_mask = loss_mask + F.binary_cross_entropy_with_logits(mask_logits, m_off.float())
-            loss_mult = loss_mult + F.mse_loss(p_exist.sum(dim=1), m_off.float().sum(dim=1))
-            loss_stats = loss_stats + generator_stats_loss(x_hat, x_off, m_off)
-            loss_kl = loss_kl + kl_divergence(z_mu, z_logvar)
-
             if use_kd and teacher is not None:
                 t_logits_hat, t_attn_hat, t_emb_hat = teacher(
                     x_hat, m_hat, return_attention=True, return_embedding=True
                 )
                 t_logits_hat = t_logits_hat.squeeze(1)
-                loss_kd = loss_kd + kd_loss(t_logits_hat, t_logits_true, cfg["loss"]["kd_temp"])
-                loss_emb = loss_emb + cosine_embed_loss(t_emb_hat, t_emb_true).mean()
-                if cfg["loss"]["attn"] > 0:
+                if use_conf:
+                    loss_kd = loss_kd + kd_loss_conf_weighted(t_logits_hat, t_logits_true, temperature)
+                else:
+                    loss_kd = loss_kd + kd_loss(t_logits_hat, t_logits_true, temperature)
+                if a_rep > 0:
+                    loss_rep = loss_rep + cosine_embed_loss(t_emb_hat, t_emb_true).mean()
+                if a_nce > 0:
+                    loss_nce = loss_nce + info_nce_loss(t_emb_hat, t_emb_true, tau=cfg["kd"]["tau_nce"])
+                if a_attn > 0:
                     loss_attn = loss_attn + attn_kl_loss(t_attn_hat, t_attn_true, m_hat, m_off)
 
         n_samples = max(1, cfg["superres"]["n_samples"])
-        loss_feat = loss_feat / n_samples
-        loss_mask = loss_mask / n_samples
-        loss_mult = loss_mult / n_samples
-        loss_stats = loss_stats / n_samples
-        loss_kl = loss_kl / n_samples
         loss_kd = loss_kd / n_samples
-        loss_emb = loss_emb / n_samples
+        loss_rep = loss_rep / n_samples
+        loss_nce = loss_nce / n_samples
         loss_attn = loss_attn / max(1, n_samples)
 
         p_mean = torch.stack(views_probs, dim=0).mean(dim=0)
@@ -902,8 +973,13 @@ def train_superres_epoch(generator, classifier, teacher, loader, opt, device, cf
         pair_count = 0
         for i in range(len(views_probs)):
             for j in range(i + 1, len(views_probs)):
-                loss_cons_prob = loss_cons_prob + symmetric_kl_bernoulli(views_probs[i], views_probs[j]).mean()
-                loss_cons_emb = loss_cons_emb + cosine_embed_loss(views_emb[i], views_emb[j]).mean()
+                w = confidence_weight_min(
+                    views_probs[i], views_probs[j],
+                    power=cfg["consistency"]["conf_power"],
+                    conf_min=cfg["consistency"]["conf_min"],
+                )
+                loss_cons_prob = loss_cons_prob + (w * symmetric_kl_bernoulli(views_probs[i], views_probs[j])).mean()
+                loss_cons_emb = loss_cons_emb + (w * cosine_embed_loss(views_emb[i], views_emb[j])).mean()
                 pair_count += 1
         if pair_count > 0:
             loss_cons_prob = loss_cons_prob / pair_count
@@ -915,15 +991,18 @@ def train_superres_epoch(generator, classifier, teacher, loader, opt, device, cf
             + cfg["generator"]["lambda_mask"] * loss_mask
             + cfg["generator"]["lambda_mult"] * loss_mult
             + cfg["generator"]["lambda_stats"] * loss_stats
-            + cfg["generator"]["lambda_kl"] * loss_kl
             + cfg["loss"]["cons_prob"] * loss_cons_prob
             + cfg["loss"]["cons_emb"] * loss_cons_emb
         )
 
         if use_kd and teacher is not None:
-            loss = loss + cfg["loss"]["kd"] * loss_kd + cfg["loss"]["emb"] * loss_emb
-            if cfg["loss"]["attn"] > 0:
-                loss = loss + cfg["loss"]["attn"] * loss_attn
+            loss = loss + alpha_kd * loss_kd
+            if a_rep > 0:
+                loss = loss + a_rep * loss_rep
+            if a_nce > 0:
+                loss = loss + a_nce * loss_nce
+            if a_attn > 0:
+                loss = loss + a_attn * loss_attn
 
         loss.backward()
         torch.nn.utils.clip_grad_norm_(list(generator.parameters()) + list(classifier.parameters()), 1.0)
@@ -939,7 +1018,8 @@ def train_superres_epoch(generator, classifier, teacher, loader, opt, device, cf
 
 
 def fit_superres(generator, classifier, teacher, train_loader, val_loader, device, cfg,
-                 use_kd=False, save_path=None, skip_save=False, label="SR"):
+                 use_kd=False, save_path=None, skip_save=False, label="SR",
+                 temp_init=7.0, temp_final=None, alpha_init=0.5, alpha_final=None):
     params = list(generator.parameters()) + list(classifier.parameters())
     opt = torch.optim.AdamW(params, lr=cfg["superres"]["lr"], weight_decay=cfg["superres"]["weight_decay"])
     sch = get_scheduler(opt, cfg["training"]["warmup_epochs"], cfg["superres"]["epochs"])
@@ -948,11 +1028,16 @@ def fit_superres(generator, classifier, teacher, train_loader, val_loader, devic
     history = []
 
     for ep in tqdm(range(cfg["superres"]["epochs"]), desc=label):
-        tr_loss, tr_auc = train_superres_epoch(generator, classifier, teacher, train_loader, opt, device, cfg, use_kd=use_kd)
+        temp = get_temperature_schedule(ep, cfg["superres"]["epochs"], temp_init, temp_final)
+        alpha = get_alpha_schedule(ep, cfg["superres"]["epochs"], alpha_init, alpha_final)
+        tr_loss, tr_auc = train_superres_epoch(
+            generator, classifier, teacher, train_loader, opt, device, cfg,
+            use_kd=use_kd, temperature=temp, alpha_kd=alpha
+        )
         val_auc, _ = evaluate_superres(generator, classifier, val_loader, device, cfg)
         sch.step()
 
-        history.append((ep + 1, tr_loss, tr_auc, val_auc))
+        history.append((ep + 1, tr_loss, tr_auc, val_auc, temp, alpha))
 
         if val_auc > best_auc:
             best_auc = val_auc
@@ -1073,6 +1158,8 @@ def main():
     parser.add_argument("--gen_ff_dim", type=int, default=CONFIG["generator"]["ff_dim"])
     parser.add_argument("--gen_dropout", type=float, default=CONFIG["generator"]["dropout"])
     parser.add_argument("--gen_latent_dim", type=int, default=CONFIG["generator"]["latent_dim"])
+    parser.add_argument("--gen_mix_components", type=int, default=CONFIG["generator"]["mix_components"])
+    parser.add_argument("--gen_min_sigma", type=float, default=CONFIG["generator"]["min_sigma"])
     parser.add_argument("--gen_lr", type=float, default=CONFIG["generator"]["lr"])
     parser.add_argument("--gen_epochs", type=int, default=CONFIG["generator"]["epochs"])
     parser.add_argument("--gen_lambda_feat", type=float, default=CONFIG["generator"]["lambda_feat"])
@@ -1088,14 +1175,29 @@ def main():
     parser.add_argument("--sr_eval_samples", type=int, default=CONFIG["superres"]["n_samples_eval"])
     parser.add_argument("--sr_mask_threshold", type=float, default=CONFIG["superres"]["mask_threshold"])
 
-    # Loss weights
+    # Consistency / KD hyperparameters
+    parser.add_argument("--conf_power", type=float, default=CONFIG["consistency"]["conf_power"])
+    parser.add_argument("--conf_min", type=float, default=CONFIG["consistency"]["conf_min"])
+    parser.add_argument("--temp_init", type=float, default=CONFIG["kd"]["temperature"])
+    parser.add_argument("--temp_final", type=float, default=None)
+    parser.add_argument("--alpha_init", type=float, default=CONFIG["kd"]["alpha_kd"])
+    parser.add_argument("--alpha_final", type=float, default=None)
+    parser.add_argument("--alpha_attn", type=float, default=CONFIG["kd"]["alpha_attn"])
+    parser.add_argument("--alpha_rep", type=float, default=CONFIG["kd"]["alpha_rep"])
+    parser.add_argument("--alpha_nce", type=float, default=CONFIG["kd"]["alpha_nce"])
+    parser.add_argument("--tau_nce", type=float, default=CONFIG["kd"]["tau_nce"])
+    parser.add_argument("--no_conf_kd", action="store_true")
+
+    # Loss weights (non-KD)
     parser.add_argument("--loss_sup", type=float, default=CONFIG["loss"]["sup"])
     parser.add_argument("--loss_cons_prob", type=float, default=CONFIG["loss"]["cons_prob"])
     parser.add_argument("--loss_cons_emb", type=float, default=CONFIG["loss"]["cons_emb"])
-    parser.add_argument("--loss_kd", type=float, default=CONFIG["loss"]["kd"])
-    parser.add_argument("--loss_emb", type=float, default=CONFIG["loss"]["emb"])
-    parser.add_argument("--loss_attn", type=float, default=CONFIG["loss"]["attn"])
-    parser.add_argument("--kd_temp", type=float, default=CONFIG["loss"]["kd_temp"])
+
+    # Deprecated KD args (kept for compatibility with older sweep scripts)
+    parser.add_argument("--loss_kd", type=float, default=None)
+    parser.add_argument("--loss_emb", type=float, default=None)
+    parser.add_argument("--loss_attn", type=float, default=None)
+    parser.add_argument("--kd_temp", type=float, default=None)
 
     # Pre-trained model loading (for hyperparameter search efficiency)
     parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to pre-trained teacher model (skips teacher training)")
@@ -1111,6 +1213,8 @@ def main():
     CONFIG["generator"]["ff_dim"] = args.gen_ff_dim
     CONFIG["generator"]["dropout"] = args.gen_dropout
     CONFIG["generator"]["latent_dim"] = args.gen_latent_dim
+    CONFIG["generator"]["mix_components"] = args.gen_mix_components
+    CONFIG["generator"]["min_sigma"] = args.gen_min_sigma
     CONFIG["generator"]["lr"] = args.gen_lr
     CONFIG["generator"]["epochs"] = args.gen_epochs
     CONFIG["generator"]["lambda_feat"] = args.gen_lambda_feat
@@ -1125,13 +1229,28 @@ def main():
     CONFIG["superres"]["n_samples_eval"] = args.sr_eval_samples
     CONFIG["superres"]["mask_threshold"] = args.sr_mask_threshold
 
+    if args.kd_temp is not None:
+        args.temp_init = args.kd_temp
+    if args.loss_kd is not None:
+        args.alpha_init = args.loss_kd
+    if args.loss_emb is not None:
+        args.alpha_rep = args.loss_emb
+    if args.loss_attn is not None:
+        args.alpha_attn = args.loss_attn
+
+    CONFIG["consistency"]["conf_power"] = args.conf_power
+    CONFIG["consistency"]["conf_min"] = args.conf_min
+    CONFIG["kd"]["temperature"] = args.temp_init
+    CONFIG["kd"]["alpha_kd"] = args.alpha_init
+    CONFIG["kd"]["alpha_attn"] = args.alpha_attn
+    CONFIG["kd"]["alpha_rep"] = args.alpha_rep
+    CONFIG["kd"]["alpha_nce"] = args.alpha_nce
+    CONFIG["kd"]["tau_nce"] = args.tau_nce
+    CONFIG["kd"]["use_conf_weighted_kd"] = (not args.no_conf_kd)
+
     CONFIG["loss"]["sup"] = args.loss_sup
     CONFIG["loss"]["cons_prob"] = args.loss_cons_prob
     CONFIG["loss"]["cons_emb"] = args.loss_cons_emb
-    CONFIG["loss"]["kd"] = args.loss_kd
-    CONFIG["loss"]["emb"] = args.loss_emb
-    CONFIG["loss"]["attn"] = args.loss_attn
-    CONFIG["loss"]["kd_temp"] = args.kd_temp
 
     # Create unique save directory for this run
     save_dir = Path(args.save_dir) / args.run_name
@@ -1309,6 +1428,8 @@ def main():
         ff_dim=CONFIG["generator"]["ff_dim"],
         dropout=CONFIG["generator"]["dropout"],
         latent_dim=CONFIG["generator"]["latent_dim"],
+        n_components=CONFIG["generator"]["mix_components"],
+        min_sigma=CONFIG["generator"]["min_sigma"],
     ).to(device)
 
     best_gen_val, gen_history = fit_generator(
@@ -1350,7 +1471,9 @@ def main():
         sr_only_clf = copy.deepcopy(classifier_off)
         best_auc_sr, _ = fit_superres(
             sr_only_gen, sr_only_clf, None, train_loader, val_loader, device, CONFIG,
-            use_kd=False, save_path=sr_path, skip_save=args.skip_save_models, label="SR-Only"
+            use_kd=False, save_path=sr_path, skip_save=args.skip_save_models, label="SR-Only",
+            temp_init=args.temp_init, temp_final=args.temp_final,
+            alpha_init=args.alpha_init, alpha_final=args.alpha_final,
         )
         print(f"Saved SR-only model: {sr_path} (best val AUC={best_auc_sr:.4f})")
 
@@ -1362,7 +1485,9 @@ def main():
         sr_kd_clf = copy.deepcopy(classifier_off)
         best_auc_sr_kd, _ = fit_superres(
             sr_kd_gen, sr_kd_clf, teacher, train_loader, val_loader, device, CONFIG,
-            use_kd=True, save_path=sr_kd_path, skip_save=args.skip_save_models, label="SR+KD"
+            use_kd=True, save_path=sr_kd_path, skip_save=args.skip_save_models, label="SR+KD",
+            temp_init=args.temp_init, temp_final=args.temp_final,
+            alpha_init=args.alpha_init, alpha_final=args.alpha_final,
         )
         print(f"Saved SR+KD model: {sr_kd_path} (best val AUC={best_auc_sr_kd:.4f})")
 
@@ -1469,7 +1594,18 @@ def main():
         f.write(f"\nRun: {args.run_name}\n")
         f.write(f"  SR mode: {args.sr_mode}\n")
         f.write(f"  SR samples: train={CONFIG['superres']['n_samples']}, eval={CONFIG['superres']['n_samples_eval']}\n")
-        f.write(f"  KD temp: {CONFIG['loss']['kd_temp']:.2f}\n")
+        f.write(f"  KD temp: {args.temp_init:.2f}")
+        if args.temp_final is not None:
+            f.write(f" -> {args.temp_final:.2f} (annealing)\n")
+        else:
+            f.write(" (constant)\n")
+        f.write(f"  KD alpha: {args.alpha_init:.2f}")
+        if args.alpha_final is not None:
+            f.write(f" -> {args.alpha_final:.2f} (scheduling)\n")
+        else:
+            f.write(" (constant)\n")
+        f.write(f"  KD weights: attn={CONFIG['kd']['alpha_attn']}, rep={CONFIG['kd']['alpha_rep']}, nce={CONFIG['kd']['alpha_nce']}, tau_nce={CONFIG['kd']['tau_nce']}, conf_weighted={CONFIG['kd']['use_conf_weighted_kd']}\n")
+        f.write(f"  Consistency: conf_power={CONFIG['consistency']['conf_power']}, conf_min={CONFIG['consistency']['conf_min']}\n")
         if br_sr is not None:
             f.write(f"  BR @ 50% eff (SR only): {br_sr:.2f}\n")
         if br_sr_kd is not None:
