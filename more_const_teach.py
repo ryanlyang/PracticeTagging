@@ -20,6 +20,38 @@ What this script trains (6 models):
   6) Consistency + KD (paired HLT views 1..N with teacher distillation)
                                              -> evaluated on HLT test (view #1)
 
+Detailed overview:
+  This script builds multiple HLT "views" by applying randomized HLT effects to the same
+  offline jet constituents. Each view is a different noisy realization of the same jet.
+  The models are trained as follows:
+
+  - Teacher (offline): trained on offline features only and evaluated on the offline test split.
+    This is the reference model for distillation.
+
+  - Baseline (HLT1): trained only on HLT view #1, evaluated on HLT view #1.
+    This measures the raw HLT performance without any multi-view or KD help.
+
+  - Union: concatenates all HLT views into one large dataset, ignoring that they correspond
+    to the same jets. This tests whether more HLT statistics alone helps.
+
+  - Consistency: uses paired HLT views from the same jet. It applies supervised BCE on each
+    view plus consistency penalties across all view pairs:
+      * symmetric KL on prediction probabilities
+      * cosine alignment on pooled embeddings
+    Consistency encourages the model to be stable under HLT noise (same jet -> same decision).
+
+  - Student KD: trains on HLT view #1 with knowledge distillation from the offline teacher.
+    The KD loss includes optional attention KL, embedding cosine alignment, and InfoNCE,
+    plus confidence-weighted logit distillation.
+
+  - Consistency + KD: combines both ideas. It uses all HLT views with pairwise consistency
+    losses and also distills from the offline teacher into every HLT view. This model is
+    the most constrained: it learns from labels, agrees across HLT views, and matches the
+    offline teacher's behavior.
+
+  All HLT-based models (baseline/union/consistency/KD) are evaluated on HLT view #1 so that
+  performance comparisons stay on a consistent HLT test distribution.
+
 Key idea:
   - Generate N independently randomized HLT realizations per jet (different seeds).
   - "Union" ignores pairing (just concatenates all views).
