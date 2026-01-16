@@ -1504,6 +1504,13 @@ def main():
     print(f"\nSaved results to: {save_dir / 'results.npz'} and {save_dir / 'results.png'}")
     print(f"Logged to: {summary_file}")
 
+    # Cleanup model checkpoints to save space
+    for ckpt in save_dir.glob("*.pt"):
+        try:
+            ckpt.unlink()
+        except OSError as exc:
+            print(f"Warning: failed to delete {ckpt}: {exc}")
+
 
 if __name__ == "__main__":
     main()
