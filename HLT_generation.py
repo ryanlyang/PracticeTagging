@@ -517,6 +517,7 @@ class HLTGenerator(nn.Module):
         return mu, log_sigma, mask_logits, global_scale
 
     def sample(self, x, mask, n_views=1, min_sigma=0.02, global_noise=0.05):
+        x, mask = ensure_nonempty_mask(x, mask)
         mu, log_sigma, mask_logits, global_scale = self(x, mask)
         sigma = F.softplus(log_sigma) + min_sigma
         mask_prob = torch.sigmoid(mask_logits) * mask.float()
@@ -531,16 +532,43 @@ class HLTGenerator(nn.Module):
 
             u = torch.rand_like(mask_prob)
             m_gen = (u < mask_prob).bool() & mask
+
+            # Ensure at least one token is kept per sample to avoid all-masked attention
+            empty = m_gen.sum(dim=1) == 0
+            if empty.any():
+                idx = torch.argmax(mask_prob, dim=1)
+                for b in torch.where(empty)[0]:
+                    m_gen[b, idx[b]] = True
+
             x_gen = x_gen * m_gen.unsqueeze(-1).float()
+            x_gen = torch.nan_to_num(x_gen, nan=0.0, posinf=0.0, neginf=0.0)
 
             views.append(x_gen)
             masks.append(m_gen)
         return views, masks
 
 # ----------------------------- KD losses (same as professor) ----------------------------- #
+def ensure_nonempty_mask(x, mask):
+    if mask.dim() != 2:
+        return x, mask
+    empty = mask.sum(dim=1) == 0
+    if empty.any():
+        mask = mask.clone()
+        x = x.clone()
+        mask[empty, 0] = True
+        x[empty, 0] = 0.0
+    return x, mask
+
+
+def safe_sigmoid(logits, temp=1.0, eps=1e-6):
+    logits = torch.nan_to_num(logits, nan=0.0, posinf=50.0, neginf=-50.0)
+    probs = torch.sigmoid(logits / temp)
+    return torch.clamp(probs, eps, 1.0 - eps)
+
+
 def kd_loss(student_logits, teacher_logits, T):
-    s_soft = torch.sigmoid(student_logits / T)
-    t_soft = torch.sigmoid(teacher_logits / T)
+    s_soft = safe_sigmoid(student_logits, temp=T)
+    t_soft = safe_sigmoid(teacher_logits, temp=T)
     return F.binary_cross_entropy(s_soft, t_soft) * (T ** 2)
 
 
@@ -554,9 +582,10 @@ def attn_loss(s_attn, t_attn, s_mask, t_mask):
 
 
 def kd_loss_conf_weighted(student_logits, teacher_logits, T):
-    s_soft = torch.sigmoid(student_logits / T)
-    t_soft = torch.sigmoid(teacher_logits / T)
-    w = (torch.abs(torch.sigmoid(teacher_logits) - 0.5) * 2.0).detach()
+    s_soft = safe_sigmoid(student_logits, temp=T)
+    t_soft = safe_sigmoid(teacher_logits, temp=T)
+    t_conf = safe_sigmoid(teacher_logits, temp=1.0)
+    w = (torch.abs(t_conf - 0.5) * 2.0).detach()
     per = F.binary_cross_entropy(s_soft, t_soft, reduction="none")
     return (w * per).mean() * (T ** 2)
 
@@ -653,6 +682,7 @@ def train_standard(model, loader, opt, device, feat_key, mask_key):
     for batch in loader:
         x = batch[feat_key].to(device)
         mask = batch[mask_key].to(device)
+        x, mask = ensure_nonempty_mask(x, mask)
         y = batch["label"].to(device)
 
         opt.zero_grad()
@@ -663,7 +693,7 @@ def train_standard(model, loader, opt, device, feat_key, mask_key):
         opt.step()
 
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
 
     return total_loss / len(preds), roc_auc_score(labs, preds)
@@ -687,6 +717,8 @@ def train_kd(student, teacher, loader, opt, device, cfg, temperature=None, alpha
         m_hlt = batch["mask_hlt"].to(device)
         m_off = batch["mask_off"].to(device)
         y = batch["label"].to(device)
+        x_off, m_off = ensure_nonempty_mask(x_off, m_off)
+        x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
 
         with torch.no_grad():
             t_logits, t_attn = teacher(x_off, m_off, return_attention=True)
@@ -707,7 +739,7 @@ def train_kd(student, teacher, loader, opt, device, cfg, temperature=None, alpha
         opt.step()
 
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(s_logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(s_logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
 
     return total_loss / len(preds), roc_auc_score(labs, preds)
@@ -726,6 +758,8 @@ def train_generator_epoch(generator, loader, opt, device, cfg):
         m_off = batch["mask_off"].to(device)
         x_hlt = batch["hlt"].to(device)
         m_hlt = batch["mask_hlt"].to(device)
+        x_off, m_off = ensure_nonempty_mask(x_off, m_off)
+        x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
 
         opt.zero_grad()
         mu, log_sigma, mask_logits, _ = generator(x_off, m_off)
@@ -765,6 +799,8 @@ def eval_generator(generator, loader, device, cfg):
         m_off = batch["mask_off"].to(device)
         x_hlt = batch["hlt"].to(device)
         m_hlt = batch["mask_hlt"].to(device)
+        x_off, m_off = ensure_nonempty_mask(x_off, m_off)
+        x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
 
         mu, log_sigma, mask_logits, _ = generator(x_off, m_off)
         mask_f = m_hlt.float().unsqueeze(-1)
@@ -805,6 +841,8 @@ def train_student_epoch(student, teacher, generator, loader, opt, device, cfg, e
         x_hlt = batch["hlt"].to(device)
         m_hlt = batch["mask_hlt"].to(device)
         y = batch["label"].to(device)
+        x_off, m_off = ensure_nonempty_mask(x_off, m_off)
+        x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
 
         with torch.no_grad():
             t_logits, t_attn, t_z = teacher(x_off, m_off, return_attention=True, return_embedding=True)
@@ -817,7 +855,7 @@ def train_student_epoch(student, teacher, generator, loader, opt, device, cfg, e
         loss_hard_real = F.binary_cross_entropy_with_logits(s_logits_real, y)
 
         views_logits = [s_logits_real]
-        views_probs = [torch.sigmoid(s_logits_real)]
+        views_probs = [safe_sigmoid(s_logits_real)]
         views_emb = [s_z_real]
 
         loss_hard_gen = torch.tensor(0.0, device=device)
@@ -840,7 +878,7 @@ def train_student_epoch(student, teacher, generator, loader, opt, device, cfg, e
             s_logits_gen = s_logits_gen.squeeze(1)
             loss_hard_gen = loss_hard_gen + F.binary_cross_entropy_with_logits(s_logits_gen, y)
             views_logits.append(s_logits_gen)
-            views_probs.append(torch.sigmoid(s_logits_gen))
+            views_probs.append(safe_sigmoid(s_logits_gen))
             views_emb.append(s_z_gen)
 
             if cfg["kd"]["use_conf_weighted_kd"]:
@@ -1012,8 +1050,9 @@ def evaluate(model, loader, device, feat_key, mask_key):
     for batch in loader:
         x = batch[feat_key].to(device)
         mask = batch[mask_key].to(device)
+        x, mask = ensure_nonempty_mask(x, mask)
         logits = model(x, mask).squeeze(1)
-        preds.extend(torch.sigmoid(logits).cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
         labs.extend(batch["label"].cpu().numpy().flatten())
     preds = np.array(preds)
     labs = np.array(labs)
