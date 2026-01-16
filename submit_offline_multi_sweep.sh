@@ -1,19 +1,17 @@
 #!/bin/bash
 set -euo pipefail
 
-# A2 sweep for Offline_multi.py (40 runs)
+# A2 sweep for Offline_multi.py (18 runs)
 #
-# Block A (24 runs): student/KD hyperparameters
-#   K_SAMPLES: 8, 16, 32
+# Block A (16 runs): student/KD hyperparameters
+#   K_SAMPLES: 8, 16
 #   KD_TEMP: 3.0, 4.0
 #   A_KD: 0.7, 1.0
 #   BETA_ALL: 0.0, 0.1
 #
-# Block B (16 runs): generator hyperparameters
+# Block B (2 runs): generator hyperparameters (focused)
 #   GEN_MIN_SIGMA: 0.01, 0.02
-#   GEN_LAMBDA_MASK: 1.0, 2.0
-#   GEN_LAMBDA_PERC: 0.5, 1.0
-#   GEN_LAMBDA_LOGIT: 0.25, 0.5
+#   GEN_LAMBDA_MASK: 1.0
 
 SAVE_DIR=${SAVE_DIR:-"checkpoints/offline_multi_sweep"}
 TRAIN_PATH=${TRAIN_PATH:-""}
@@ -91,8 +89,8 @@ submit_job() {
     run_count=$((run_count + 1))
 }
 
-echo "Block A: student/KD hyperparameters (24 runs)"
-K_SAMPLES_LIST=(8 16 32)
+echo "Block A: student/KD hyperparameters (16 runs)"
+K_SAMPLES_LIST=(8 16)
 KD_TEMP_LIST=(3.0 4.0)
 A_KD_LIST=(0.7 1.0)
 BETA_ALL_LIST=(0.0 0.1)
@@ -118,11 +116,11 @@ for K in "${K_SAMPLES_LIST[@]}"; do
   done
 done
 
-echo "Block B: generator hyperparameters (16 runs)"
+echo "Block B: generator hyperparameters (2 runs)"
 GEN_MIN_SIGMA_LIST=(0.01 0.02)
-GEN_LAMBDA_MASK_LIST=(1.0 2.0)
-GEN_LAMBDA_PERC_LIST=(0.5 1.0)
-GEN_LAMBDA_LOGIT_LIST=(0.25 0.5)
+GEN_LAMBDA_MASK_LIST=(1.0)
+GEN_LAMBDA_PERC_LIST=(1.0)
+GEN_LAMBDA_LOGIT_LIST=(0.5)
 
 # Fix student/KD for Block B
 K_FIXED=16
