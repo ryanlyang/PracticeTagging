@@ -498,6 +498,7 @@ class OfflineGenerator(nn.Module):
         return mu, log_sigma, mask_logits, global_scale
 
     def sample(self, x, mask, n_views=1, min_sigma=0.02, global_noise=0.05):
+        x, mask = ensure_nonempty_mask(x, mask)
         mu, log_sigma, mask_logits, global_scale = self(x, mask)
         sigma = F.softplus(log_sigma) + min_sigma
         mask_prob = torch.sigmoid(mask_logits)
@@ -513,15 +514,37 @@ class OfflineGenerator(nn.Module):
             u = torch.rand_like(mask_prob)
             m_gen = (u < mask_prob).bool() & mask
             x_gen = x_gen * m_gen.unsqueeze(-1).float()
+            x_gen = torch.nan_to_num(x_gen, nan=0.0, posinf=0.0, neginf=0.0)
+            x_gen, m_gen = ensure_nonempty_mask(x_gen, m_gen)
 
             views.append(x_gen)
             masks.append(m_gen)
         return views, masks
 
 
+def ensure_nonempty_mask(x, mask):
+    if mask.dim() != 2:
+        return x, mask
+    empty = mask.sum(dim=1) == 0
+    if empty.any():
+        mask = mask.clone()
+        x = x.clone()
+        mask[empty, 0] = True
+        x[empty, 0] = 0.0
+    return x, mask
+
+
+def safe_sigmoid(logits, temp=1.0, eps=1e-6):
+    logits = torch.nan_to_num(logits, nan=0.0, posinf=50.0, neginf=-50.0)
+    probs = torch.sigmoid(logits / temp)
+    return torch.clamp(probs, eps, 1.0 - eps)
+
+
 def kd_loss_to_probs(student_logits, target_probs, T):
-    p_s = torch.sigmoid(student_logits / T)
-    return F.binary_cross_entropy(p_s, target_probs, reduction="none") * (T ** 2)
+    p_s = safe_sigmoid(student_logits, temp=T)
+    target = torch.nan_to_num(target_probs, nan=0.5, posinf=1.0, neginf=0.0)
+    target = torch.clamp(target, 1e-6, 1.0 - 1e-6)
+    return F.binary_cross_entropy(p_s, target, reduction="none") * (T ** 2)
 
 
 def rep_loss_cosine(s_z, t_z):
@@ -551,6 +574,7 @@ def train_standard(model, loader, opt, device, feat_key, mask_key):
         x = batch[feat_key].to(device)
         mask = batch[mask_key].to(device)
         y = batch["label"].to(device)
+        x, mask = ensure_nonempty_mask(x, mask)
 
         opt.zero_grad()
         logits = model(x, mask).squeeze(1)
@@ -560,7 +584,7 @@ def train_standard(model, loader, opt, device, feat_key, mask_key):
         opt.step()
 
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
 
     return total_loss / len(preds), roc_auc_score(labs, preds)
@@ -573,8 +597,9 @@ def evaluate(model, loader, device, feat_key, mask_key):
     for batch in loader:
         x = batch[feat_key].to(device)
         mask = batch[mask_key].to(device)
+        x, mask = ensure_nonempty_mask(x, mask)
         logits = model(x, mask).squeeze(1)
-        preds.extend(torch.sigmoid(logits).cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
         labs.extend(batch["label"].cpu().numpy().flatten())
     preds = np.array(preds)
     labs = np.array(labs)
@@ -591,10 +616,13 @@ def get_scheduler(opt, warmup, total):
 
 def teacher_ensemble_stats(logits_list, T, tau_u, w_min):
     # logits_list: list of (B,) tensors
-    probs = torch.stack([torch.sigmoid(z / T) for z in logits_list], dim=0)  # (K, B)
+    probs = torch.stack([safe_sigmoid(z, temp=T) for z in logits_list], dim=0)  # (K, B)
+    probs = torch.nan_to_num(probs, nan=0.5, posinf=1.0, neginf=0.0)
+    probs = torch.clamp(probs, 1e-6, 1.0 - 1e-6)
     p_bar = probs.mean(dim=0)
     var_p = ((probs - p_bar.unsqueeze(0)) ** 2).mean(dim=0)
     w_u = torch.exp(-var_p / tau_u)
+    w_u = torch.nan_to_num(w_u, nan=1.0, posinf=1.0, neginf=0.0)
     if w_min > 0.0:
         w_u = torch.clamp(w_u, w_min, 1.0)
     return probs, p_bar, w_u
@@ -616,6 +644,8 @@ def fit_generator(generator, teacher, train_loader, val_loader, device, cfg, sav
             m_hlt = batch["mask_hlt"].to(device)
             x_off = batch["off"].to(device)
             m_off = batch["mask_off"].to(device)
+            x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
+            x_off, m_off = ensure_nonempty_mask(x_off, m_off)
 
             opt.zero_grad()
             mu, log_sigma, mask_logits, _ = generator(x_hlt, m_hlt)
@@ -652,6 +682,8 @@ def fit_generator(generator, teacher, train_loader, val_loader, device, cfg, sav
                 m_hlt = batch["mask_hlt"].to(device)
                 x_off = batch["off"].to(device)
                 m_off = batch["mask_off"].to(device)
+                x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
+                x_off, m_off = ensure_nonempty_mask(x_off, m_off)
 
                 mu, log_sigma, mask_logits, _ = generator(x_hlt, m_hlt)
                 recon = masked_huber_loss(mu, x_off, m_off)
@@ -712,6 +744,7 @@ def train_student_epoch(student, teacher, generator, loader, opt, device, cfg, t
         x_hlt = batch["hlt"].to(device)
         m_hlt = batch["mask_hlt"].to(device)
         y = batch["label"].to(device)
+        x_hlt, m_hlt = ensure_nonempty_mask(x_hlt, m_hlt)
 
         opt.zero_grad()
         z_s, e_s = student(x_hlt, m_hlt, return_embedding=True)
@@ -729,6 +762,7 @@ def train_student_epoch(student, teacher, generator, loader, opt, device, cfg, t
         emb_list = []
         with torch.no_grad():
             for x_off_k, m_off_k in zip(x_off_list, m_off_list):
+                x_off_k, m_off_k = ensure_nonempty_mask(x_off_k, m_off_k)
                 z_t, e_t = teacher(x_off_k, m_off_k, return_embedding=True)
                 logits_list.append(z_t.squeeze(1))
                 emb_list.append(e_t)
@@ -764,7 +798,7 @@ def train_student_epoch(student, teacher, generator, loader, opt, device, cfg, t
         opt.step()
 
         total_loss += loss.item() * len(y)
-        preds.append(torch.sigmoid(z_s).detach().cpu().numpy())
+        preds.append(safe_sigmoid(z_s).detach().cpu().numpy())
         labs.append(y.detach().cpu().numpy())
 
     preds = np.concatenate(preds, axis=0)
