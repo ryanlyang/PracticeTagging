@@ -8,7 +8,7 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=192G
 #SBATCH --partition=tier3
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 
 mkdir -p knowledge_res_logs
 
@@ -40,6 +40,8 @@ TRAIN_PATH=${TRAIN_PATH:-""}
 N_TRAIN_JETS=${N_TRAIN_JETS:-100000}
 MAX_CONSTITS=${MAX_CONSTITS:-80}
 SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS:-0}
+BATCH_SIZE=${BATCH_SIZE:-}
+AUTO_BATCH_SCALE=${AUTO_BATCH_SCALE:-0}
 
 RUN_TEACHER=${RUN_TEACHER:-0}
 RUN_BASELINE=${RUN_BASELINE:-0}
@@ -106,6 +108,12 @@ CMD="python KnowledgeRes.py \
     --alpha_nce $ALPHA_NCE \
     --tau_nce $TAU_NCE"
 
+if [ -n "$BATCH_SIZE" ]; then
+    CMD="$CMD --batch_size $BATCH_SIZE"
+fi
+if [ "$AUTO_BATCH_SCALE" -eq 1 ]; then
+    CMD="$CMD --auto_batch_scale"
+fi
 if [ -n "$TEMP_FINAL" ]; then
     CMD="$CMD --temp_final $TEMP_FINAL"
 fi

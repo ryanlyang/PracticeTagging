@@ -52,6 +52,8 @@ mkdir -p knowledge_res_logs
 
 run_count=0
 
+GPU_GRES=${GPU_GRES:-"gpu:h100:1"}
+
 submit_job() {
     local run_name="$1"
     local know_samples="$2"
@@ -99,7 +101,7 @@ submit_job() {
         exports+=",MAX_CONSTITS=${MAX_CONSTITS}"
     fi
 
-    sbatch --export="$exports" run_knowledge_res_single.sh
+    sbatch --gres="$GPU_GRES" --export="$exports" run_knowledge_res_single.sh
     run_count=$((run_count + 1))
 }
 

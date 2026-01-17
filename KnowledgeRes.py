@@ -933,6 +933,8 @@ def main():
     parser.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "knowledge_res"))
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--run_name", type=str, default="default")
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--auto_batch_scale", action="store_true")
 
     parser.add_argument("--run_teacher", action="store_true")
     parser.add_argument("--run_baseline", action="store_true")
@@ -1073,13 +1075,17 @@ def main():
         constituents_off[test_idx], constituents_hlt[test_idx]
     )
 
+    if args.batch_size is not None:
+        CONFIG["training"]["batch_size"] = args.batch_size
+
     BS = CONFIG["training"]["batch_size"]
-    sample_scale = max(CONFIG["knowledge"]["n_samples"], CONFIG["knowledge"]["n_samples_eval"])
-    scale_div = max(1, int(math.ceil(sample_scale / 4.0)))
-    adj_bs = max(1, BS // scale_div)
-    if adj_bs < BS:
-        print(f"Scaling batch size from {BS} to {adj_bs} for knowledge_samples={sample_scale}")
-        BS = adj_bs
+    if args.auto_batch_scale:
+        sample_scale = max(CONFIG["knowledge"]["n_samples"], CONFIG["knowledge"]["n_samples_eval"])
+        scale_div = max(1, int(math.ceil(sample_scale / 4.0)))
+        adj_bs = max(1, BS // scale_div)
+        if adj_bs < BS:
+            print(f"Scaling batch size from {BS} to {adj_bs} for knowledge_samples={sample_scale}")
+            BS = adj_bs
     train_loader = DataLoader(train_ds, batch_size=BS, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=BS, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=BS, shuffle=False)
