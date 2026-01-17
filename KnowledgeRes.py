@@ -737,7 +737,7 @@ def fit_classifier(model, train_loader, val_loader, device, cfg, feat_key, mask_
 
 
 def train_knowledge_epoch(model, teacher, loader, sampler, device, cfg, feat_means, feat_stds,
-                          use_kd=False, temperature=7.0, alpha_kd=0.5):
+                          opt, use_kd=False, temperature=7.0, alpha_kd=0.5):
     model.train()
     if teacher is not None:
         teacher.eval()
@@ -755,6 +755,7 @@ def train_knowledge_epoch(model, teacher, loader, sampler, device, cfg, feat_mea
         y = batch["label"].to(device)
         hlt_const, hlt_mask = ensure_nonempty_mask(hlt_const, hlt_mask)
 
+        opt.zero_grad()
         opt_views, opt_masks = sampler.sample(hlt_const, hlt_mask, cfg["knowledge"]["n_samples"])
 
         views_probs = []
@@ -852,7 +853,7 @@ def fit_knowledge(model, teacher, train_loader, val_loader, sampler, device, cfg
         alpha = get_alpha_schedule(ep, cfg["training"]["epochs"], alpha_init, alpha_final)
         tr_loss, tr_auc = train_knowledge_epoch(
             model, teacher, train_loader, sampler, device, cfg, feat_means, feat_stds,
-            use_kd=use_kd, temperature=temp, alpha_kd=alpha
+            opt=opt, use_kd=use_kd, temperature=temp, alpha_kd=alpha
         )
         val_auc, _ = evaluate_knowledge(model, val_loader, sampler, device, cfg, feat_means, feat_stds)
         sch.step()

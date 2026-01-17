@@ -11,7 +11,8 @@ set -euo pipefail
 #   SPLIT_FRAC: 0.3, 0.5
 #
 # Total: 2 * 3 * 3 * 2 = 36
-# We'll prune to 30 by skipping 6 high-noise/high-extra combos.
+# We'll prune to 30 by skipping 6 high-noise/high-extra combos,
+# then add a couple high-K stress runs (K=128).
 
 SAVE_DIR=${SAVE_DIR:-"checkpoints/knowledge_res_sweep"}
 TRAIN_PATH=${TRAIN_PATH:-""}
@@ -29,6 +30,8 @@ USE_KD=${USE_KD:-0}
 SR_MODE=${SR_MODE:-"both"}
 
 KNOW_EVAL_SAMPLES=${KNOW_EVAL_SAMPLES:-4}
+HIGH_K_LIST=(${HIGH_K_LIST:-16 32 64 128})
+HIGH_K_EVAL_SAMPLES=${HIGH_K_EVAL_SAMPLES:-}
 SPLIT_RADIUS=${SPLIT_RADIUS:-0.01}
 SPLIT_MIN_FRAC=${SPLIT_MIN_FRAC:-0.05}
 SPLIT_MAX_FRAC=${SPLIT_MAX_FRAC:-0.3}
@@ -55,6 +58,7 @@ submit_job() {
     local inv_noise="$3"
     local extra_scale="$4"
     local split_frac="$5"
+    local know_eval_samples="${6:-$KNOW_EVAL_SAMPLES}"
 
     local exports="ALL"
     exports+=",RUN_NAME=${run_name}"
@@ -64,7 +68,7 @@ submit_job() {
     exports+=",RUN_STUDENT=${RUN_STUDENT}"
     exports+=",USE_KD=${USE_KD}"
     exports+=",KNOW_SAMPLES=${know_samples}"
-    exports+=",KNOW_EVAL_SAMPLES=${KNOW_EVAL_SAMPLES}"
+    exports+=",KNOW_EVAL_SAMPLES=${know_eval_samples}"
     exports+=",INV_NOISE_SCALE=${inv_noise}"
     exports+=",EXTRA_COUNT_SCALE=${extra_scale}"
     exports+=",SPLIT_FRAC=${split_frac}"
@@ -126,6 +130,23 @@ for K in "${KNOW_SAMPLES_LIST[@]}"; do
         submit_job "$RUN_NAME" "$K" "$N" "$E" "$S"
       done
     done
+  done
+done
+
+# Extra high-K runs to probe large-sample behavior without exploding the grid.
+HIGH_K_CONFIGS=(
+  "1.0 1.0 0.5"
+  "0.7 0.5 0.3"
+)
+for K in "${HIGH_K_LIST[@]}"; do
+  for cfg in "${HIGH_K_CONFIGS[@]}"; do
+    read -r N E S <<< "$cfg"
+    n_tag=${N//./p}
+    e_tag=${E//./p}
+    s_tag=${S//./p}
+    RUN_NAME="KR_K${K}_N${n_tag}_E${e_tag}_S${s_tag}"
+    eval_samples="${HIGH_K_EVAL_SAMPLES:-$K}"
+    submit_job "$RUN_NAME" "$K" "$N" "$E" "$S" "$eval_samples"
   done
 done
 
