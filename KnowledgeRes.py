@@ -23,6 +23,7 @@ offline priors (from training data) to generate plausible offline views.
 from pathlib import Path
 import argparse
 import copy
+import math
 import random
 import numpy as np
 
@@ -756,8 +757,6 @@ def train_knowledge_epoch(model, teacher, loader, sampler, device, cfg, feat_mea
         hlt_const, hlt_mask = ensure_nonempty_mask(hlt_const, hlt_mask)
 
         opt.zero_grad()
-        opt_views, opt_masks = sampler.sample(hlt_const, hlt_mask, cfg["knowledge"]["n_samples"])
-
         views_probs = []
         views_emb = []
         loss_kd = torch.tensor(0.0, device=device)
@@ -765,7 +764,8 @@ def train_knowledge_epoch(model, teacher, loader, sampler, device, cfg, feat_mea
         loss_nce = torch.tensor(0.0, device=device)
         loss_attn = torch.tensor(0.0, device=device)
 
-        for off_const, off_mask in zip(opt_views, opt_masks):
+        for _ in range(cfg["knowledge"]["n_samples"]):
+            off_const, off_mask = sampler.sample_once(hlt_const, hlt_mask)
             feat = compute_features_torch(off_const, off_mask)
             feat = standardize_torch(feat, off_mask, feat_means, feat_stds)
             logits, attn, emb = model(feat, off_mask, return_attention=True, return_embedding=True)
@@ -891,9 +891,9 @@ def evaluate_knowledge(model, loader, sampler, device, cfg, feat_means, feat_std
         y = batch["label"].to(device)
         hlt_const, hlt_mask = ensure_nonempty_mask(hlt_const, hlt_mask)
 
-        views, masks = sampler.sample(hlt_const, hlt_mask, cfg["knowledge"]["n_samples_eval"])
         probs = []
-        for off_const, off_mask in zip(views, masks):
+        for _ in range(cfg["knowledge"]["n_samples_eval"]):
+            off_const, off_mask = sampler.sample_once(hlt_const, hlt_mask)
             feat = compute_features_torch(off_const, off_mask)
             feat = standardize_torch(feat, off_mask, feat_means, feat_stds)
             logits = model(feat, off_mask).squeeze(1)
@@ -1074,6 +1074,12 @@ def main():
     )
 
     BS = CONFIG["training"]["batch_size"]
+    sample_scale = max(CONFIG["knowledge"]["n_samples"], CONFIG["knowledge"]["n_samples_eval"])
+    scale_div = max(1, int(math.ceil(sample_scale / 4.0)))
+    adj_bs = max(1, BS // scale_div)
+    if adj_bs < BS:
+        print(f"Scaling batch size from {BS} to {adj_bs} for knowledge_samples={sample_scale}")
+        BS = adj_bs
     train_loader = DataLoader(train_ds, batch_size=BS, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=BS, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=BS, shuffle=False)
