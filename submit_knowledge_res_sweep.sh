@@ -109,6 +109,24 @@ EXTRA_COUNT_LIST=(0.5 1.0 1.5)
 SPLIT_FRAC_LIST=(0.3 0.5)
 
 echo "Submitting KnowledgeRes sweep..."
+
+# Extra high-K runs to probe large-sample behavior without exploding the grid.
+HIGH_K_CONFIGS=(
+  "1.0 1.0 0.5"
+  "0.7 0.5 0.3"
+)
+for K in "${HIGH_K_LIST[@]}"; do
+  for cfg in "${HIGH_K_CONFIGS[@]}"; do
+    read -r N E S <<< "$cfg"
+    n_tag=${N//./p}
+    e_tag=${E//./p}
+    s_tag=${S//./p}
+    RUN_NAME="KR_K${K}_N${n_tag}_E${e_tag}_S${s_tag}"
+    eval_samples="${HIGH_K_EVAL_SAMPLES:-$K}"
+    submit_job "$RUN_NAME" "$K" "$N" "$E" "$S" "$eval_samples"
+  done
+done
+
 for K in "${KNOW_SAMPLES_LIST[@]}"; do
   for N in "${INV_NOISE_LIST[@]}"; do
     for E in "${EXTRA_COUNT_LIST[@]}"; do
@@ -130,23 +148,6 @@ for K in "${KNOW_SAMPLES_LIST[@]}"; do
         submit_job "$RUN_NAME" "$K" "$N" "$E" "$S"
       done
     done
-  done
-done
-
-# Extra high-K runs to probe large-sample behavior without exploding the grid.
-HIGH_K_CONFIGS=(
-  "1.0 1.0 0.5"
-  "0.7 0.5 0.3"
-)
-for K in "${HIGH_K_LIST[@]}"; do
-  for cfg in "${HIGH_K_CONFIGS[@]}"; do
-    read -r N E S <<< "$cfg"
-    n_tag=${N//./p}
-    e_tag=${E//./p}
-    s_tag=${S//./p}
-    RUN_NAME="KR_K${K}_N${n_tag}_E${e_tag}_S${s_tag}"
-    eval_samples="${HIGH_K_EVAL_SAMPLES:-$K}"
-    submit_job "$RUN_NAME" "$K" "$N" "$E" "$S" "$eval_samples"
   done
 done
 
