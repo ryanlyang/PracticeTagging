@@ -132,7 +132,7 @@ CONFIG = {
     },
 
     "superres": {
-        "epochs": 50,
+        "epochs": 100,
         "lr": 5e-4,
         "weight_decay": 1e-5,
         "n_samples": 4,
@@ -1245,8 +1245,18 @@ def main():
     parser.add_argument("--kd_temp", type=float, default=None)
 
     # Pre-trained model loading (for hyperparameter search efficiency)
-    parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to pre-trained teacher model (skips teacher training)")
-    parser.add_argument("--baseline_checkpoint", type=str, default=None, help="Path to pre-trained baseline model (skips baseline training)")
+    parser.add_argument(
+        "--teacher_checkpoint",
+        type=str,
+        default="/home/ryreu/atlas/PracticeTagging/checkpoints/smartres_sweep/A_K4_L4_H128/teacher.pt",
+        help="Path to pre-trained teacher model (skips teacher training)",
+    )
+    parser.add_argument(
+        "--baseline_checkpoint",
+        type=str,
+        default="/home/ryreu/atlas/PracticeTagging/checkpoints/smartres_sweep/A_K4_L4_H128/baseline.pt",
+        help="Path to pre-trained baseline model (skips baseline training)",
+    )
     parser.add_argument("--skip_save_models", action="store_true", help="Skip saving model weights (save space during hyperparameter search)")
 
     args = parser.parse_args()

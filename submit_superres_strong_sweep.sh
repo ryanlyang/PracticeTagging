@@ -41,7 +41,7 @@ SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS:-0}
 SR_MODE=${SR_MODE:-"both"}
 
 # Fixed defaults (can be overridden via environment)
-SR_EPOCHS=${SR_EPOCHS:-50}
+SR_EPOCHS=${SR_EPOCHS:-100}
 SR_LR=${SR_LR:-5e-4}
 SR_MASK_THRESHOLD=${SR_MASK_THRESHOLD:-0.5}
 
@@ -160,13 +160,13 @@ GEN_LAMBDA_PERC_BASE=0.2
 GEN_LAMBDA_LOGIT_BASE=0.1
 
 echo "Block A: main grid (60 runs)"
-MIX_LIST_A=(4 8 16 32 64)
+MIX_LIST_A=(64 32 16 8 4)
 SIGMA_LIST_A=(1e-3 1e-2 1e-1)
 SR_SAMPLES_LIST_A=(4 8)
 EMBED_LIST_A=(96 128)
 
-for K in "${SR_SAMPLES_LIST_A[@]}"; do
-  for M in "${MIX_LIST_A[@]}"; do
+for M in "${MIX_LIST_A[@]}"; do
+  for K in "${SR_SAMPLES_LIST_A[@]}"; do
     for S in "${SIGMA_LIST_A[@]}"; do
       for E in "${EMBED_LIST_A[@]}"; do
         s_tag=${S//./p}
