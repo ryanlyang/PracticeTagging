@@ -710,10 +710,17 @@ def train_kd(student, teacher, loader, opt, device, cfg, temperature=None, alpha
 def evaluate(model, loader, device, feat_key, mask_key):
     model.eval()
     preds, labs = [], []
+    if not hasattr(evaluate, "_warned"):
+        evaluate._warned = False
     for batch in loader:
         x = batch[feat_key].to(device)
         mask = batch[mask_key].to(device)
         logits = model(x, mask).squeeze(1)
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            if not evaluate._warned:
+                print("Warning: NaN/Inf in logits during evaluation; replacing with 0.0.")
+                evaluate._warned = True
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
         preds.extend(torch.sigmoid(logits).cpu().numpy().flatten())
         labs.extend(batch["label"].cpu().numpy().flatten())
     preds = np.array(preds)

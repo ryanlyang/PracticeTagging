@@ -3,7 +3,7 @@
 #SBATCH --job-name=superres_diff
 #SBATCH --output=superres_diff_logs/superres_diff_%j.out
 #SBATCH --error=superres_diff_logs/superres_diff_%j.err
-#SBATCH --time=10:00:00
+#SBATCH --time=4-10:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
