@@ -49,6 +49,11 @@ from tqdm import tqdm
 import utils
 
 
+def safe_sigmoid(logits):
+    probs = torch.sigmoid(logits)
+    return torch.nan_to_num(probs, nan=0.5, posinf=1.0, neginf=0.0)
+
+
 # ----------------------------- Reproducibility ----------------------------- #
 RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
@@ -600,7 +605,7 @@ def train_standard(model, loader, opt, device, feat_key, mask_key):
         opt.step()
 
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
 
     return total_loss / len(preds), roc_auc_score(labs, preds)
@@ -626,7 +631,7 @@ def train_standard_ema(model, loader, opt, device, feat_key, mask_key, ema=None)
             ema.update(model)
 
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
 
     return total_loss / len(preds), roc_auc_score(labs, preds)
@@ -700,7 +705,7 @@ def train_kd(student, teacher, loader, opt, device, cfg, temperature=None, alpha
         opt.step()
 
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(s_logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(s_logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
 
     return total_loss / len(preds), roc_auc_score(labs, preds)
@@ -721,7 +726,7 @@ def evaluate(model, loader, device, feat_key, mask_key):
                 print("Warning: NaN/Inf in logits during evaluation; replacing with 0.0.")
                 evaluate._warned = True
             logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
-        preds.extend(torch.sigmoid(logits).cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
         labs.extend(batch["label"].cpu().numpy().flatten())
     preds = np.array(preds)
     labs = np.array(labs)
@@ -738,6 +743,8 @@ def evaluate_hlt_loss(model, loader, device, feat_key, mask_key):
         mask = batch[mask_key].to(device)
         y = batch["label"].to(device)
         logits = model(x, mask).squeeze(1)
+        if torch.isnan(logits).any() or torch.isinf(logits).any():
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
         loss = F.binary_cross_entropy_with_logits(logits, y, reduction="sum")
         total_loss += loss.item()
         count += len(y)
@@ -763,6 +770,8 @@ def train_self_train_epoch(student, source_model, loader, opt, device,
 
         with torch.no_grad():
             src_logits = source_model(x_src, m_src).squeeze(1)
+            if torch.isnan(src_logits).any() or torch.isinf(src_logits).any():
+                src_logits = torch.nan_to_num(src_logits, nan=0.0, posinf=0.0, neginf=0.0)
             if teacher_temp != 1.0:
                 src_logits = src_logits / teacher_temp
             p = torch.sigmoid(src_logits)
@@ -1038,8 +1047,9 @@ def main():
     elif args.teacher_checkpoint is not None:
         print(f"Loading pre-trained teacher from: {args.teacher_checkpoint}")
         ckpt = torch.load(args.teacher_checkpoint, map_location=device)
-        if args.ema_teacher and "ema" in ckpt:
-            teacher.load_state_dict(ckpt["ema"])
+        ema_state = ckpt.get("ema")
+        if args.ema_teacher and isinstance(ema_state, dict):
+            teacher.load_state_dict(ema_state)
         else:
             teacher.load_state_dict(ckpt["model"])
         best_auc_teacher = ckpt["auc"]
