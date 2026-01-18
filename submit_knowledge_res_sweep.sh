@@ -4,7 +4,7 @@ set -euo pipefail
 # KnowledgeRes sweep (~30 runs)
 # Focus on the inverse sampler hyperparameters.
 #
-# Grid:
+# Grid (full):
 #   KNOW_SAMPLES: 4, 8
 #   INV_NOISE_SCALE: 0.7, 1.0, 1.3
 #   EXTRA_COUNT_SCALE: 0.5, 1.0, 1.5
@@ -12,8 +12,9 @@ set -euo pipefail
 #
 # Total: 2 * 3 * 3 * 2 = 36
 # We'll prune to 30 by skipping 6 high-noise/high-extra combos,
-# then add a couple high-K stress runs (K=128).
+# then add a couple high-K stress runs.
 
+FAST_SWEEP=${FAST_SWEEP:-0}
 SAVE_DIR=${SAVE_DIR:-"checkpoints/knowledge_res_sweep"}
 TRAIN_PATH=${TRAIN_PATH:-""}
 N_TRAIN_JETS=${N_TRAIN_JETS:-100000}
@@ -105,10 +106,20 @@ submit_job() {
     run_count=$((run_count + 1))
 }
 
-KNOW_SAMPLES_LIST=(4 8)
+KNOW_SAMPLES_LIST=(4)
 INV_NOISE_LIST=(0.7 1.0 1.3)
 EXTRA_COUNT_LIST=(0.5 1.0 1.5)
 SPLIT_FRAC_LIST=(0.3 0.5)
+
+if [ "$FAST_SWEEP" -eq 1 ]; then
+  # Faster grid defaults: fewer samples, fewer combos, skip high-K.
+  N_TRAIN_JETS=${N_TRAIN_JETS:-50000}
+  SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS:-1}
+  INV_NOISE_LIST=(0.7 1.0)
+  EXTRA_COUNT_LIST=(0.5 1.0)
+  SPLIT_FRAC_LIST=(0.3 0.5)
+  HIGH_K_LIST=()
+fi
 
 echo "Submitting KnowledgeRes sweep..."
 
