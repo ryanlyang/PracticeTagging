@@ -77,84 +77,65 @@ fi
 
 run_count=0
 
-# Base grid (no self-train): calibration, EMA, adaptive alpha, relational KD
-if [ -n "$TEACHER_ENSEMBLE_CKPTS" ]; then
-    ALPHA_REL_VALUES=(0.0 0.03 0.06 0.09 0.12)
-else
-    ALPHA_REL_VALUES=(0.0 0.02 0.04 0.06 0.08 0.10)
-fi
-
+# Strategy-first sweep: emphasize combinations of new options.
 CAL_FLAGS=(0 1)
-EMA_DECAYS=(0.99 0.995 0.999)
+REL_VALUES=(0.0 0.04 0.08)
+EMA_DECAYS_CORE=(0.99 0.995)
 ADAPT_WARMUPS=(0.0 0.1)
 ADAPT_PATIENCE=(2 4)
 
+# Block A: Core strategy matrix (no self-train).
 for CAL in "${CAL_FLAGS[@]}"; do
-  for EMA in 0 1; do
-    for REL in "${ALPHA_REL_VALUES[@]}"; do
-      # ADAPT off
-      extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=$EMA,ALPHA_REL=$REL,USE_ENSEMBLE=0"
-      if [ "$EMA" -eq 1 ]; then
-          for DECAY in "${EMA_DECAYS[@]}"; do
-              extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=1,EMA_DECAY=$DECAY,ALPHA_REL=$REL,USE_ENSEMBLE=0"
-              RUN_NAME="A_cal${CAL}_ema${DECAY}_adapt0_rel${REL}"
-              submit_job "$RUN_NAME" "$extra_env"
-          done
-      else
-          RUN_NAME="A_cal${CAL}_ema0_adapt0_rel${REL}"
-          submit_job "$RUN_NAME" "$extra_env"
-      fi
+  for REL in "${REL_VALUES[@]}"; do
+    # No EMA, no adaptive alpha
+    extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=0,ADAPTIVE_ALPHA=0,ALPHA_REL=$REL,USE_ENSEMBLE=0"
+    RUN_NAME="A_cal${CAL}_ema0_adapt0_rel${REL}"
+    submit_job "$RUN_NAME" "$extra_env"
 
-      # ADAPT on (4 combos)
+    # No EMA, adaptive alpha on
+    for W in "${ADAPT_WARMUPS[@]}"; do
+      for P in "${ADAPT_PATIENCE[@]}"; do
+        extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=0,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=$W,ALPHA_STABLE_PATIENCE=$P,ALPHA_REL=$REL,USE_ENSEMBLE=0"
+        RUN_NAME="A_cal${CAL}_ema0_adapt1_w${W}_p${P}_rel${REL}"
+        submit_job "$RUN_NAME" "$extra_env"
+      done
+    done
+
+    # EMA on (best-performing decays), adaptive alpha off/on
+    for DECAY in "${EMA_DECAYS_CORE[@]}"; do
+      extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=1,EMA_DECAY=$DECAY,ADAPTIVE_ALPHA=0,ALPHA_REL=$REL,USE_ENSEMBLE=0"
+      RUN_NAME="A_cal${CAL}_ema${DECAY}_adapt0_rel${REL}"
+      submit_job "$RUN_NAME" "$extra_env"
+
       for W in "${ADAPT_WARMUPS[@]}"; do
         for P in "${ADAPT_PATIENCE[@]}"; do
-          if [ "$EMA" -eq 1 ]; then
-            for DECAY in "${EMA_DECAYS[@]}"; do
-              extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=1,EMA_DECAY=$DECAY,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=$W,ALPHA_STABLE_PATIENCE=$P,ALPHA_REL=$REL"
-              RUN_NAME="A_cal${CAL}_ema${DECAY}_adapt1_w${W}_p${P}_rel${REL}"
-              submit_job "$RUN_NAME" "$extra_env"
-            done
-          else
-            extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=0,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=$W,ALPHA_STABLE_PATIENCE=$P,ALPHA_REL=$REL,USE_ENSEMBLE=0"
-            RUN_NAME="A_cal${CAL}_ema0_adapt1_w${W}_p${P}_rel${REL}"
-            submit_job "$RUN_NAME" "$extra_env"
-          fi
+          extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=1,EMA_DECAY=$DECAY,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=$W,ALPHA_STABLE_PATIENCE=$P,ALPHA_REL=$REL,USE_ENSEMBLE=0"
+          RUN_NAME="A_cal${CAL}_ema${DECAY}_adapt1_w${W}_p${P}_rel${REL}"
+          submit_job "$RUN_NAME" "$extra_env"
         done
       done
     done
   done
 done
 
-# Self-train block (single-teacher only): 16 base combos * 16 self-train combos = 256
-ST_REL_VALUES=(0.0 0.06)
+# Block B: Self-train focus (keep base close to best EMA+adaptive).
+ST_REL_VALUES=(0.0 0.04)
 ST_CAL_FLAGS=(0 1)
-ST_EMA=(0 1)
-ST_WARMUPS=(0.0 0.1)
-ST_PATIENCE=(2 4)
 ST_SOURCES=("teacher" "student")
 ST_EPOCHS=(3 5)
 ST_CONF_MIN=(0.0 0.2)
 ST_CONF_POWER=(1.0 2.0)
 
 for CAL in "${ST_CAL_FLAGS[@]}"; do
-  for EMA in "${ST_EMA[@]}"; do
-    for REL in "${ST_REL_VALUES[@]}"; do
-      for W in "${ST_WARMUPS[@]}"; do
-        for P in "${ST_PATIENCE[@]}"; do
-          base_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=$EMA,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=$W,ALPHA_STABLE_PATIENCE=$P,ALPHA_REL=$REL,SELF_TRAIN=1,USE_ENSEMBLE=0"
-          if [ "$EMA" -eq 1 ]; then
-              base_env="$base_env,EMA_DECAY=0.995"
-          fi
-          for SRC in "${ST_SOURCES[@]}"; do
-            for E in "${ST_EPOCHS[@]}"; do
-              for CM in "${ST_CONF_MIN[@]}"; do
-                for CP in "${ST_CONF_POWER[@]}"; do
-                  RUN_NAME="B_cal${CAL}_ema${EMA}_st${SRC}_e${E}_cm${CM}_cp${CP}_rel${REL}"
-                  extra_env="$base_env,SELF_TRAIN_SOURCE=$SRC,SELF_TRAIN_EPOCHS=$E,SELF_TRAIN_CONF_MIN=$CM,SELF_TRAIN_CONF_POWER=$CP"
-                  submit_job "$RUN_NAME" "$extra_env"
-                done
-              done
-            done
+  for REL in "${ST_REL_VALUES[@]}"; do
+    base_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=1,EMA_DECAY=0.99,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=0.0,ALPHA_STABLE_PATIENCE=2,ALPHA_REL=$REL,SELF_TRAIN=1,USE_ENSEMBLE=0"
+    for SRC in "${ST_SOURCES[@]}"; do
+      for E in "${ST_EPOCHS[@]}"; do
+        for CM in "${ST_CONF_MIN[@]}"; do
+          for CP in "${ST_CONF_POWER[@]}"; do
+            RUN_NAME="B_cal${CAL}_st${SRC}_e${E}_cm${CM}_cp${CP}_rel${REL}"
+            extra_env="$base_env,SELF_TRAIN_SOURCE=$SRC,SELF_TRAIN_EPOCHS=$E,SELF_TRAIN_CONF_MIN=$CM,SELF_TRAIN_CONF_POWER=$CP"
+            submit_job "$RUN_NAME" "$extra_env"
           done
         done
       done
@@ -162,36 +143,31 @@ for CAL in "${ST_CAL_FLAGS[@]}"; do
   done
 done
 
+# Block C: Teacher calibration vs EMA decay sweep around the best config.
+CAL_SWEEP_REL=(0.0)
+EMA_SWEEP_DECAYS=(0.985 0.99 0.995)
+for CAL in "${CAL_FLAGS[@]}"; do
+  for REL in "${CAL_SWEEP_REL[@]}"; do
+    for DECAY in "${EMA_SWEEP_DECAYS[@]}"; do
+      extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=1,EMA_DECAY=$DECAY,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=0.0,ALPHA_STABLE_PATIENCE=2,ALPHA_REL=$REL,USE_ENSEMBLE=0"
+      RUN_NAME="C_cal${CAL}_ema${DECAY}_rel${REL}"
+      submit_job "$RUN_NAME" "$extra_env"
+    done
+  done
+done
+
 # Optional ensemble block (only if TEACHER_ENSEMBLE_CKPTS is provided).
 if [ -n "$TEACHER_ENSEMBLE_CKPTS" ]; then
-  ENSEMBLE_REL_VALUES=(0.0 0.06 0.12)
-  ENSEMBLE_ADAPT_WARMUPS=(0.0 0.1)
-  ENSEMBLE_ADAPT_PATIENCE=(2 4)
-  ENSEMBLE_CAL_FLAGS=(0 1)
-  ENSEMBLE_EMA_DECAYS=(0.995 0.999)
-
-  for CAL in "${ENSEMBLE_CAL_FLAGS[@]}"; do
+  ENSEMBLE_REL_VALUES=(0.0 0.06)
+  for CAL in "${CAL_FLAGS[@]}"; do
     for REL in "${ENSEMBLE_REL_VALUES[@]}"; do
-      # ADAPT off, EMA off
       extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=0,ADAPTIVE_ALPHA=0,ALPHA_REL=$REL,USE_ENSEMBLE=1"
-      RUN_NAME="E_cal${CAL}_ema0_adapt0_rel${REL}"
+      RUN_NAME="E_cal${CAL}_adapt0_rel${REL}"
       submit_job "$RUN_NAME" "$extra_env"
 
-      # ADAPT on, EMA off
-      for W in "${ENSEMBLE_ADAPT_WARMUPS[@]}"; do
-        for P in "${ENSEMBLE_ADAPT_PATIENCE[@]}"; do
-          extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=0,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=$W,ALPHA_STABLE_PATIENCE=$P,ALPHA_REL=$REL,USE_ENSEMBLE=1"
-          RUN_NAME="E_cal${CAL}_ema0_adapt1_w${W}_p${P}_rel${REL}"
-          submit_job "$RUN_NAME" "$extra_env"
-        done
-      done
-
-      # EMA on with two decays
-      for DECAY in "${ENSEMBLE_EMA_DECAYS[@]}"; do
-        extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=1,EMA_DECAY=$DECAY,ADAPTIVE_ALPHA=0,ALPHA_REL=$REL,USE_ENSEMBLE=1"
-        RUN_NAME="E_cal${CAL}_ema${DECAY}_adapt0_rel${REL}"
-        submit_job "$RUN_NAME" "$extra_env"
-      done
+      extra_env="CALIBRATE_TEACHER=$CAL,EMA_TEACHER=0,ADAPTIVE_ALPHA=1,ALPHA_WARMUP=0.0,ALPHA_STABLE_PATIENCE=2,ALPHA_REL=$REL,USE_ENSEMBLE=1"
+      RUN_NAME="E_cal${CAL}_adapt1_rel${REL}"
+      submit_job "$RUN_NAME" "$extra_env"
     done
   done
 fi
