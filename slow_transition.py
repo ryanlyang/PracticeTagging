@@ -312,7 +312,7 @@ class ParticleTransformer(nn.Module):
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
 
-    def forward(self, x, mask):
+    def forward(self, x, mask, return_embedding=False):
         batch_size, seq_len, _ = x.shape
 
         h = x.view(-1, self.input_dim)
@@ -330,11 +330,13 @@ class ParticleTransformer(nn.Module):
 
         z = self.norm(pooled.squeeze(1))
         logits = self.classifier(z)
+        if return_embedding:
+            return logits, z
         return logits
 
 
 # ----------------------------- Train / eval ----------------------------- #
-def train_epoch(model, loader, opt, device, hlt_frac):
+def train_epoch(model, teacher, loader, opt, device, hlt_frac, rep_kd_weight=0.0, rep_kd_mode="cosine"):
     model.train()
     total_loss = 0.0
     preds, labs = [], []
@@ -351,8 +353,23 @@ def train_epoch(model, loader, opt, device, hlt_frac):
         m = torch.where(use_hlt.squeeze(-1), m_hlt, m_off)
 
         opt.zero_grad()
-        logits = model(x, m).squeeze(1)
+        if rep_kd_weight > 0.0 and teacher is not None:
+            logits, s_z = model(x, m, return_embedding=True)
+        else:
+            logits = model(x, m)
+            s_z = None
+        logits = logits.squeeze(1)
         loss = F.binary_cross_entropy_with_logits(logits, y)
+        if rep_kd_weight > 0.0 and teacher is not None:
+            with torch.no_grad():
+                _, t_z = teacher(x_off, m_off, return_embedding=True)
+            if rep_kd_mode == "mse":
+                rep_loss = F.mse_loss(s_z, t_z)
+            else:
+                s_norm = F.normalize(s_z, dim=1)
+                t_norm = F.normalize(t_z, dim=1)
+                rep_loss = (1.0 - (s_norm * t_norm).sum(dim=1)).mean()
+            loss = loss + rep_kd_weight * rep_loss
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
@@ -422,6 +439,10 @@ def main():
     parser.add_argument("--transition_mode", type=str, default="linear", choices=["linear", "cosine", "power", "sigmoid"])
     parser.add_argument("--transition_power", type=float, default=1.0)
     parser.add_argument("--start_hlt_frac", type=float, default=0.0)
+    parser.add_argument("--rep_kd_weight", type=float, default=0.0, help="Weight for representation KD")
+    parser.add_argument("--rep_kd_mode", type=str, default="cosine", choices=["cosine", "mse"])
+    parser.add_argument("--teacher_epochs", type=int, default=50, help="Offline teacher training epochs")
+    parser.add_argument("--teacher_patience", type=int, default=10, help="Offline teacher early-stop patience")
     parser.add_argument("--skip_save_models", action="store_true")
 
     args = parser.parse_args()
@@ -506,7 +527,37 @@ def main():
     val_loader   = DataLoader(val_ds, batch_size=BS, shuffle=False)
     test_loader  = DataLoader(test_ds, batch_size=BS, shuffle=False)
 
+    teacher = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
     model = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
+
+    print("\n" + "=" * 70)
+    print("STEP 1: OFFLINE TEACHER")
+    print("=" * 70)
+    opt_t = torch.optim.AdamW(teacher.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+    sch_t = get_scheduler(opt_t, CONFIG["training"]["warmup_epochs"], args.teacher_epochs)
+    best_t_auc, best_t_state, no_improve = 0.0, None, 0
+    for ep in tqdm(range(args.teacher_epochs), desc="Teacher"):
+        train_loss, train_auc = train_epoch(teacher, None, train_loader, opt_t, device, hlt_frac=0.0)
+        val_auc, _, _ = evaluate(teacher, val_loader, device, "off", "mask_off")
+        sch_t.step()
+        if val_auc > best_t_auc:
+            best_t_auc = val_auc
+            best_t_state = {k: v.detach().cpu().clone() for k, v in teacher.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+        if (ep + 1) % 5 == 0:
+            print(f"Teacher ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_t_auc:.4f}")
+        if no_improve >= args.teacher_patience:
+            print(f"Early stopping teacher at epoch {ep+1}")
+            break
+
+    if best_t_state is not None:
+        teacher.load_state_dict(best_t_state)
+    teacher.eval()
+    for p in teacher.parameters():
+        p.requires_grad = False
+
     opt = torch.optim.AdamW(model.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
     sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
@@ -522,7 +573,10 @@ def main():
             ep, args.transition_epochs, args.start_hlt_frac,
             mode=args.transition_mode, power=args.transition_power,
         )
-        train_loss, train_auc = train_epoch(model, train_loader, opt, device, hlt_frac)
+        train_loss, train_auc = train_epoch(
+            model, teacher, train_loader, opt, device, hlt_frac,
+            rep_kd_weight=args.rep_kd_weight, rep_kd_mode=args.rep_kd_mode,
+        )
         val_auc, _, _ = evaluate(model, val_loader, device, "hlt", "mask_hlt")
         sch.step()
 

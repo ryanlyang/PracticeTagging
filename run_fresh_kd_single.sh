@@ -3,7 +3,7 @@
 #SBATCH --job-name=fresh_kd
 #SBATCH --output=fresh_kd_logs/fresh_kd_%j.out
 #SBATCH --error=fresh_kd_logs/fresh_kd_%j.err
-#SBATCH --time=12:00:00
+#SBATCH --time=3-16:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G

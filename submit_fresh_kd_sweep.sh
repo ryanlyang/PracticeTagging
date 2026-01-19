@@ -5,6 +5,7 @@ set -euo pipefail
 # Trains shared teacher/baseline once, then queues dependent runs.
 
 MAX_RUNS=${MAX_RUNS:-500}
+BATCH_SIZE=${BATCH_SIZE:-20}
 SAVE_DIR=${SAVE_DIR:-"checkpoints/fresh_kd_sweep"}
 TRAIN_PATH=${TRAIN_PATH:-""}
 N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
@@ -20,6 +21,10 @@ TEACHER_ENSEMBLE_CKPTS=${TEACHER_ENSEMBLE_CKPTS:-""}
 
 mkdir -p fresh_kd_logs
 mkdir -p "$SAVE_DIR"
+BATCH_DIR=${BATCH_DIR:-"fresh_kd_batches"}
+mkdir -p "$BATCH_DIR"
+RUN_LIST="${BATCH_DIR}/fresh_kd_runlist_$(date +%s).txt"
+> "$RUN_LIST"
 
 submit_job() {
     local run_name="$1"
@@ -30,30 +35,31 @@ submit_job() {
         return
     fi
 
-    local exports="ALL"
-    exports+=",RUN_NAME=${run_name}"
-    exports+=",SAVE_DIR=${SAVE_DIR}"
-    exports+=",SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS}"
-    exports+=",TEACHER_CKPT=${TEACHER_CKPT}"
-    exports+=",BASELINE_CKPT=${BASELINE_CKPT}"
-    exports+=",N_TRAIN_JETS=${N_TRAIN_JETS}"
-    exports+=",MAX_CONSTITS=${MAX_CONSTITS}"
-
+    local base_env="RUN_NAME=${run_name}"
+    base_env+=",SAVE_DIR=${SAVE_DIR}"
+    base_env+=",SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS}"
+    base_env+=",TEACHER_CKPT=${TEACHER_CKPT}"
+    base_env+=",BASELINE_CKPT=${BASELINE_CKPT}"
+    base_env+=",N_TRAIN_JETS=${N_TRAIN_JETS}"
+    base_env+=",MAX_CONSTITS=${MAX_CONSTITS}"
     if [ -n "$TRAIN_PATH" ]; then
-        exports+=",TRAIN_PATH=${TRAIN_PATH}"
-    fi
-    if [ -n "$TEACHER_ENSEMBLE_CKPTS" ]; then
-        exports+=",TEACHER_ENSEMBLE_CKPTS=${TEACHER_ENSEMBLE_CKPTS}"
-    fi
-    if [ -n "$extra_env" ]; then
-        exports+=",$extra_env"
+        base_env+=",TRAIN_PATH=${TRAIN_PATH}"
     fi
 
-    if [ -n "$DEP_JOB" ]; then
-        sbatch --dependency=afterok:$DEP_JOB --gres="$GPU_GRES" --export="$exports" run_fresh_kd_single.sh
-    else
-        sbatch --gres="$GPU_GRES" --export="$exports" run_fresh_kd_single.sh
+    # Explicit defaults to avoid env carryover between runs.
+    base_env+=",TEMP_INIT=7.0,TEMP_FINAL=,ALPHA_INIT=0.5,ALPHA_FINAL="
+    base_env+=",ALPHA_ATTN=0.05,ALPHA_REP=0.10,ALPHA_NCE=0.10,ALPHA_REL=0.0,TAU_NCE=0.10,NO_CONF_KD=0"
+    base_env+=",CALIBRATE_TEACHER=0,TEACHER_CALIB_MAX_ITER=50,EMA_TEACHER=0,EMA_DECAY=0.999"
+    base_env+=",ADAPTIVE_ALPHA=0,ALPHA_WARMUP=0.0,ALPHA_STABLE_PATIENCE=3,ALPHA_STABLE_DELTA=1e-4,ALPHA_WARMUP_MIN_EPOCHS=3"
+    base_env+=",SELF_TRAIN=0,SELF_TRAIN_SOURCE=teacher,SELF_TRAIN_EPOCHS=5,SELF_TRAIN_LR=1e-4"
+    base_env+=",SELF_TRAIN_CONF_MIN=0.0,SELF_TRAIN_CONF_POWER=1.0,SELF_TRAIN_HARD=0,SELF_TRAIN_PATIENCE=5"
+    base_env+=",USE_ENSEMBLE=0"
+
+    if [ -n "$extra_env" ]; then
+        base_env+=",$extra_env"
     fi
+
+    echo "$base_env" >> "$RUN_LIST"
     run_count=$((run_count + 1))
 }
 
@@ -173,4 +179,24 @@ if [ -n "$TEACHER_ENSEMBLE_CKPTS" ]; then
 fi
 
 echo ""
-echo "Submitted $run_count fresh_KD runs."
+echo "Queued $run_count fresh_KD runs into: $RUN_LIST"
+
+split -l "$BATCH_SIZE" -d --additional-suffix=.list "$RUN_LIST" "$BATCH_DIR/batch_"
+
+batch_count=0
+for batch_file in "$BATCH_DIR"/batch_*.list; do
+    if [ -z "${batch_file:-}" ]; then
+        continue
+    fi
+    if [ -n "$DEP_JOB" ]; then
+        TEACHER_ENSEMBLE_CKPTS="$TEACHER_ENSEMBLE_CKPTS" \
+          sbatch --dependency=afterok:$DEP_JOB --gres="$GPU_GRES" \
+          --export=ALL,BATCH_FILE="$batch_file" run_fresh_kd_batch.sh
+    else
+        TEACHER_ENSEMBLE_CKPTS="$TEACHER_ENSEMBLE_CKPTS" \
+          sbatch --gres="$GPU_GRES" --export=ALL,BATCH_FILE="$batch_file" run_fresh_kd_batch.sh
+    fi
+    batch_count=$((batch_count + 1))
+done
+
+echo "Submitted $batch_count batch jobs (up to $BATCH_SIZE runs each)."
