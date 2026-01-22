@@ -79,9 +79,9 @@ PT_IDX  = 2
 # ----------------------------- HLT config (matches professor) ----------------------------- #
 CONFIG = {
     "hlt_effects": {
-        "pt_resolution": 0.10,
-        "eta_resolution": 0.03,
-        "phi_resolution": 0.03,
+        "pt_resolution": 0.0, #0.10
+        "eta_resolution": 0.0, #0.03
+        "phi_resolution": 0.0, #0.03
 
         "pt_threshold_offline": 0.5,
         "pt_threshold_hlt": 1.5,
@@ -89,7 +89,7 @@ CONFIG = {
         "merge_enabled": True,
         "merge_radius": 0.01,
 
-        "efficiency_loss": 0.03,
+        "efficiency_loss": 0.05,
 
         "noise_enabled": False,
         "noise_fraction": 0.0,
