@@ -220,7 +220,7 @@ def apply_hlt_effects_with_tracking(const, mask, cfg, seed=42):
     n_merged = 0
     if hcfg["merge_enabled"] and hcfg["merge_radius"] > 0:
         merge_radius = hcfg["merge_radius"]
-        for jet_idx in range(n_jets):
+    for jet_idx in tqdm(range(n_jets), desc="HLTEffects"):
             valid_idx = np.where(hlt_mask[jet_idx])[0]
             if len(valid_idx) < 2:
                 continue
@@ -1135,7 +1135,8 @@ def main():
     print("STEP 4: UNMERGER")
     print("=" * 70)
     samples = []
-    for j in range(len(all_labels)):
+    print("Building merged-token sample list...")
+    for j in tqdm(range(len(all_labels)), desc="CollectMerged"):
         for idx in range(args.max_constits):
             if hlt_mask[j, idx] and len(origin_lists[j][idx]) > 1:
                 pc = int(pred_counts[j, idx])
@@ -1145,14 +1146,21 @@ def main():
                     pc = max_count
                 samples.append((j, idx, origin_lists[j][idx], pc))
 
-    train_samples = [s for s in samples if s[0] in set(train_idx)]
-    val_samples = [s for s in samples if s[0] in set(val_idx)]
-    test_samples = [s for s in samples if s[0] in set(test_idx)]
+    train_idx_set = set(train_idx)
+    val_idx_set = set(val_idx)
+    test_idx_set = set(test_idx)
+    train_samples = [s for s in samples if s[0] in train_idx_set]
+    val_samples = [s for s in samples if s[0] in val_idx_set]
+    test_samples = [s for s in samples if s[0] in test_idx_set]
+    print(f"Merged samples: train={len(train_samples):,}, val={len(val_samples):,}, test={len(test_samples):,}")
 
     if len(train_samples) == 0:
         raise RuntimeError("No merged samples in training split.")
 
-    train_targets = [const_off[s[0], s[2], :4] for s in train_samples]
+    print("Building unmerge targets (train split)...")
+    train_targets = []
+    for s in tqdm(train_samples, desc="UnmergeTargets"):
+        train_targets.append(const_off[s[0], s[2], :4])
     flat_train = np.concatenate(train_targets, axis=0)
     tgt_mean = flat_train.mean(axis=0)
     tgt_std = flat_train.std(axis=0) + 1e-8
