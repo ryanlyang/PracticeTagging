@@ -2,10 +2,10 @@
 # -*- coding: utf-8 -*-
 
 """
-Predict which HLT constituents are merged versions of offline constituents.
+Predict how many offline constituents each HLT token represents.
 
-Training uses paired offline/HLT jets to label merged HLT tokens, but the model
-only consumes HLT features at inference.
+Training uses paired offline/HLT jets to label merge counts, but the model only
+consumes HLT features at inference.
 """
 
 from pathlib import Path
@@ -20,17 +20,10 @@ import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import roc_auc_score, roc_curve
-
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import utils
-
-
-def safe_sigmoid(logits):
-    probs = torch.sigmoid(logits)
-    return torch.nan_to_num(probs, nan=0.5, posinf=1.0, neginf=0.0)
 
 
 # ----------------------------- Reproducibility ----------------------------- #
@@ -202,7 +195,7 @@ def apply_hlt_effects_with_labels(const, mask, cfg, seed=42):
         "n_lost_eff": n_lost_eff,
         "n_final": n_final,
     }
-    return hlt, hlt_mask, merged_label, stats
+    return hlt, hlt_mask, merged_label, origin_counts, stats
 
 
 def compute_features(const, mask):
@@ -261,10 +254,10 @@ def standardize(feat, mask, means, stds):
 
 
 class MergeDataset(Dataset):
-    def __init__(self, feat_hlt, mask_hlt, merged_label):
+    def __init__(self, feat_hlt, mask_hlt, count_label):
         self.hlt = torch.tensor(feat_hlt, dtype=torch.float32)
         self.mask = torch.tensor(mask_hlt, dtype=torch.bool)
-        self.label = torch.tensor(merged_label, dtype=torch.float32)
+        self.label = torch.tensor(count_label, dtype=torch.long)
 
     def __len__(self):
         return len(self.hlt)
@@ -278,10 +271,20 @@ class MergeDataset(Dataset):
 
 
 class MergePredictor(nn.Module):
-    def __init__(self, input_dim=7, embed_dim=128, num_heads=8, num_layers=6, ff_dim=512, dropout=0.1):
+    def __init__(
+        self,
+        input_dim=7,
+        embed_dim=128,
+        num_heads=8,
+        num_layers=6,
+        ff_dim=512,
+        dropout=0.1,
+        num_classes=6,
+    ):
         super().__init__()
         self.input_dim = input_dim
         self.embed_dim = embed_dim
+        self.num_classes = num_classes
 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
@@ -306,7 +309,7 @@ class MergePredictor(nn.Module):
             nn.Linear(embed_dim, max(embed_dim // 2, 32)),
             nn.GELU(),
             nn.Dropout(dropout),
-            nn.Linear(max(embed_dim // 2, 32), 1),
+            nn.Linear(max(embed_dim // 2, 32), num_classes),
         )
 
     def forward(self, x, mask):
@@ -315,25 +318,27 @@ class MergePredictor(nn.Module):
         h = self.input_proj(h)
         h = h.view(batch_size, seq_len, -1)
         h = self.transformer(h, src_key_padding_mask=~mask)
-        logits = self.head(h).squeeze(-1)
+        logits = self.head(h)
         return logits
 
 
-def compute_pos_weight(labels, mask):
+def compute_class_weights(labels, mask, num_classes):
     valid = labels[mask]
-    pos = float(valid.sum())
-    neg = float(valid.size - pos)
-    if pos <= 0:
-        return 1.0
-    return max(neg / pos, 1.0)
+    counts = np.bincount(valid, minlength=num_classes).astype(np.float64)
+    total = counts.sum()
+    weights = np.ones(num_classes, dtype=np.float64)
+    if total > 0:
+        weights = total / np.maximum(counts, 1.0)
+        weights = weights / weights.mean()
+    return weights
 
 
-def train_epoch(model, loader, opt, device, pos_weight):
+def train_epoch(model, loader, opt, device, class_weights):
     model.train()
     total_loss = 0.0
     preds, labs = [], []
-    weight = torch.tensor(pos_weight, device=device)
-    criterion = nn.BCEWithLogitsLoss(pos_weight=weight)
+    weight = torch.tensor(class_weights, device=device, dtype=torch.float32)
+    criterion = nn.CrossEntropyLoss(weight=weight)
 
     for batch in loader:
         x = batch["hlt"].to(device)
@@ -348,11 +353,12 @@ def train_epoch(model, loader, opt, device, pos_weight):
         opt.step()
 
         total_loss += loss.item() * mask.sum().item()
-        preds.extend(safe_sigmoid(logits[mask]).detach().cpu().numpy().flatten())
+        pred_cls = logits[mask].argmax(dim=1)
+        preds.extend(pred_cls.detach().cpu().numpy().flatten())
         labs.extend(y[mask].detach().cpu().numpy().flatten())
 
-    auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
-    return total_loss / max(len(labs), 1), auc
+    acc = (np.array(preds) == np.array(labs)).mean() if len(labs) > 0 else 0.0
+    return total_loss / max(len(labs), 1), acc
 
 
 @torch.no_grad()
@@ -365,14 +371,16 @@ def evaluate(model, loader, device):
         mask = batch["mask"].to(device)
         logits = model(x, mask)
         if not warned and not torch.isfinite(logits).all():
-            print("Warning: NaN/Inf in logits during evaluation; replacing with 0.5.")
+            print("Warning: NaN/Inf in logits during evaluation; replacing with 0.0.")
             warned = True
-        preds.extend(safe_sigmoid(logits[mask]).cpu().numpy().flatten())
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+        pred_cls = logits[mask].argmax(dim=1)
+        preds.extend(pred_cls.cpu().numpy().flatten())
         labs.extend(batch["label"][mask.cpu()].numpy().flatten())
     preds = np.array(preds)
     labs = np.array(labs)
-    auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
-    return auc, preds, labs
+    acc = (preds == labs).mean() if labs.size > 0 else 0.0
+    return acc, preds, labs
 
 
 def get_scheduler(opt, warmup, total):
@@ -383,28 +391,20 @@ def get_scheduler(opt, warmup, total):
     return torch.optim.lr_scheduler.LambdaLR(opt, lr_lambda)
 
 
-def best_threshold_accuracy(preds, labs, thresholds=None):
-    if preds.size == 0:
-        return 0.5, 0.0
-    if thresholds is None:
-        thresholds = np.linspace(0.0, 1.0, 201)
-    labs_i = labs.astype(np.int64)
-    best_acc = 0.0
-    best_thr = 0.5
-    for thr in thresholds:
-        acc = ((preds >= thr).astype(np.int64) == labs_i).mean()
-        if acc > best_acc:
-            best_acc = acc
-            best_thr = float(thr)
-    return best_thr, float(best_acc)
-
-
-def accuracy_at_threshold(preds, labs, threshold):
+def clipped_mae(preds, labs, max_count):
     if preds.size == 0:
         return 0.0
-    labs_i = labs.astype(np.int64)
-    acc = ((preds >= threshold).astype(np.int64) == labs_i).mean()
-    return float(acc)
+    preds_c = np.clip(preds + 1, 1, max_count)
+    labs_c = np.clip(labs + 1, 1, max_count)
+    return float(np.abs(preds_c - labs_c).mean())
+
+
+def confusion_matrix(preds, labs, num_classes):
+    mat = np.zeros((num_classes, num_classes), dtype=np.int64)
+    for t, p in zip(labs, preds):
+        if 0 <= t < num_classes and 0 <= p < num_classes:
+            mat[t, p] += 1
+    return mat
 
 
 def main():
@@ -430,6 +430,7 @@ def main():
     parser.add_argument("--pt_resolution", type=float, default=None)
     parser.add_argument("--eta_resolution", type=float, default=None)
     parser.add_argument("--phi_resolution", type=float, default=None)
+    parser.add_argument("--max_merge_count", type=int, default=6)
     args = parser.parse_args()
 
     if args.pt_resolution is not None:
@@ -470,7 +471,7 @@ def main():
     constituents_raw = np.stack([pt, eta, phi, E], axis=-1).astype(np.float32)
 
     print("Applying HLT effects...")
-    constituents_hlt, masks_hlt, merged_label, stats = apply_hlt_effects_with_labels(
+    constituents_hlt, masks_hlt, merged_label, origin_counts, stats = apply_hlt_effects_with_labels(
         constituents_raw, mask_raw, CONFIG, seed=RANDOM_SEED
     )
 
@@ -499,16 +500,31 @@ def main():
     feat_means, feat_stds = get_stats(features_off, masks_off, train_idx)
     features_hlt_std = standardize(features_hlt, masks_hlt, feat_means, feat_stds)
 
-    train_ds = MergeDataset(features_hlt_std[train_idx], masks_hlt[train_idx], merged_label[train_idx].astype(np.float32))
-    val_ds = MergeDataset(features_hlt_std[val_idx], masks_hlt[val_idx], merged_label[val_idx].astype(np.float32))
-    test_ds = MergeDataset(features_hlt_std[test_idx], masks_hlt[test_idx], merged_label[test_idx].astype(np.float32))
+    max_count = max(int(args.max_merge_count), 2)
+    count_label = np.clip(origin_counts, 1, max_count) - 1
+
+    train_ds = MergeDataset(features_hlt_std[train_idx], masks_hlt[train_idx], count_label[train_idx])
+    val_ds = MergeDataset(features_hlt_std[val_idx], masks_hlt[val_idx], count_label[val_idx])
+    test_ds = MergeDataset(features_hlt_std[test_idx], masks_hlt[test_idx], count_label[test_idx])
 
     train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, drop_last=True)
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
-    pos_weight = compute_pos_weight(merged_label[train_idx].astype(np.float32), masks_hlt[train_idx])
-    print(f"Positive class weight: {pos_weight:.3f}")
+    def format_dist(label, mask, name):
+        valid = label[mask]
+        counts = np.bincount(valid, minlength=max_count).astype(np.int64)
+        total = max(counts.sum(), 1)
+        frac = counts / total * 100.0
+        print(f"{name} merge-count distribution (class=1..{max_count}, {max_count}=cap):")
+        for i in range(max_count):
+            print(f"  {i+1}: {counts[i]:,} ({frac[i]:.2f}%)")
+
+    format_dist(count_label, masks_hlt, "All HLT")
+    format_dist(count_label[train_idx], masks_hlt[train_idx], "Train")
+
+    class_weights = compute_class_weights(count_label[train_idx], masks_hlt[train_idx], max_count)
+    print(f"Class weights (1..{max_count}): {np.round(class_weights, 3)}")
 
     model = MergePredictor(
         input_dim=7,
@@ -517,6 +533,7 @@ def main():
         num_layers=args.num_layers,
         ff_dim=args.ff_dim,
         dropout=args.dropout,
+        num_classes=max_count,
     ).to(device)
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -525,22 +542,22 @@ def main():
     best_auc, best_state, no_improve = 0.0, None, 0
 
     print("\n" + "=" * 70)
-    print("TRAINING: MERGE PREDICTOR (HLT -> merged token labels)")
+    print("TRAINING: MERGE COUNT PREDICTOR (HLT -> count labels)")
     print("=" * 70)
     for ep in tqdm(range(args.epochs), desc="MergePredictor"):
-        train_loss, train_auc = train_epoch(model, train_loader, opt, device, pos_weight)
-        val_auc, _, _ = evaluate(model, val_loader, device)
+        train_loss, train_acc = train_epoch(model, train_loader, opt, device, class_weights)
+        val_acc, _, _ = evaluate(model, val_loader, device)
         sch.step()
 
-        if val_auc > best_auc:
-            best_auc = val_auc
+        if val_acc > best_auc:
+            best_auc = val_acc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             no_improve = 0
         else:
             no_improve += 1
 
         if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc:.4f}")
+            print(f"Ep {ep+1}: train_acc={train_acc:.4f}, val_acc={val_acc:.4f}, best={best_auc:.4f}")
 
         if no_improve >= args.patience:
             print(f"Early stopping at epoch {ep+1}")
@@ -549,22 +566,25 @@ def main():
     if best_state is not None:
         model.load_state_dict(best_state)
 
-    val_auc, val_preds, val_labs = evaluate(model, val_loader, device)
-    test_auc, test_preds, test_labs = evaluate(model, test_loader, device)
-    best_thr, best_val_acc = best_threshold_accuracy(val_preds, val_labs)
-    test_acc = accuracy_at_threshold(test_preds, test_labs, best_thr)
+    val_acc, val_preds, val_labs = evaluate(model, val_loader, device)
+    test_acc, test_preds, test_labs = evaluate(model, test_loader, device)
+    test_mae = clipped_mae(test_preds, test_labs, max_count)
 
-    print("\nFinal test AUC:", f"{test_auc:.4f}")
-    print(f"Best val accuracy: {best_val_acc:.4f} at threshold={best_thr:.3f}")
-    print(f"Test accuracy @ val-threshold: {test_acc:.4f}")
+    print("\nFinal test accuracy:", f"{test_acc:.4f}")
+    print(f"Final test MAE (clipped @ {max_count}): {test_mae:.4f}")
 
-    fpr, tpr, _ = roc_curve(test_labs, test_preds) if len(np.unique(test_labs)) > 1 else (np.array([0, 1]), np.array([0, 1]), None)
-    plt.figure(figsize=(8, 6))
-    plt.plot(tpr, fpr, "-", label=f"Merge predictor (AUC={test_auc:.3f})", color="steelblue", linewidth=2)
-    plt.ylabel("False Positive Rate", fontsize=12)
-    plt.xlabel("True Positive Rate", fontsize=12)
-    plt.legend(fontsize=12, frameon=False)
-    plt.grid(True, alpha=0.3)
+    cm = confusion_matrix(test_preds, test_labs, max_count)
+    cm_norm = cm / np.maximum(cm.sum(axis=1, keepdims=True), 1)
+
+    plt.figure(figsize=(7, 6))
+    plt.imshow(cm_norm, interpolation="nearest", cmap="Blues", vmin=0.0, vmax=1.0)
+    plt.colorbar(label="Fraction")
+    tick_labels = [str(i) for i in range(1, max_count + 1)]
+    plt.xticks(np.arange(max_count), tick_labels)
+    plt.yticks(np.arange(max_count), tick_labels)
+    plt.xlabel("Predicted merge count")
+    plt.ylabel("True merge count")
+    plt.title(f"Confusion (acc={test_acc:.3f})")
     plt.tight_layout()
     plt.savefig(save_root / "results.png", dpi=300)
     plt.close()
@@ -573,18 +593,17 @@ def main():
         save_root / "results.npz",
         labs=test_labs,
         preds=test_preds,
-        auc=test_auc,
-        fpr=fpr,
-        tpr=tpr,
-        pos_weight=pos_weight,
-        best_val_acc=best_val_acc,
-        best_val_threshold=best_thr,
-        test_acc=test_acc,
+        acc=test_acc,
+        mae=test_mae,
+        confusion=cm,
+        confusion_norm=cm_norm,
+        class_weights=class_weights,
+        val_acc=val_acc,
     )
 
     if not args.skip_save_models:
         torch.save(
-            {"model": model.state_dict(), "auc": best_auc},
+            {"model": model.state_dict(), "best_val_acc": best_auc, "max_merge_count": max_count},
             save_root / "merge_predictor.pt",
         )
 
