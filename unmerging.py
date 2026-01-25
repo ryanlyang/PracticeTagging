@@ -25,7 +25,7 @@ import utils
 
 
 # ----------------------------- Reproducibility ----------------------------- #
-RANDOM_SEED = 42
+RANDOM_SEED = 48
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
@@ -105,7 +105,7 @@ def apply_hlt_effects_with_groups(const, mask, cfg, seed=42):
     n_lost_eff = 0
     samples = []
 
-    for jet_idx in range(n_jets):
+    for jet_idx in tqdm(range(n_jets), desc="HLTEffects"):
         origin_lists = []
         for idx in range(max_part):
             if hlt_mask[jet_idx, idx]:
@@ -517,17 +517,22 @@ def main():
     max_count = max(int(args.max_merge_count), 2)
     samples = [s for s in samples if len(s[2]) <= max_count]
 
-    train_samples = [s for s in samples if s[0] in set(train_idx)]
-    val_samples = [s for s in samples if s[0] in set(val_idx)]
-    test_samples = [s for s in samples if s[0] in set(test_idx)]
+    train_idx_set = set(train_idx)
+    val_idx_set = set(val_idx)
+    test_idx_set = set(test_idx)
+    train_samples = [s for s in samples if s[0] in train_idx_set]
+    val_samples = [s for s in samples if s[0] in val_idx_set]
+    test_samples = [s for s in samples if s[0] in test_idx_set]
+    print(f"Merged samples: train={len(train_samples):,}, val={len(val_samples):,}, test={len(test_samples):,}")
 
-    def gather_targets(sample_list):
+    def gather_targets(sample_list, label):
         out = []
-        for jet_idx, _, origin in sample_list:
+        for jet_idx, _, origin in tqdm(sample_list, desc=f"Targets-{label}"):
             out.append(constituents_off[jet_idx, origin, :4])
         return out
 
-    train_targets = gather_targets(train_samples)
+    print("Building unmerge targets (train split)...")
+    train_targets = gather_targets(train_samples, "train")
     flat_train = np.concatenate(train_targets, axis=0)
     tgt_mean = flat_train.mean(axis=0)
     tgt_std = flat_train.std(axis=0) + 1e-8
