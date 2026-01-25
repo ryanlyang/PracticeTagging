@@ -491,52 +491,93 @@ def main():
 
     auc_teacher, preds_teacher, labs = evaluate(teacher, test_loader_off, device, "off", "mask_off")
 
+    pt_off = CONFIG["hlt_effects"]["pt_threshold_offline"]
+    pt_hlt = CONFIG["hlt_effects"]["pt_threshold_hlt"]
+    merge_r = CONFIG["hlt_effects"]["merge_radius"]
+    eff_default = CONFIG["hlt_effects"]["efficiency_loss"]
+
     hlt_configs = [
         ("default", {
             "pt_resolution": 0.10,
             "eta_resolution": 0.03,
             "phi_resolution": 0.03,
-            "pt_threshold_offline": 0.5,
-            "pt_threshold_hlt": 1.5,
+            "pt_threshold_offline": pt_off,
+            "pt_threshold_hlt": pt_hlt,
             "merge_enabled": True,
-            "merge_radius": 0.01,
-            "efficiency_loss": 0.03,
+            "merge_radius": merge_r,
+            "efficiency_loss": eff_default,
             "noise_enabled": False,
             "noise_fraction": 0.0,
         }),
-        ("no_smear_no_merge_eff0p05", {
-            "pt_resolution": 0.0,
-            "eta_resolution": 0.0,
-            "phi_resolution": 0.0,
-            "pt_threshold_offline": 0.5,
-            "pt_threshold_hlt": 1.5,
-            "merge_enabled": False,
-            "merge_radius": 0.01,
-            "efficiency_loss": 0.05,
-            "noise_enabled": False,
-            "noise_fraction": 0.0,
-        }),
-        ("no_smear_merge_eff0p05", {
-            "pt_resolution": 0.0,
-            "eta_resolution": 0.0,
-            "phi_resolution": 0.0,
-            "pt_threshold_offline": 0.5,
-            "pt_threshold_hlt": 1.5,
-            "merge_enabled": True,
-            "merge_radius": 0.01,
-            "efficiency_loss": 0.05,
-            "noise_enabled": False,
-            "noise_fraction": 0.0,
-        }),
-        ("smear_no_merge_eff0p0", {
+        ("pt_smear_only", {
             "pt_resolution": 0.10,
-            "eta_resolution": 0.03,
-            "phi_resolution": 0.03,
-            "pt_threshold_offline": 0.5,
-            "pt_threshold_hlt": 1.5,
+            "eta_resolution": 0.0,
+            "phi_resolution": 0.0,
+            "pt_threshold_offline": pt_off,
+            "pt_threshold_hlt": pt_off,
             "merge_enabled": False,
-            "merge_radius": 0.01,
+            "merge_radius": merge_r,
             "efficiency_loss": 0.0,
+            "noise_enabled": False,
+            "noise_fraction": 0.0,
+        }),
+        ("eta_smear_only", {
+            "pt_resolution": 0.0,
+            "eta_resolution": 0.03,
+            "phi_resolution": 0.0,
+            "pt_threshold_offline": pt_off,
+            "pt_threshold_hlt": pt_off,
+            "merge_enabled": False,
+            "merge_radius": merge_r,
+            "efficiency_loss": 0.0,
+            "noise_enabled": False,
+            "noise_fraction": 0.0,
+        }),
+        ("phi_smear_only", {
+            "pt_resolution": 0.0,
+            "eta_resolution": 0.0,
+            "phi_resolution": 0.03,
+            "pt_threshold_offline": pt_off,
+            "pt_threshold_hlt": pt_off,
+            "merge_enabled": False,
+            "merge_radius": merge_r,
+            "efficiency_loss": 0.0,
+            "noise_enabled": False,
+            "noise_fraction": 0.0,
+        }),
+        ("threshold_only", {
+            "pt_resolution": 0.0,
+            "eta_resolution": 0.0,
+            "phi_resolution": 0.0,
+            "pt_threshold_offline": pt_off,
+            "pt_threshold_hlt": pt_hlt,
+            "merge_enabled": False,
+            "merge_radius": merge_r,
+            "efficiency_loss": 0.0,
+            "noise_enabled": False,
+            "noise_fraction": 0.0,
+        }),
+        ("merge_only", {
+            "pt_resolution": 0.0,
+            "eta_resolution": 0.0,
+            "phi_resolution": 0.0,
+            "pt_threshold_offline": pt_off,
+            "pt_threshold_hlt": pt_off,
+            "merge_enabled": True,
+            "merge_radius": merge_r,
+            "efficiency_loss": 0.0,
+            "noise_enabled": False,
+            "noise_fraction": 0.0,
+        }),
+        ("efficiency_only", {
+            "pt_resolution": 0.0,
+            "eta_resolution": 0.0,
+            "phi_resolution": 0.0,
+            "pt_threshold_offline": pt_off,
+            "pt_threshold_hlt": pt_off,
+            "merge_enabled": False,
+            "merge_radius": merge_r,
+            "efficiency_loss": eff_default,
             "noise_enabled": False,
             "noise_fraction": 0.0,
         }),
@@ -550,6 +591,9 @@ def main():
         cfg["hlt_effects"] = hcfg
 
         constituents_hlt, masks_hlt = apply_hlt_effects(constituents_raw, mask_raw, cfg, seed=RANDOM_SEED)
+        avg_off = masks_off.sum(axis=1).mean()
+        avg_hlt = masks_hlt.sum(axis=1).mean()
+        print(f"Avg constituents per jet: Offline={avg_off:.1f}, HLT={avg_hlt:.1f}")
         features_hlt = compute_features(constituents_hlt, masks_hlt)
         features_hlt_std = standardize(features_hlt, masks_hlt, feat_means, feat_stds)
 
