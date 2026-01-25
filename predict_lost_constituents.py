@@ -430,7 +430,7 @@ def main():
     parser.add_argument("--pt_resolution", type=float, default=None)
     parser.add_argument("--eta_resolution", type=float, default=None)
     parser.add_argument("--phi_resolution", type=float, default=None)
-    parser.add_argument("--max_merge_count", type=int, default=6)
+    parser.add_argument("--max_merge_count", type=int, default=10)
     args = parser.parse_args()
 
     if args.pt_resolution is not None:
