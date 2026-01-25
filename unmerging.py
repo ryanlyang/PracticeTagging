@@ -419,7 +419,7 @@ def main():
     parser.add_argument("--train_path", type=str, default="./data")
     parser.add_argument("--n_train_jets", type=int, default=200000)
     parser.add_argument("--max_constits", type=int, default=80)
-    parser.add_argument("--max_merge_count", type=int, default=6)
+    parser.add_argument("--max_merge_count", type=int, default=10)
     parser.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "unmerging"))
     parser.add_argument("--run_name", type=str, default="default")
     parser.add_argument("--device", type=str, default="cpu")
