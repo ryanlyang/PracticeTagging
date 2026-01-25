@@ -33,6 +33,11 @@ from tqdm import tqdm
 import utils
 
 
+def safe_sigmoid(logits):
+    probs = torch.sigmoid(logits)
+    return torch.nan_to_num(probs, nan=0.5, posinf=1.0, neginf=0.0)
+
+
 # ----------------------------- Reproducibility ----------------------------- #
 RANDOM_SEED = 42
 random.seed(RANDOM_SEED)
@@ -345,7 +350,7 @@ def train_standard(model, loader, opt, device, feat_key, mask_key):
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
     return total_loss / len(preds), roc_auc_score(labs, preds)
 
@@ -354,11 +359,15 @@ def train_standard(model, loader, opt, device, feat_key, mask_key):
 def evaluate(model, loader, device, feat_key, mask_key):
     model.eval()
     preds, labs = [], []
+    warned = False
     for batch in loader:
         x = batch[feat_key].to(device)
         mask = batch[mask_key].to(device)
         logits = model(x, mask).squeeze(1)
-        preds.extend(torch.sigmoid(logits).cpu().numpy().flatten())
+        if not warned and not torch.isfinite(logits).all():
+            print("Warning: NaN/Inf in logits during evaluation; replacing with 0.5.")
+            warned = True
+        preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
         labs.extend(batch["label"].cpu().numpy().flatten())
     preds = np.array(preds)
     labs = np.array(labs)
