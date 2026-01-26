@@ -979,7 +979,7 @@ def main():
             ema.apply_to(eval_model)
             val_l1, val_l2 = eval_reconstruction(
                 eval_model, val_loader, device, betas, alpha, alpha_bar,
-                feat_means, feat_stds, samp_cfg, args.pred_type
+                const_means, const_stds, samp_cfg, args.pred_type
             )
             print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
             if val_l1 < best_val:
