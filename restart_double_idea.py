@@ -19,7 +19,7 @@ from pathlib import Path
 
 # Import everything from double_idea
 sys.path.insert(0, str(Path(__file__).parent))
-from double_idea import *
+from old_ideas.double_idea import *
 
 def main_restart():
     parser = argparse.ArgumentParser()
