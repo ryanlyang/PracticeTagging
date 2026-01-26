@@ -25,7 +25,7 @@ import utils
 
 
 # ----------------------------- Reproducibility ----------------------------- #
-RANDOM_SEED = 48
+RANDOM_SEED = 52
 random.seed(RANDOM_SEED)
 np.random.seed(RANDOM_SEED)
 torch.manual_seed(RANDOM_SEED)
