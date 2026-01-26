@@ -1138,13 +1138,16 @@ def main():
     print("Building merged-token sample list...")
     for j in tqdm(range(len(all_labels)), desc="CollectMerged"):
         for idx in range(args.max_constits):
-            if hlt_mask[j, idx] and len(origin_lists[j][idx]) > 1:
+            origin = origin_lists[j][idx]
+            if hlt_mask[j, idx] and len(origin) > 1:
+                if len(origin) > max_count:
+                    continue
                 pc = int(pred_counts[j, idx])
                 if pc < 2:
                     pc = 2
                 if pc > max_count:
                     pc = max_count
-                samples.append((j, idx, origin_lists[j][idx], pc))
+                samples.append((j, idx, origin, pc))
 
     train_idx_set = set(train_idx)
     val_idx_set = set(val_idx)
@@ -1207,9 +1210,17 @@ def main():
             chunk = sample_list[i:i + BS_un]
             jet_idx = [c[0] for c in chunk]
             token_idx = [c[1] for c in chunk]
-            true_counts = [len(c[2]) for c in chunk]
-            pred_counts_batch = [c[3] for c in chunk]
-            target = [const_off[c[0], c[2], :4] for c in chunk]
+            origins = []
+            true_counts = []
+            pred_counts_batch = []
+            for c in chunk:
+                origin = c[2]
+                if len(origin) > max_count:
+                    origin = origin[:max_count]
+                origins.append(origin)
+                true_counts.append(len(origin))
+                pred_counts_batch.append(min(int(c[3]), max_count))
+            target = [const_off[c[0], origin, :4] for c, origin in zip(chunk, origins)]
             target = np.stack([np.pad(t, ((0, max_count - t.shape[0]), (0, 0)), mode="constant") for t in target], axis=0)
             target = (target - tgt_mean) / tgt_std
             target = np.clip(target, -10, 10)

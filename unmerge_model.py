@@ -470,7 +470,8 @@ class UnmergeDataset(Dataset):
 
     def __getitem__(self, i):
         jet_idx, token_idx, origin, pred_count = self.samples[i]
-        true_count = len(origin)
+        true_count = min(len(origin), self.max_count)
+        origin = origin[:true_count]
         target = self.constituents_off[jet_idx, origin, :4].astype(np.float32)
 
         target = (target - self.tgt_mean) / self.tgt_std
@@ -483,7 +484,7 @@ class UnmergeDataset(Dataset):
             "hlt": torch.tensor(self.feat_hlt[jet_idx], dtype=torch.float32),
             "mask": torch.tensor(self.mask_hlt[jet_idx], dtype=torch.bool),
             "token_idx": torch.tensor(token_idx, dtype=torch.long),
-            "pred_count": torch.tensor(pred_count, dtype=torch.long),
+            "pred_count": torch.tensor(min(pred_count, self.max_count), dtype=torch.long),
             "true_count": torch.tensor(true_count, dtype=torch.long),
             "target": torch.tensor(target_pad, dtype=torch.float32),
         }
@@ -1184,13 +1185,16 @@ def main():
     print("Building merged-token sample list...")
     for j in tqdm(range(len(all_labels)), desc="CollectMerged"):
         for idx in range(args.max_constits):
-            if hlt_mask[j, idx] and len(origin_lists[j][idx]) > 1:
+            origin = origin_lists[j][idx]
+            if hlt_mask[j, idx] and len(origin) > 1:
+                if len(origin) > max_count:
+                    continue
                 pc = int(pred_counts[j, idx])
                 if pc < 2:
                     pc = 2
                 if pc > max_count:
                     pc = max_count
-                samples.append((j, idx, origin_lists[j][idx], pc))
+                samples.append((j, idx, origin, pc))
 
     train_idx_set = set(train_idx)
     val_idx_set = set(val_idx)
