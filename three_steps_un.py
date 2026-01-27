@@ -1152,7 +1152,7 @@ def train_classifier(model, loader, opt, device):
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         opt.step()
         total_loss += loss.item() * len(y)
-        preds.extend(torch.sigmoid(logits).detach().cpu().numpy().flatten())
+        preds.extend(safe_sigmoid(logits).detach().cpu().numpy().flatten())
         labs.extend(y.detach().cpu().numpy().flatten())
     auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
     return total_loss / len(preds), auc
@@ -1162,11 +1162,15 @@ def train_classifier(model, loader, opt, device):
 def eval_classifier(model, loader, device):
     model.eval()
     preds, labs = [], []
+    warned = False
     for batch in loader:
         x = batch["feat"].to(device)
         m = batch["mask"].to(device)
         logits = model(x, m).squeeze(1)
-        preds.extend(torch.sigmoid(logits).cpu().numpy().flatten())
+        if not warned and not torch.isfinite(logits).all():
+            print("Warning: NaN/Inf in logits during evaluation; replacing with 0.5.")
+            warned = True
+        preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
         labs.extend(batch["label"].cpu().numpy().flatten())
     preds = np.array(preds)
     labs = np.array(labs)

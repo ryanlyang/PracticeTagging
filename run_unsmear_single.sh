@@ -3,7 +3,7 @@
 #SBATCH --job-name=unsmear
 #SBATCH --output=unsmear_logs/unsmear_%j.out
 #SBATCH --error=unsmear_logs/unsmear_%j.err
-#SBATCH --time=1-00:00:00
+#SBATCH --time=4-23:30:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -33,84 +33,139 @@ if python -c "import torch; torch.cuda.is_available()" 2>/dev/null; then
 fi
 echo ""
 
-TRAIN_PATH=${TRAIN_PATH:-""}
-N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
-MAX_CONSTITS=${MAX_CONSTITS:-80}
-SAVE_DIR=${SAVE_DIR:-"checkpoints/unsmear"}
-RUN_NAME=${RUN_NAME:-"default"}
+run_one() {
+  local run_idx="$1"
 
-PRED_TYPE=${PRED_TYPE:-"v"}
-SNR_WEIGHT=${SNR_WEIGHT:-1}
-SNR_GAMMA=${SNR_GAMMA:-5.0}
-SELF_COND_PROB=${SELF_COND_PROB:-0.5}
-COND_DROP_PROB=${COND_DROP_PROB:-0.1}
-JET_LOSS_WEIGHT=${JET_LOSS_WEIGHT:-0.1}
-USE_CROSS_ATTN=${USE_CROSS_ATTN:-1}
-NO_SELF_COND=${NO_SELF_COND:-0}
-SAMPLING_METHOD=${SAMPLING_METHOD:-"ddim"}
-GUIDANCE_SCALE=${GUIDANCE_SCALE:-1.5}
-SAMPLE_STEPS=${SAMPLE_STEPS:-400}
-N_SAMPLES_EVAL=${N_SAMPLES_EVAL:-4}
-SKIP_CLASSIFIERS=${SKIP_CLASSIFIERS:-0}
+  TRAIN_PATH=${TRAIN_PATH:-""}
+  N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
+  MAX_CONSTITS=${MAX_CONSTITS:-80}
+  SAVE_DIR=${SAVE_DIR:-"checkpoints/unsmear"}
+  RUN_NAME=${RUN_NAME:-"default"}
 
-CMD="python unsmear_method.py \
-  --save_dir $SAVE_DIR \
-  --run_name $RUN_NAME \
-  --n_train_jets $N_TRAIN_JETS \
-  --max_constits $MAX_CONSTITS \
-  --pred_type $PRED_TYPE \
-  --snr_gamma $SNR_GAMMA \
-  --self_cond_prob $SELF_COND_PROB \
-  --cond_drop_prob $COND_DROP_PROB \
-  --jet_loss_weight $JET_LOSS_WEIGHT \
-  --sampling_method $SAMPLING_METHOD \
-  --guidance_scale $GUIDANCE_SCALE \
-  --sample_steps $SAMPLE_STEPS \
-  --n_samples_eval $N_SAMPLES_EVAL"
+  PRED_TYPE=${PRED_TYPE:-"v"}
+  SNR_WEIGHT=${SNR_WEIGHT:-1}
+  SNR_GAMMA=${SNR_GAMMA:-5.0}
+  SELF_COND_PROB=${SELF_COND_PROB:-0.5}
+  COND_DROP_PROB=${COND_DROP_PROB:-0.1}
+  JET_LOSS_WEIGHT=${JET_LOSS_WEIGHT:-0.1}
+  USE_CROSS_ATTN=${USE_CROSS_ATTN:-1}
+  NO_SELF_COND=${NO_SELF_COND:-0}
+  SAMPLING_METHOD=${SAMPLING_METHOD:-"ddim"}
+  GUIDANCE_SCALE=${GUIDANCE_SCALE:-1.5}
+  SAMPLE_STEPS=${SAMPLE_STEPS:-400}
+  N_SAMPLES_EVAL=${N_SAMPLES_EVAL:-4}
+  SKIP_CLASSIFIERS=${SKIP_CLASSIFIERS:-0}
 
-if [ -n "$TRAIN_PATH" ]; then
-  CMD="$CMD --train_path $TRAIN_PATH"
-fi
+  CMD="python unsmear_method.py \
+    --save_dir $SAVE_DIR \
+    --run_name $RUN_NAME \
+    --n_train_jets $N_TRAIN_JETS \
+    --max_constits $MAX_CONSTITS \
+    --pred_type $PRED_TYPE \
+    --snr_gamma $SNR_GAMMA \
+    --self_cond_prob $SELF_COND_PROB \
+    --cond_drop_prob $COND_DROP_PROB \
+    --jet_loss_weight $JET_LOSS_WEIGHT \
+    --sampling_method $SAMPLING_METHOD \
+    --guidance_scale $GUIDANCE_SCALE \
+    --sample_steps $SAMPLE_STEPS \
+    --n_samples_eval $N_SAMPLES_EVAL"
 
-if [ "$SNR_WEIGHT" -eq 1 ]; then
-  CMD="$CMD --snr_weight"
-fi
+  if [ -n "$TRAIN_PATH" ]; then
+    CMD="$CMD --train_path $TRAIN_PATH"
+  fi
 
-if [ "$USE_CROSS_ATTN" -eq 1 ]; then
-  CMD="$CMD --use_cross_attn"
-fi
+  if [ "$SNR_WEIGHT" -eq 1 ]; then
+    CMD="$CMD --snr_weight"
+  fi
 
-if [ "$NO_SELF_COND" -eq 1 ]; then
-  CMD="$CMD --no_self_cond"
-fi
+  if [ "$USE_CROSS_ATTN" -eq 1 ]; then
+    CMD="$CMD --use_cross_attn"
+  fi
 
-if [ "$SKIP_CLASSIFIERS" -eq 1 ]; then
-  CMD="$CMD --skip_classifiers"
-fi
+  if [ "$NO_SELF_COND" -eq 1 ]; then
+    CMD="$CMD --no_self_cond"
+  fi
 
-if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
-  CMD="$CMD --device cuda"
+  if [ "$SKIP_CLASSIFIERS" -eq 1 ]; then
+    CMD="$CMD --skip_classifiers"
+  fi
+
+  if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    CMD="$CMD --device cuda"
+  else
+    CMD="$CMD --device cpu"
+  fi
+
+  echo "Running command (run $run_idx):"
+  echo "$CMD"
+  echo ""
+
+  eval $CMD
+  return $?
+}
+
+run_batch() {
+  local batch_file="$1"
+  local idx=0
+  local failures=0
+
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%%#*}"
+    line="${line%$'\r'}"
+    if [ -z "$line" ]; then
+      continue
+    fi
+
+    idx=$((idx + 1))
+    IFS=';' read -r -a kvs <<< "$line"
+    for kv in "${kvs[@]}"; do
+      export "$kv"
+    done
+
+    echo ""
+    echo "------------------------------------------"
+    echo "Batch run $idx: $RUN_NAME"
+    echo "------------------------------------------"
+    run_one "$idx"
+    EXIT_CODE=$?
+    if [ $EXIT_CODE -ne 0 ]; then
+      echo "Run $idx failed with exit code: $EXIT_CODE"
+      failures=$((failures + 1))
+    else
+      echo "Run $idx completed successfully"
+      echo "Results saved to: $SAVE_DIR/$RUN_NAME"
+    fi
+  done < "$batch_file"
+
+  if [ $failures -ne 0 ]; then
+    echo "$failures run(s) failed in batch."
+    return 1
+  fi
+  return 0
+}
+
+if [ -n "$BATCH_FILE" ]; then
+  if [ ! -f "$BATCH_FILE" ]; then
+    echo "BATCH_FILE not found: $BATCH_FILE"
+    exit 1
+  fi
+  echo "Running batch file: $BATCH_FILE"
+  run_batch "$BATCH_FILE"
+  EXIT_CODE=$?
 else
-  CMD="$CMD --device cpu"
+  run_one 1
+  EXIT_CODE=$?
+  echo ""
+  echo "=========================================="
+  if [ $EXIT_CODE -eq 0 ]; then
+    echo "Run completed successfully"
+    echo "Results saved to: $SAVE_DIR/$RUN_NAME"
+  else
+    echo "Run failed with exit code: $EXIT_CODE"
+  fi
+  echo "End Time: $(date)"
+  echo "=========================================="
 fi
-
-echo "Running command:"
-echo "$CMD"
-echo ""
-
-eval $CMD
-
-EXIT_CODE=$?
-
-echo ""
-echo "=========================================="
-if [ $EXIT_CODE -eq 0 ]; then
-  echo "Run completed successfully"
-  echo "Results saved to: $SAVE_DIR/$RUN_NAME"
-else
-  echo "Run failed with exit code: $EXIT_CODE"
-fi
-echo "End Time: $(date)"
-echo "=========================================="
 
 exit $EXIT_CODE

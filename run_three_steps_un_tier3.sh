@@ -3,7 +3,7 @@
 #SBATCH --job-name=three_steps_un
 #SBATCH --output=three_steps_un_logs/three_steps_un_%j.out
 #SBATCH --error=three_steps_un_logs/three_steps_un_%j.err
-#SBATCH --time=4-12:00:00
+#SBATCH --time=4-23:50:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G

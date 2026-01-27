@@ -4,11 +4,13 @@
 # Uses run_unsmear_single.sh as the sbatch runner.
 
 RUN_SCRIPT="run_unsmear_single.sh"
+RUNS_PER_JOB=${RUNS_PER_JOB:-10}
 SAVE_DIR=${SAVE_DIR:-"checkpoints/unsmear_sweep"}
 N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
 MAX_CONSTITS=${MAX_CONSTITS:-80}
 
 mkdir -p unsmear_logs
+mkdir -p unsmear_batches
 
 pred_types=("eps" "x0" "v")
 cross_attn=(1 0)
@@ -18,7 +20,7 @@ jet_loss=("0.1" "0.0")
 sampling=("ddim" "ddpm")
 guidance=("1.0" "1.5")
 
-count=0
+configs=()
 
 for PRED in "${pred_types[@]}"; do
   for XATTN in "${cross_attn[@]}"; do
@@ -44,27 +46,23 @@ for PRED in "${pred_types[@]}"; do
 
               RUN_NAME="U_pred${PRED}_xattn${XATTN}_sc${SCOND}_snr${SNR}_jet${JET}_samp${SAMP}_g${GUID}"
 
-              echo "Submitting: $RUN_NAME"
-              EXPORTS="ALL,"
-              EXPORTS+="RUN_NAME=$RUN_NAME,"
-              EXPORTS+="SAVE_DIR=$SAVE_DIR,"
-              EXPORTS+="N_TRAIN_JETS=$N_TRAIN_JETS,"
-              EXPORTS+="MAX_CONSTITS=$MAX_CONSTITS,"
-              EXPORTS+="PRED_TYPE=$PRED,"
-              EXPORTS+="USE_CROSS_ATTN=$XATTN,"
-              EXPORTS+="NO_SELF_COND=$NO_SELF_COND,"
-              EXPORTS+="SELF_COND_PROB=$SELF_COND_PROB,"
-              EXPORTS+="SNR_WEIGHT=$SNR,"
-              EXPORTS+="SNR_GAMMA=5.0,"
-              EXPORTS+="COND_DROP_PROB=$COND_DROP,"
-              EXPORTS+="JET_LOSS_WEIGHT=$JET,"
-              EXPORTS+="SAMPLING_METHOD=$SAMP,"
-              EXPORTS+="GUIDANCE_SCALE=$GUID,"
-              EXPORTS+="SAMPLE_STEPS=200,"
-              EXPORTS+="N_SAMPLES_EVAL=1"
-              sbatch --export="$EXPORTS" "$RUN_SCRIPT"
-
-              count=$((count + 1))
+              line="RUN_NAME=$RUN_NAME"
+              line+=";SAVE_DIR=$SAVE_DIR"
+              line+=";N_TRAIN_JETS=$N_TRAIN_JETS"
+              line+=";MAX_CONSTITS=$MAX_CONSTITS"
+              line+=";PRED_TYPE=$PRED"
+              line+=";USE_CROSS_ATTN=$XATTN"
+              line+=";NO_SELF_COND=$NO_SELF_COND"
+              line+=";SELF_COND_PROB=$SELF_COND_PROB"
+              line+=";SNR_WEIGHT=$SNR"
+              line+=";SNR_GAMMA=5.0"
+              line+=";COND_DROP_PROB=$COND_DROP"
+              line+=";JET_LOSS_WEIGHT=$JET"
+              line+=";SAMPLING_METHOD=$SAMP"
+              line+=";GUIDANCE_SCALE=$GUID"
+              line+=";SAMPLE_STEPS=200"
+              line+=";N_SAMPLES_EVAL=1"
+              configs+=("$line")
             done
           done
         done
@@ -73,4 +71,26 @@ for PRED in "${pred_types[@]}"; do
   done
 done
 
-echo "Total jobs submitted: $count"
+total_configs=${#configs[@]}
+if [ "$total_configs" -eq 0 ]; then
+  echo "No configs generated."
+  exit 0
+fi
+
+job_count=0
+batch_idx=0
+for ((i=0; i<total_configs; i+=RUNS_PER_JOB)); do
+  batch_idx=$((batch_idx + 1))
+  batch_file="unsmear_batches/unsmear_batch_${batch_idx}.txt"
+  : > "$batch_file"
+  for ((j=i; j<i+RUNS_PER_JOB && j<total_configs; j++)); do
+    echo "${configs[j]}" >> "$batch_file"
+  done
+  echo "Submitting batch $batch_idx: $batch_file"
+  sbatch --export="ALL,BATCH_FILE=$batch_file" "$RUN_SCRIPT"
+  job_count=$((job_count + 1))
+done
+
+echo "Total configs: $total_configs"
+echo "Runs per job: $RUNS_PER_JOB"
+echo "Total jobs submitted: $job_count"
