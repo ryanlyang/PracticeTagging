@@ -134,6 +134,12 @@ CONFIG = {
         "nll_weight": 1.0,
         "distributional": True,
     },
+    "unmerge_finetune": {
+        "enabled": False,
+        "epochs": 30,
+        "patience": 10,
+        "lr_mult": 0.5,
+    },
     "diffusion": {
         "timesteps": 1000,
         "schedule": "cosine",
@@ -352,6 +358,134 @@ def apply_hlt_effects_with_tracking(const, mask, cfg, seed=42):
         "n_final": n_final,
     }
     return hlt, hlt_mask, origin_counts, origin_lists, stats
+
+
+def apply_hlt_effects_dual_with_tracking(const, mask, cfg, seed=42):
+    """
+    Produce two HLT views with identical threshold/merge/efficiency:
+      - smeared (pt/eta/phi resolutions)
+      - no-smear (same constituents, no resolution smearing)
+    Ensures identical merge/efficiency decisions and origin tracking.
+    """
+    rng = np.random.RandomState(seed)
+    hcfg = cfg["hlt_effects"]
+    n_jets, max_part, _ = const.shape
+
+    hlt_base = const.copy()
+    hlt_mask = mask.copy()
+
+    origin_lists = [[([idx] if hlt_mask[j, idx] else []) for idx in range(max_part)]
+                    for j in range(n_jets)]
+
+    n_initial = int(hlt_mask.sum())
+
+    # pT threshold
+    pt_threshold = hcfg["pt_threshold_hlt"]
+    below_threshold = (hlt_base[:, :, 0] < pt_threshold) & hlt_mask
+    hlt_mask[below_threshold] = False
+    hlt_base[~hlt_mask] = 0
+    for j in range(n_jets):
+        for idx in np.where(below_threshold[j])[0]:
+            origin_lists[j][idx] = []
+    n_lost_threshold = int(below_threshold.sum())
+
+    # Merging (deterministic)
+    n_merged = 0
+    if hcfg["merge_enabled"] and hcfg["merge_radius"] > 0:
+        merge_radius = hcfg["merge_radius"]
+        for jet_idx in range(n_jets):
+            valid_idx = np.where(hlt_mask[jet_idx])[0]
+            if len(valid_idx) < 2:
+                continue
+            to_remove = set()
+            for i in range(len(valid_idx)):
+                idx_i = valid_idx[i]
+                if idx_i in to_remove:
+                    continue
+                for j in range(i + 1, len(valid_idx)):
+                    idx_j = valid_idx[j]
+                    if idx_j in to_remove:
+                        continue
+                    deta = hlt_base[jet_idx, idx_i, 1] - hlt_base[jet_idx, idx_j, 1]
+                    dphi = hlt_base[jet_idx, idx_i, 2] - hlt_base[jet_idx, idx_j, 2]
+                    dphi = np.arctan2(np.sin(dphi), np.cos(dphi))
+                    dR = np.sqrt(deta**2 + dphi**2)
+                    if dR < merge_radius:
+                        pt_i = hlt_base[jet_idx, idx_i, 0]
+                        pt_j = hlt_base[jet_idx, idx_j, 0]
+                        pt_sum = pt_i + pt_j
+                        if pt_sum < 1e-6:
+                            continue
+                        w_i = pt_i / pt_sum
+                        w_j = pt_j / pt_sum
+                        hlt_base[jet_idx, idx_i, 0] = pt_sum
+                        hlt_base[jet_idx, idx_i, 1] = w_i * hlt_base[jet_idx, idx_i, 1] + w_j * hlt_base[jet_idx, idx_j, 1]
+                        phi_i = hlt_base[jet_idx, idx_i, 2]
+                        phi_j = hlt_base[jet_idx, idx_j, 2]
+                        hlt_base[jet_idx, idx_i, 2] = np.arctan2(
+                            w_i * np.sin(phi_i) + w_j * np.sin(phi_j),
+                            w_i * np.cos(phi_i) + w_j * np.cos(phi_j),
+                        )
+                        hlt_base[jet_idx, idx_i, 3] = hlt_base[jet_idx, idx_i, 3] + hlt_base[jet_idx, idx_j, 3]
+                        origin_lists[jet_idx][idx_i].extend(origin_lists[jet_idx][idx_j])
+                        origin_lists[jet_idx][idx_j] = []
+                        to_remove.add(idx_j)
+                        n_merged += 1
+            for idx in to_remove:
+                hlt_mask[jet_idx, idx] = False
+                hlt_base[jet_idx, idx] = 0
+
+    # Create no-smear and smear copies
+    hlt_nosmear = hlt_base.copy()
+    hlt_smear = hlt_base.copy()
+
+    valid = hlt_mask
+    if hcfg["pt_resolution"] > 0:
+        pt_noise = rng.normal(1.0, hcfg["pt_resolution"], (n_jets, max_part))
+        pt_noise = np.clip(pt_noise, 0.5, 1.5)
+        hlt_smear[:, :, 0] = np.where(valid, hlt_smear[:, :, 0] * pt_noise, 0)
+    if hcfg["eta_resolution"] > 0:
+        eta_noise = rng.normal(0, hcfg["eta_resolution"], (n_jets, max_part))
+        hlt_smear[:, :, 1] = np.where(valid, np.clip(hlt_smear[:, :, 1] + eta_noise, -5, 5), 0)
+    if hcfg["phi_resolution"] > 0:
+        phi_noise = rng.normal(0, hcfg["phi_resolution"], (n_jets, max_part))
+        new_phi = hlt_smear[:, :, 2] + phi_noise
+        hlt_smear[:, :, 2] = np.where(valid, np.arctan2(np.sin(new_phi), np.cos(new_phi)), 0)
+
+    # Recompute E for both
+    hlt_smear[:, :, 3] = np.where(valid, hlt_smear[:, :, 0] * np.cosh(np.clip(hlt_smear[:, :, 1], -5, 5)), 0)
+    hlt_nosmear[:, :, 3] = np.where(valid, hlt_nosmear[:, :, 0] * np.cosh(np.clip(hlt_nosmear[:, :, 1], -5, 5)), 0)
+
+    # Efficiency loss (shared mask)
+    n_lost_eff = 0
+    if hcfg["efficiency_loss"] > 0:
+        random_loss = rng.random((n_jets, max_part)) < hcfg["efficiency_loss"]
+        lost = random_loss & hlt_mask
+        hlt_mask[lost] = False
+        hlt_smear[lost] = 0
+        hlt_nosmear[lost] = 0
+        n_lost_eff = int(lost.sum())
+        for j in range(n_jets):
+            for idx in np.where(lost[j])[0]:
+                origin_lists[j][idx] = []
+
+    hlt_smear = np.nan_to_num(hlt_smear, nan=0.0, posinf=0.0, neginf=0.0)
+    hlt_nosmear = np.nan_to_num(hlt_nosmear, nan=0.0, posinf=0.0, neginf=0.0)
+    hlt_smear[~hlt_mask] = 0
+    hlt_nosmear[~hlt_mask] = 0
+
+    origin_counts = np.array([[len(origin_lists[j][i]) for i in range(max_part)] for j in range(n_jets)], dtype=np.int32)
+    origin_counts[~hlt_mask] = 0
+
+    n_final = int(hlt_mask.sum())
+    stats = {
+        "n_initial": n_initial,
+        "n_lost_threshold": n_lost_threshold,
+        "n_merged": n_merged,
+        "n_lost_eff": n_lost_eff,
+        "n_final": n_final,
+    }
+    return hlt_smear, hlt_nosmear, hlt_mask, origin_counts, origin_lists, stats
 
 
 def apply_smear_only(const, mask, cfg, seed=42):
@@ -1238,6 +1372,9 @@ def main():
     parser.add_argument("--sampling_method", type=str, choices=["ddim", "ddpm"], default=None)
     parser.add_argument("--guidance_scale", type=float, default=None)
     parser.add_argument("--no_unsmear_finetune", action="store_true")
+    parser.add_argument("--unmerge_finetune", action="store_true")
+    parser.add_argument("--unmerge_ft_epochs", type=int, default=None)
+    parser.add_argument("--unmerge_ft_lr_mult", type=float, default=None)
     args = parser.parse_args()
 
     save_root = Path(args.save_dir) / args.run_name
@@ -1272,6 +1409,12 @@ def main():
         CONFIG["sampling"]["guidance_scale"] = args.guidance_scale
     if args.no_unsmear_finetune:
         CONFIG["diffusion_finetune"]["enabled"] = False
+    if args.unmerge_finetune:
+        CONFIG["unmerge_finetune"]["enabled"] = True
+    if args.unmerge_ft_epochs is not None:
+        CONFIG["unmerge_finetune"]["epochs"] = int(args.unmerge_ft_epochs)
+    if args.unmerge_ft_lr_mult is not None:
+        CONFIG["unmerge_finetune"]["lr_mult"] = float(args.unmerge_ft_lr_mult)
 
     train_path = Path(args.train_path)
     train_files = sorted(list(train_path.glob("*.h5")))
@@ -1295,8 +1438,8 @@ def main():
     E = pt * np.cosh(np.clip(eta, -5, 5))
     const_raw = np.stack([pt, eta, phi, E], axis=-1).astype(np.float32)
 
-    print("Applying HLT effects (full)...")
-    hlt_const, hlt_mask, origin_counts, origin_lists, stats = apply_hlt_effects_with_tracking(
+    print("Applying HLT effects (dual: smeared + no-smear)...")
+    hlt_const_smear, hlt_const_nosmear, hlt_mask, origin_counts, origin_lists, stats = apply_hlt_effects_dual_with_tracking(
         const_raw, mask_raw, CONFIG, seed=RANDOM_SEED
     )
     pt_threshold_off = CONFIG["hlt_effects"]["pt_threshold_offline"]
@@ -1319,10 +1462,18 @@ def main():
 
     # Offline stats
     feat_off = compute_features(const_off, masks_off)
-    feat_hlt = compute_features(hlt_const, hlt_mask)
+    feat_hlt_smear = compute_features(hlt_const_smear, hlt_mask)
+    feat_hlt_nosmear = compute_features(hlt_const_nosmear, hlt_mask)
     feat_means, feat_stds = get_stats(feat_off, masks_off, train_idx)
     feat_off_std = standardize(feat_off, masks_off, feat_means, feat_stds)
-    feat_hlt_std = standardize(feat_hlt, hlt_mask, feat_means, feat_stds)
+    feat_hlt_smear_std = standardize(feat_hlt_smear, hlt_mask, feat_means, feat_stds)
+    feat_hlt_nosmear_std = standardize(feat_hlt_nosmear, hlt_mask, feat_means, feat_stds)
+
+    # Standardize in constituent space for diffusion
+    const_means, const_stds = get_stats(const_off, masks_off, train_idx)
+    off_std_const = standardize(const_off, masks_off, const_means, const_stds)
+    hlt_smear_std_const = standardize(hlt_const_smear, hlt_mask, const_means, const_stds)
+    hlt_nosmear_std_const = standardize(hlt_const_nosmear, hlt_mask, const_means, const_stds)
 
     # ------------------- Teacher ------------------- #
     print("\n" + "=" * 70)
@@ -1363,9 +1514,9 @@ def main():
     print("\n" + "=" * 70)
     print("STEP 2: BASELINE (HLT)")
     print("=" * 70)
-    train_hlt = JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], all_labels[train_idx])
-    val_hlt = JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], all_labels[val_idx])
-    test_hlt = JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], all_labels[test_idx])
+    train_hlt = JetDataset(feat_hlt_smear_std[train_idx], hlt_mask[train_idx], all_labels[train_idx])
+    val_hlt = JetDataset(feat_hlt_smear_std[val_idx], hlt_mask[val_idx], all_labels[val_idx])
+    test_hlt = JetDataset(feat_hlt_smear_std[test_idx], hlt_mask[test_idx], all_labels[test_idx])
     train_hlt_loader = DataLoader(train_hlt, batch_size=BS, shuffle=True, drop_last=True)
     val_hlt_loader = DataLoader(val_hlt, batch_size=BS, shuffle=False)
     test_hlt_loader = DataLoader(test_hlt, batch_size=BS, shuffle=False)
@@ -1399,8 +1550,8 @@ def main():
     print("=" * 70)
     max_count = max(int(args.max_merge_count), 2)
     count_label = np.clip(origin_counts, 1, max_count) - 1
-    train_cnt = MergeCountDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], count_label[train_idx])
-    val_cnt = MergeCountDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], count_label[val_idx])
+    train_cnt = MergeCountDataset(feat_hlt_nosmear_std[train_idx], hlt_mask[train_idx], count_label[train_idx])
+    val_cnt = MergeCountDataset(feat_hlt_nosmear_std[val_idx], hlt_mask[val_idx], count_label[val_idx])
     BS_cnt = CONFIG["merge_count_training"]["batch_size"]
     train_cnt_loader = DataLoader(train_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True)
     val_cnt_loader = DataLoader(val_cnt, batch_size=BS_cnt, shuffle=False)
@@ -1427,7 +1578,65 @@ def main():
     if best_state is not None:
         count_model.load_state_dict(best_state)
 
-    pred_counts = predict_counts(count_model, feat_hlt_std, hlt_mask, BS_cnt, device, max_count)
+    # ------------------- UNSMEAR-1 (smeared -> no-smear) ------------------- #
+    print("\n" + "=" * 70)
+    print("STEP 3B: UNSMEAR-1 (smeared -> no-smear)")
+    print("=" * 70)
+    pair_train = JetPairDataset(hlt_nosmear_std_const[train_idx], hlt_smear_std_const[train_idx],
+                                hlt_mask[train_idx], hlt_mask[train_idx])
+    pair_val = JetPairDataset(hlt_nosmear_std_const[val_idx], hlt_smear_std_const[val_idx],
+                              hlt_mask[val_idx], hlt_mask[val_idx])
+    pair_train_loader = DataLoader(pair_train, batch_size=CONFIG["training"]["batch_size"], shuffle=True, drop_last=True)
+    pair_val_loader = DataLoader(pair_val, batch_size=CONFIG["training"]["batch_size"], shuffle=False)
+
+    diff1 = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
+    ema1 = EMA(diff1, decay=CONFIG["diffusion"]["ema_decay"])
+    betas = torch.tensor(make_beta_schedule(CONFIG["diffusion"]["timesteps"], CONFIG["diffusion"]["schedule"]), dtype=torch.float32, device=device)
+    alpha = 1.0 - betas
+    alpha_bar = torch.cumprod(alpha, dim=0)
+    opt_d1 = torch.optim.AdamW(diff1.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+    sch_d1 = get_scheduler(opt_d1, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+    best_val = 1e9
+    best_state = None
+    no_improve = 0
+    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Unsmear1"):
+        loss = train_diffusion_epoch(diff1, ema1, pair_train_loader, opt_d1, device, alpha_bar)
+        sch_d1.step()
+        if (ep + 1) % 5 == 0:
+            ema_model = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
+            ema1.apply_to(ema_model)
+            val_loss = 0.0
+            count = 0
+            for batch in pair_val_loader:
+                x0 = batch["off"].to(device)
+                cond = batch["hlt"].to(device)
+                mask = batch["mask"].to(device)
+                x0_pred = sample_ddim(ema_model, cond, mask, betas, alpha, alpha_bar, CONFIG["sampling"]["sample_steps"])
+                val_loss += F.l1_loss(x0_pred, x0, reduction="sum").item()
+                count += x0.numel()
+            val_loss = val_loss / max(count, 1)
+            print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_loss:.6f}")
+            if val_loss < best_val:
+                best_val = val_loss
+                best_state = {k: v.detach().cpu().clone() for k, v in diff1.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+            if no_improve >= CONFIG["training"]["patience"]:
+                print(f"Early stopping unsmear1 at epoch {ep+1}")
+                break
+    if best_state is not None:
+        diff1.load_state_dict(best_state)
+        ema1.shadow = {k: v.detach().clone() for k, v in diff1.state_dict().items()}
+    ema_model1 = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
+    ema1.apply_to(ema_model1)
+
+    hlt_unsmear1_std = generate_unsmeared(ema_model1, hlt_smear_std_const, hlt_mask, betas, alpha, alpha_bar, device)
+    hlt_unsmear1_const = hlt_unsmear1_std * const_stds + const_means
+    feat_unsmear1 = compute_features(hlt_unsmear1_const, hlt_mask)
+    feat_unsmear1_std = standardize(feat_unsmear1, hlt_mask, feat_means, feat_stds)
+
+    pred_counts = predict_counts(count_model, feat_unsmear1_std, hlt_mask, BS_cnt, device, max_count)
 
     # ------------------- Unmerger training ------------------- #
     print("\n" + "=" * 70)
@@ -1463,9 +1672,9 @@ def main():
     tgt_std = flat_train.std(axis=0) + 1e-8
 
     BS_un = CONFIG["unmerge_training"]["batch_size"]
-    train_un = UnmergeDataset(feat_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
-    val_un = UnmergeDataset(feat_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
-    test_un = UnmergeDataset(feat_hlt_std, hlt_mask, hlt_const, const_off, test_samples, max_count, tgt_mean, tgt_std)
+    train_un = UnmergeDataset(feat_hlt_nosmear_std, hlt_mask, hlt_const_nosmear, const_off, train_samples, max_count, tgt_mean, tgt_std)
+    val_un = UnmergeDataset(feat_unsmear1_std, hlt_mask, hlt_unsmear1_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
+    test_un = UnmergeDataset(feat_unsmear1_std, hlt_mask, hlt_unsmear1_const, const_off, test_samples, max_count, tgt_mean, tgt_std)
     train_un_loader = DataLoader(train_un, batch_size=BS_un, shuffle=True, drop_last=True)
     val_un_loader = DataLoader(val_un, batch_size=BS_un, shuffle=False)
     test_un_loader = DataLoader(test_un, batch_size=BS_un, shuffle=False)
@@ -1545,6 +1754,83 @@ def main():
     if best_state is not None:
         unmerge_model.load_state_dict(best_state)
 
+    # ------------------- Unmerge fine-tune on unsmear-1 outputs ------------------- #
+    if CONFIG["unmerge_finetune"]["enabled"]:
+        print("\n" + "=" * 70)
+        print("STEP 4B: UNMERGER FINETUNE (unsmear-1 inputs)")
+        print("=" * 70)
+        ft_train_un = UnmergeDataset(
+            feat_unsmear1_std, hlt_mask, hlt_unsmear1_const, const_off,
+            train_samples, max_count, tgt_mean, tgt_std
+        )
+        ft_val_un = UnmergeDataset(
+            feat_unsmear1_std, hlt_mask, hlt_unsmear1_const, const_off,
+            val_samples, max_count, tgt_mean, tgt_std
+        )
+        ft_train_loader = DataLoader(ft_train_un, batch_size=BS_un, shuffle=True, drop_last=True)
+        ft_val_loader = DataLoader(ft_val_un, batch_size=BS_un, shuffle=False)
+
+        opt_ft = torch.optim.AdamW(
+            unmerge_model.parameters(),
+            lr=CONFIG["unmerge_training"]["lr"] * CONFIG["unmerge_finetune"]["lr_mult"],
+            weight_decay=CONFIG["unmerge_training"]["weight_decay"],
+        )
+        sch_ft = get_scheduler(opt_ft, CONFIG["unmerge_training"]["warmup_epochs"], CONFIG["unmerge_finetune"]["epochs"])
+        best_val_ft, best_state_ft, no_improve = 1e9, None, 0
+        for ep in tqdm(range(CONFIG["unmerge_finetune"]["epochs"]), desc="Unmerge-FT"):
+            unmerge_model.train()
+            total_loss = 0.0
+            n_batches = 0
+            for batch in ft_train_loader:
+                x = batch["hlt"].to(device)
+                mask = batch["mask"].to(device)
+                token_idx = batch["token_idx"].to(device)
+                true_count = batch["true_count"].to(device)
+                target = batch["target"].to(device)
+                hlt_token = batch["hlt_token"].to(device)
+                count_in = true_count.clamp(min=2, max=max_count) if CONFIG["unmerge_training"]["use_true_count"] else batch["pred_count"].to(device)
+                opt_ft.zero_grad()
+                mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                loss.backward()
+                torch.nn.utils.clip_grad_norm_(unmerge_model.parameters(), 1.0)
+                opt_ft.step()
+                total_loss += loss.item()
+                n_batches += 1
+            train_loss = total_loss / max(n_batches, 1)
+
+            unmerge_model.eval()
+            val_loss = 0.0
+            n_batches = 0
+            with torch.no_grad():
+                for batch in ft_val_loader:
+                    x = batch["hlt"].to(device)
+                    mask = batch["mask"].to(device)
+                    token_idx = batch["token_idx"].to(device)
+                    true_count = batch["true_count"].to(device)
+                    target = batch["target"].to(device)
+                    hlt_token = batch["hlt_token"].to(device)
+                    count_in = batch["pred_count"].to(device)
+                    mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                    loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                    val_loss += loss.item()
+                    n_batches += 1
+            val_loss = val_loss / max(n_batches, 1)
+            sch_ft.step()
+            if val_loss < best_val_ft:
+                best_val_ft = val_loss
+                best_state_ft = {k: v.detach().cpu().clone() for k, v in unmerge_model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+            if (ep + 1) % 5 == 0:
+                print(f"FT Ep {ep+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, best={best_val_ft:.4f}")
+            if no_improve >= CONFIG["unmerge_finetune"]["patience"]:
+                print(f"Early stopping unmerge FT at epoch {ep+1}")
+                break
+        if best_state_ft is not None:
+            unmerge_model.load_state_dict(best_state_ft)
+
     # ------------------- Build unmerged dataset ------------------- #
     print("\n" + "=" * 70)
     print("STEP 5: BUILD UNMERGED DATASETS")
@@ -1555,44 +1841,43 @@ def main():
     counts_valtest = pred_counts
 
     unmerged_const_train, unmerged_mask_train = build_unmerged_view(
-        feat_hlt_std, hlt_mask, hlt_const, counts_train,
+        feat_hlt_nosmear_std, hlt_mask, hlt_const_nosmear, counts_train,
         unmerge_model, tgt_mean, tgt_std, max_count, args.max_constits, device, BS_un
     )
     unmerged_const_val, unmerged_mask_val = build_unmerged_view(
-        feat_hlt_std, hlt_mask, hlt_const, counts_valtest,
+        feat_unsmear1_std, hlt_mask, hlt_unsmear1_const, counts_valtest,
         unmerge_model, tgt_mean, tgt_std, max_count, args.max_constits, device, BS_un
     )
 
-    # ------------------- Train unsmear diffusion ------------------- #
+    # ------------------- UNSMEAR-2 (unmerged -> offline) ------------------- #
     print("\n" + "=" * 70)
-    print("STEP 6: UNSMEAR DIFFUSION")
+    print("STEP 6: UNSMEAR-2 (unmerged -> offline)")
     print("=" * 70)
-    smear_only, smear_mask = apply_smear_only(const_off, masks_off, CONFIG, seed=RANDOM_SEED + 123)
-    const_means, const_stds = get_stats(const_off, masks_off, train_idx)
-    off_std = standardize(const_off, masks_off, const_means, const_stds)
-    smear_std = standardize(smear_only, smear_mask, const_means, const_stds)
-    train_pair = JetPairDataset(off_std[train_idx], smear_std[train_idx], masks_off[train_idx], smear_mask[train_idx])
-    val_pair = JetPairDataset(off_std[val_idx], smear_std[val_idx], masks_off[val_idx], smear_mask[val_idx])
+    unmerged_std_train = standardize(unmerged_const_train, unmerged_mask_train, const_means, const_stds)
+    unmerged_std_val = standardize(unmerged_const_val, unmerged_mask_val, const_means, const_stds)
+    train_pair = JetPairDataset(off_std_const[train_idx], unmerged_std_train[train_idx],
+                                masks_off[train_idx], unmerged_mask_train[train_idx])
+    val_pair = JetPairDataset(off_std_const[val_idx], unmerged_std_val[val_idx],
+                              masks_off[val_idx], unmerged_mask_val[val_idx])
     train_pair_loader = DataLoader(train_pair, batch_size=CONFIG["training"]["batch_size"], shuffle=True, drop_last=True)
     val_pair_loader = DataLoader(val_pair, batch_size=CONFIG["training"]["batch_size"], shuffle=False)
 
-    diff_model = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
-    ema = EMA(diff_model, decay=CONFIG["diffusion"]["ema_decay"])
+    diff2 = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
+    ema2 = EMA(diff2, decay=CONFIG["diffusion"]["ema_decay"])
     betas = torch.tensor(make_beta_schedule(CONFIG["diffusion"]["timesteps"], CONFIG["diffusion"]["schedule"]), dtype=torch.float32, device=device)
     alpha = 1.0 - betas
     alpha_bar = torch.cumprod(alpha, dim=0)
-    opt_d = torch.optim.AdamW(diff_model.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
-    sch_d = get_scheduler(opt_d, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+    opt_d2 = torch.optim.AdamW(diff2.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+    sch_d2 = get_scheduler(opt_d2, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
     best_val = 1e9
     best_state = None
     no_improve = 0
-    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Diffusion"):
-        loss = train_diffusion_epoch(diff_model, ema, train_pair_loader, opt_d, device, alpha_bar)
-        sch_d.step()
+    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Unsmear2"):
+        loss = train_diffusion_epoch(diff2, ema2, train_pair_loader, opt_d2, device, alpha_bar)
+        sch_d2.step()
         if (ep + 1) % 5 == 0:
-            # quick val L1
             ema_model = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
-            ema.apply_to(ema_model)
+            ema2.apply_to(ema_model)
             val_loss = 0.0
             count = 0
             for batch in val_pair_loader:
@@ -1606,83 +1891,28 @@ def main():
             print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_loss:.6f}")
             if val_loss < best_val:
                 best_val = val_loss
-                best_state = {k: v.detach().cpu().clone() for k, v in diff_model.state_dict().items()}
+                best_state = {k: v.detach().cpu().clone() for k, v in diff2.state_dict().items()}
                 no_improve = 0
             else:
                 no_improve += 1
             if no_improve >= CONFIG["training"]["patience"]:
-                print(f"Early stopping diffusion at epoch {ep+1}")
+                print(f"Early stopping unsmear2 at epoch {ep+1}")
                 break
     if best_state is not None:
-        diff_model.load_state_dict(best_state)
-        ema.shadow = {k: v.detach().clone() for k, v in diff_model.state_dict().items()}
+        diff2.load_state_dict(best_state)
+        ema2.shadow = {k: v.detach().clone() for k, v in diff2.state_dict().items()}
 
-    ema_model = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
-    ema.apply_to(ema_model)
+    ema_model2 = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
+    ema2.apply_to(ema_model2)
 
-    # ------------------- Fine-tune on unmerged outputs ------------------- #
-    if CONFIG["diffusion_finetune"]["enabled"]:
-        print("\n" + "=" * 70)
-        print("STEP 6B: UNSMEAR FINETUNE (Unmerged -> Offline)")
-        print("=" * 70)
-        unmerged_std_train = standardize(unmerged_const_train, unmerged_mask_train, const_means, const_stds)
-        unmerged_std_val = standardize(unmerged_const_val, unmerged_mask_val, const_means, const_stds)
-        ft_train = JetPairDataset(off_std[train_idx], unmerged_std_train[train_idx], masks_off[train_idx], unmerged_mask_train[train_idx])
-        ft_val = JetPairDataset(off_std[val_idx], unmerged_std_val[val_idx], masks_off[val_idx], unmerged_mask_val[val_idx])
-        ft_train_loader = DataLoader(ft_train, batch_size=CONFIG["training"]["batch_size"], shuffle=True, drop_last=True)
-        ft_val_loader = DataLoader(ft_val, batch_size=CONFIG["training"]["batch_size"], shuffle=False)
-
-        opt_ft = torch.optim.AdamW(
-            diff_model.parameters(),
-            lr=CONFIG["training"]["lr"] * CONFIG["diffusion_finetune"]["lr_mult"],
-            weight_decay=CONFIG["training"]["weight_decay"],
-        )
-        sch_ft = get_scheduler(opt_ft, CONFIG["training"]["warmup_epochs"], CONFIG["diffusion_finetune"]["epochs"])
-        best_val_ft = 1e9
-        best_state_ft = None
-        no_improve = 0
-        for ep in tqdm(range(CONFIG["diffusion_finetune"]["epochs"]), desc="Diffusion-FT"):
-            loss = train_diffusion_epoch(diff_model, ema, ft_train_loader, opt_ft, device, alpha_bar)
-            sch_ft.step()
-            if (ep + 1) % 5 == 0:
-                ema_ft = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
-                ema.apply_to(ema_ft)
-                val_loss = 0.0
-                count = 0
-                for batch in ft_val_loader:
-                    x0 = batch["off"].to(device)
-                    cond = batch["hlt"].to(device)
-                    mask = batch["mask"].to(device)
-                    x0_pred = sample_ddim(ema_ft, cond, mask, betas, alpha, alpha_bar, CONFIG["sampling"]["sample_steps"])
-                    val_loss += F.l1_loss(x0_pred, x0, reduction="sum").item()
-                    count += x0.numel()
-                val_loss = val_loss / max(count, 1)
-                print(f"FT Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_loss:.6f}")
-                if val_loss < best_val_ft:
-                    best_val_ft = val_loss
-                    best_state_ft = {k: v.detach().cpu().clone() for k, v in diff_model.state_dict().items()}
-                    no_improve = 0
-                else:
-                    no_improve += 1
-                if no_improve >= CONFIG["diffusion_finetune"]["patience"]:
-                    print(f"Early stopping diffusion FT at epoch {ep+1}")
-                    break
-        if best_state_ft is not None:
-            diff_model.load_state_dict(best_state_ft)
-            ema.shadow = {k: v.detach().clone() for k, v in diff_model.state_dict().items()}
-        ema_model = ConditionalDenoiser(input_dim=4, embed_dim=256, num_heads=8, num_layers=8, ff_dim=1024, dropout=0.1).to(device)
-        ema.apply_to(ema_model)
-
-    # ------------------- Unsmeared datasets ------------------- #
+    # ------------------- Unsmeared datasets (2nd pass) ------------------- #
     print("\n" + "=" * 70)
-    print("STEP 7: UNSMEAR UNMERGED DATA")
+    print("STEP 7: UNSMEAR UNMERGED DATA (2nd pass)")
     print("=" * 70)
-    unmerge_std = standardize(unmerged_const_train, unmerged_mask_train, const_means, const_stds)
-    unsmeared_std_train = generate_unsmeared(ema_model, unmerge_std, unmerged_mask_train, betas, alpha, alpha_bar, device)
+    unsmeared_std_train = generate_unsmeared(ema_model2, unmerged_std_train, unmerged_mask_train, betas, alpha, alpha_bar, device)
     unsmeared_const_train = unsmeared_std_train * const_stds + const_means
 
-    unmerge_std_val = standardize(unmerged_const_val, unmerged_mask_val, const_means, const_stds)
-    unsmeared_std_val = generate_unsmeared(ema_model, unmerge_std_val, unmerged_mask_val, betas, alpha, alpha_bar, device)
+    unsmeared_std_val = generate_unsmeared(ema_model2, unmerged_std_val, unmerged_mask_val, betas, alpha, alpha_bar, device)
     unsmeared_const_val = unsmeared_std_val * const_stds + const_means
 
     # Final classifier

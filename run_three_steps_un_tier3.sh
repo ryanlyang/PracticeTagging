@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=unmerge_distr
-#SBATCH --output=unmerge_distr_logs/unmerge_distr_%j.out
-#SBATCH --error=unmerge_distr_logs/unmerge_distr_%j.err
+#SBATCH --job-name=three_steps_un
+#SBATCH --output=three_steps_un_logs/three_steps_un_%j.out
+#SBATCH --error=three_steps_un_logs/three_steps_un_%j.err
 #SBATCH --time=4-12:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -10,10 +10,10 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 
-mkdir -p unmerge_distr_logs
+mkdir -p three_steps_un_logs
 
 echo "=========================================="
-echo "Unmerge Distributional Model"
+echo "Three-Step Unsmear/Unmerge Pipeline"
 echo "=========================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
@@ -37,49 +37,28 @@ TRAIN_PATH=${TRAIN_PATH:-""}
 N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
 MAX_CONSTITS=${MAX_CONSTITS:-80}
 MAX_MERGE_COUNT=${MAX_MERGE_COUNT:-10}
-SAVE_DIR=${SAVE_DIR:-"checkpoints/unmerge_distr"}
-RUN_NAME=${RUN_NAME:-"all_on"}
+SAVE_DIR=${SAVE_DIR:-"checkpoints/three_steps_un_sweep"}
+RUN_NAME=${RUN_NAME:-"default"}
 SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS:-0}
+EXTRA_ARGS=${EXTRA_ARGS:-""}
 
-UNMERGE_LOSS=${UNMERGE_LOSS:-"hungarian"}
-USE_TRUE_COUNT=${USE_TRUE_COUNT:-1}
-NO_CURRICULUM=${NO_CURRICULUM:-0}
-CURR_START=${CURR_START:-2}
-CURR_EPOCHS=${CURR_EPOCHS:-20}
-PHYSICS_WEIGHT=${PHYSICS_WEIGHT:-0.2}
-NLL_WEIGHT=${NLL_WEIGHT:-1.0}
-NO_DISTRIBUTIONAL=${NO_DISTRIBUTIONAL:-0}
-
-CMD="python unmerge_distr_model.py \
+CMD="python three_steps_un.py \
   --save_dir $SAVE_DIR \
   --run_name $RUN_NAME \
   --n_train_jets $N_TRAIN_JETS \
   --max_constits $MAX_CONSTITS \
-  --max_merge_count $MAX_MERGE_COUNT \
-  --unmerge_loss $UNMERGE_LOSS \
-  --curriculum_start $CURR_START \
-  --curriculum_epochs $CURR_EPOCHS \
-  --physics_weight $PHYSICS_WEIGHT \
-  --nll_weight $NLL_WEIGHT"
+  --max_merge_count $MAX_MERGE_COUNT"
 
 if [ -n "$TRAIN_PATH" ]; then
   CMD="$CMD --train_path $TRAIN_PATH"
 fi
 
-if [ "$USE_TRUE_COUNT" -eq 1 ]; then
-  CMD="$CMD --use_true_count"
-fi
-
-if [ "$NO_CURRICULUM" -eq 1 ]; then
-  CMD="$CMD --no_curriculum"
-fi
-
-if [ "$NO_DISTRIBUTIONAL" -eq 1 ]; then
-  CMD="$CMD --no_distributional"
-fi
-
 if [ "$SKIP_SAVE_MODELS" -eq 1 ]; then
   CMD="$CMD --skip_save_models"
+fi
+
+if [ -n "$EXTRA_ARGS" ]; then
+  CMD="$CMD $EXTRA_ARGS"
 fi
 
 if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
@@ -99,10 +78,10 @@ EXIT_CODE=$?
 echo ""
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
-  echo "Run completed successfully"
+  echo "Pipeline completed successfully"
   echo "Results saved to: $SAVE_DIR/$RUN_NAME"
 else
-  echo "Run failed with exit code: $EXIT_CODE"
+  echo "Pipeline failed with exit code: $EXIT_CODE"
 fi
 echo "End Time: $(date)"
 echo "=========================================="
