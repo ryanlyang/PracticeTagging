@@ -3,11 +3,11 @@
 #SBATCH --job-name=unsmear
 #SBATCH --output=unsmear_logs/unsmear_%j.out
 #SBATCH --error=unsmear_logs/unsmear_%j.err
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 
 mkdir -p unsmear_logs
@@ -39,8 +39,8 @@ MAX_CONSTITS=${MAX_CONSTITS:-80}
 SAVE_DIR=${SAVE_DIR:-"checkpoints/unsmear"}
 RUN_NAME=${RUN_NAME:-"default"}
 
-PRED_TYPE=${PRED_TYPE:-"eps"}
-SNR_WEIGHT=${SNR_WEIGHT:-0}
+PRED_TYPE=${PRED_TYPE:-"v"}
+SNR_WEIGHT=${SNR_WEIGHT:-1}
 SNR_GAMMA=${SNR_GAMMA:-5.0}
 SELF_COND_PROB=${SELF_COND_PROB:-0.5}
 COND_DROP_PROB=${COND_DROP_PROB:-0.1}
@@ -49,8 +49,8 @@ USE_CROSS_ATTN=${USE_CROSS_ATTN:-1}
 NO_SELF_COND=${NO_SELF_COND:-0}
 SAMPLING_METHOD=${SAMPLING_METHOD:-"ddim"}
 GUIDANCE_SCALE=${GUIDANCE_SCALE:-1.5}
-SAMPLE_STEPS=${SAMPLE_STEPS:-200}
-N_SAMPLES_EVAL=${N_SAMPLES_EVAL:-1}
+SAMPLE_STEPS=${SAMPLE_STEPS:-400}
+N_SAMPLES_EVAL=${N_SAMPLES_EVAL:-4}
 SKIP_CLASSIFIERS=${SKIP_CLASSIFIERS:-0}
 
 CMD="python unsmear_method.py \
