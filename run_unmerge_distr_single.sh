@@ -3,7 +3,7 @@
 #SBATCH --job-name=unmerge_distr
 #SBATCH --output=unmerge_distr_logs/unmerge_distr_%j.out
 #SBATCH --error=unmerge_distr_logs/unmerge_distr_%j.err
-#SBATCH --time=4-12:00:00
+#SBATCH --time=4-23:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
