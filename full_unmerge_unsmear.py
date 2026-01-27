@@ -869,6 +869,8 @@ def train_diffusion_epoch(model, ema, loader, opt, device, alpha_bar):
         x0 = batch["off"].to(device)
         cond = batch["hlt"].to(device)
         mask = batch["mask"].to(device)
+        x0 = torch.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
+        cond = torch.nan_to_num(cond, nan=0.0, posinf=0.0, neginf=0.0)
 
         if CONFIG["diffusion"]["cond_drop_prob"] > 0:
             drop = torch.rand(x0.size(0), device=device) < CONFIG["diffusion"]["cond_drop_prob"]
@@ -979,6 +981,7 @@ def generate_unsmeared(model, hlt_std, mask_hlt, betas, alpha, alpha_bar, device
     for batch in tqdm(loader, desc="UnsmearedGen"):
         x = batch["feat"].to(device)
         m = batch["mask"].to(device)
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         preds = []
         for _ in range(CONFIG["sampling"]["n_samples_eval"]):
             if CONFIG["sampling"]["method"] == "ddim":

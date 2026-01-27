@@ -102,6 +102,7 @@ CONFIG = {
         "grad_clip": 1.0,
     },
     "classifier": {
+        "batch_size": 512,
         "embed_dim": 128,
         "num_heads": 8,
         "num_layers": 6,
@@ -542,6 +543,8 @@ def train_epoch(model, ema, loader, opt, device, alpha_bar, cfg):
         x0 = batch["off"].to(device)
         cond = batch["hlt"].to(device)
         mask = batch["mask"].to(device)
+        x0 = torch.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
+        cond = torch.nan_to_num(cond, nan=0.0, posinf=0.0, neginf=0.0)
 
         # classifier-free guidance conditioning dropout
         if cfg["cond_drop_prob"] > 0:
@@ -710,6 +713,8 @@ def eval_reconstruction(model, loader, device, betas, alpha, alpha_bar, means, s
         x0 = batch["off"].to(device)
         cond = batch["hlt"].to(device)
         mask = batch["mask"].to(device)
+        x0 = torch.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
+        cond = torch.nan_to_num(cond, nan=0.0, posinf=0.0, neginf=0.0)
 
         preds = []
         for _ in range(cfg["n_samples_eval"]):
@@ -755,6 +760,7 @@ def generate_unsmeared_constituents(model, hlt_std, mask_hlt, betas, alpha, alph
     for batch in tqdm(loader, desc="UnsmearedGen"):
         x = batch["feat"].to(device)
         m = batch["mask"].to(device)
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         preds = []
         for _ in range(cfg["n_samples_eval"]):
             if cfg["method"] == "ddim":
