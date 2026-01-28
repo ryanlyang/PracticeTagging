@@ -3,7 +3,7 @@
 #SBATCH --job-name=unsmear
 #SBATCH --output=unsmear_logs/unsmear_%j.out
 #SBATCH --error=unsmear_logs/unsmear_%j.err
-#SBATCH --time=4-23:30:00
+#SBATCH --time=1-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
@@ -52,8 +52,8 @@ run_one() {
   NO_SELF_COND=${NO_SELF_COND:-0}
   SAMPLING_METHOD=${SAMPLING_METHOD:-"ddim"}
   GUIDANCE_SCALE=${GUIDANCE_SCALE:-1.5}
-  SAMPLE_STEPS=${SAMPLE_STEPS:-400}
-  N_SAMPLES_EVAL=${N_SAMPLES_EVAL:-4}
+SAMPLE_STEPS=${SAMPLE_STEPS:-100}
+N_SAMPLES_EVAL=${N_SAMPLES_EVAL:-2}
   SKIP_CLASSIFIERS=${SKIP_CLASSIFIERS:-0}
 
   CMD="python unsmear_method.py \
