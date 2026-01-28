@@ -51,6 +51,7 @@ NO_DISTRIBUTIONAL=${NO_DISTRIBUTIONAL:-0}
 K_FOLDS=${K_FOLDS:-5}
 KFOLD_ENSEMBLE=${KFOLD_ENSEMBLE:-1}
 KFOLD_MODEL_DIR=${KFOLD_MODEL_DIR:-"$SAVE_DIR/$RUN_NAME/kfold_models"}
+MC_SWEEP=${MC_SWEEP:-0}
 
 CMD="python unmerge_distr_model.py \
   --save_dir $SAVE_DIR \
@@ -114,16 +115,29 @@ if [ $EXIT_CODE -eq 0 ]; then
   TEACHER_CKPT="$SAVE_DIR/$RUN_NAME/teacher.pt"
   BASELINE_CKPT="$SAVE_DIR/$RUN_NAME/baseline.pt"
 
-  declare -a TAGS=("mc0_st1" "mc4_st1" "mc4_hiCons" "mc0_nost" "kd0_mc0" "kd0_mc4" "rep_hi" "nce_hi" "attn_hi" "temp_lo" "temp_hi" "conf_off")
-  declare -a MC_S=(1 4 4 1 1 4 1 1 1 1 1 1)
-  declare -a MC_W=(0.1 0.1 0.3 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1)
-  declare -a NO_ST=(0 0 0 1 1 1 0 0 0 0 0 0)
-  declare -a ALPHA_KD=("" "" "" "" "0.0" "0.0" "" "" "" "" "" "")
-  declare -a ALPHA_REP=("" "" "" "" "" "" "0.30" "" "" "" "" "")
-  declare -a ALPHA_NCE=("" "" "" "" "" "" "" "0.30" "" "" "" "")
-  declare -a ALPHA_ATTN=("" "" "" "" "" "" "" "" "0.15" "" "" "")
-  declare -a KD_TEMP=("" "" "" "" "" "" "" "" "" "5.0" "9.0" "")
-  declare -a NO_CONF=(0 0 0 0 0 0 0 0 0 0 0 1)
+  if [ "$MC_SWEEP" -eq 1 ]; then
+    declare -a TAGS=("mc1" "mc2" "mc4" "mc8" "mc16" "mc32")
+    declare -a MC_S=(1 2 4 8 16 32)
+    declare -a MC_W=(0.1 0.1 0.1 0.08 0.05 0.03)
+    declare -a NO_ST=(0 0 0 0 0 0)
+    declare -a ALPHA_KD=("" "" "" "" "" "")
+    declare -a ALPHA_REP=("" "" "" "" "" "")
+    declare -a ALPHA_NCE=("" "" "" "" "" "")
+    declare -a ALPHA_ATTN=("" "" "" "" "" "")
+    declare -a KD_TEMP=("" "" "" "" "" "")
+    declare -a NO_CONF=(0 0 0 0 0 0)
+  else
+    declare -a TAGS=("mc0_st1" "mc4_st1" "mc4_hiCons" "mc0_nost" "kd0_mc0" "kd0_mc4" "rep_hi" "nce_hi" "attn_hi" "temp_lo" "temp_hi" "conf_off")
+    declare -a MC_S=(1 4 4 1 1 4 1 1 1 1 1 1)
+    declare -a MC_W=(0.1 0.1 0.3 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1)
+    declare -a NO_ST=(0 0 0 1 1 1 0 0 0 0 0 0)
+    declare -a ALPHA_KD=("" "" "" "" "0.0" "0.0" "" "" "" "" "" "")
+    declare -a ALPHA_REP=("" "" "" "" "" "" "0.30" "" "" "" "" "")
+    declare -a ALPHA_NCE=("" "" "" "" "" "" "" "0.30" "" "" "" "")
+    declare -a ALPHA_ATTN=("" "" "" "" "" "" "" "" "0.15" "" "" "")
+    declare -a KD_TEMP=("" "" "" "" "" "" "" "" "" "5.0" "9.0" "")
+    declare -a NO_CONF=(0 0 0 0 0 0 0 0 0 0 0 1)
+  fi
 
   for i in "${!TAGS[@]}"; do
     tag=${TAGS[$i]}
