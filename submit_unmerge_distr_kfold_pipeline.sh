@@ -77,44 +77,4 @@ TRAIN_PATH=$TRAIN_PATH \
 
 echo "Final job submitted as Job $final_jid"
 
-echo "Submitting classifier-only sweeps (after final job)..."
-# 12 runs: mix KD details, MC on/off, self-train on/off, + KD-off baselines
-declare -a TAGS=(\"mc0_st1\" \"mc4_st1\" \"mc4_hiCons\" \"mc0_nost\" \"kd0_mc0\" \"kd0_mc4\" \"rep_hi\" \"nce_hi\" \"attn_hi\" \"temp_lo\" \"temp_hi\" \"conf_off\")
-declare -a MC_S=(1 4 4 1 1 4 1 1 1 1 1 1)
-declare -a MC_W=(0.1 0.1 0.3 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1)
-declare -a NO_ST=(0 0 0 1 1 1 0 0 0 0 0 0)
-declare -a ALPHA_KD=(\"\" \"\" \"\" \"\" \"0.0\" \"0.0\" \"\" \"\" \"\" \"\" \"\" \"\")
-declare -a ALPHA_REP=(\"\" \"\" \"\" \"\" \"\" \"\" \"0.30\" \"\" \"\" \"\" \"\" \"\")
-declare -a ALPHA_NCE=(\"\" \"\" \"\" \"\" \"\" \"\" \"\" \"0.30\" \"\" \"\" \"\" \"\")
-declare -a ALPHA_ATTN=(\"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"0.15\" \"\" \"\" \"\")
-declare -a KD_TEMP=(\"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"\" \"5.0\" \"9.0\" \"\")
-declare -a NO_CONF=(0 0 0 0 0 0 0 0 0 0 0 1)
-
-for i in "${!TAGS[@]}"; do
-  tag=${TAGS[$i]}
-  ms=${MC_S[$i]}
-  mw=${MC_W[$i]}
-  ns=${NO_ST[$i]}
-  akd=${ALPHA_KD[$i]}
-  arep=${ALPHA_REP[$i]}
-  ance=${ALPHA_NCE[$i]}
-  aattn=${ALPHA_ATTN[$i]}
-  kdt=${KD_TEMP[$i]}
-  nconf=${NO_CONF[$i]}
-  jid=$(sbatch --dependency=afterok:$final_jid --export=ALL,\
-TAG=$tag,\
-MC_SAMPLES=$ms,\
-MC_CONS_W=$mw,\
-NO_SELF_TRAIN=$ns,\
-ALPHA_KD=$akd,\
-ALPHA_REP=$arep,\
-ALPHA_NCE=$ance,\
-ALPHA_ATTN=$aattn,\
-KD_TEMP=$kdt,\
-NO_CONF_KD=$nconf,\
-SAVE_DIR=$SAVE_DIR,\
-RUN_NAME=$RUN_NAME,\
-N_TRAIN_JETS=$N_TRAIN_JETS,\
-MAX_CONSTITS=$MAX_CONSTITS,\
-TRAIN_PATH=$TRAIN_PATH \
-  run_unmerge_distr_classifier_only.sh | awk '{print $4}')\n  echo \"  Classifier $tag submitted as Job $jid\"\n+  sleep 0.2\n+done
+echo "Classifier-only sweeps will run inside the final job."

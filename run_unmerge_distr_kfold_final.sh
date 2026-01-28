@@ -101,6 +101,90 @@ eval $CMD
 
 EXIT_CODE=$?
 
+if [ $EXIT_CODE -eq 0 ]; then
+  echo ""
+  echo "=========================================="
+  echo "Classifier-only sweeps (sequential)"
+  echo "=========================================="
+
+  CACHE_PATH="$SAVE_DIR/$RUN_NAME/unmerged_cache.npz"
+  MC_CACHE_PATH="$SAVE_DIR/$RUN_NAME/unmerged_mc_cache.npz"
+  TEACHER_CKPT="$SAVE_DIR/$RUN_NAME/teacher.pt"
+  BASELINE_CKPT="$SAVE_DIR/$RUN_NAME/baseline.pt"
+
+  declare -a TAGS=("mc0_st1" "mc4_st1" "mc4_hiCons" "mc0_nost" "kd0_mc0" "kd0_mc4" "rep_hi" "nce_hi" "attn_hi" "temp_lo" "temp_hi" "conf_off")
+  declare -a MC_S=(1 4 4 1 1 4 1 1 1 1 1 1)
+  declare -a MC_W=(0.1 0.1 0.3 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1)
+  declare -a NO_ST=(0 0 0 1 1 1 0 0 0 0 0 0)
+  declare -a ALPHA_KD=("" "" "" "" "0.0" "0.0" "" "" "" "" "" "")
+  declare -a ALPHA_REP=("" "" "" "" "" "" "0.30" "" "" "" "" "")
+  declare -a ALPHA_NCE=("" "" "" "" "" "" "" "0.30" "" "" "" "")
+  declare -a ALPHA_ATTN=("" "" "" "" "" "" "" "" "0.15" "" "" "")
+  declare -a KD_TEMP=("" "" "" "" "" "" "" "" "" "5.0" "9.0" "")
+  declare -a NO_CONF=(0 0 0 0 0 0 0 0 0 0 0 1)
+
+  for i in "${!TAGS[@]}"; do
+    tag=${TAGS[$i]}
+    ms=${MC_S[$i]}
+    mw=${MC_W[$i]}
+    ns=${NO_ST[$i]}
+    akd=${ALPHA_KD[$i]}
+    arep=${ALPHA_REP[$i]}
+    ance=${ALPHA_NCE[$i]}
+    aattn=${ALPHA_ATTN[$i]}
+    kdt=${KD_TEMP[$i]}
+    nconf=${NO_CONF[$i]}
+
+    CMD_CLS="python unmerge_distr_model.py \
+      --save_dir $SAVE_DIR \
+      --run_name ${RUN_NAME}_cls_${tag} \
+      --n_train_jets $N_TRAIN_JETS \
+      --max_constits $MAX_CONSTITS \
+      --classifier_only \
+      --load_unmerged_cache $CACHE_PATH \
+      --teacher_checkpoint $TEACHER_CKPT \
+      --baseline_checkpoint $BASELINE_CKPT \
+      --k_folds 1 \
+      --mc_samples $ms \
+      --mc_consistency_weight $mw"
+
+    if [ "$ns" -eq 1 ]; then
+      CMD_CLS="$CMD_CLS --no_self_train"
+    fi
+    if [ -n "$akd" ]; then
+      CMD_CLS="$CMD_CLS --alpha_kd $akd"
+    fi
+    if [ -n "$arep" ]; then
+      CMD_CLS="$CMD_CLS --alpha_rep $arep"
+    fi
+    if [ -n "$ance" ]; then
+      CMD_CLS="$CMD_CLS --alpha_nce $ance"
+    fi
+    if [ -n "$aattn" ]; then
+      CMD_CLS="$CMD_CLS --alpha_attn $aattn"
+    fi
+    if [ -n "$kdt" ]; then
+      CMD_CLS="$CMD_CLS --kd_temp $kdt"
+    fi
+    if [ "$nconf" -eq 1 ]; then
+      CMD_CLS="$CMD_CLS --no_conf_kd"
+    fi
+    if [ "$ms" -gt 1 ] && [ -f "$MC_CACHE_PATH" ]; then
+      CMD_CLS="$CMD_CLS --load_mc_cache $MC_CACHE_PATH"
+    fi
+    if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+      CMD_CLS="$CMD_CLS --device cuda"
+    else
+      CMD_CLS="$CMD_CLS --device cpu"
+    fi
+
+    echo ""
+    echo "Classifier run: $tag"
+    echo "$CMD_CLS"
+    eval $CMD_CLS
+  done
+fi
+
 echo ""
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
