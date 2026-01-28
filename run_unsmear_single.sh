@@ -3,11 +3,11 @@
 #SBATCH --job-name=unsmear
 #SBATCH --output=unsmear_logs/unsmear_%j.out
 #SBATCH --error=unsmear_logs/unsmear_%j.err
-#SBATCH --time=1-00:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 
 mkdir -p unsmear_logs
