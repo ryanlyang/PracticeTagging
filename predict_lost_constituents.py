@@ -19,7 +19,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
@@ -383,6 +383,23 @@ def evaluate(model, loader, device):
     return acc, preds, labs
 
 
+def predict_classes(model, loader, device):
+    model.eval()
+    preds = []
+    warned = False
+    with torch.no_grad():
+        for batch in loader:
+            x = batch["feat"].to(device)
+            m = batch["mask"].to(device)
+            logits = model(x, m)
+            if not warned and not torch.isfinite(logits).all():
+                print("Warning: NaN/Inf in logits during evaluation; replacing with 0.0.")
+                warned = True
+            pred = logits.argmax(dim=2).cpu().numpy()
+            preds.append(pred)
+    return np.concatenate(preds, axis=0)
+
+
 def get_scheduler(opt, warmup, total):
     def lr_lambda(ep):
         if ep < warmup:
@@ -431,6 +448,8 @@ def main():
     parser.add_argument("--eta_resolution", type=float, default=None)
     parser.add_argument("--phi_resolution", type=float, default=None)
     parser.add_argument("--max_merge_count", type=int, default=10)
+    parser.add_argument("--k_folds", type=int, default=1, help="K-fold OOF training (K>1).")
+    parser.add_argument("--kfold_ensemble_valtest", action="store_true", help="Ensemble K models for val/test.")
     args = parser.parse_args()
 
     if args.pt_resolution is not None:
@@ -526,49 +545,121 @@ def main():
     class_weights = compute_class_weights(count_label[train_idx], masks_hlt[train_idx], max_count)
     print(f"Class weights (1..{max_count}): {np.round(class_weights, 3)}")
 
-    model = MergePredictor(
-        input_dim=7,
-        embed_dim=args.embed_dim,
-        num_heads=args.num_heads,
-        num_layers=args.num_layers,
-        ff_dim=args.ff_dim,
-        dropout=args.dropout,
-        num_classes=max_count,
-    ).to(device)
+    k_folds = max(1, int(args.k_folds))
+    models = []
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    sch = get_scheduler(opt, args.warmup_epochs, args.epochs)
+    if k_folds > 1:
+        kf = KFold(n_splits=k_folds, shuffle=True, random_state=RANDOM_SEED)
+        train_idx_array = np.array(train_idx)
+        for fold_id, (train_sub_rel, hold_rel) in enumerate(kf.split(train_idx_array)):
+            train_sub = train_idx_array[train_sub_rel]
+            hold_sub = train_idx_array[hold_rel]
+            print(f"\n--- Fold {fold_id+1}/{k_folds} | train={len(train_sub)} holdout={len(hold_sub)} ---")
+            train_ds_f = MergeDataset(features_hlt_std[train_sub], masks_hlt[train_sub], count_label[train_sub])
+            val_ds_f = MergeDataset(features_hlt_std[hold_sub], masks_hlt[hold_sub], count_label[hold_sub])
+            train_loader_f = DataLoader(train_ds_f, batch_size=args.batch_size, shuffle=True, drop_last=True)
+            val_loader_f = DataLoader(val_ds_f, batch_size=args.batch_size, shuffle=False)
 
-    best_auc, best_state, no_improve = 0.0, None, 0
+            model = MergePredictor(
+                input_dim=7,
+                embed_dim=args.embed_dim,
+                num_heads=args.num_heads,
+                num_layers=args.num_layers,
+                ff_dim=args.ff_dim,
+                dropout=args.dropout,
+                num_classes=max_count,
+            ).to(device)
+            opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+            sch = get_scheduler(opt, args.warmup_epochs, args.epochs)
+            best_auc, best_state, no_improve = 0.0, None, 0
+            for ep in tqdm(range(args.epochs), desc=f"MergePredictor-F{fold_id+1}"):
+                train_loss, train_acc = train_epoch(model, train_loader_f, opt, device, class_weights)
+                val_acc, _, _ = evaluate(model, val_loader_f, device)
+                sch.step()
+                if val_acc > best_auc:
+                    best_auc = val_acc
+                    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if (ep + 1) % 5 == 0:
+                    print(f"Ep {ep+1}: train_acc={train_acc:.4f}, val_acc={val_acc:.4f}, best={best_auc:.4f}")
+                if no_improve >= args.patience:
+                    print(f"Early stopping at epoch {ep+1}")
+                    break
+            if best_state is not None:
+                model.load_state_dict(best_state)
+            models.append(model)
 
-    print("\n" + "=" * 70)
-    print("TRAINING: MERGE COUNT PREDICTOR (HLT -> count labels)")
-    print("=" * 70)
-    for ep in tqdm(range(args.epochs), desc="MergePredictor"):
-        train_loss, train_acc = train_epoch(model, train_loader, opt, device, class_weights)
-        val_acc, _, _ = evaluate(model, val_loader, device)
-        sch.step()
+        if args.kfold_ensemble_valtest:
+            print("Ensembling K models for val/test...")
+            # majority vote
+            def ensemble_predict(loader):
+                preds_stack = []
+                for m in models:
+                    preds_stack.append(predict_classes(m, loader, device))
+                preds_stack = np.stack(preds_stack, axis=0)  # (K, B, L)
+                counts = np.zeros((preds_stack.shape[1], preds_stack.shape[2], max_count), dtype=np.int32)
+                for c in range(max_count):
+                    counts[..., c] = (preds_stack == c).sum(axis=0)
+                return counts.argmax(axis=2)
 
-        if val_acc > best_auc:
-            best_auc = val_acc
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            no_improve = 0
+            val_preds = ensemble_predict(val_loader)
+            test_preds = ensemble_predict(test_loader)
+            val_labs = count_label[val_idx]
+            test_labs = count_label[test_idx]
+            val_acc = (val_preds[masks_hlt[val_idx]] == val_labs[masks_hlt[val_idx]]).mean()
+            test_acc = (test_preds[masks_hlt[test_idx]] == test_labs[masks_hlt[test_idx]]).mean()
+            test_mae = clipped_mae(test_preds, test_labs, max_count)
         else:
-            no_improve += 1
+            model = models[-1]
+            val_acc, val_preds, val_labs = evaluate(model, val_loader, device)
+            test_acc, test_preds, test_labs = evaluate(model, test_loader, device)
+            test_mae = clipped_mae(test_preds, test_labs, max_count)
+    else:
+        model = MergePredictor(
+            input_dim=7,
+            embed_dim=args.embed_dim,
+            num_heads=args.num_heads,
+            num_layers=args.num_layers,
+            ff_dim=args.ff_dim,
+            dropout=args.dropout,
+            num_classes=max_count,
+        ).to(device)
 
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_acc={train_acc:.4f}, val_acc={val_acc:.4f}, best={best_auc:.4f}")
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        sch = get_scheduler(opt, args.warmup_epochs, args.epochs)
 
-        if no_improve >= args.patience:
-            print(f"Early stopping at epoch {ep+1}")
-            break
+        best_auc, best_state, no_improve = 0.0, None, 0
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
+        print("\n" + "=" * 70)
+        print("TRAINING: MERGE COUNT PREDICTOR (HLT -> count labels)")
+        print("=" * 70)
+        for ep in tqdm(range(args.epochs), desc="MergePredictor"):
+            train_loss, train_acc = train_epoch(model, train_loader, opt, device, class_weights)
+            val_acc, _, _ = evaluate(model, val_loader, device)
+            sch.step()
 
-    val_acc, val_preds, val_labs = evaluate(model, val_loader, device)
-    test_acc, test_preds, test_labs = evaluate(model, test_loader, device)
-    test_mae = clipped_mae(test_preds, test_labs, max_count)
+            if val_acc > best_auc:
+                best_auc = val_acc
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (ep + 1) % 5 == 0:
+                print(f"Ep {ep+1}: train_acc={train_acc:.4f}, val_acc={val_acc:.4f}, best={best_auc:.4f}")
+
+            if no_improve >= args.patience:
+                print(f"Early stopping at epoch {ep+1}")
+                break
+
+        if best_state is not None:
+            model.load_state_dict(best_state)
+
+        val_acc, val_preds, val_labs = evaluate(model, val_loader, device)
+        test_acc, test_preds, test_labs = evaluate(model, test_loader, device)
+        test_mae = clipped_mae(test_preds, test_labs, max_count)
 
     print("\nFinal test accuracy:", f"{test_acc:.4f}")
     print(f"Final test MAE (clipped @ {max_count}): {test_mae:.4f}")
@@ -602,10 +693,16 @@ def main():
     )
 
     if not args.skip_save_models:
-        torch.save(
-            {"model": model.state_dict(), "best_val_acc": best_auc, "max_merge_count": max_count},
-            save_root / "merge_predictor.pt",
-        )
+        if k_folds > 1:
+            torch.save(
+                {"models": [m.state_dict() for m in models], "max_merge_count": max_count},
+                save_root / "merge_predictor_folds.pt",
+            )
+        else:
+            torch.save(
+                {"model": model.state_dict(), "best_val_acc": best_auc, "max_merge_count": max_count},
+                save_root / "merge_predictor.pt",
+            )
 
     print(f"Saved results to: {save_root}")
 

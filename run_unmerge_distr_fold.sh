@@ -1,8 +1,8 @@
 #!/bin/bash
 
-#SBATCH --job-name=unmerge_distr
-#SBATCH --output=unmerge_distr_logs/unmerge_distr_%j.out
-#SBATCH --error=unmerge_distr_logs/unmerge_distr_%j.err
+#SBATCH --job-name=unmerge_distr_f
+#SBATCH --output=unmerge_distr_kfold_logs/unmerge_distr_fold_%j.out
+#SBATCH --error=unmerge_distr_kfold_logs/unmerge_distr_fold_%j.err
 #SBATCH --time=4-23:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -10,14 +10,15 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 
-mkdir -p unmerge_distr_logs
+mkdir -p unmerge_distr_kfold_logs
 
 echo "=========================================="
-echo "Unmerge Distributional Model"
+echo "Unmerge Distributional Model (K-fold train-only)"
 echo "=========================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
 echo "Start Time: $(date)"
+echo "Fold: ${FOLD_ID:-0}"
 echo "=========================================="
 echo ""
 
@@ -37,10 +38,8 @@ TRAIN_PATH=${TRAIN_PATH:-""}
 N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
 MAX_CONSTITS=${MAX_CONSTITS:-80}
 MAX_MERGE_COUNT=${MAX_MERGE_COUNT:-10}
-SAVE_DIR=${SAVE_DIR:-"checkpoints/unmerge_distr"}
-RUN_NAME=${RUN_NAME:-"all_on"}
-SKIP_SAVE_MODELS=${SKIP_SAVE_MODELS:-0}
-
+SAVE_DIR=${SAVE_DIR:-"checkpoints/unmerge_distr_kfold"}
+RUN_NAME=${RUN_NAME:-"kfold_run"}
 UNMERGE_LOSS=${UNMERGE_LOSS:-"hungarian"}
 USE_TRUE_COUNT=${USE_TRUE_COUNT:-0}
 NO_CURRICULUM=${NO_CURRICULUM:-0}
@@ -50,9 +49,8 @@ PHYSICS_WEIGHT=${PHYSICS_WEIGHT:-0.2}
 NLL_WEIGHT=${NLL_WEIGHT:-1.0}
 NO_DISTRIBUTIONAL=${NO_DISTRIBUTIONAL:-0}
 K_FOLDS=${K_FOLDS:-5}
-KFOLD_ENSEMBLE=${KFOLD_ENSEMBLE:-1}
-MC_SAMPLES=${MC_SAMPLES:-1}
-MC_CONS_W=${MC_CONS_W:-0.1}
+KFOLD_MODEL_DIR=${KFOLD_MODEL_DIR:-"$SAVE_DIR/$RUN_NAME/kfold_models"}
+FOLD_ID=${FOLD_ID:-0}
 
 CMD="python unmerge_distr_model.py \
   --save_dir $SAVE_DIR \
@@ -66,8 +64,8 @@ CMD="python unmerge_distr_model.py \
   --physics_weight $PHYSICS_WEIGHT \
   --nll_weight $NLL_WEIGHT \
   --k_folds $K_FOLDS \
-  --mc_samples $MC_SAMPLES \
-  --mc_consistency_weight $MC_CONS_W"
+  --kfold_train_only $FOLD_ID \
+  --kfold_model_dir $KFOLD_MODEL_DIR"
 
 if [ -n "$TRAIN_PATH" ]; then
   CMD="$CMD --train_path $TRAIN_PATH"
@@ -77,20 +75,12 @@ if [ "$USE_TRUE_COUNT" -eq 1 ]; then
   CMD="$CMD --use_true_count"
 fi
 
-if [ "$KFOLD_ENSEMBLE" -eq 1 ]; then
-  CMD="$CMD --kfold_ensemble_valtest"
-fi
-
 if [ "$NO_CURRICULUM" -eq 1 ]; then
   CMD="$CMD --no_curriculum"
 fi
 
 if [ "$NO_DISTRIBUTIONAL" -eq 1 ]; then
   CMD="$CMD --no_distributional"
-fi
-
-if [ "$SKIP_SAVE_MODELS" -eq 1 ]; then
-  CMD="$CMD --skip_save_models"
 fi
 
 if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
@@ -110,10 +100,10 @@ EXIT_CODE=$?
 echo ""
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
-  echo "Run completed successfully"
-  echo "Results saved to: $SAVE_DIR/$RUN_NAME"
+  echo "Fold run completed successfully"
+  echo "Fold models saved to: $KFOLD_MODEL_DIR/fold_$FOLD_ID"
 else
-  echo "Run failed with exit code: $EXIT_CODE"
+  echo "Fold run failed with exit code: $EXIT_CODE"
 fi
 echo "End Time: $(date)"
 echo "=========================================="

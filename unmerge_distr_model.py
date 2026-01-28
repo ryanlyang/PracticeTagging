@@ -21,7 +21,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 from sklearn.metrics import roc_auc_score, roc_curve
 
 import matplotlib.pyplot as plt
@@ -114,13 +114,19 @@ CONFIG = {
         "warmup_epochs": 5,
         "patience": 20,
         "loss_type": "hungarian",  # chamfer | hungarian
-        "use_true_count": True,
+        "use_true_count": False,
         "curriculum": True,
         "curriculum_start": 2,
         "curriculum_epochs": 20,
         "physics_weight": 0.2,
         "nll_weight": 1.0,
         "distributional": True,
+    },
+    "mc_sampling": {
+        "enabled": False,
+        "n_samples": 4,
+        "consistency_weight": 0.1,
+        "seed": 1337,
     },
     "kd": {
         "temperature": 7.0,
@@ -506,6 +512,25 @@ class UnmergeDataset(Dataset):
         }
 
 
+class MCJetDataset(Dataset):
+    def __init__(self, feat_list, mask_list, labels):
+        self.feat_list = feat_list
+        self.mask_list = mask_list
+        self.labels = torch.tensor(labels, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, i):
+        feats = np.stack([f[i] for f in self.feat_list], axis=0)
+        masks = np.stack([m[i] for m in self.mask_list], axis=0)
+        return {
+            "feat": torch.tensor(feats, dtype=torch.float32),
+            "mask": torch.tensor(masks, dtype=torch.bool),
+            "label": self.labels[i],
+        }
+
+
 class ParticleTransformer(nn.Module):
     def __init__(self, input_dim=7, embed_dim=128, num_heads=8, num_layers=6, ff_dim=512, dropout=0.1):
         super().__init__()
@@ -839,6 +864,36 @@ def train_classifier(model, loader, opt, device, ema=None):
     return total_loss / len(preds), auc
 
 
+def train_classifier_mc(model, loader, opt, device, consistency_weight):
+    model.train()
+    total_loss = 0.0
+    preds, labs = [], []
+    for batch in loader:
+        x = batch["feat"].to(device)  # (B, K, N, F)
+        m = batch["mask"].to(device)  # (B, K, N)
+        y = batch["label"].to(device)
+        K = x.size(1)
+        opt.zero_grad()
+        logits_list = []
+        loss_list = []
+        for k in range(K):
+            logits = model(x[:, k], m[:, k]).squeeze(1)
+            logits_list.append(logits)
+            loss_list.append(F.binary_cross_entropy_with_logits(logits, y))
+        loss_hard = torch.stack(loss_list).mean()
+        probs = torch.stack([safe_sigmoid(l) for l in logits_list], dim=1)  # (B, K)
+        cons = probs.var(dim=1).mean()
+        loss = loss_hard + consistency_weight * cons
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        total_loss += loss.item() * len(y)
+        preds.extend(probs.mean(dim=1).detach().cpu().numpy().flatten())
+        labs.extend(y.detach().cpu().numpy().flatten())
+    auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
+    return total_loss / len(preds), auc
+
+
 @torch.no_grad()
 def eval_classifier(model, loader, device):
     model.eval()
@@ -1101,6 +1156,222 @@ def build_unmerged_dataset(
     return new_const, new_mask
 
 
+def _build_samples_for_indices(indices, origin_lists, hlt_mask, pred_counts, max_count, max_constits):
+    samples = []
+    idx_set = set(indices)
+    for j in indices:
+        for idx in range(max_constits):
+            origin = origin_lists[j][idx]
+            if hlt_mask[j, idx] and len(origin) > 1:
+                if len(origin) > max_count:
+                    continue
+                pc = int(pred_counts[j, idx])
+                if pc < 2:
+                    pc = 2
+                if pc > max_count:
+                    pc = max_count
+                samples.append((j, idx, origin, pc))
+    return samples
+
+
+def predict_counts_ensemble(models, feat, mask, batch_size, device, max_count):
+    if len(models) == 1:
+        return predict_counts(models[0], feat, mask, batch_size, device, max_count)
+    preds = np.zeros(mask.shape, dtype=np.int64)
+    loader = DataLoader(MergeCountDataset(feat, mask, np.zeros(mask.shape, dtype=np.int64)),
+                        batch_size=batch_size, shuffle=False)
+    idx = 0
+    with torch.no_grad():
+        for batch in loader:
+            x = batch["feat"].to(device)
+            m = batch["mask"].to(device)
+            probs_sum = None
+            for model in models:
+                logits = model(x, m)
+                probs = torch.softmax(logits, dim=2)
+                probs_sum = probs if probs_sum is None else (probs_sum + probs)
+            probs_avg = probs_sum / float(len(models))
+            pred_cls = probs_avg.argmax(dim=2).cpu().numpy()
+            batch_size_curr = pred_cls.shape[0]
+            preds[idx:idx + batch_size_curr] = pred_cls + 1
+            preds[idx:idx + batch_size_curr][~mask[idx:idx + batch_size_curr]] = 0
+            idx += batch_size_curr
+    preds = np.clip(preds, 0, max_count)
+    return preds
+
+
+def build_unmerged_dataset_subset(
+    indices,
+    feat_hlt_std,
+    mask_hlt,
+    hlt_const,
+    pred_counts,
+    unmerge_model,
+    tgt_mean,
+    tgt_std,
+    max_count,
+    max_constits,
+    device,
+    batch_size,
+):
+    if len(indices) == 0:
+        return None, None
+    sub_feat = feat_hlt_std[indices]
+    sub_mask = mask_hlt[indices]
+    sub_hlt = hlt_const[indices]
+    sub_counts = pred_counts[indices]
+    sub_const, sub_mask_new = build_unmerged_dataset(
+        sub_feat,
+        sub_mask,
+        sub_hlt,
+        sub_counts,
+        unmerge_model,
+        tgt_mean,
+        tgt_std,
+        max_count,
+        max_constits,
+        device,
+        batch_size,
+    )
+    return sub_const, sub_mask_new
+
+
+def build_unmerged_dataset_ensemble_subset(
+    indices,
+    feat_hlt_std,
+    mask_hlt,
+    hlt_const,
+    pred_counts,
+    unmerge_models,
+    tgt_stats,
+    max_count,
+    max_constits,
+    device,
+    batch_size,
+):
+    if len(indices) == 0:
+        return None, None
+    sum_const = None
+    sum_mask = None
+    count = None
+    for model, (tgt_mean, tgt_std) in zip(unmerge_models, tgt_stats):
+        sub_const, sub_mask = build_unmerged_dataset_subset(
+            indices,
+            feat_hlt_std,
+            mask_hlt,
+            hlt_const,
+            pred_counts,
+            model,
+            tgt_mean,
+            tgt_std,
+            max_count,
+            max_constits,
+            device,
+            batch_size,
+        )
+        if sub_const is None:
+            continue
+        if sum_const is None:
+            sum_const = np.zeros_like(sub_const, dtype=np.float32)
+            sum_mask = np.zeros_like(sub_mask, dtype=np.int32)
+            count = np.zeros_like(sub_mask, dtype=np.int32)
+        valid = sub_mask
+        sum_const += sub_const
+        sum_mask += valid.astype(np.int32)
+        count += valid.astype(np.int32)
+    if sum_const is None:
+        return None, None
+    count = np.maximum(count, 1)
+    avg_const = sum_const / count[..., None]
+    avg_mask = sum_mask > 0
+    return avg_const, avg_mask
+
+
+def build_unmerged_dataset_mc(
+    feat_hlt_std,
+    mask_hlt,
+    hlt_const,
+    pred_counts,
+    unmerge_model,
+    tgt_mean,
+    tgt_std,
+    max_count,
+    max_constits,
+    device,
+    batch_size,
+    n_samples,
+    seed,
+):
+    rng = np.random.default_rng(seed)
+    n_jets, max_part, _ = hlt_const.shape
+    pred_maps = [dict() for _ in range(n_samples)]
+    samples = []
+    for j in range(n_jets):
+        for idx in range(max_part):
+            if mask_hlt[j, idx] and pred_counts[j, idx] > 1:
+                samples.append((j, idx, int(pred_counts[j, idx])))
+
+    if len(samples) > 0:
+        unmerge_model.eval()
+        with torch.no_grad():
+            for i in range(0, len(samples), batch_size):
+                chunk = samples[i:i + batch_size]
+                jet_idx = [c[0] for c in chunk]
+                tok_idx = [c[1] for c in chunk]
+                counts = [c[2] for c in chunk]
+                x = torch.tensor(feat_hlt_std[jet_idx], dtype=torch.float32, device=device)
+                m = torch.tensor(mask_hlt[jet_idx], dtype=torch.bool, device=device)
+                token_idx = torch.tensor(tok_idx, dtype=torch.long, device=device)
+                count = torch.tensor(counts, dtype=torch.long, device=device)
+                mu, logvar = unmerge_model(x, m, token_idx, count)
+                mu_np = mu.cpu().numpy()
+                logvar_np = logvar.cpu().numpy()
+                std_np = np.exp(0.5 * logvar_np)
+
+                for s in range(n_samples):
+                    eps = rng.standard_normal(mu_np.shape).astype(np.float32)
+                    samp = mu_np + std_np * eps
+                    for k in range(len(chunk)):
+                        c = counts[k]
+                        pred = samp[k, :c]
+                        pred = pred * tgt_std + tgt_mean
+                        pred[:, 0] = np.clip(pred[:, 0], 0.0, None)
+                        pred[:, 1] = np.clip(pred[:, 1], -5.0, 5.0)
+                        pred[:, 2] = np.arctan2(np.sin(pred[:, 2]), np.cos(pred[:, 2]))
+                        pred[:, 3] = np.clip(pred[:, 3], 0.0, None)
+                        pred_maps[s][(chunk[k][0], chunk[k][1])] = pred
+
+    new_consts = []
+    new_masks = []
+    for s in range(n_samples):
+        new_const = np.zeros((n_jets, max_constits, 4), dtype=np.float32)
+        new_mask = np.zeros((n_jets, max_constits), dtype=bool)
+        pred_map = pred_maps[s]
+        for j in range(n_jets):
+            parts = []
+            for idx in range(max_part):
+                if not mask_hlt[j, idx]:
+                    continue
+                if pred_counts[j, idx] <= 1:
+                    parts.append(hlt_const[j, idx])
+                else:
+                    pred = pred_map.get((j, idx))
+                    if pred is not None:
+                        parts.extend(list(pred))
+            if len(parts) == 0:
+                continue
+            parts = np.array(parts, dtype=np.float32)
+            order = np.argsort(parts[:, 0])[::-1]
+            parts = parts[order]
+            n_keep = min(len(parts), max_constits)
+            new_const[j, :n_keep] = parts[:n_keep]
+            new_mask[j, :n_keep] = True
+        new_consts.append(new_const)
+        new_masks.append(new_mask)
+
+    return new_consts, new_masks
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_path", type=str, default="./data")
@@ -1113,25 +1384,102 @@ def main():
     parser.add_argument("--skip_save_models", action="store_true")
     parser.add_argument("--unmerge_loss", type=str, default=CONFIG["unmerge_training"]["loss_type"], choices=["chamfer", "hungarian"])
     parser.add_argument("--use_true_count", action="store_true", default=CONFIG["unmerge_training"]["use_true_count"])
+    parser.add_argument("--no_true_count", action="store_true", help="Force using predicted counts instead of true counts.")
     parser.add_argument("--no_curriculum", action="store_true")
     parser.add_argument("--curriculum_start", type=int, default=CONFIG["unmerge_training"]["curriculum_start"])
     parser.add_argument("--curriculum_epochs", type=int, default=CONFIG["unmerge_training"]["curriculum_epochs"])
     parser.add_argument("--physics_weight", type=float, default=CONFIG["unmerge_training"]["physics_weight"])
     parser.add_argument("--nll_weight", type=float, default=CONFIG["unmerge_training"]["nll_weight"])
     parser.add_argument("--no_distributional", action="store_true", help="Disable mean+variance output (use point estimates)")
+    parser.add_argument("--mc_samples", type=int, default=CONFIG["mc_sampling"]["n_samples"], help="Number of Monte-Carlo unmerge samples (>=2 enables MC).")
+    parser.add_argument("--mc_consistency_weight", type=float, default=CONFIG["mc_sampling"]["consistency_weight"], help="Consistency loss weight for MC samples.")
+    parser.add_argument("--mc_seed", type=int, default=CONFIG["mc_sampling"]["seed"], help="Seed for MC sampling.")
+    parser.add_argument("--no_mc", action="store_true", help="Disable Monte-Carlo sampling/consistency training.")
+    parser.add_argument("--k_folds", type=int, default=1, help="K-fold OOF training for count+unmerge (K>1).")
+    parser.add_argument("--kfold_ensemble_valtest", action="store_true", help="Ensemble K models for val/test generation.")
+    parser.add_argument("--kfold_train_only", type=int, default=-1, help="Train only a single fold (0-based) and save models, then exit.")
+    parser.add_argument("--kfold_model_dir", type=str, default=None, help="Directory to save/load fold models.")
+    parser.add_argument("--kfold_use_pretrained", action="store_true", help="Use pre-trained fold models and skip fold training.")
+    parser.add_argument("--classifier_only", action="store_true", help="Skip count/unmerge training and only train classifiers using cached unmerged data.")
+    parser.add_argument("--save_unmerged_cache", action="store_true", help="Save unmerged dataset cache for classifier-only runs.")
+    parser.add_argument("--load_unmerged_cache", type=str, default=None, help="Load unmerged dataset cache for classifier-only runs.")
+    parser.add_argument("--load_mc_cache", type=str, default=None, help="Load MC unmerged dataset cache for classifier-only runs.")
+    parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to pretrained teacher checkpoint (skip training).")
+    parser.add_argument("--baseline_checkpoint", type=str, default=None, help="Path to pretrained baseline checkpoint (skip training).")
+    parser.add_argument("--skip_baseline", action="store_true", help="Skip baseline training/evaluation.")
+    parser.add_argument("--alpha_kd", type=float, default=None, help="Override KD alpha weight.")
+    parser.add_argument("--kd_temp", type=float, default=None, help="Override KD temperature.")
+    parser.add_argument("--no_self_train", action="store_true", help="Disable self-training after KD.")
+    parser.add_argument("--alpha_attn", type=float, default=None, help="Override KD attention weight.")
+    parser.add_argument("--alpha_rep", type=float, default=None, help="Override KD embedding alignment weight.")
+    parser.add_argument("--alpha_nce", type=float, default=None, help="Override KD InfoNCE weight.")
+    parser.add_argument("--tau_nce", type=float, default=None, help="Override KD InfoNCE temperature.")
+    parser.add_argument("--no_conf_kd", action="store_true", help="Disable confidence-weighted KD.")
+    parser.add_argument("--no_adaptive_alpha", action="store_true", help="Disable adaptive alpha schedule.")
+    parser.add_argument("--alpha_warmup", type=float, default=None, help="Override adaptive alpha warmup value.")
+    parser.add_argument("--alpha_stable_patience", type=int, default=None, help="Override adaptive alpha patience.")
+    parser.add_argument("--alpha_stable_delta", type=float, default=None, help="Override adaptive alpha delta.")
+    parser.add_argument("--alpha_warmup_min_epochs", type=int, default=None, help="Override adaptive alpha min epochs.")
     args = parser.parse_args()
 
     CONFIG["unmerge_training"]["loss_type"] = args.unmerge_loss
-    CONFIG["unmerge_training"]["use_true_count"] = bool(args.use_true_count)
+    if args.no_true_count:
+        CONFIG["unmerge_training"]["use_true_count"] = False
+    else:
+        CONFIG["unmerge_training"]["use_true_count"] = bool(args.use_true_count)
     CONFIG["unmerge_training"]["curriculum"] = not args.no_curriculum
     CONFIG["unmerge_training"]["curriculum_start"] = int(args.curriculum_start)
     CONFIG["unmerge_training"]["curriculum_epochs"] = int(args.curriculum_epochs)
     CONFIG["unmerge_training"]["physics_weight"] = float(args.physics_weight)
     CONFIG["unmerge_training"]["nll_weight"] = float(args.nll_weight)
     CONFIG["unmerge_training"]["distributional"] = not args.no_distributional
+    CONFIG["mc_sampling"]["n_samples"] = int(args.mc_samples)
+    CONFIG["mc_sampling"]["consistency_weight"] = float(args.mc_consistency_weight)
+    CONFIG["mc_sampling"]["seed"] = int(args.mc_seed)
+    CONFIG["mc_sampling"]["enabled"] = (not args.no_mc) and (CONFIG["mc_sampling"]["n_samples"] > 1)
+    if args.alpha_kd is not None:
+        CONFIG["kd"]["alpha_kd"] = float(args.alpha_kd)
+    if args.kd_temp is not None:
+        CONFIG["kd"]["temperature"] = float(args.kd_temp)
+    if args.no_self_train:
+        CONFIG["kd"]["self_train"] = False
+    if args.alpha_attn is not None:
+        CONFIG["kd"]["alpha_attn"] = float(args.alpha_attn)
+    if args.alpha_rep is not None:
+        CONFIG["kd"]["alpha_rep"] = float(args.alpha_rep)
+    if args.alpha_nce is not None:
+        CONFIG["kd"]["alpha_nce"] = float(args.alpha_nce)
+    if args.tau_nce is not None:
+        CONFIG["kd"]["tau_nce"] = float(args.tau_nce)
+    if args.no_conf_kd:
+        CONFIG["kd"]["conf_weighted"] = False
+    if args.no_adaptive_alpha:
+        CONFIG["kd"]["adaptive_alpha"] = False
+    if args.alpha_warmup is not None:
+        CONFIG["kd"]["alpha_warmup"] = float(args.alpha_warmup)
+    if args.alpha_stable_patience is not None:
+        CONFIG["kd"]["alpha_stable_patience"] = int(args.alpha_stable_patience)
+    if args.alpha_stable_delta is not None:
+        CONFIG["kd"]["alpha_stable_delta"] = float(args.alpha_stable_delta)
+    if args.alpha_warmup_min_epochs is not None:
+        CONFIG["kd"]["alpha_warmup_min_epochs"] = int(args.alpha_warmup_min_epochs)
+    k_folds = max(1, int(args.k_folds))
+    kfold_ensemble_valtest = bool(args.kfold_ensemble_valtest)
+    kfold_train_only = int(args.kfold_train_only)
+    classifier_only = bool(args.classifier_only)
+    kfold_use_pretrained = bool(args.kfold_use_pretrained)
 
     save_root = Path(args.save_dir) / args.run_name
     save_root.mkdir(parents=True, exist_ok=True)
+
+    kfold_model_dir = Path(args.kfold_model_dir) if args.kfold_model_dir else (save_root / "kfold_models")
+    if k_folds > 1:
+        kfold_model_dir.mkdir(parents=True, exist_ok=True)
+    kfold_train_only_mode = (k_folds > 1 and kfold_train_only >= 0)
+    if kfold_train_only_mode and kfold_train_only >= k_folds:
+        raise ValueError(f"kfold_train_only={kfold_train_only} out of range for k_folds={k_folds}")
+    if kfold_train_only_mode and kfold_use_pretrained:
+        raise ValueError("Cannot use --kfold_use_pretrained together with --kfold_train_only.")
 
     device = torch.device(args.device)
     print(f"Device: {device}")
@@ -1194,306 +1542,763 @@ def main():
     max_count = max(int(args.max_merge_count), 2)
     count_label = np.clip(origin_counts, 1, max_count) - 1
 
-    # ------------------- Train teacher (offline) ------------------- #
-    print("\n" + "=" * 70)
-    print("STEP 1: TEACHER (Offline)")
-    print("=" * 70)
-    train_ds_off = JetDataset(features_off_std[train_idx], masks_off[train_idx], all_labels[train_idx])
-    val_ds_off = JetDataset(features_off_std[val_idx], masks_off[val_idx], all_labels[val_idx])
-    test_ds_off = JetDataset(features_off_std[test_idx], masks_off[test_idx], all_labels[test_idx])
-    BS = CONFIG["training"]["batch_size"]
-    train_loader_off = DataLoader(train_ds_off, batch_size=BS, shuffle=True, drop_last=True)
-    val_loader_off = DataLoader(val_ds_off, batch_size=BS, shuffle=False)
-    test_loader_off = DataLoader(test_ds_off, batch_size=BS, shuffle=False)
+    def _fold_dir(fid: int) -> Path:
+        return kfold_model_dir / f"fold_{fid}"
 
-    kd_cfg = CONFIG["kd"]
-    teacher = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
-    opt_t = torch.optim.AdamW(teacher.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
-    sch_t = get_scheduler(opt_t, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
-    best_auc_t, best_state_t, no_improve = 0.0, None, 0
-    ema = EMA(teacher, decay=kd_cfg["ema_decay"]) if kd_cfg["ema_teacher"] else None
-    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Teacher"):
-        _, train_auc = train_classifier(teacher, train_loader_off, opt_t, device, ema=ema)
-        val_auc, _, _ = eval_classifier(teacher, val_loader_off, device)
-        sch_t.step()
-        if val_auc > best_auc_t:
-            best_auc_t = val_auc
-            best_state_t = {k: v.detach().cpu().clone() for k, v in teacher.state_dict().items()}
-            no_improve = 0
+    def _save_count_model(fid, count_model):
+        fold_dir = _fold_dir(fid)
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "model": count_model.state_dict(),
+                "max_count": max_count,
+                "config": CONFIG["merge_count_model"],
+            },
+            fold_dir / "merge_count.pt",
+        )
+
+    def _save_unmerge_model(fid, unmerge_model, tgt_mean, tgt_std):
+        fold_dir = _fold_dir(fid)
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "model": unmerge_model.state_dict(),
+                "tgt_mean": tgt_mean,
+                "tgt_std": tgt_std,
+                "max_count": max_count,
+                "config": CONFIG["unmerge_model"],
+            },
+            fold_dir / "unmerge_predictor.pt",
+        )
+
+    def _load_fold_models(fid):
+        fold_dir = _fold_dir(fid)
+        ckpt_c = torch.load(fold_dir / "merge_count.pt", map_location=device)
+        count_model = MergeCountPredictor(input_dim=7, num_classes=max_count, **CONFIG["merge_count_model"]).to(device)
+        count_model.load_state_dict(ckpt_c["model"])
+        ckpt_u = torch.load(fold_dir / "unmerge_predictor.pt", map_location=device)
+        unmerge_model = UnmergePredictor(input_dim=7, max_count=max_count, **CONFIG["unmerge_model"]).to(device)
+        unmerge_model.load_state_dict(ckpt_u["model"])
+        tgt_mean = ckpt_u["tgt_mean"]
+        tgt_std = ckpt_u["tgt_std"]
+        return count_model, unmerge_model, tgt_mean, tgt_std
+
+    if kfold_train_only_mode:
+        print(f"K-fold train-only mode: fold {kfold_train_only+1}/{k_folds}")
+
+    if not kfold_train_only_mode:
+        # ------------------- Train teacher (offline) ------------------- #
+        print("\n" + "=" * 70)
+        print("STEP 1: TEACHER (Offline)")
+        print("=" * 70)
+        train_ds_off = JetDataset(features_off_std[train_idx], masks_off[train_idx], all_labels[train_idx])
+        val_ds_off = JetDataset(features_off_std[val_idx], masks_off[val_idx], all_labels[val_idx])
+        test_ds_off = JetDataset(features_off_std[test_idx], masks_off[test_idx], all_labels[test_idx])
+        BS = CONFIG["training"]["batch_size"]
+        train_loader_off = DataLoader(train_ds_off, batch_size=BS, shuffle=True, drop_last=True)
+        val_loader_off = DataLoader(val_ds_off, batch_size=BS, shuffle=False)
+        test_loader_off = DataLoader(test_ds_off, batch_size=BS, shuffle=False)
+
+        kd_cfg = CONFIG["kd"]
+        teacher = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
+        if args.teacher_checkpoint is not None:
+            print(f"Loading pre-trained teacher from: {args.teacher_checkpoint}")
+            ckpt = torch.load(args.teacher_checkpoint, map_location=device)
+            teacher.load_state_dict(ckpt["model"])
         else:
-            no_improve += 1
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_t:.4f}")
-        if no_improve >= CONFIG["training"]["patience"]:
-            print(f"Early stopping teacher at epoch {ep+1}")
-            break
-    if best_state_t is not None:
-        teacher.load_state_dict(best_state_t)
-    if ema is not None:
-        ema.apply_to(teacher)
+            opt_t = torch.optim.AdamW(teacher.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+            sch_t = get_scheduler(opt_t, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+            best_auc_t, best_state_t, no_improve = 0.0, None, 0
+            ema = EMA(teacher, decay=kd_cfg["ema_decay"]) if kd_cfg["ema_teacher"] else None
+            for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Teacher"):
+                _, train_auc = train_classifier(teacher, train_loader_off, opt_t, device, ema=ema)
+                val_auc, _, _ = eval_classifier(teacher, val_loader_off, device)
+                sch_t.step()
+                if val_auc > best_auc_t:
+                    best_auc_t = val_auc
+                    best_state_t = {k: v.detach().cpu().clone() for k, v in teacher.state_dict().items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if (ep + 1) % 5 == 0:
+                    print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_t:.4f}")
+                if no_improve >= CONFIG["training"]["patience"]:
+                    print(f"Early stopping teacher at epoch {ep+1}")
+                    break
+            if best_state_t is not None:
+                teacher.load_state_dict(best_state_t)
+            if ema is not None:
+                ema.apply_to(teacher)
 
-    auc_teacher, preds_teacher, labs = eval_classifier(teacher, test_loader_off, device)
+        auc_teacher, preds_teacher, labs = eval_classifier(teacher, test_loader_off, device)
 
-    # ------------------- Train baseline (HLT) ------------------- #
-    print("\n" + "=" * 70)
-    print("STEP 2: BASELINE HLT")
-    print("=" * 70)
-    train_ds_hlt = JetDataset(features_hlt_std[train_idx], hlt_mask[train_idx], all_labels[train_idx])
-    val_ds_hlt = JetDataset(features_hlt_std[val_idx], hlt_mask[val_idx], all_labels[val_idx])
-    test_ds_hlt = JetDataset(features_hlt_std[test_idx], hlt_mask[test_idx], all_labels[test_idx])
-    train_loader_hlt = DataLoader(train_ds_hlt, batch_size=BS, shuffle=True, drop_last=True)
-    val_loader_hlt = DataLoader(val_ds_hlt, batch_size=BS, shuffle=False)
-    test_loader_hlt = DataLoader(test_ds_hlt, batch_size=BS, shuffle=False)
+        # ------------------- Train baseline (HLT) ------------------- #
+        print("\n" + "=" * 70)
+        print("STEP 2: BASELINE HLT")
+        print("=" * 70)
+        train_ds_hlt = JetDataset(features_hlt_std[train_idx], hlt_mask[train_idx], all_labels[train_idx])
+        val_ds_hlt = JetDataset(features_hlt_std[val_idx], hlt_mask[val_idx], all_labels[val_idx])
+        test_ds_hlt = JetDataset(features_hlt_std[test_idx], hlt_mask[test_idx], all_labels[test_idx])
+        train_loader_hlt = DataLoader(train_ds_hlt, batch_size=BS, shuffle=True, drop_last=True)
+        val_loader_hlt = DataLoader(val_ds_hlt, batch_size=BS, shuffle=False)
+        test_loader_hlt = DataLoader(test_ds_hlt, batch_size=BS, shuffle=False)
 
-    baseline = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
-    opt_b = torch.optim.AdamW(baseline.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
-    sch_b = get_scheduler(opt_b, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
-    best_auc_b, best_state_b, no_improve = 0.0, None, 0
-    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Baseline"):
-        _, train_auc = train_classifier(baseline, train_loader_hlt, opt_b, device)
-        val_auc, _, _ = eval_classifier(baseline, val_loader_hlt, device)
-        sch_b.step()
-        if val_auc > best_auc_b:
-            best_auc_b = val_auc
-            best_state_b = {k: v.detach().cpu().clone() for k, v in baseline.state_dict().items()}
-            no_improve = 0
+        baseline = None
+        if args.skip_baseline:
+            print("Skipping baseline training/evaluation.")
         else:
-            no_improve += 1
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_b:.4f}")
-        if no_improve >= CONFIG["training"]["patience"]:
-            print(f"Early stopping baseline at epoch {ep+1}")
-            break
-    if best_state_b is not None:
-        baseline.load_state_dict(best_state_b)
+            baseline = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
+            if args.baseline_checkpoint is not None:
+                print(f"Loading pre-trained baseline from: {args.baseline_checkpoint}")
+                ckpt = torch.load(args.baseline_checkpoint, map_location=device)
+                baseline.load_state_dict(ckpt["model"])
+            else:
+                opt_b = torch.optim.AdamW(baseline.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+                sch_b = get_scheduler(opt_b, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+                best_auc_b, best_state_b, no_improve = 0.0, None, 0
+                for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Baseline"):
+                    _, train_auc = train_classifier(baseline, train_loader_hlt, opt_b, device)
+                    val_auc, _, _ = eval_classifier(baseline, val_loader_hlt, device)
+                    sch_b.step()
+                    if val_auc > best_auc_b:
+                        best_auc_b = val_auc
+                        best_state_b = {k: v.detach().cpu().clone() for k, v in baseline.state_dict().items()}
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                    if (ep + 1) % 5 == 0:
+                        print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_b:.4f}")
+                    if no_improve >= CONFIG["training"]["patience"]:
+                        print(f"Early stopping baseline at epoch {ep+1}")
+                        break
+                if best_state_b is not None:
+                    baseline.load_state_dict(best_state_b)
 
-    auc_baseline, preds_baseline, _ = eval_classifier(baseline, test_loader_hlt, device)
+            auc_baseline, preds_baseline, _ = eval_classifier(baseline, test_loader_hlt, device)
 
     # ------------------- Train merge-count predictor ------------------- #
-    print("\n" + "=" * 70)
-    print("STEP 3: MERGE COUNT PREDICTOR")
-    print("=" * 70)
-    train_ds_cnt = MergeCountDataset(features_hlt_std[train_idx], hlt_mask[train_idx], count_label[train_idx])
-    val_ds_cnt = MergeCountDataset(features_hlt_std[val_idx], hlt_mask[val_idx], count_label[val_idx])
-    test_ds_cnt = MergeCountDataset(features_hlt_std[test_idx], hlt_mask[test_idx], count_label[test_idx])
-    BS_cnt = CONFIG["merge_count_training"]["batch_size"]
-    train_loader_cnt = DataLoader(train_ds_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True)
-    val_loader_cnt = DataLoader(val_ds_cnt, batch_size=BS_cnt, shuffle=False)
+    if classifier_only:
+        if args.load_unmerged_cache is None:
+            raise ValueError("--classifier_only requires --load_unmerged_cache")
+        print("\n" + "=" * 70)
+        print("STEP 3: LOAD UNMERGED CACHE")
+        print("=" * 70)
+        cache = np.load(args.load_unmerged_cache, allow_pickle=True)
+        features_unmerged_std = cache["features_unmerged_std"]
+        unmerged_mask = cache["unmerged_mask"]
+        if "train_idx" in cache:
+            train_idx = cache["train_idx"]
+            val_idx = cache["val_idx"]
+            test_idx = cache["test_idx"]
+        if "labels" in cache:
+            all_labels = cache["labels"]
+        mc_cache = None
+        if args.load_mc_cache is not None:
+            mc_cache = np.load(args.load_mc_cache, allow_pickle=True)
+        print(f"Loaded unmerged cache: {args.load_unmerged_cache}")
+    else:
+        print("\n" + "=" * 70)
+        print("STEP 3: MERGE COUNT PREDICTOR")
+        print("=" * 70)
+        BS_cnt = CONFIG["merge_count_training"]["batch_size"]
+        count_models = []
+        count_models_by_fold = {}
+        pred_counts = np.zeros_like(hlt_mask, dtype=np.int64)
 
-    count_model = MergeCountPredictor(input_dim=7, num_classes=max_count, **CONFIG["merge_count_model"]).to(device)
-    opt_c = torch.optim.AdamW(count_model.parameters(), lr=CONFIG["merge_count_training"]["lr"], weight_decay=CONFIG["merge_count_training"]["weight_decay"])
-    sch_c = get_scheduler(opt_c, CONFIG["merge_count_training"]["warmup_epochs"], CONFIG["merge_count_training"]["epochs"])
-    class_weights = compute_class_weights(count_label[train_idx], hlt_mask[train_idx], max_count)
-    best_acc, best_state_c, no_improve = 0.0, None, 0
-    for ep in tqdm(range(CONFIG["merge_count_training"]["epochs"]), desc="MergeCount"):
-        _, train_acc = train_merge_count(count_model, train_loader_cnt, opt_c, device, class_weights)
-        val_acc, _, _ = eval_merge_count(count_model, val_loader_cnt, device)
-        sch_c.step()
-        if val_acc > best_acc:
-            best_acc = val_acc
-            best_state_c = {k: v.detach().cpu().clone() for k, v in count_model.state_dict().items()}
-            no_improve = 0
-        else:
-            no_improve += 1
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_acc={train_acc:.4f}, val_acc={val_acc:.4f}, best={best_acc:.4f}")
-        if no_improve >= CONFIG["merge_count_training"]["patience"]:
-            print(f"Early stopping merge-count at epoch {ep+1}")
-            break
-    if best_state_c is not None:
-        count_model.load_state_dict(best_state_c)
-
-    # Predict counts for all jets
-    pred_counts = predict_counts(count_model, features_hlt_std, hlt_mask, BS_cnt, device, max_count)
-
-    # ------------------- Train unmerger ------------------- #
-    print("\n" + "=" * 70)
-    print("STEP 4: UNMERGER")
-    print("=" * 70)
-    samples = []
-    print("Building merged-token sample list...")
-    for j in tqdm(range(len(all_labels)), desc="CollectMerged"):
-        for idx in range(args.max_constits):
-            origin = origin_lists[j][idx]
-            if hlt_mask[j, idx] and len(origin) > 1:
-                if len(origin) > max_count:
+    if not classifier_only:
+        fold_trains = []
+        fold_holds = []
+        if k_folds > 1 and not kfold_use_pretrained:
+            kf = KFold(n_splits=k_folds, shuffle=True, random_state=RANDOM_SEED)
+            train_idx_array = np.array(train_idx)
+            for fold_id, (train_sub_rel, hold_rel) in enumerate(kf.split(train_idx_array)):
+                train_sub = train_idx_array[train_sub_rel]
+                hold_sub = train_idx_array[hold_rel]
+                fold_trains.append(train_sub)
+                fold_holds.append(hold_sub)
+                print(f"\n--- Count Fold {fold_id+1}/{k_folds} | train={len(train_sub)} holdout={len(hold_sub)} ---")
+                if kfold_train_only_mode and fold_id != kfold_train_only:
+                    print("Skipping fold (train-only mode).")
                     continue
-                pc = int(pred_counts[j, idx])
-                if pc < 2:
-                    pc = 2
-                if pc > max_count:
-                    pc = max_count
-                samples.append((j, idx, origin, pc))
-
-    train_idx_set = set(train_idx)
-    val_idx_set = set(val_idx)
-    test_idx_set = set(test_idx)
-    train_samples = [s for s in samples if s[0] in train_idx_set]
-    val_samples = [s for s in samples if s[0] in val_idx_set]
-    test_samples = [s for s in samples if s[0] in test_idx_set]
-    print(f"Merged samples: train={len(train_samples):,}, val={len(val_samples):,}, test={len(test_samples):,}")
-
-    if len(train_samples) == 0:
-        raise RuntimeError("No merged samples in training split.")
-
-    print("Building unmerge targets (train split)...")
-    train_targets = []
-    for s in tqdm(train_samples, desc="UnmergeTargets"):
-        train_targets.append(const_off[s[0], s[2], :4])
-    flat_train = np.concatenate(train_targets, axis=0)
-    tgt_mean = flat_train.mean(axis=0)
-    tgt_std = flat_train.std(axis=0) + 1e-8
-
-    BS_un = CONFIG["unmerge_training"]["batch_size"]
-    train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
-    val_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
-    test_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, test_samples, max_count, tgt_mean, tgt_std)
-    train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True)
-    val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False)
-    test_loader_un = DataLoader(test_ds_un, batch_size=BS_un, shuffle=False)
-
-    unmerge_model = UnmergePredictor(
-        input_dim=7,
-        max_count=max_count,
-        **CONFIG["unmerge_model"],
-    ).to(device)
-    opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
-    sch_u = get_scheduler(opt_u, CONFIG["unmerge_training"]["warmup_epochs"], CONFIG["unmerge_training"]["epochs"])
-    best_val_loss, best_state_u, no_improve = 1e9, None, 0
-    def compute_unmerge_loss(mu, logvar, target, true_count, hlt_token):
-        if CONFIG["unmerge_training"]["loss_type"] == "hungarian":
-            loss_nll = matched_nll_loss(mu, logvar, target, true_count)
-            loss_l1 = matched_l1_loss(mu, target, true_count)
-            loss = CONFIG["unmerge_training"]["nll_weight"] * loss_nll + (1.0 - CONFIG["unmerge_training"]["nll_weight"]) * loss_l1
-        else:
-            loss = set_chamfer_loss(mu, target, true_count)
-        if CONFIG["unmerge_training"]["physics_weight"] > 0:
-            loss = loss + CONFIG["unmerge_training"]["physics_weight"] * physics_loss(mu, true_count, hlt_token)
-        return loss
-
-    for ep in tqdm(range(CONFIG["unmerge_training"]["epochs"]), desc="Unmerge"):
-        unmerge_model.train()
-        total_loss = 0.0
-        n_batches = 0
-        # Curriculum: restrict to low counts early
-        if CONFIG["unmerge_training"]["curriculum"]:
-            frac = min(1.0, (ep + 1) / max(CONFIG["unmerge_training"]["curriculum_epochs"], 1))
-            curr_max = int(CONFIG["unmerge_training"]["curriculum_start"] + frac * (max_count - CONFIG["unmerge_training"]["curriculum_start"]))
-        else:
-            curr_max = max_count
-
-        for batch in train_loader_un:
-            x = batch["hlt"].to(device)
-            mask = batch["mask"].to(device)
-            token_idx = batch["token_idx"].to(device)
-            true_count = batch["true_count"].to(device)
-            target = batch["target"].to(device)
-            hlt_token = batch["hlt_token"].to(device)
-            if CONFIG["unmerge_training"]["use_true_count"]:
-                count_in = true_count.clamp(min=2, max=max_count)
+                train_ds_cnt = MergeCountDataset(features_hlt_std[train_sub], hlt_mask[train_sub], count_label[train_sub])
+                val_ds_cnt = MergeCountDataset(features_hlt_std[hold_sub], hlt_mask[hold_sub], count_label[hold_sub])
+                train_loader_cnt = DataLoader(train_ds_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True)
+                val_loader_cnt = DataLoader(val_ds_cnt, batch_size=BS_cnt, shuffle=False)
+                count_model = MergeCountPredictor(input_dim=7, num_classes=max_count, **CONFIG["merge_count_model"]).to(device)
+                opt_c = torch.optim.AdamW(count_model.parameters(), lr=CONFIG["merge_count_training"]["lr"], weight_decay=CONFIG["merge_count_training"]["weight_decay"])
+                sch_c = get_scheduler(opt_c, CONFIG["merge_count_training"]["warmup_epochs"], CONFIG["merge_count_training"]["epochs"])
+                class_weights = compute_class_weights(count_label[train_sub], hlt_mask[train_sub], max_count)
+                best_acc, best_state_c, no_improve = 0.0, None, 0
+                for ep in tqdm(range(CONFIG["merge_count_training"]["epochs"]), desc=f"MergeCount-F{fold_id+1}"):
+                    _, train_acc = train_merge_count(count_model, train_loader_cnt, opt_c, device, class_weights)
+                    val_acc, _, _ = eval_merge_count(count_model, val_loader_cnt, device)
+                    sch_c.step()
+                    if val_acc > best_acc:
+                        best_acc = val_acc
+                        best_state_c = {k: v.detach().cpu().clone() for k, v in count_model.state_dict().items()}
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                    if (ep + 1) % 5 == 0:
+                        print(f"Ep {ep+1}: train_acc={train_acc:.4f}, val_acc={val_acc:.4f}, best={best_acc:.4f}")
+                    if no_improve >= CONFIG["merge_count_training"]["patience"]:
+                        print(f"Early stopping merge-count at epoch {ep+1}")
+                        break
+                if best_state_c is not None:
+                    count_model.load_state_dict(best_state_c)
+                count_models.append(count_model)
+                count_models_by_fold[fold_id] = count_model
+                pred_counts_hold = predict_counts(count_model, features_hlt_std[hold_sub], hlt_mask[hold_sub], BS_cnt, device, max_count)
+                pred_counts[hold_sub] = pred_counts_hold
+                _save_count_model(fold_id, count_model)
+    
+            if kfold_ensemble_valtest:
+                print("Ensembling count models for val/test...")
+                pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
             else:
-                count_in = batch["pred_count"].to(device)
-
-            # curriculum filter
-            if curr_max < max_count:
-                keep = true_count <= curr_max
-                if keep.sum().item() == 0:
-                    continue
-                x = x[keep]
-                mask = mask[keep]
-                token_idx = token_idx[keep]
-                count_in = count_in[keep]
-                true_count = true_count[keep]
-                target = target[keep]
-                hlt_token = hlt_token[keep]
-
-            opt_u.zero_grad()
-            mu, logvar = unmerge_model(x, mask, token_idx, count_in)
-            loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(unmerge_model.parameters(), 1.0)
-            opt_u.step()
-            total_loss += loss.item()
-            n_batches += 1
-        train_loss = total_loss / max(n_batches, 1)
-        val_loss = 0.0
-        n_batches = 0
-        unmerge_model.eval()
-        with torch.no_grad():
-            for batch in val_loader_un:
-                x = batch["hlt"].to(device)
-                mask = batch["mask"].to(device)
-                token_idx = batch["token_idx"].to(device)
-                true_count = batch["true_count"].to(device)
-                target = batch["target"].to(device)
-                hlt_token = batch["hlt_token"].to(device)
-                if CONFIG["unmerge_training"]["use_true_count"]:
-                    count_in = true_count.clamp(min=2, max=max_count)
+                pred_counts[val_idx] = predict_counts(count_models[-1], features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                pred_counts[test_idx] = predict_counts(count_models[-1], features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+        elif kfold_use_pretrained:
+            count_models = []
+            pred_counts = np.zeros_like(hlt_mask, dtype=np.int64)
+            train_idx_array = np.array(train_idx)
+            kf = KFold(n_splits=k_folds, shuffle=True, random_state=RANDOM_SEED)
+            for fold_id, (train_sub_rel, hold_rel) in enumerate(kf.split(train_idx_array)):
+                train_sub = train_idx_array[train_sub_rel]
+                hold_sub = train_idx_array[hold_rel]
+                print(f"Loading count fold {fold_id+1}/{k_folds} from {kfold_model_dir}...")
+                count_model, _, _, _ = _load_fold_models(fold_id)
+                count_models.append(count_model)
+                count_models_by_fold[fold_id] = count_model
+                pred_counts[hold_sub] = predict_counts(count_model, features_hlt_std[hold_sub], hlt_mask[hold_sub], BS_cnt, device, max_count)
+                fold_trains.append(train_sub)
+                fold_holds.append(hold_sub)
+            if kfold_ensemble_valtest:
+                print("Ensembling count models for val/test...")
+                pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+            else:
+                pred_counts[val_idx] = predict_counts(count_models[-1], features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                pred_counts[test_idx] = predict_counts(count_models[-1], features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+        else:
+            train_ds_cnt = MergeCountDataset(features_hlt_std[train_idx], hlt_mask[train_idx], count_label[train_idx])
+            val_ds_cnt = MergeCountDataset(features_hlt_std[val_idx], hlt_mask[val_idx], count_label[val_idx])
+            train_loader_cnt = DataLoader(train_ds_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True)
+            val_loader_cnt = DataLoader(val_ds_cnt, batch_size=BS_cnt, shuffle=False)
+            count_model = MergeCountPredictor(input_dim=7, num_classes=max_count, **CONFIG["merge_count_model"]).to(device)
+            opt_c = torch.optim.AdamW(count_model.parameters(), lr=CONFIG["merge_count_training"]["lr"], weight_decay=CONFIG["merge_count_training"]["weight_decay"])
+            sch_c = get_scheduler(opt_c, CONFIG["merge_count_training"]["warmup_epochs"], CONFIG["merge_count_training"]["epochs"])
+            class_weights = compute_class_weights(count_label[train_idx], hlt_mask[train_idx], max_count)
+            best_acc, best_state_c, no_improve = 0.0, None, 0
+            for ep in tqdm(range(CONFIG["merge_count_training"]["epochs"]), desc="MergeCount"):
+                _, train_acc = train_merge_count(count_model, train_loader_cnt, opt_c, device, class_weights)
+                val_acc, _, _ = eval_merge_count(count_model, val_loader_cnt, device)
+                sch_c.step()
+                if val_acc > best_acc:
+                    best_acc = val_acc
+                    best_state_c = {k: v.detach().cpu().clone() for k, v in count_model.state_dict().items()}
+                    no_improve = 0
                 else:
-                    count_in = batch["pred_count"].to(device)
-                mu, logvar = unmerge_model(x, mask, token_idx, count_in)
-                loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
-                val_loss += loss.item()
-                n_batches += 1
-        val_loss = val_loss / max(n_batches, 1)
-        sch_u.step()
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            best_state_u = {k: v.detach().cpu().clone() for k, v in unmerge_model.state_dict().items()}
-            no_improve = 0
-        else:
-            no_improve += 1
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, best={best_val_loss:.4f}")
-        if no_improve >= CONFIG["unmerge_training"]["patience"]:
-            print(f"Early stopping unmerge at epoch {ep+1}")
-            break
-    if best_state_u is not None:
-        unmerge_model.load_state_dict(best_state_u)
-
-    test_loss = 0.0
-    n_batches = 0
-    unmerge_model.eval()
-    with torch.no_grad():
-        for batch in test_loader_un:
-            x = batch["hlt"].to(device)
-            mask = batch["mask"].to(device)
-            token_idx = batch["token_idx"].to(device)
-            true_count = batch["true_count"].to(device)
-            target = batch["target"].to(device)
-            hlt_token = batch["hlt_token"].to(device)
-            if CONFIG["unmerge_training"]["use_true_count"]:
-                count_in = true_count.clamp(min=2, max=max_count)
+                    no_improve += 1
+                if (ep + 1) % 5 == 0:
+                    print(f"Ep {ep+1}: train_acc={train_acc:.4f}, val_acc={val_acc:.4f}, best={best_acc:.4f}")
+                if no_improve >= CONFIG["merge_count_training"]["patience"]:
+                    print(f"Early stopping merge-count at epoch {ep+1}")
+                    break
+            if best_state_c is not None:
+                count_model.load_state_dict(best_state_c)
+            count_models = [count_model]
+            pred_counts = predict_counts(count_model, features_hlt_std, hlt_mask, BS_cnt, device, max_count)
+    
+        # ------------------- Train unmerger ------------------- #
+        print("\n" + "=" * 70)
+        print("STEP 4: UNMERGER")
+        print("=" * 70)
+        BS_un = CONFIG["unmerge_training"]["batch_size"]
+        unmerge_models = []
+        tgt_stats = []
+        unmerged_const = np.zeros((len(all_labels), args.max_constits, 4), dtype=np.float32)
+        unmerged_mask = np.zeros((len(all_labels), args.max_constits), dtype=bool)
+    
+        def compute_unmerge_loss(mu, logvar, target, true_count, hlt_token):
+            if CONFIG["unmerge_training"]["loss_type"] == "hungarian":
+                loss_nll = matched_nll_loss(mu, logvar, target, true_count)
+                loss_l1 = matched_l1_loss(mu, target, true_count)
+                loss = CONFIG["unmerge_training"]["nll_weight"] * loss_nll + (1.0 - CONFIG["unmerge_training"]["nll_weight"]) * loss_l1
             else:
-                count_in = batch["pred_count"].to(device)
-            mu, logvar = unmerge_model(x, mask, token_idx, count_in)
-            loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
-            test_loss += loss.item()
-            n_batches += 1
-    test_loss = test_loss / max(n_batches, 1)
-    print(f"Unmerge test loss: {test_loss:.4f}")
+                loss = set_chamfer_loss(mu, target, true_count)
+            if CONFIG["unmerge_training"]["physics_weight"] > 0:
+                loss = loss + CONFIG["unmerge_training"]["physics_weight"] * physics_loss(mu, true_count, hlt_token)
+            return loss
+    
+        if k_folds > 1:
+            for fold_id in range(k_folds):
+                train_sub = fold_trains[fold_id]
+                hold_sub = fold_holds[fold_id]
+                print(f"\n--- Unmerge Fold {fold_id+1}/{k_folds} | train={len(train_sub)} holdout={len(hold_sub)} ---")
+                if kfold_train_only_mode and fold_id != kfold_train_only:
+                    print("Skipping fold (train-only mode).")
+                    continue
+                if kfold_use_pretrained:
+                    print(f"Loading unmerge fold {fold_id+1}/{k_folds} from {kfold_model_dir}...")
+                    count_model, unmerge_model, tgt_mean, tgt_std = _load_fold_models(fold_id)
+                    unmerge_models.append(unmerge_model)
+                    tgt_stats.append((tgt_mean, tgt_std))
+                    sub_const, sub_mask = build_unmerged_dataset_subset(
+                        hold_sub,
+                        features_hlt_std,
+                        hlt_mask,
+                        hlt_const,
+                        pred_counts,
+                        unmerge_model,
+                        tgt_mean,
+                        tgt_std,
+                        max_count,
+                        args.max_constits,
+                        device,
+                        BS_un,
+                    )
+                    if sub_const is not None:
+                        unmerged_const[hold_sub] = sub_const
+                        unmerged_mask[hold_sub] = sub_mask
+                    continue
+                if kfold_train_only_mode and not kfold_use_pretrained:
+                    count_model = count_models_by_fold[fold_id]
+                else:
+                    count_model = count_models[fold_id]
+                pred_counts_train = predict_counts(count_model, features_hlt_std[train_sub], hlt_mask[train_sub], BS_cnt, device, max_count)
+                pred_counts_hold = pred_counts[hold_sub]
+    
+                train_samples = _build_samples_for_indices(train_sub, origin_lists, hlt_mask, pred_counts_train, max_count, args.max_constits)
+                val_samples = _build_samples_for_indices(hold_sub, origin_lists, hlt_mask, pred_counts_hold, max_count, args.max_constits)
+                print(f"Merged samples: train={len(train_samples):,}, holdout={len(val_samples):,}")
+                if len(train_samples) == 0:
+                    raise RuntimeError("No merged samples in training fold.")
+    
+                train_targets = [const_off[s[0], s[2], :4] for s in train_samples]
+                flat_train = np.concatenate(train_targets, axis=0)
+                tgt_mean = flat_train.mean(axis=0)
+                tgt_std = flat_train.std(axis=0) + 1e-8
+    
+                train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
+                val_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
+                train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True)
+                val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False)
+    
+                unmerge_model = UnmergePredictor(
+                    input_dim=7,
+                    max_count=max_count,
+                    **CONFIG["unmerge_model"],
+                ).to(device)
+                opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
+                sch_u = get_scheduler(opt_u, CONFIG["unmerge_training"]["warmup_epochs"], CONFIG["unmerge_training"]["epochs"])
+                best_val_loss, best_state_u, no_improve = 1e9, None, 0
+    
+                for ep in tqdm(range(CONFIG["unmerge_training"]["epochs"]), desc=f"Unmerge-F{fold_id+1}"):
+                    unmerge_model.train()
+                    total_loss = 0.0
+                    n_batches = 0
+                    if CONFIG["unmerge_training"]["curriculum"]:
+                        frac = min(1.0, (ep + 1) / max(CONFIG["unmerge_training"]["curriculum_epochs"], 1))
+                        curr_max = int(CONFIG["unmerge_training"]["curriculum_start"] + frac * (max_count - CONFIG["unmerge_training"]["curriculum_start"]))
+                    else:
+                        curr_max = max_count
+    
+                    for batch in train_loader_un:
+                        x = batch["hlt"].to(device)
+                        mask = batch["mask"].to(device)
+                        token_idx = batch["token_idx"].to(device)
+                        true_count = batch["true_count"].to(device)
+                        if CONFIG["unmerge_training"]["use_true_count"]:
+                            count_in = true_count.clamp(min=2, max=max_count)
+                        else:
+                            count_in = batch["pred_count"].to(device)
+                        if curr_max < max_count:
+                            keep = true_count <= curr_max
+                            if keep.sum() == 0:
+                                continue
+                            x = x[keep]
+                            mask = mask[keep]
+                            token_idx = token_idx[keep]
+                            count_in = count_in[keep]
+                            true_count = true_count[keep]
+                            target = batch["target"].to(device)[keep]
+                            hlt_token = batch["hlt_token"].to(device)[keep]
+                        else:
+                            target = batch["target"].to(device)
+                            hlt_token = batch["hlt_token"].to(device)
+    
+                        opt_u.zero_grad()
+                        mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                        loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                        loss.backward()
+                        torch.nn.utils.clip_grad_norm_(unmerge_model.parameters(), 1.0)
+                        opt_u.step()
+                        total_loss += loss.item()
+                        n_batches += 1
+    
+                    train_loss = total_loss / max(n_batches, 1)
+                    val_loss = 0.0
+                    n_batches = 0
+                    unmerge_model.eval()
+                    with torch.no_grad():
+                        for batch in val_loader_un:
+                            x = batch["hlt"].to(device)
+                            mask = batch["mask"].to(device)
+                            token_idx = batch["token_idx"].to(device)
+                            true_count = batch["true_count"].to(device)
+                            if CONFIG["unmerge_training"]["use_true_count"]:
+                                count_in = true_count.clamp(min=2, max=max_count)
+                            else:
+                                count_in = batch["pred_count"].to(device)
+                            target = batch["target"].to(device)
+                            hlt_token = batch["hlt_token"].to(device)
+                            mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                            loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                            val_loss += loss.item()
+                            n_batches += 1
+                    val_loss = val_loss / max(n_batches, 1)
+                    sch_u.step()
+                    if val_loss < best_val_loss:
+                        best_val_loss = val_loss
+                        best_state_u = {k: v.detach().cpu().clone() for k, v in unmerge_model.state_dict().items()}
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                    if (ep + 1) % 5 == 0:
+                        print(f"Ep {ep+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, best={best_val_loss:.4f}")
+                    if no_improve >= CONFIG["unmerge_training"]["patience"]:
+                        print(f"Early stopping unmerge at epoch {ep+1}")
+                        break
+                if best_state_u is not None:
+                    unmerge_model.load_state_dict(best_state_u)
+                unmerge_models.append(unmerge_model)
+                tgt_stats.append((tgt_mean, tgt_std))
+                _save_unmerge_model(fold_id, unmerge_model, tgt_mean, tgt_std)
+    
+                sub_const, sub_mask = build_unmerged_dataset_subset(
+                    hold_sub,
+                    features_hlt_std,
+                    hlt_mask,
+                    hlt_const,
+                    pred_counts,
+                    unmerge_model,
+                    tgt_mean,
+                    tgt_std,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+                if sub_const is not None:
+                    unmerged_const[hold_sub] = sub_const
+                    unmerged_mask[hold_sub] = sub_mask
+    
+            if kfold_train_only_mode:
+                print("K-fold train-only mode complete; saved fold models. Exiting.")
+                return
+    
+            # val/test generation with ensemble
+            if kfold_ensemble_valtest:
+                print("Ensembling unmerge models for val/test...")
+                val_const, val_mask = build_unmerged_dataset_ensemble_subset(
+                    val_idx,
+                    features_hlt_std,
+                    hlt_mask,
+                    hlt_const,
+                    pred_counts,
+                    unmerge_models,
+                    tgt_stats,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+                test_const, test_mask = build_unmerged_dataset_ensemble_subset(
+                    test_idx,
+                    features_hlt_std,
+                    hlt_mask,
+                    hlt_const,
+                    pred_counts,
+                    unmerge_models,
+                    tgt_stats,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+            else:
+                val_const, val_mask = build_unmerged_dataset_subset(
+                    val_idx,
+                    features_hlt_std,
+                    hlt_mask,
+                    hlt_const,
+                    pred_counts,
+                    unmerge_models[-1],
+                    tgt_stats[-1][0],
+                    tgt_stats[-1][1],
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+                test_const, test_mask = build_unmerged_dataset_subset(
+                    test_idx,
+                    features_hlt_std,
+                    hlt_mask,
+                    hlt_const,
+                    pred_counts,
+                    unmerge_models[-1],
+                    tgt_stats[-1][0],
+                    tgt_stats[-1][1],
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+            if val_const is not None:
+                unmerged_const[val_idx] = val_const
+                unmerged_mask[val_idx] = val_mask
+            if test_const is not None:
+                unmerged_const[test_idx] = test_const
+                unmerged_mask[test_idx] = test_mask
+    
+        else:
+            all_idx = np.concatenate([train_idx, val_idx, test_idx])
+            samples = _build_samples_for_indices(all_idx, origin_lists, hlt_mask, pred_counts, max_count, args.max_constits)
+            train_idx_set = set(train_idx)
+            val_idx_set = set(val_idx)
+            test_idx_set = set(test_idx)
+            train_samples = [s for s in samples if s[0] in train_idx_set]
+            val_samples = [s for s in samples if s[0] in val_idx_set]
+            test_samples = [s for s in samples if s[0] in test_idx_set]
+            print(f"Merged samples: train={len(train_samples):,}, val={len(val_samples):,}, test={len(test_samples):,}")
+    
+            if len(train_samples) == 0:
+                raise RuntimeError("No merged samples in training split.")
+    
+            print("Building unmerge targets (train split)...")
+            train_targets = []
+            for s in tqdm(train_samples, desc="UnmergeTargets"):
+                train_targets.append(const_off[s[0], s[2], :4])
+            flat_train = np.concatenate(train_targets, axis=0)
+            tgt_mean = flat_train.mean(axis=0)
+            tgt_std = flat_train.std(axis=0) + 1e-8
+    
+            train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
+            val_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
+            test_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, test_samples, max_count, tgt_mean, tgt_std)
+            train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True)
+            val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False)
+            test_loader_un = DataLoader(test_ds_un, batch_size=BS_un, shuffle=False)
+    
+            unmerge_model = UnmergePredictor(
+                input_dim=7,
+                max_count=max_count,
+                **CONFIG["unmerge_model"],
+            ).to(device)
+            opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
+            sch_u = get_scheduler(opt_u, CONFIG["unmerge_training"]["warmup_epochs"], CONFIG["unmerge_training"]["epochs"])
+            best_val_loss, best_state_u, no_improve = 1e9, None, 0
+        if k_folds <= 1:
+            for ep in tqdm(range(CONFIG["unmerge_training"]["epochs"]), desc="Unmerge"):
+                unmerge_model.train()
+                total_loss = 0.0
+                n_batches = 0
+                if CONFIG["unmerge_training"]["curriculum"]:
+                    frac = min(1.0, (ep + 1) / max(CONFIG["unmerge_training"]["curriculum_epochs"], 1))
+                    curr_max = int(CONFIG["unmerge_training"]["curriculum_start"] + frac * (max_count - CONFIG["unmerge_training"]["curriculum_start"]))
+                else:
+                    curr_max = max_count
+    
+                for batch in train_loader_un:
+                    x = batch["hlt"].to(device)
+                    mask = batch["mask"].to(device)
+                    token_idx = batch["token_idx"].to(device)
+                    true_count = batch["true_count"].to(device)
+                    target = batch["target"].to(device)
+                    hlt_token = batch["hlt_token"].to(device)
+                    if CONFIG["unmerge_training"]["use_true_count"]:
+                        count_in = true_count.clamp(min=2, max=max_count)
+                    else:
+                        count_in = batch["pred_count"].to(device)
+    
+                    if curr_max < max_count:
+                        keep = true_count <= curr_max
+                        if keep.sum().item() == 0:
+                            continue
+                        x = x[keep]
+                        mask = mask[keep]
+                        token_idx = token_idx[keep]
+                        count_in = count_in[keep]
+                        true_count = true_count[keep]
+                        target = target[keep]
+                        hlt_token = hlt_token[keep]
+    
+                    opt_u.zero_grad()
+                    mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                    loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                    loss.backward()
+                    torch.nn.utils.clip_grad_norm_(unmerge_model.parameters(), 1.0)
+                    opt_u.step()
+                    total_loss += loss.item()
+                    n_batches += 1
+                train_loss = total_loss / max(n_batches, 1)
+                val_loss = 0.0
+                n_batches = 0
+                unmerge_model.eval()
+                with torch.no_grad():
+                    for batch in val_loader_un:
+                        x = batch["hlt"].to(device)
+                        mask = batch["mask"].to(device)
+                        token_idx = batch["token_idx"].to(device)
+                        true_count = batch["true_count"].to(device)
+                        target = batch["target"].to(device)
+                        hlt_token = batch["hlt_token"].to(device)
+                        if CONFIG["unmerge_training"]["use_true_count"]:
+                            count_in = true_count.clamp(min=2, max=max_count)
+                        else:
+                            count_in = batch["pred_count"].to(device)
+                        mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                        loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                        val_loss += loss.item()
+                        n_batches += 1
+                val_loss = val_loss / max(n_batches, 1)
+                sch_u.step()
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_state_u = {k: v.detach().cpu().clone() for k, v in unmerge_model.state_dict().items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if (ep + 1) % 5 == 0:
+                    print(f"Ep {ep+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, best={best_val_loss:.4f}")
+                if no_improve >= CONFIG["unmerge_training"]["patience"]:
+                    print(f"Early stopping unmerge at epoch {ep+1}")
+                    break
+    
+            if best_state_u is not None:
+                unmerge_model.load_state_dict(best_state_u)
+    
+            test_loss = 0.0
+            n_batches = 0
+            unmerge_model.eval()
+            with torch.no_grad():
+                for batch in test_loader_un:
+                    x = batch["hlt"].to(device)
+                    mask = batch["mask"].to(device)
+                    token_idx = batch["token_idx"].to(device)
+                    true_count = batch["true_count"].to(device)
+                    target = batch["target"].to(device)
+                    hlt_token = batch["hlt_token"].to(device)
+                    if CONFIG["unmerge_training"]["use_true_count"]:
+                        count_in = true_count.clamp(min=2, max=max_count)
+                    else:
+                        count_in = batch["pred_count"].to(device)
+                    mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                    loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                    test_loss += loss.item()
+                    n_batches += 1
+            test_loss = test_loss / max(n_batches, 1)
+            print(f"Unmerge test loss: {test_loss:.4f}")
+    
+            print("\n" + "=" * 70)
+            print("STEP 5: BUILD UNMERGED DATASET")
+            print("=" * 70)
+            unmerged_const, unmerged_mask = build_unmerged_dataset(
+                features_hlt_std,
+                hlt_mask,
+                hlt_const,
+                pred_counts,
+                unmerge_model,
+                tgt_mean,
+                tgt_std,
+                max_count,
+                args.max_constits,
+                device,
+                BS_un,
+            )
+    mc_feats_std = None
+    mc_masks_std = None
+    if not classifier_only:
+        features_unmerged = compute_features(unmerged_const, unmerged_mask)
+        features_unmerged_std = standardize(features_unmerged, unmerged_mask, feat_means, feat_stds)
 
-    # ------------------- Build unmerged dataset ------------------- #
-    print("\n" + "=" * 70)
-    print("STEP 5: BUILD UNMERGED DATASET")
-    print("=" * 70)
-    unmerged_const, unmerged_mask = build_unmerged_dataset(
-        features_hlt_std,
-        hlt_mask,
-        hlt_const,
-        pred_counts,
-        unmerge_model,
-        tgt_mean,
-        tgt_std,
-        max_count,
-        args.max_constits,
-        device,
-        BS_un,
-    )
-    features_unmerged = compute_features(unmerged_const, unmerged_mask)
-    features_unmerged_std = standardize(features_unmerged, unmerged_mask, feat_means, feat_stds)
+        mc_enabled = CONFIG["mc_sampling"]["enabled"]
+        if k_folds > 1 and mc_enabled:
+            print("Warning: MC sampling with k-fold unmerge not supported; disabling MC.")
+            mc_enabled = False
+        if mc_enabled and not CONFIG["unmerge_training"]["distributional"]:
+            print("Warning: MC sampling requested but distributional output is disabled; disabling MC.")
+            mc_enabled = False
 
-    train_ds_unmerged = JetDataset(features_unmerged_std[train_idx], unmerged_mask[train_idx], all_labels[train_idx])
+        if mc_enabled:
+            print("\n" + "=" * 70)
+            print("STEP 5B: BUILD MC UNMERGED DATASETS")
+            print("=" * 70)
+            mc_n = CONFIG["mc_sampling"]["n_samples"]
+            mc_seed = CONFIG["mc_sampling"]["seed"]
+            mc_consts, mc_masks = build_unmerged_dataset_mc(
+                features_hlt_std,
+                hlt_mask,
+                hlt_const,
+                pred_counts,
+                unmerge_model,
+                tgt_mean,
+                tgt_std,
+                max_count,
+                args.max_constits,
+                device,
+                BS_un,
+                mc_n,
+                mc_seed,
+            )
+            mc_feats_std = []
+            mc_masks_std = []
+            for s in range(mc_n):
+                feat_s = compute_features(mc_consts[s], mc_masks[s])
+                feat_s_std = standardize(feat_s, mc_masks[s], feat_means, feat_stds)
+                mc_feats_std.append(feat_s_std)
+                mc_masks_std.append(mc_masks[s])
+        if args.save_unmerged_cache:
+            cache_path = save_root / "unmerged_cache.npz"
+            np.savez(
+                cache_path,
+                features_unmerged_std=features_unmerged_std,
+                unmerged_mask=unmerged_mask,
+                labels=all_labels,
+                train_idx=train_idx,
+                val_idx=val_idx,
+                test_idx=test_idx,
+            )
+            print(f"Saved unmerged cache to: {cache_path}")
+            if mc_enabled and mc_feats_std is not None:
+                mc_path = save_root / "unmerged_mc_cache.npz"
+                np.savez(
+                    mc_path,
+                    mc_feats_std=np.array(mc_feats_std, dtype=np.float32),
+                    mc_masks_std=np.array(mc_masks_std, dtype=bool),
+                )
+                print(f"Saved MC unmerged cache to: {mc_path}")
+    else:
+        mc_enabled = CONFIG["mc_sampling"]["enabled"]
+        if mc_enabled and args.load_mc_cache is None:
+            print("Warning: MC sampling requested but no MC cache provided; disabling MC.")
+            mc_enabled = False
+        if mc_enabled and args.load_mc_cache is not None:
+            mc_cache = np.load(args.load_mc_cache, allow_pickle=True)
+            mc_feats_std = mc_cache["mc_feats_std"]
+            mc_masks_std = mc_cache["mc_masks_std"]
+
+    if mc_enabled:
+        train_ds_unmerged = MCJetDataset(
+            [f[train_idx] for f in mc_feats_std],
+            [m[train_idx] for m in mc_masks_std],
+            all_labels[train_idx],
+        )
+    else:
+        train_ds_unmerged = JetDataset(features_unmerged_std[train_idx], unmerged_mask[train_idx], all_labels[train_idx])
     val_ds_unmerged = JetDataset(features_unmerged_std[val_idx], unmerged_mask[val_idx], all_labels[val_idx])
     test_ds_unmerged = JetDataset(features_unmerged_std[test_idx], unmerged_mask[test_idx], all_labels[test_idx])
 
@@ -1510,7 +2315,16 @@ def main():
     sch_ucls = get_scheduler(opt_ucls, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
     best_auc_u, best_state_ucls, no_improve = 0.0, None, 0
     for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="UnmergeCls"):
-        _, train_auc = train_classifier(unmerge_cls, train_loader_um, opt_ucls, device)
+        if mc_enabled:
+            _, train_auc = train_classifier_mc(
+                unmerge_cls,
+                train_loader_um,
+                opt_ucls,
+                device,
+                CONFIG["mc_sampling"]["consistency_weight"],
+            )
+        else:
+            _, train_auc = train_classifier(unmerge_cls, train_loader_um, opt_ucls, device)
         val_auc, _, _ = eval_classifier(unmerge_cls, val_loader_um, device)
         sch_ucls.step()
         if val_auc > best_auc_u:
