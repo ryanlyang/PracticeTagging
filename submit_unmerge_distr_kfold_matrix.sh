@@ -16,12 +16,13 @@ submit_cfg() {
   local name="$1"
   shift
   echo "Submitting config: $name"
-  SAVE_DIR="$BASE_DIR" RUN_NAME="$name" \
-  K_FOLDS="$K_FOLDS" KFOLD_ENSEMBLE="$KFOLD_ENSEMBLE" \
-  N_TRAIN_JETS="$N_TRAIN_JETS" MAX_CONSTITS="$MAX_CONSTITS" MAX_MERGE_COUNT="$MAX_MERGE_COUNT" \
-  TRAIN_PATH="$TRAIN_PATH" \
-  "$@" \
-  bash submit_unmerge_distr_kfold_pipeline.sh
+  env \
+    SAVE_DIR="$BASE_DIR" RUN_NAME="$name" \
+    K_FOLDS="$K_FOLDS" KFOLD_ENSEMBLE="$KFOLD_ENSEMBLE" \
+    N_TRAIN_JETS="$N_TRAIN_JETS" MAX_CONSTITS="$MAX_CONSTITS" MAX_MERGE_COUNT="$MAX_MERGE_COUNT" \
+    TRAIN_PATH="$TRAIN_PATH" \
+    "$@" \
+    bash submit_unmerge_distr_kfold_pipeline.sh
   sleep 0.3
 }
 
@@ -112,4 +113,3 @@ submit_cfg "true_count" \
   CURR_START=2 \
   CURR_EPOCHS=20 \
   USE_TRUE_COUNT=1
-
