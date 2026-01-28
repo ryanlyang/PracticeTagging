@@ -1868,10 +1868,14 @@ def main():
                 else:
                     count_model = count_models[fold_id]
                 pred_counts_train = predict_counts(count_model, features_hlt_std[train_sub], hlt_mask[train_sub], BS_cnt, device, max_count)
+                pred_counts_train_full = np.zeros_like(pred_counts)
+                pred_counts_train_full[train_sub] = pred_counts_train
                 pred_counts_hold = pred_counts[hold_sub]
-    
-                train_samples = _build_samples_for_indices(train_sub, origin_lists, hlt_mask, pred_counts_train, max_count, args.max_constits)
-                val_samples = _build_samples_for_indices(hold_sub, origin_lists, hlt_mask, pred_counts_hold, max_count, args.max_constits)
+                pred_counts_hold_full = np.zeros_like(pred_counts)
+                pred_counts_hold_full[hold_sub] = pred_counts_hold
+
+                train_samples = _build_samples_for_indices(train_sub, origin_lists, hlt_mask, pred_counts_train_full, max_count, args.max_constits)
+                val_samples = _build_samples_for_indices(hold_sub, origin_lists, hlt_mask, pred_counts_hold_full, max_count, args.max_constits)
                 print(f"Merged samples: train={len(train_samples):,}, holdout={len(val_samples):,}")
                 if len(train_samples) == 0:
                     raise RuntimeError("No merged samples in training fold.")
