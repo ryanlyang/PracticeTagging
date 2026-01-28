@@ -3,7 +3,7 @@
 #SBATCH --job-name=unmerge_distr_f
 #SBATCH --output=unmerge_distr_kfold_logs/unmerge_distr_fold_%j.out
 #SBATCH --error=unmerge_distr_kfold_logs/unmerge_distr_fold_%j.err
-#SBATCH --time=19-00:00:00
+#SBATCH --time=16-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
