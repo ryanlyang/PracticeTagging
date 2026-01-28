@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Submit 8 unmerger-configuration sweeps (each uses k-fold pipeline with restart chains).
+# Submit 8 unmerger-configuration sweeps (each uses k-fold pipeline).
 
 BASE_DIR=${BASE_DIR:-"checkpoints/unmerge_distr_kfold_sweep"}
 K_FOLDS=${K_FOLDS:-5}
@@ -22,7 +22,7 @@ submit_cfg() {
     N_TRAIN_JETS="$N_TRAIN_JETS" MAX_CONSTITS="$MAX_CONSTITS" MAX_MERGE_COUNT="$MAX_MERGE_COUNT" \
     TRAIN_PATH="$TRAIN_PATH" \
     "$@" \
-    bash submit_unmerge_distr_kfold_pipeline_long.sh
+    bash submit_unmerge_distr_kfold_pipeline.sh
   sleep 0.3
 }
 
