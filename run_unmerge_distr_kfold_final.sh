@@ -40,6 +40,7 @@ MAX_MERGE_COUNT=${MAX_MERGE_COUNT:-10}
 SAVE_DIR=${SAVE_DIR:-"checkpoints/unmerge_distr_kfold"}
 RUN_NAME=${RUN_NAME:-"kfold_run"}
 UNMERGE_LOSS=${UNMERGE_LOSS:-"hungarian"}
+NUM_WORKERS=${NUM_WORKERS:-6}
 USE_TRUE_COUNT=${USE_TRUE_COUNT:-0}
 NO_CURRICULUM=${NO_CURRICULUM:-0}
 CURR_START=${CURR_START:-2}
@@ -58,6 +59,7 @@ CMD="python unmerge_distr_model.py \
   --max_constits $MAX_CONSTITS \
   --max_merge_count $MAX_MERGE_COUNT \
   --unmerge_loss $UNMERGE_LOSS \
+  --num_workers $NUM_WORKERS \
   --curriculum_start $CURR_START \
   --curriculum_epochs $CURR_EPOCHS \
   --physics_weight $PHYSICS_WEIGHT \
@@ -140,6 +142,7 @@ if [ $EXIT_CODE -eq 0 ]; then
       --run_name ${RUN_NAME}_cls_${tag} \
       --n_train_jets $N_TRAIN_JETS \
       --max_constits $MAX_CONSTITS \
+      --num_workers $NUM_WORKERS \
       --classifier_only \
       --load_unmerged_cache $CACHE_PATH \
       --teacher_checkpoint $TEACHER_CKPT \

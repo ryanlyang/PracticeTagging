@@ -35,6 +35,9 @@ try:
 except Exception:
     _HAS_SCIPY = False
 
+# DataLoader defaults (set in main)
+DL_KWARGS = {}
+
 
 # ----------------------------- Reproducibility ----------------------------- #
 RANDOM_SEED = 52
@@ -1069,7 +1072,7 @@ def predict_counts(model, feat, mask, batch_size, device, max_count):
     model.eval()
     preds = np.zeros(mask.shape, dtype=np.int64)
     loader = DataLoader(MergeCountDataset(feat, mask, np.zeros(mask.shape, dtype=np.int64)),
-                        batch_size=batch_size, shuffle=False)
+                        batch_size=batch_size, shuffle=False, **DL_KWARGS)
     idx = 0
     with torch.no_grad():
         for batch in loader:
@@ -1179,7 +1182,7 @@ def predict_counts_ensemble(models, feat, mask, batch_size, device, max_count):
         return predict_counts(models[0], feat, mask, batch_size, device, max_count)
     preds = np.zeros(mask.shape, dtype=np.int64)
     loader = DataLoader(MergeCountDataset(feat, mask, np.zeros(mask.shape, dtype=np.int64)),
-                        batch_size=batch_size, shuffle=False)
+                        batch_size=batch_size, shuffle=False, **DL_KWARGS)
     idx = 0
     with torch.no_grad():
         for batch in loader:
@@ -1381,6 +1384,7 @@ def main():
     parser.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "unmerge_model"))
     parser.add_argument("--run_name", type=str, default="default")
     parser.add_argument("--device", type=str, default="cpu")
+    parser.add_argument("--num_workers", type=int, default=0, help="DataLoader worker processes.")
     parser.add_argument("--skip_save_models", action="store_true")
     parser.add_argument("--unmerge_loss", type=str, default=CONFIG["unmerge_training"]["loss_type"], choices=["chamfer", "hungarian"])
     parser.add_argument("--use_true_count", action="store_true", default=CONFIG["unmerge_training"]["use_true_count"])
@@ -1484,6 +1488,16 @@ def main():
     device = torch.device(args.device)
     print(f"Device: {device}")
     print(f"Save dir: {save_root}")
+    global DL_KWARGS
+    num_workers = max(0, int(args.num_workers))
+    pin_memory = (device.type == "cuda")
+    persistent_workers = num_workers > 0
+    DL_KWARGS = {
+        "num_workers": num_workers,
+        "pin_memory": pin_memory,
+        "persistent_workers": persistent_workers,
+    }
+    print(f"DataLoader workers: {num_workers}")
 
     train_path = Path(args.train_path)
     train_files = sorted(list(train_path.glob("*.h5")))
@@ -1595,9 +1609,9 @@ def main():
         val_ds_off = JetDataset(features_off_std[val_idx], masks_off[val_idx], all_labels[val_idx])
         test_ds_off = JetDataset(features_off_std[test_idx], masks_off[test_idx], all_labels[test_idx])
         BS = CONFIG["training"]["batch_size"]
-        train_loader_off = DataLoader(train_ds_off, batch_size=BS, shuffle=True, drop_last=True)
-        val_loader_off = DataLoader(val_ds_off, batch_size=BS, shuffle=False)
-        test_loader_off = DataLoader(test_ds_off, batch_size=BS, shuffle=False)
+        train_loader_off = DataLoader(train_ds_off, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+        val_loader_off = DataLoader(val_ds_off, batch_size=BS, shuffle=False, **DL_KWARGS)
+        test_loader_off = DataLoader(test_ds_off, batch_size=BS, shuffle=False, **DL_KWARGS)
 
         kd_cfg = CONFIG["kd"]
         teacher = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
@@ -1639,9 +1653,9 @@ def main():
         train_ds_hlt = JetDataset(features_hlt_std[train_idx], hlt_mask[train_idx], all_labels[train_idx])
         val_ds_hlt = JetDataset(features_hlt_std[val_idx], hlt_mask[val_idx], all_labels[val_idx])
         test_ds_hlt = JetDataset(features_hlt_std[test_idx], hlt_mask[test_idx], all_labels[test_idx])
-        train_loader_hlt = DataLoader(train_ds_hlt, batch_size=BS, shuffle=True, drop_last=True)
-        val_loader_hlt = DataLoader(val_ds_hlt, batch_size=BS, shuffle=False)
-        test_loader_hlt = DataLoader(test_ds_hlt, batch_size=BS, shuffle=False)
+        train_loader_hlt = DataLoader(train_ds_hlt, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+        val_loader_hlt = DataLoader(val_ds_hlt, batch_size=BS, shuffle=False, **DL_KWARGS)
+        test_loader_hlt = DataLoader(test_ds_hlt, batch_size=BS, shuffle=False, **DL_KWARGS)
 
         baseline = None
         if args.skip_baseline:
@@ -1722,8 +1736,8 @@ def main():
                     continue
                 train_ds_cnt = MergeCountDataset(features_hlt_std[train_sub], hlt_mask[train_sub], count_label[train_sub])
                 val_ds_cnt = MergeCountDataset(features_hlt_std[hold_sub], hlt_mask[hold_sub], count_label[hold_sub])
-                train_loader_cnt = DataLoader(train_ds_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True)
-                val_loader_cnt = DataLoader(val_ds_cnt, batch_size=BS_cnt, shuffle=False)
+                train_loader_cnt = DataLoader(train_ds_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True, **DL_KWARGS)
+                val_loader_cnt = DataLoader(val_ds_cnt, batch_size=BS_cnt, shuffle=False, **DL_KWARGS)
                 count_model = MergeCountPredictor(input_dim=7, num_classes=max_count, **CONFIG["merge_count_model"]).to(device)
                 opt_c = torch.optim.AdamW(count_model.parameters(), lr=CONFIG["merge_count_training"]["lr"], weight_decay=CONFIG["merge_count_training"]["weight_decay"])
                 sch_c = get_scheduler(opt_c, CONFIG["merge_count_training"]["warmup_epochs"], CONFIG["merge_count_training"]["epochs"])
@@ -1784,8 +1798,8 @@ def main():
         else:
             train_ds_cnt = MergeCountDataset(features_hlt_std[train_idx], hlt_mask[train_idx], count_label[train_idx])
             val_ds_cnt = MergeCountDataset(features_hlt_std[val_idx], hlt_mask[val_idx], count_label[val_idx])
-            train_loader_cnt = DataLoader(train_ds_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True)
-            val_loader_cnt = DataLoader(val_ds_cnt, batch_size=BS_cnt, shuffle=False)
+            train_loader_cnt = DataLoader(train_ds_cnt, batch_size=BS_cnt, shuffle=True, drop_last=True, **DL_KWARGS)
+            val_loader_cnt = DataLoader(val_ds_cnt, batch_size=BS_cnt, shuffle=False, **DL_KWARGS)
             count_model = MergeCountPredictor(input_dim=7, num_classes=max_count, **CONFIG["merge_count_model"]).to(device)
             opt_c = torch.optim.AdamW(count_model.parameters(), lr=CONFIG["merge_count_training"]["lr"], weight_decay=CONFIG["merge_count_training"]["weight_decay"])
             sch_c = get_scheduler(opt_c, CONFIG["merge_count_training"]["warmup_epochs"], CONFIG["merge_count_training"]["epochs"])
@@ -1887,8 +1901,8 @@ def main():
     
                 train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
                 val_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
-                train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True)
-                val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False)
+                train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True, **DL_KWARGS)
+                val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
     
                 unmerge_model = UnmergePredictor(
                     input_dim=7,
@@ -2093,9 +2107,9 @@ def main():
             train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
             val_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
             test_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, test_samples, max_count, tgt_mean, tgt_std)
-            train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True)
-            val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False)
-            test_loader_un = DataLoader(test_ds_un, batch_size=BS_un, shuffle=False)
+            train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True, **DL_KWARGS)
+            val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
+            test_loader_un = DataLoader(test_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
     
             unmerge_model = UnmergePredictor(
                 input_dim=7,
@@ -2306,9 +2320,9 @@ def main():
     val_ds_unmerged = JetDataset(features_unmerged_std[val_idx], unmerged_mask[val_idx], all_labels[val_idx])
     test_ds_unmerged = JetDataset(features_unmerged_std[test_idx], unmerged_mask[test_idx], all_labels[test_idx])
 
-    train_loader_um = DataLoader(train_ds_unmerged, batch_size=BS, shuffle=True, drop_last=True)
-    val_loader_um = DataLoader(val_ds_unmerged, batch_size=BS, shuffle=False)
-    test_loader_um = DataLoader(test_ds_unmerged, batch_size=BS, shuffle=False)
+    train_loader_um = DataLoader(train_ds_unmerged, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+    val_loader_um = DataLoader(val_ds_unmerged, batch_size=BS, shuffle=False, **DL_KWARGS)
+    test_loader_um = DataLoader(test_ds_unmerged, batch_size=BS, shuffle=False, **DL_KWARGS)
 
     # ------------------- Train unmerge-model classifier ------------------- #
     print("\n" + "=" * 70)
@@ -2372,9 +2386,9 @@ def main():
         masks_off[test_idx],
         all_labels[test_idx],
     )
-    kd_train_loader = DataLoader(kd_train_ds, batch_size=BS, shuffle=True, drop_last=True)
-    kd_val_loader = DataLoader(kd_val_ds, batch_size=BS, shuffle=False)
-    kd_test_loader = DataLoader(kd_test_ds, batch_size=BS, shuffle=False)
+    kd_train_loader = DataLoader(kd_train_ds, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+    kd_val_loader = DataLoader(kd_val_ds, batch_size=BS, shuffle=False, **DL_KWARGS)
+    kd_test_loader = DataLoader(kd_test_ds, batch_size=BS, shuffle=False, **DL_KWARGS)
 
     kd_student = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
     opt_kd = torch.optim.AdamW(kd_student.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
