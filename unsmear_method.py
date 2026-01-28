@@ -857,6 +857,9 @@ def main():
     parser.add_argument("--sampling_method", type=str, default=CONFIG["sampling"]["method"], choices=["ddpm", "ddim"])
     parser.add_argument("--guidance_scale", type=float, default=CONFIG["sampling"]["guidance_scale"])
     parser.add_argument("--skip_classifiers", action="store_true", help="Skip teacher/baseline/unsmear classifiers")
+    parser.add_argument("--classifiers_only", action="store_true", help="Skip diffusion training and run only classifiers using a saved diffusion model.")
+    parser.add_argument("--diffusion_ckpt", type=str, default=None, help="Path to diffusion checkpoint (EMA preferred).")
+    parser.add_argument("--results_npz", type=str, default=None, help="Path to results.npz with const stats and sampling settings.")
     args = parser.parse_args()
 
     save_root = Path(args.save_dir) / args.run_name
@@ -911,7 +914,15 @@ def main():
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
     # Standardize in raw constituent space (pt, eta, phi, E)
-    const_means, const_stds = get_stats(constituents_off, masks_off, train_idx)
+    if args.classifiers_only:
+        res_path = Path(args.results_npz) if args.results_npz else (save_root / "results.npz")
+        if not res_path.exists():
+            raise FileNotFoundError(f"results.npz not found at {res_path}")
+        res = np.load(res_path, allow_pickle=True)
+        const_means = res["feat_means"]
+        const_stds = res["feat_stds"]
+    else:
+        const_means, const_stds = get_stats(constituents_off, masks_off, train_idx)
     off_std = standardize(constituents_off, masks_off, const_means, const_stds)
     hlt_std = standardize(constituents_hlt, masks_hlt, const_means, const_stds)
 
@@ -923,133 +934,172 @@ def main():
     val_loader = DataLoader(val_ds, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_ds, batch_size=args.batch_size, shuffle=False)
 
-    model = ConditionalDenoiser(
-        input_dim=4,
-        embed_dim=CONFIG["model"]["embed_dim"],
-        num_heads=CONFIG["model"]["num_heads"],
-        num_layers=CONFIG["model"]["num_layers"],
-        ff_dim=CONFIG["model"]["ff_dim"],
-        dropout=CONFIG["model"]["dropout"],
-        use_cross_attn=args.use_cross_attn,
-        self_cond=not args.no_self_cond,
-    ).to(device)
-    ema = EMA(model, decay=args.ema_decay)
+    if args.classifiers_only:
+        print("\n" + "=" * 70)
+        print("SKIP DIFFUSION TRAINING: loading trained model")
+        print("=" * 70)
+        res_path = Path(args.results_npz) if args.results_npz else (save_root / "results.npz")
+        res = np.load(res_path, allow_pickle=True)
+        timesteps = int(res["timesteps"]) if "timesteps" in res else args.timesteps
+        sample_steps = int(res["sample_steps"]) if "sample_steps" in res else args.sample_steps
+        n_samples_eval = int(res["n_samples_eval"]) if "n_samples_eval" in res else args.n_samples_eval
+        pred_type = str(res["pred_type"]) if "pred_type" in res else args.pred_type
+        sampling_method = str(res["sampling_method"]) if "sampling_method" in res else args.sampling_method
+        guidance_scale = float(res["guidance_scale"]) if "guidance_scale" in res else args.guidance_scale
+        samp_cfg = {
+            "sample_steps": sample_steps,
+            "n_samples_eval": n_samples_eval,
+            "method": sampling_method,
+            "guidance_scale": guidance_scale,
+        }
+        betas = torch.tensor(make_beta_schedule(timesteps, args.schedule), dtype=torch.float32, device=device)
+        alpha = 1.0 - betas
+        alpha_bar = torch.cumprod(alpha, dim=0)
 
-    betas = torch.tensor(make_beta_schedule(args.timesteps, args.schedule), dtype=torch.float32, device=device)
-    alpha = 1.0 - betas
-    alpha_bar = torch.cumprod(alpha, dim=0)
+        eval_model = ConditionalDenoiser(
+            input_dim=4,
+            embed_dim=CONFIG["model"]["embed_dim"],
+            num_heads=CONFIG["model"]["num_heads"],
+            num_layers=CONFIG["model"]["num_layers"],
+            ff_dim=CONFIG["model"]["ff_dim"],
+            dropout=CONFIG["model"]["dropout"],
+            use_cross_attn=args.use_cross_attn,
+            self_cond=not args.no_self_cond,
+        ).to(device)
+        ckpt_path = Path(args.diffusion_ckpt) if args.diffusion_ckpt else (save_root / "unsmear_diffusion_ema.pt")
+        ckpt = torch.load(ckpt_path, map_location=device)
+        eval_model.load_state_dict(ckpt["model"])
+        diff_pred_type = pred_type
+    else:
+        model = ConditionalDenoiser(
+            input_dim=4,
+            embed_dim=CONFIG["model"]["embed_dim"],
+            num_heads=CONFIG["model"]["num_heads"],
+            num_layers=CONFIG["model"]["num_layers"],
+            ff_dim=CONFIG["model"]["ff_dim"],
+            dropout=CONFIG["model"]["dropout"],
+            use_cross_attn=args.use_cross_attn,
+            self_cond=not args.no_self_cond,
+        ).to(device)
+        ema = EMA(model, decay=args.ema_decay)
 
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
-    sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], args.epochs)
+        betas = torch.tensor(make_beta_schedule(args.timesteps, args.schedule), dtype=torch.float32, device=device)
+        alpha = 1.0 - betas
+        alpha_bar = torch.cumprod(alpha, dim=0)
 
-    best_val = 1e9
-    best_state = None
-    best_state_ema = None
-    no_improve = 0
+        opt = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        sch = get_scheduler(opt, CONFIG["training"]["warmup_epochs"], args.epochs)
 
-    print("\n" + "=" * 70)
-    print("TRAINING: CONDITIONAL DIFFUSION UNSMEAR")
-    print("=" * 70)
-    diff_cfg = {
-        "pred_type": args.pred_type,
-        "x0_weight": args.x0_weight,
-        "snr_weight": args.snr_weight,
-        "snr_gamma": args.snr_gamma,
-        "self_cond_prob": args.self_cond_prob,
-        "cond_drop_prob": args.cond_drop_prob,
-        "jet_loss_weight": args.jet_loss_weight,
-    }
-    samp_cfg = {
-        "sample_steps": args.sample_steps,
-        "n_samples_eval": args.n_samples_eval,
-        "method": args.sampling_method,
-        "guidance_scale": args.guidance_scale,
-    }
+        best_val = 1e9
+        best_state = None
+        best_state_ema = None
+        no_improve = 0
 
-    for ep in tqdm(range(args.epochs), desc="Diffusion"):
-        loss = train_epoch(model, ema, train_loader, opt, device, alpha_bar, diff_cfg)
-        sch.step()
+        print("\n" + "=" * 70)
+        print("TRAINING: CONDITIONAL DIFFUSION UNSMEAR")
+        print("=" * 70)
+        diff_cfg = {
+            "pred_type": args.pred_type,
+            "x0_weight": args.x0_weight,
+            "snr_weight": args.snr_weight,
+            "snr_gamma": args.snr_gamma,
+            "self_cond_prob": args.self_cond_prob,
+            "cond_drop_prob": args.cond_drop_prob,
+            "jet_loss_weight": args.jet_loss_weight,
+        }
+        samp_cfg = {
+            "sample_steps": args.sample_steps,
+            "n_samples_eval": args.n_samples_eval,
+            "method": args.sampling_method,
+            "guidance_scale": args.guidance_scale,
+        }
 
-        if (ep + 1) % 5 == 0:
-            # eval on val (EMA)
-            eval_model = ConditionalDenoiser(
-                input_dim=4,
-                embed_dim=CONFIG["model"]["embed_dim"],
-                num_heads=CONFIG["model"]["num_heads"],
-                num_layers=CONFIG["model"]["num_layers"],
-                ff_dim=CONFIG["model"]["ff_dim"],
-                dropout=CONFIG["model"]["dropout"],
-                use_cross_attn=args.use_cross_attn,
-                self_cond=not args.no_self_cond,
-            ).to(device)
-            ema.apply_to(eval_model)
-            val_l1, val_l2 = eval_reconstruction(
-                eval_model, val_loader, device, betas, alpha, alpha_bar,
-                const_means, const_stds, samp_cfg, args.pred_type
-            )
-            print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
-            if val_l1 < best_val:
-                best_val = val_l1
-                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-                best_state_ema = {k: v.detach().cpu().clone() for k, v in ema.shadow.items()}
-                no_improve = 0
-            else:
-                no_improve += 1
-            if no_improve >= CONFIG["training"]["patience"]:
-                print(f"Early stopping at epoch {ep+1}")
-                break
+        for ep in tqdm(range(args.epochs), desc="Diffusion"):
+            loss = train_epoch(model, ema, train_loader, opt, device, alpha_bar, diff_cfg)
+            sch.step()
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
-        ema.shadow = best_state_ema
+            if (ep + 1) % 5 == 0:
+                # eval on val (EMA)
+                eval_model = ConditionalDenoiser(
+                    input_dim=4,
+                    embed_dim=CONFIG["model"]["embed_dim"],
+                    num_heads=CONFIG["model"]["num_heads"],
+                    num_layers=CONFIG["model"]["num_layers"],
+                    ff_dim=CONFIG["model"]["ff_dim"],
+                    dropout=CONFIG["model"]["dropout"],
+                    use_cross_attn=args.use_cross_attn,
+                    self_cond=not args.no_self_cond,
+                ).to(device)
+                ema.apply_to(eval_model)
+                val_l1, val_l2 = eval_reconstruction(
+                    eval_model, val_loader, device, betas, alpha, alpha_bar,
+                    const_means, const_stds, samp_cfg, args.pred_type
+                )
+                print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
+                if val_l1 < best_val:
+                    best_val = val_l1
+                    best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                    best_state_ema = {k: v.detach().cpu().clone() for k, v in ema.shadow.items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if no_improve >= CONFIG["training"]["patience"]:
+                    print(f"Early stopping at epoch {ep+1}")
+                    break
 
-    # Final evaluation using EMA weights
-    eval_model = ConditionalDenoiser(
-        input_dim=4,
-        embed_dim=CONFIG["model"]["embed_dim"],
-        num_heads=CONFIG["model"]["num_heads"],
-        num_layers=CONFIG["model"]["num_layers"],
-        ff_dim=CONFIG["model"]["ff_dim"],
-        dropout=CONFIG["model"]["dropout"],
-        use_cross_attn=args.use_cross_attn,
-        self_cond=not args.no_self_cond,
-    ).to(device)
-    ema.apply_to(eval_model)
-    val_l1, val_l2 = eval_reconstruction(
-        eval_model, val_loader, device, betas, alpha, alpha_bar,
-        const_means, const_stds, samp_cfg, args.pred_type
-    )
-    test_l1, test_l2 = eval_reconstruction(
-        eval_model, test_loader, device, betas, alpha, alpha_bar,
-        const_means, const_stds, samp_cfg, args.pred_type
-    )
+        if best_state is not None:
+            model.load_state_dict(best_state)
+            ema.shadow = best_state_ema
 
-    print("\nFinal reconstruction:")
-    print(f"  Val L1: {val_l1:.6f} | Val L2: {val_l2:.6f}")
-    print(f"  Test L1: {test_l1:.6f} | Test L2: {test_l2:.6f}")
+        # Final evaluation using EMA weights
+        eval_model = ConditionalDenoiser(
+            input_dim=4,
+            embed_dim=CONFIG["model"]["embed_dim"],
+            num_heads=CONFIG["model"]["num_heads"],
+            num_layers=CONFIG["model"]["num_layers"],
+            ff_dim=CONFIG["model"]["ff_dim"],
+            dropout=CONFIG["model"]["dropout"],
+            use_cross_attn=args.use_cross_attn,
+            self_cond=not args.no_self_cond,
+        ).to(device)
+        ema.apply_to(eval_model)
+        val_l1, val_l2 = eval_reconstruction(
+            eval_model, val_loader, device, betas, alpha, alpha_bar,
+            const_means, const_stds, samp_cfg, args.pred_type
+        )
+        test_l1, test_l2 = eval_reconstruction(
+            eval_model, test_loader, device, betas, alpha, alpha_bar,
+            const_means, const_stds, samp_cfg, args.pred_type
+        )
 
-    np.savez(
-        save_root / "results.npz",
-        val_l1=val_l1,
-        val_l2=val_l2,
-        test_l1=test_l1,
-        test_l2=test_l2,
-        feat_means=const_means,
-        feat_stds=const_stds,
-        timesteps=args.timesteps,
-        sample_steps=args.sample_steps,
-        n_samples_eval=args.n_samples_eval,
-        pred_type=args.pred_type,
-        sampling_method=args.sampling_method,
-        guidance_scale=args.guidance_scale,
-    )
-    torch.save({"model": eval_model.state_dict()}, save_root / "unsmear_diffusion_ema.pt")
-    torch.save({"model": model.state_dict()}, save_root / "unsmear_diffusion.pt")
+        print("\nFinal reconstruction:")
+        print(f"  Val L1: {val_l1:.6f} | Val L2: {val_l2:.6f}")
+        print(f"  Test L1: {test_l1:.6f} | Test L2: {test_l2:.6f}")
 
-    print(f"Saved results to: {save_root}")
+        np.savez(
+            save_root / "results.npz",
+            val_l1=val_l1,
+            val_l2=val_l2,
+            test_l1=test_l1,
+            test_l2=test_l2,
+            feat_means=const_means,
+            feat_stds=const_stds,
+            timesteps=args.timesteps,
+            sample_steps=args.sample_steps,
+            n_samples_eval=args.n_samples_eval,
+            pred_type=args.pred_type,
+            sampling_method=args.sampling_method,
+            guidance_scale=args.guidance_scale,
+        )
+        torch.save({"model": eval_model.state_dict()}, save_root / "unsmear_diffusion_ema.pt")
+        torch.save({"model": model.state_dict()}, save_root / "unsmear_diffusion.pt")
 
-    if args.skip_classifiers:
-        return
+        print(f"Saved results to: {save_root}")
+
+        diff_pred_type = args.pred_type
+
+        if args.skip_classifiers:
+            return
 
     print("\n" + "=" * 70)
     print("CLASSIFIERS: Offline Teacher / HLT Baseline / Unsmeared Student")
@@ -1065,7 +1115,7 @@ def main():
 
     # Generate unsmeared constituents (EMA model)
     unsmear_std = generate_unsmeared_constituents(
-        eval_model, hlt_std, masks_hlt, betas, alpha, alpha_bar, samp_cfg, args.pred_type, device
+        eval_model, hlt_std, masks_hlt, betas, alpha, alpha_bar, samp_cfg, diff_pred_type, device
     )
     unsmear_const = unstandardize(unsmear_std, const_means, const_stds)
     unsmear_const[:, :, 0] = np.clip(unsmear_const[:, :, 0], 0.0, None)
