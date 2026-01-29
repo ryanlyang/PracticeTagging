@@ -3,8 +3,9 @@
 # K-fold unsmearer training job (train-only), using cached unmerged dataset.
 
 #SBATCH --job-name=unsmear_kf
-#SBATCH --output=unmerge_distr_kfold_logs/unsmear_kfold_fold_%j.out
-#SBATCH --error=unmerge_distr_kfold_logs/unsmear_kfold_fold_%j.err
+## Set log directory (can override with LOG_DIR env)
+#SBATCH --output=unmerge_distr_kfold_unsmear_logs/unsmear_kfold_fold_%j.out
+#SBATCH --error=unmerge_distr_kfold_unsmear_logs/unsmear_kfold_fold_%j.err
 #SBATCH --time=11-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -12,7 +13,8 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 
-mkdir -p unmerge_distr_kfold_logs
+LOG_DIR=${LOG_DIR:-"unmerge_distr_kfold_unsmear_logs"}
+mkdir -p "$LOG_DIR"
 
 echo "=========================================="
 echo "Unsmearer K-fold (train-only)"

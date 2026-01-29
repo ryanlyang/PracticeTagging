@@ -3,8 +3,9 @@
 # K-fold unmerger training job (unsmear pipeline variant)
 
 #SBATCH --job-name=unmerge_distr_fu
-#SBATCH --output=unmerge_distr_kfold_logs/unmerge_distr_fold_unsmear_%j.out
-#SBATCH --error=unmerge_distr_kfold_logs/unmerge_distr_fold_unsmear_%j.err
+## Set log directory (can override with LOG_DIR env)
+#SBATCH --output=unmerge_distr_kfold_unsmear_logs/unmerge_distr_fold_unsmear_%j.out
+#SBATCH --error=unmerge_distr_kfold_unsmear_logs/unmerge_distr_fold_unsmear_%j.err
 #SBATCH --time=11-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
@@ -12,7 +13,8 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 
-mkdir -p unmerge_distr_kfold_logs
+LOG_DIR=${LOG_DIR:-"unmerge_distr_kfold_unsmear_logs"}
+mkdir -p "$LOG_DIR"
 
 echo "=========================================="
 echo "Unmerge Distributional Model (K-fold train-only, unsmear pipeline)"
