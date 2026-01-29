@@ -91,6 +91,7 @@ CONFIG = {
         "cond_drop_prob": 0.1,  # classifier-free guidance dropout
         "ema_decay": 0.995,
         "jet_loss_weight": 0.1,  # jet-level summary loss
+        "two_head": False,
     },
     "training": {
         "batch_size": 256,
@@ -242,11 +243,17 @@ def compute_features(const, mask):
 
 # ----------------------------- Dataset ----------------------------- #
 class JetPairDataset(Dataset):
-    def __init__(self, off_std, hlt_std, mask_off, mask_hlt):
+    def __init__(self, off_std, hlt_std, mask_off, mask_hlt, weights=None, merge_flag=None):
         self.off = torch.tensor(off_std, dtype=torch.float32)
         self.hlt = torch.tensor(hlt_std, dtype=torch.float32)
         self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
         self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+        self.weights = (
+            torch.tensor(weights, dtype=torch.float32) if weights is not None else None
+        )
+        self.merge_flag = (
+            torch.tensor(merge_flag, dtype=torch.float32) if merge_flag is not None else None
+        )
 
     def __len__(self):
         return len(self.off)
@@ -254,28 +261,38 @@ class JetPairDataset(Dataset):
     def __getitem__(self, i):
         # Use joint mask (tokens present in HLT); this is the reliable supervision
         joint = self.mask_hlt[i]
-        return {
+        out = {
             "off": self.off[i],
             "hlt": self.hlt[i],
             "mask": joint,
         }
+        if self.weights is not None:
+            out["weight"] = self.weights[i]
+        if self.merge_flag is not None:
+            out["merge_flag"] = self.merge_flag[i]
+        return out
 
 
 class JetDataset(Dataset):
-    def __init__(self, feat, mask, labels):
+    def __init__(self, feat, mask, labels, extra=None, extra_key="extra"):
         self.feat = torch.tensor(feat, dtype=torch.float32)
         self.mask = torch.tensor(mask, dtype=torch.bool)
         self.labels = torch.tensor(labels, dtype=torch.float32)
+        self.extra = torch.tensor(extra, dtype=torch.float32) if extra is not None else None
+        self.extra_key = extra_key
 
     def __len__(self):
         return len(self.labels)
 
     def __getitem__(self, i):
-        return {
+        out = {
             "feat": self.feat[i],
             "mask": self.mask[i],
             "label": self.labels[i],
         }
+        if self.extra is not None:
+            out[self.extra_key] = self.extra[i]
+        return out
 
 
 # ----------------------------- Diffusion utils ----------------------------- #
@@ -336,6 +353,7 @@ class ConditionalDenoiser(nn.Module):
     def __init__(
         self,
         input_dim=4,
+        cond_dim=None,
         embed_dim=256,
         num_heads=8,
         num_layers=8,
@@ -343,19 +361,22 @@ class ConditionalDenoiser(nn.Module):
         dropout=0.1,
         use_cross_attn=True,
         self_cond=True,
+        two_head=False,
     ):
         super().__init__()
         self.input_dim = input_dim
+        self.cond_dim = input_dim if cond_dim is None else cond_dim
         self.embed_dim = embed_dim
         self.use_cross_attn = use_cross_attn
         self.self_cond = self_cond
+        self.two_head = two_head
         self.x_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
             nn.GELU(),
             nn.Dropout(dropout),
         )
         self.c_proj = nn.Sequential(
-            nn.Linear(input_dim, embed_dim),
+            nn.Linear(self.cond_dim, embed_dim),
             nn.GELU(),
             nn.Dropout(dropout),
         )
@@ -402,12 +423,18 @@ class ConditionalDenoiser(nn.Module):
                 norm_first=True,
             )
             self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
-        self.out = nn.Linear(embed_dim, input_dim)
+        if self.two_head:
+            self.out_normal = nn.Linear(embed_dim, input_dim)
+            self.out_merged = nn.Linear(embed_dim, input_dim)
+        else:
+            self.out = nn.Linear(embed_dim, input_dim)
 
-    def forward(self, x_t, cond, mask, t, self_cond=None):
+    def forward(self, x_t, cond, mask, t, self_cond=None, merge_flag=None):
         # x_t, cond: (B, N, F) ; mask: (B, N)
         if cond is None:
-            cond = torch.zeros_like(x_t)
+            cond = torch.zeros(
+                x_t.size(0), x_t.size(1), self.cond_dim, device=x_t.device, dtype=x_t.dtype
+            )
         h = self.x_proj(x_t) + self.c_proj(cond)
         if self.self_cond and self_cond is not None:
             h = h + self.sc_proj(self_cond)
@@ -418,6 +445,15 @@ class ConditionalDenoiser(nn.Module):
             h = self.decoder(h, mem, tgt_key_padding_mask=~mask, memory_key_padding_mask=~mask)
         else:
             h = self.encoder(h, src_key_padding_mask=~mask)
+        if self.two_head:
+            out_normal = self.out_normal(h)
+            out_merged = self.out_merged(h)
+            if merge_flag is None:
+                return out_normal
+            g = merge_flag.float()
+            if g.dim() == 2:
+                g = g.unsqueeze(-1)
+            return out_normal * (1.0 - g) + out_merged * g
         return self.out(h)
 
 
@@ -503,10 +539,19 @@ def q_sample(x0, t, noise, alpha_bar):
     return torch.sqrt(a_bar) * x0 + torch.sqrt(1.0 - a_bar) * noise
 
 
-def masked_mse(pred, target, mask):
+def masked_mse(pred, target, mask, weight=None):
     diff = (pred - target) ** 2
-    diff = diff * mask.unsqueeze(-1)
-    denom = mask.sum() * pred.shape[-1]
+    m = mask.unsqueeze(-1).float()
+    if weight is not None:
+        w = weight
+        if w.dim() == 2:
+            w = w.unsqueeze(-1)
+        w = w.float() * m
+        diff = diff * w
+        denom = w.sum() * pred.shape[-1]
+    else:
+        diff = diff * m
+        denom = m.sum() * pred.shape[-1]
     return diff.sum() / torch.clamp(denom, min=1.0)
 
 
@@ -543,6 +588,12 @@ def train_epoch(model, ema, loader, opt, device, alpha_bar, cfg):
         x0 = batch["off"].to(device)
         cond = batch["hlt"].to(device)
         mask = batch["mask"].to(device)
+        weight = batch.get("weight")
+        if weight is not None:
+            weight = weight.to(device)
+        merge_flag = batch.get("merge_flag")
+        if merge_flag is not None:
+            merge_flag = merge_flag.to(device)
         x0 = torch.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
         cond = torch.nan_to_num(cond, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -562,7 +613,7 @@ def train_epoch(model, ema, loader, opt, device, alpha_bar, cfg):
         if cfg["self_cond_prob"] > 0 and model.self_cond:
             if torch.rand(()) < cfg["self_cond_prob"]:
                 with torch.no_grad():
-                    pred0 = model(x_t, cond, mask, t, self_cond=None)
+                    pred0 = model(x_t, cond, mask, t, self_cond=None, merge_flag=merge_flag)
                     a_bar = alpha_bar[t].view(-1, 1, 1)
                     if cfg["pred_type"] == "x0":
                         x0_sc = pred0
@@ -573,7 +624,7 @@ def train_epoch(model, ema, loader, opt, device, alpha_bar, cfg):
                     self_cond = x0_sc.detach()
 
         opt.zero_grad()
-        pred = model(x_t, cond, mask, t, self_cond=self_cond)
+        pred = model(x_t, cond, mask, t, self_cond=self_cond, merge_flag=merge_flag)
 
         a_bar = alpha_bar[t].view(-1, 1, 1)
         if cfg["pred_type"] == "x0":
@@ -589,7 +640,7 @@ def train_epoch(model, ema, loader, opt, device, alpha_bar, cfg):
             pred_eps = pred
             pred_x0 = predict_x0_from_eps(x_t, pred, a_bar)
 
-        loss_noise = masked_mse(pred, target, mask)
+        loss_noise = masked_mse(pred, target, mask, weight)
         if cfg["snr_weight"]:
             snr = compute_snr(a_bar)
             w = torch.clamp(snr, max=cfg["snr_gamma"]) / (snr + 1.0)
@@ -597,7 +648,7 @@ def train_epoch(model, ema, loader, opt, device, alpha_bar, cfg):
 
         loss = loss_noise
         if cfg["x0_weight"] > 0:
-            loss_x0 = masked_mse(pred_x0, x0, mask)
+            loss_x0 = masked_mse(pred_x0, x0, mask, weight)
             loss = loss + cfg["x0_weight"] * loss_x0
 
         if cfg["jet_loss_weight"] > 0:
@@ -619,14 +670,14 @@ def train_epoch(model, ema, loader, opt, device, alpha_bar, cfg):
 
 
 @torch.no_grad()
-def model_pred_eps(model, x, cond, mask, t, pred_type, alpha_bar, guidance_scale=1.0):
+def model_pred_eps(model, x, cond, mask, t, pred_type, alpha_bar, guidance_scale=1.0, merge_flag=None):
     # CFG: do conditional + unconditional
     if guidance_scale != 1.0:
-        eps_cond = model(x, cond, mask, t)
-        eps_uncond = model(x, torch.zeros_like(cond), mask, t)
+        eps_cond = model(x, cond, mask, t, merge_flag=merge_flag)
+        eps_uncond = model(x, torch.zeros_like(cond), mask, t, merge_flag=merge_flag)
         eps = eps_uncond + guidance_scale * (eps_cond - eps_uncond)
     else:
-        eps = model(x, cond, mask, t)
+        eps = model(x, cond, mask, t, merge_flag=merge_flag)
 
     a_bar = alpha_bar[t].view(-1, 1, 1)
     if pred_type == "x0":
@@ -638,7 +689,7 @@ def model_pred_eps(model, x, cond, mask, t, pred_type, alpha_bar, guidance_scale
 
 
 @torch.no_grad()
-def sample_ddpm(model, cond, mask, betas, alpha, alpha_bar, steps, pred_type, guidance_scale):
+def sample_ddpm(model, cond, mask, betas, alpha, alpha_bar, steps, pred_type, guidance_scale, merge_flag=None):
     model.eval()
     device = cond.device
     T = betas.shape[0]
@@ -650,10 +701,11 @@ def sample_ddpm(model, cond, mask, betas, alpha, alpha_bar, steps, pred_type, gu
     else:
         idx = torch.arange(T - 1, -1, -1, device=device)
 
-    x = torch.randn_like(cond)
+    b, n, _ = cond.shape
+    x = torch.randn((b, n, getattr(model, "input_dim", cond.shape[-1])), device=device)
     for t in idx:
         t_batch = torch.full((x.size(0),), t, device=device, dtype=torch.long)
-        eps = model_pred_eps(model, x, cond, mask, t_batch, pred_type, alpha_bar, guidance_scale)
+        eps = model_pred_eps(model, x, cond, mask, t_batch, pred_type, alpha_bar, guidance_scale, merge_flag=merge_flag)
         a_t = alpha[t]
         a_bar_t = alpha_bar[t]
         beta_t = betas[t]
@@ -673,7 +725,7 @@ def sample_ddpm(model, cond, mask, betas, alpha, alpha_bar, steps, pred_type, gu
 
 
 @torch.no_grad()
-def sample_ddim(model, cond, mask, betas, alpha, alpha_bar, steps, pred_type, guidance_scale, eta=0.0):
+def sample_ddim(model, cond, mask, betas, alpha, alpha_bar, steps, pred_type, guidance_scale, eta=0.0, merge_flag=None):
     model.eval()
     device = cond.device
     T = betas.shape[0]
@@ -685,10 +737,11 @@ def sample_ddim(model, cond, mask, betas, alpha, alpha_bar, steps, pred_type, gu
     else:
         idx = torch.arange(T - 1, -1, -1, device=device)
 
-    x = torch.randn_like(cond)
+    b, n, _ = cond.shape
+    x = torch.randn((b, n, getattr(model, "input_dim", cond.shape[-1])), device=device)
     for i, t in enumerate(idx):
         t_batch = torch.full((x.size(0),), t, device=device, dtype=torch.long)
-        eps = model_pred_eps(model, x, cond, mask, t_batch, pred_type, alpha_bar, guidance_scale)
+        eps = model_pred_eps(model, x, cond, mask, t_batch, pred_type, alpha_bar, guidance_scale, merge_flag=merge_flag)
         a_bar_t = alpha_bar[t]
         x0 = predict_x0_from_eps(x, eps, a_bar_t)
 
@@ -713,6 +766,9 @@ def eval_reconstruction(model, loader, device, betas, alpha, alpha_bar, means, s
         x0 = batch["off"].to(device)
         cond = batch["hlt"].to(device)
         mask = batch["mask"].to(device)
+        merge_flag = batch.get("merge_flag")
+        if merge_flag is not None:
+            merge_flag = merge_flag.to(device)
         x0 = torch.nan_to_num(x0, nan=0.0, posinf=0.0, neginf=0.0)
         cond = torch.nan_to_num(cond, nan=0.0, posinf=0.0, neginf=0.0)
 
@@ -722,13 +778,13 @@ def eval_reconstruction(model, loader, device, betas, alpha, alpha_bar, means, s
                 x0_pred = sample_ddim(
                     model, cond, mask, betas, alpha, alpha_bar,
                     steps=cfg["sample_steps"], pred_type=pred_type,
-                    guidance_scale=cfg["guidance_scale"]
+                    guidance_scale=cfg["guidance_scale"], merge_flag=merge_flag
                 )
             else:
                 x0_pred = sample_ddpm(
                     model, cond, mask, betas, alpha, alpha_bar,
                     steps=cfg["sample_steps"], pred_type=pred_type,
-                    guidance_scale=cfg["guidance_scale"]
+                    guidance_scale=cfg["guidance_scale"], merge_flag=merge_flag
                 )
             preds.append(x0_pred)
         x0_pred = torch.stack(preds, dim=0).mean(dim=0)
@@ -747,12 +803,19 @@ def eval_reconstruction(model, loader, device, betas, alpha, alpha_bar, means, s
 
 
 @torch.no_grad()
-def generate_unsmeared_constituents(model, hlt_std, mask_hlt, betas, alpha, alpha_bar, cfg, pred_type, device):
+def generate_unsmeared_constituents(model, hlt_std, mask_hlt, betas, alpha, alpha_bar, cfg, pred_type, device, merge_flag=None):
     model.eval()
     n = hlt_std.shape[0]
-    out = np.zeros_like(hlt_std)
+    out = np.zeros((n, hlt_std.shape[1], getattr(model, "input_dim", hlt_std.shape[-1])), dtype=np.float32)
+    merge_flag_arr = merge_flag.astype(np.float32) if merge_flag is not None else None
     loader = DataLoader(
-        JetDataset(hlt_std, mask_hlt, np.zeros(n, dtype=np.float32)),
+        JetDataset(
+            hlt_std,
+            mask_hlt,
+            np.zeros(n, dtype=np.float32),
+            extra=merge_flag_arr,
+            extra_key="merge_flag",
+        ),
         batch_size=CONFIG["training"]["batch_size"],
         shuffle=False,
     )
@@ -760,6 +823,9 @@ def generate_unsmeared_constituents(model, hlt_std, mask_hlt, betas, alpha, alph
     for batch in tqdm(loader, desc="UnsmearedGen"):
         x = batch["feat"].to(device)
         m = batch["mask"].to(device)
+        mflag = batch.get("merge_flag")
+        if mflag is not None:
+            mflag = mflag.to(device)
         x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
         preds = []
         for _ in range(cfg["n_samples_eval"]):
@@ -767,13 +833,13 @@ def generate_unsmeared_constituents(model, hlt_std, mask_hlt, betas, alpha, alph
                 x0_pred = sample_ddim(
                     model, x, m, betas, alpha, alpha_bar,
                     steps=cfg["sample_steps"], pred_type=pred_type,
-                    guidance_scale=cfg["guidance_scale"]
+                    guidance_scale=cfg["guidance_scale"], merge_flag=mflag
                 )
             else:
                 x0_pred = sample_ddpm(
                     model, x, m, betas, alpha, alpha_bar,
                     steps=cfg["sample_steps"], pred_type=pred_type,
-                    guidance_scale=cfg["guidance_scale"]
+                    guidance_scale=cfg["guidance_scale"], merge_flag=mflag
                 )
             preds.append(x0_pred)
         x0_pred = torch.stack(preds, dim=0).mean(dim=0)
@@ -847,6 +913,7 @@ def main():
     parser.add_argument("--schedule", type=str, default=CONFIG["diffusion"]["schedule"])
     parser.add_argument("--x0_weight", type=float, default=CONFIG["diffusion"]["x0_weight"])
     parser.add_argument("--pred_type", type=str, default=CONFIG["diffusion"]["pred_type"], choices=["eps", "x0", "v"])
+    parser.add_argument("--two_head", action="store_true", default=CONFIG["diffusion"]["two_head"], help="Use two-head denoiser (merge-flag routed) if merge_flag is provided.")
     parser.add_argument("--snr_weight", action="store_true", default=CONFIG["diffusion"]["snr_weight"])
     parser.add_argument("--snr_gamma", type=float, default=CONFIG["diffusion"]["snr_gamma"])
     parser.add_argument("--self_cond_prob", type=float, default=CONFIG["diffusion"]["self_cond_prob"])
@@ -965,6 +1032,7 @@ def main():
             dropout=CONFIG["model"]["dropout"],
             use_cross_attn=args.use_cross_attn,
             self_cond=not args.no_self_cond,
+            two_head=args.two_head,
         ).to(device)
         ckpt_path = Path(args.diffusion_ckpt) if args.diffusion_ckpt else (save_root / "unsmear_diffusion_ema.pt")
         ckpt = torch.load(ckpt_path, map_location=device)
@@ -980,6 +1048,7 @@ def main():
             dropout=CONFIG["model"]["dropout"],
             use_cross_attn=args.use_cross_attn,
             self_cond=not args.no_self_cond,
+            two_head=args.two_head,
         ).to(device)
         ema = EMA(model, decay=args.ema_decay)
 
@@ -1029,6 +1098,7 @@ def main():
                     dropout=CONFIG["model"]["dropout"],
                     use_cross_attn=args.use_cross_attn,
                     self_cond=not args.no_self_cond,
+                    two_head=args.two_head,
                 ).to(device)
                 ema.apply_to(eval_model)
                 val_l1, val_l2 = eval_reconstruction(
@@ -1061,6 +1131,7 @@ def main():
             dropout=CONFIG["model"]["dropout"],
             use_cross_attn=args.use_cross_attn,
             self_cond=not args.no_self_cond,
+            two_head=args.two_head,
         ).to(device)
         ema.apply_to(eval_model)
         val_l1, val_l2 = eval_reconstruction(

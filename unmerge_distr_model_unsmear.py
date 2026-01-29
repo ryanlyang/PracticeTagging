@@ -15,7 +15,6 @@ from pathlib import Path
 import argparse
 import random
 import sys
-import time
 import numpy as np
 
 import torch
@@ -30,6 +29,15 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 
 import utils
+from unsmear_method import (
+    ConditionalDenoiser,
+    EMA,
+    JetPairDataset,
+    train_epoch as unsmear_train_epoch,
+    eval_reconstruction,
+    generate_unsmeared_constituents,
+    make_beta_schedule,
+)
 
 try:
     from scipy.optimize import linear_sum_assignment
@@ -39,56 +47,6 @@ except Exception:
 
 # DataLoader defaults (set in main)
 DL_KWARGS = {}
-
-
-def _resume_dir(base: Path, fold_id: int) -> Path:
-    return base / f"fold_{fold_id}"
-
-
-def _resume_path(base: Path, fold_id: int) -> Path:
-    return _resume_dir(base, fold_id) / "unmerge_resume.pt"
-
-
-def _done_path(base: Path, fold_id: int) -> Path:
-    return _resume_dir(base, fold_id) / "UNMERGE_DONE"
-
-
-def _save_unmerge_resume(path: Path, epoch, model, opt, sch, best_val_loss, best_state_u, no_improve):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    torch.save(
-        {
-            "epoch": epoch,
-            "model": model.state_dict(),
-            "opt": opt.state_dict(),
-            "sch": sch.state_dict(),
-            "best_val_loss": best_val_loss,
-            "best_state_u": best_state_u,
-            "no_improve": no_improve,
-        },
-        tmp,
-    )
-    tmp.replace(path)
-
-
-def _load_unmerge_resume(path: Path, model, opt, sch, device):
-    ckpt = torch.load(path, map_location=device)
-    model.load_state_dict(ckpt["model"])
-    opt.load_state_dict(ckpt["opt"])
-    sch.load_state_dict(ckpt["sch"])
-    # move optimizer state to correct device
-    for state in opt.state.values():
-        for k, v in state.items():
-            if torch.is_tensor(v):
-                state[k] = v.to(device)
-    return ckpt
-
-
-def _time_exceeded(start_time, max_hours, margin_min):
-    if max_hours is None:
-        return False
-    limit_sec = max_hours * 3600.0 - margin_min * 60.0
-    return (time.time() - start_time) >= max(0.0, limit_sec)
 
 
 # ----------------------------- Reproducibility ----------------------------- #
@@ -111,14 +69,14 @@ PT_IDX = 2
 
 CONFIG = {
     "hlt_effects": {
-        "pt_resolution": 0.0,
-        "eta_resolution": 0.0,
-        "phi_resolution": 0.0,
+        "pt_resolution": 0.10,
+        "eta_resolution": 0.03,
+        "phi_resolution": 0.03,
         "pt_threshold_offline": 0.5,
         "pt_threshold_hlt": 1.5,
         "merge_enabled": True,
         "merge_radius": 0.01,
-        "efficiency_loss": 0.03,
+        "efficiency_loss": 0.05,
         "noise_enabled": False,
         "noise_fraction": 0.0,
     },
@@ -176,6 +134,34 @@ CONFIG = {
         "physics_weight": 0.2,
         "nll_weight": 1.0,
         "distributional": True,
+    },
+    "unsmear_training": {
+        "batch_size": 512,
+        "epochs": 80,
+        "lr": 5e-4,
+        "weight_decay": 1e-5,
+        "warmup_epochs": 3,
+        "patience": 15,
+        "timesteps": 1000,
+        "pred_type": "v",
+        "snr_weight": True,
+        "snr_gamma": 5.0,
+        "self_cond_prob": 0.5,
+        "cond_drop_prob": 0.1,
+        "jet_loss_weight": 0.1,
+        "use_cross_attn": True,
+        "sampling_method": "ddim",
+        "guidance_scale": 1.5,
+        "sample_steps": 100,
+        "n_samples_eval": 2,
+        "merge_flag": False,
+        "merge_weight": 2.0,
+        "two_head": False,
+    },
+    "pre_unsmear": {
+        "enabled": False,
+        "weight": 2.0,
+        "k_folds": 1,
     },
     "mc_sampling": {
         "enabled": False,
@@ -481,6 +467,17 @@ def standardize(feat, mask, means, stds):
     std = np.nan_to_num(std, 0.0)
     std[~mask] = 0
     return std.astype(np.float32)
+
+
+def unstandardize(feat, means, stds):
+    return (feat * stds) + means
+
+
+def make_kfold_splits(indices, k, seed=RANDOM_SEED):
+    idx = np.array(indices)
+    rng = np.random.RandomState(seed)
+    rng.shuffle(idx)
+    return np.array_split(idx, k)
 
 
 class JetDataset(Dataset):
@@ -1187,28 +1184,34 @@ def build_unmerged_dataset(
 
     new_const = np.zeros((n_jets, max_constits, 4), dtype=np.float32)
     new_mask = np.zeros((n_jets, max_constits), dtype=bool)
+    new_flag = np.zeros((n_jets, max_constits), dtype=np.float32)
 
     for j in range(n_jets):
         parts = []
+        flags = []
         for idx in range(max_part):
             if not mask_hlt[j, idx]:
                 continue
             if pred_counts[j, idx] <= 1:
                 parts.append(hlt_const[j, idx])
+                flags.append(0.0)
             else:
                 pred = pred_map.get((j, idx))
                 if pred is not None:
                     parts.extend(list(pred))
+                    flags.extend([1.0] * len(pred))
         if len(parts) == 0:
             continue
         parts = np.array(parts, dtype=np.float32)
         order = np.argsort(parts[:, 0])[::-1]
         parts = parts[order]
+        flags = np.array(flags, dtype=np.float32)[order]
         n_keep = min(len(parts), max_constits)
         new_const[j, :n_keep] = parts[:n_keep]
         new_mask[j, :n_keep] = True
+        new_flag[j, :n_keep] = flags[:n_keep]
 
-    return new_const, new_mask
+    return new_const, new_mask, new_flag
 
 
 def _build_samples_for_indices(indices, origin_lists, hlt_mask, pred_counts, max_count, max_constits):
@@ -1270,12 +1273,12 @@ def build_unmerged_dataset_subset(
     batch_size,
 ):
     if len(indices) == 0:
-        return None, None
+        return None, None, None
     sub_feat = feat_hlt_std[indices]
     sub_mask = mask_hlt[indices]
     sub_hlt = hlt_const[indices]
     sub_counts = pred_counts[indices]
-    sub_const, sub_mask_new = build_unmerged_dataset(
+    sub_const, sub_mask_new, sub_flag = build_unmerged_dataset(
         sub_feat,
         sub_mask,
         sub_hlt,
@@ -1288,7 +1291,7 @@ def build_unmerged_dataset_subset(
         device,
         batch_size,
     )
-    return sub_const, sub_mask_new
+    return sub_const, sub_mask_new, sub_flag
 
 
 def build_unmerged_dataset_ensemble_subset(
@@ -1305,12 +1308,13 @@ def build_unmerged_dataset_ensemble_subset(
     batch_size,
 ):
     if len(indices) == 0:
-        return None, None
+        return None, None, None
     sum_const = None
     sum_mask = None
     count = None
+    flag_ref = None
     for model, (tgt_mean, tgt_std) in zip(unmerge_models, tgt_stats):
-        sub_const, sub_mask = build_unmerged_dataset_subset(
+        sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
             indices,
             feat_hlt_std,
             mask_hlt,
@@ -1330,16 +1334,17 @@ def build_unmerged_dataset_ensemble_subset(
             sum_const = np.zeros_like(sub_const, dtype=np.float32)
             sum_mask = np.zeros_like(sub_mask, dtype=np.int32)
             count = np.zeros_like(sub_mask, dtype=np.int32)
+            flag_ref = sub_flag
         valid = sub_mask
         sum_const += sub_const
         sum_mask += valid.astype(np.int32)
         count += valid.astype(np.int32)
     if sum_const is None:
-        return None, None
+        return None, None, None
     count = np.maximum(count, 1)
     avg_const = sum_const / count[..., None]
     avg_mask = sum_mask > 0
-    return avg_const, avg_mask
+    return avg_const, avg_mask, flag_ref
 
 
 def build_unmerged_dataset_mc(
@@ -1437,10 +1442,6 @@ def main():
     parser.add_argument("--run_name", type=str, default="default")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--num_workers", type=int, default=0, help="DataLoader worker processes.")
-    parser.add_argument("--resume_dir", type=str, default=None, help="Directory to store resume checkpoints.")
-    parser.add_argument("--resume", action="store_true", help="Resume unmerge training from checkpoint if present.")
-    parser.add_argument("--max_hours", type=float, default=None, help="Soft wall-time limit (hours) for unmerge training.")
-    parser.add_argument("--time_margin_min", type=float, default=30.0, help="Minutes before max_hours to checkpoint+exit.")
     parser.add_argument("--skip_save_models", action="store_true")
     parser.add_argument("--unmerge_loss", type=str, default=CONFIG["unmerge_training"]["loss_type"], choices=["chamfer", "hungarian"])
     parser.add_argument("--use_true_count", action="store_true", default=CONFIG["unmerge_training"]["use_true_count"])
@@ -1460,9 +1461,27 @@ def main():
     parser.add_argument("--kfold_train_only", type=int, default=-1, help="Train only a single fold (0-based) and save models, then exit.")
     parser.add_argument("--kfold_model_dir", type=str, default=None, help="Directory to save/load fold models.")
     parser.add_argument("--kfold_use_pretrained", action="store_true", help="Use pre-trained fold models and skip fold training.")
+    # Unsmearer k-fold controls (for unmerge->unsmear stage)
+    parser.add_argument("--unsmear_k_folds", type=int, default=1, help="K-fold OOF training for unsmearer (K>1).")
+    parser.add_argument("--unsmear_kfold_train_only", type=int, default=-1, help="Train only a single unsmearer fold (0-based) and save model, then exit.")
+    parser.add_argument("--unsmear_kfold_model_dir", type=str, default=None, help="Directory to save/load unsmearer fold models.")
+    parser.add_argument("--unsmear_kfold_use_pretrained", action="store_true", help="Use pre-trained unsmearer fold models and skip unsmearer training.")
+    parser.add_argument("--unsmear_kfold_ensemble_valtest", action="store_true", help="Ensemble unsmearer fold models for val/test generation.")
+    parser.add_argument("--unsmear_merge_flag", action="store_true", help="Append merge-flag channel to unsmearer conditioning.")
+    parser.add_argument("--unsmear_merge_weight", type=float, default=CONFIG["unsmear_training"]["merge_weight"], help="Loss weight multiplier for merged tokens.")
+    parser.add_argument("--unsmear_two_head", action="store_true", help="Use two-head unsmearer routed by merge flag (no merge-flag conditioning).")
+    # Pre-unsmear (singleton-only) controls
+    parser.add_argument("--pre_unsmear_singletons", action="store_true", help="Pre-unsmear singleton tokens (HLT->offline) before unmerger training.")
+    parser.add_argument("--pre_unsmear_weight", type=float, default=CONFIG["pre_unsmear"]["weight"], help="Loss weight multiplier for true singleton tokens during pre-unsmear training.")
+    parser.add_argument("--pre_unsmear_k_folds", type=int, default=CONFIG["pre_unsmear"]["k_folds"], help="K-fold OOF training for pre-unsmearer (K>1).")
+    parser.add_argument("--pre_unsmear_kfold_train_only", type=int, default=-1, help="Train only a single pre-unsmear fold (0-based) and save model, then exit.")
+    parser.add_argument("--pre_unsmear_kfold_model_dir", type=str, default=None, help="Directory to save/load pre-unsmearer fold models.")
+    parser.add_argument("--pre_unsmear_kfold_use_pretrained", action="store_true", help="Use pre-trained pre-unsmearer fold models and skip training.")
+    parser.add_argument("--pre_unsmear_kfold_ensemble_valtest", action="store_true", help="Ensemble pre-unsmearer fold models for val/test generation.")
     parser.add_argument("--classifier_only", action="store_true", help="Skip count/unmerge training and only train classifiers using cached unmerged data.")
     parser.add_argument("--save_unmerged_cache", action="store_true", help="Save unmerged dataset cache for classifier-only runs.")
     parser.add_argument("--load_unmerged_cache", type=str, default=None, help="Load unmerged dataset cache for classifier-only runs.")
+    parser.add_argument("--stop_after_unmerge", action="store_true", help="Stop after building/saving unmerged cache (skip unsmear + classifiers).")
     parser.add_argument("--load_mc_cache", type=str, default=None, help="Load MC unmerged dataset cache for classifier-only runs.")
     parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to pretrained teacher checkpoint (skip training).")
     parser.add_argument("--baseline_checkpoint", type=str, default=None, help="Path to pretrained baseline checkpoint (skip training).")
@@ -1497,6 +1516,12 @@ def main():
     CONFIG["mc_sampling"]["consistency_weight"] = float(args.mc_consistency_weight)
     CONFIG["mc_sampling"]["seed"] = int(args.mc_seed)
     CONFIG["mc_sampling"]["enabled"] = (not args.no_mc) and (CONFIG["mc_sampling"]["n_samples"] > 1)
+    CONFIG["unsmear_training"]["merge_flag"] = bool(args.unsmear_merge_flag)
+    CONFIG["unsmear_training"]["merge_weight"] = float(args.unsmear_merge_weight)
+    CONFIG["unsmear_training"]["two_head"] = bool(args.unsmear_two_head)
+    CONFIG["pre_unsmear"]["enabled"] = bool(args.pre_unsmear_singletons)
+    CONFIG["pre_unsmear"]["weight"] = float(args.pre_unsmear_weight)
+    CONFIG["pre_unsmear"]["k_folds"] = int(args.pre_unsmear_k_folds)
     if args.alpha_kd is not None:
         CONFIG["kd"]["alpha_kd"] = float(args.alpha_kd)
     if args.kd_temp is not None:
@@ -1528,12 +1553,19 @@ def main():
     kfold_train_only = int(args.kfold_train_only)
     classifier_only = bool(args.classifier_only)
     kfold_use_pretrained = bool(args.kfold_use_pretrained)
+    pre_unsmear_k_folds = max(1, int(args.pre_unsmear_k_folds))
+    pre_unsmear_train_only = int(args.pre_unsmear_kfold_train_only)
+    pre_unsmear_use_pretrained = bool(args.pre_unsmear_kfold_use_pretrained)
+    pre_unsmear_ensemble_valtest = bool(args.pre_unsmear_kfold_ensemble_valtest)
+    pre_unsmear_enabled = (
+        bool(args.pre_unsmear_singletons)
+        or pre_unsmear_k_folds > 1
+        or pre_unsmear_use_pretrained
+        or pre_unsmear_train_only >= 0
+    )
 
     save_root = Path(args.save_dir) / args.run_name
     save_root.mkdir(parents=True, exist_ok=True)
-
-    resume_root = Path(args.resume_dir) if args.resume_dir else (save_root / "resume")
-    resume_root.mkdir(parents=True, exist_ok=True)
 
     kfold_model_dir = Path(args.kfold_model_dir) if args.kfold_model_dir else (save_root / "kfold_models")
     if k_folds > 1:
@@ -1547,8 +1579,6 @@ def main():
     device = torch.device(args.device)
     print(f"Device: {device}")
     print(f"Save dir: {save_root}")
-    print(f"Resume dir: {resume_root}")
-    run_start = time.time()
     global DL_KWARGS
     num_workers = max(0, int(args.num_workers))
     pin_memory = (device.type == "cuda")
@@ -1613,6 +1643,131 @@ def main():
     feat_means, feat_stds = get_stats(features_off, masks_off, train_idx)
     features_off_std = standardize(features_off, masks_off, feat_means, feat_stds)
     features_hlt_std = standardize(features_hlt, hlt_mask, feat_means, feat_stds)
+
+    # ------------------- Pre-unsmear (train-only folds) ------------------- #
+    if pre_unsmear_train_only >= 0:
+        if pre_unsmear_k_folds < 2:
+            raise ValueError("--pre_unsmear_kfold_train_only requires --pre_unsmear_k_folds > 1")
+        print("\n" + "=" * 70)
+        print("STEP 2B: PRE-UNSMEAR SINGLETONS (train-only fold)")
+        print("=" * 70)
+        const_means_pre, const_stds_pre = get_stats(const_off, masks_off, train_idx)
+        hlt_std_pre = standardize(hlt_const, hlt_mask, const_means_pre, const_stds_pre)
+        off_std_pre = standardize(const_off, masks_off, const_means_pre, const_stds_pre)
+
+        singleton_true = (origin_counts == 1) & hlt_mask
+        pre_w = float(CONFIG["pre_unsmear"]["weight"])
+        pre_weights = (1.0 + (pre_w - 1.0) * singleton_true.astype(np.float32))
+        pre_weights[~hlt_mask] = 0.0
+
+        timesteps = CONFIG["unsmear_training"]["timesteps"]
+        betas = torch.tensor(make_beta_schedule(timesteps, "cosine"), dtype=torch.float32, device=device)
+        alpha = 1.0 - betas
+        alpha_bar = torch.cumprod(alpha, dim=0)
+        diff_cfg = {
+            "pred_type": CONFIG["unsmear_training"]["pred_type"],
+            "x0_weight": 1.0,
+            "snr_weight": CONFIG["unsmear_training"]["snr_weight"],
+            "snr_gamma": CONFIG["unsmear_training"]["snr_gamma"],
+            "self_cond_prob": CONFIG["unsmear_training"]["self_cond_prob"],
+            "cond_drop_prob": CONFIG["unsmear_training"]["cond_drop_prob"],
+            "jet_loss_weight": CONFIG["unsmear_training"]["jet_loss_weight"],
+        }
+        samp_cfg = {
+            "sample_steps": CONFIG["unsmear_training"]["sample_steps"],
+            "n_samples_eval": CONFIG["unsmear_training"]["n_samples_eval"],
+            "method": CONFIG["unsmear_training"]["sampling_method"],
+            "guidance_scale": CONFIG["unsmear_training"]["guidance_scale"],
+        }
+
+        pre_unsmear_dir = (
+            Path(args.pre_unsmear_kfold_model_dir)
+            if args.pre_unsmear_kfold_model_dir is not None
+            else save_root / "pre_unsmear_kfold_models"
+        )
+        pre_unsmear_dir.mkdir(parents=True, exist_ok=True)
+
+        def build_pre_unsmear_model():
+            return ConditionalDenoiser(
+                input_dim=4,
+                cond_dim=4,
+                embed_dim=CONFIG["model"]["embed_dim"],
+                num_heads=CONFIG["model"]["num_heads"],
+                num_layers=CONFIG["model"]["num_layers"],
+                ff_dim=CONFIG["model"]["ff_dim"],
+                dropout=CONFIG["model"]["dropout"],
+                use_cross_attn=CONFIG["unsmear_training"]["use_cross_attn"],
+                self_cond=True,
+                two_head=False,
+            ).to(device)
+
+        splits = make_kfold_splits(train_idx, pre_unsmear_k_folds, seed=RANDOM_SEED)
+        if pre_unsmear_train_only >= len(splits):
+            raise ValueError(f"pre_unsmear_kfold_train_only={pre_unsmear_train_only} out of range for K={pre_unsmear_k_folds}")
+        holdout = splits[pre_unsmear_train_only]
+        train_sub = np.concatenate([s for i, s in enumerate(splits) if i != pre_unsmear_train_only])
+        print(f"Pre-unsmear fold {pre_unsmear_train_only+1}/{pre_unsmear_k_folds} | train={len(train_sub)} holdout={len(holdout)}")
+
+        train_pair = JetPairDataset(
+            off_std_pre[train_sub],
+            hlt_std_pre[train_sub],
+            masks_off[train_sub],
+            hlt_mask[train_sub],
+            weights=pre_weights[train_sub],
+        )
+        val_pair = JetPairDataset(
+            off_std_pre[holdout],
+            hlt_std_pre[holdout],
+            masks_off[holdout],
+            hlt_mask[holdout],
+            weights=pre_weights[holdout],
+        )
+        bs_uns = CONFIG["unsmear_training"]["batch_size"]
+        train_pair_loader = DataLoader(train_pair, batch_size=bs_uns, shuffle=True, drop_last=True, **DL_KWARGS)
+        val_pair_loader = DataLoader(val_pair, batch_size=bs_uns, shuffle=False, **DL_KWARGS)
+
+        pre_model = build_pre_unsmear_model()
+        ema_pre = EMA(pre_model, decay=0.995)
+        opt_pre = torch.optim.AdamW(
+            pre_model.parameters(),
+            lr=CONFIG["unsmear_training"]["lr"],
+            weight_decay=CONFIG["unsmear_training"]["weight_decay"],
+        )
+        sch_pre = get_scheduler(opt_pre, CONFIG["unsmear_training"]["warmup_epochs"], CONFIG["unsmear_training"]["epochs"])
+        best_val = 1e9
+        best_state_ema = None
+        no_improve = 0
+        for ep in tqdm(range(CONFIG["unsmear_training"]["epochs"]), desc=f"PreUnsmear-F{pre_unsmear_train_only+1}"):
+            loss = unsmear_train_epoch(pre_model, ema_pre, train_pair_loader, opt_pre, device, alpha_bar, diff_cfg)
+            sch_pre.step()
+            if (ep + 1) % 5 == 0:
+                eval_model = build_pre_unsmear_model()
+                ema_pre.apply_to(eval_model)
+                val_l1, val_l2 = eval_reconstruction(
+                    eval_model, val_pair_loader, device, betas, alpha, alpha_bar,
+                    const_means_pre, const_stds_pre, samp_cfg, CONFIG["unsmear_training"]["pred_type"]
+                )
+                print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
+                if val_l1 < best_val:
+                    best_val = val_l1
+                    best_state_ema = {k: v.detach().cpu().clone() for k, v in ema_pre.shadow.items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if no_improve >= CONFIG["unsmear_training"]["patience"]:
+                    print(f"Early stopping pre-unsmearer at epoch {ep+1}")
+                    break
+        if best_state_ema is not None:
+            eval_model = build_pre_unsmear_model()
+            eval_model.load_state_dict(best_state_ema, strict=False)
+        else:
+            eval_model = pre_model
+        fold_dir = pre_unsmear_dir / f"fold_{pre_unsmear_train_only}"
+        fold_dir.mkdir(parents=True, exist_ok=True)
+        torch.save({"model": eval_model.state_dict()}, fold_dir / "unsmear_diffusion_ema.pt")
+        print(f"Saved pre-unsmearer fold model to: {fold_dir / 'unsmear_diffusion_ema.pt'}")
+        print("Pre-unsmear fold training completed. Exiting.")
+        sys.exit(0)
 
     max_count = max(int(args.max_merge_count), 2)
     count_label = np.clip(origin_counts, 1, max_count) - 1
@@ -1761,6 +1916,8 @@ def main():
         cache = np.load(args.load_unmerged_cache, allow_pickle=True)
         features_unmerged_std = cache["features_unmerged_std"]
         unmerged_mask = cache["unmerged_mask"]
+        unmerged_const = cache["unmerged_const"] if "unmerged_const" in cache else None
+        unmerged_merge_flag = cache["unmerged_merge_flag"] if "unmerged_merge_flag" in cache else None
         if "train_idx" in cache:
             train_idx = cache["train_idx"]
             val_idx = cache["val_idx"]
@@ -1885,6 +2042,282 @@ def main():
                 count_model.load_state_dict(best_state_c)
             count_models = [count_model]
             pred_counts = predict_counts(count_model, features_hlt_std, hlt_mask, BS_cnt, device, max_count)
+
+        # ------------------- Pre-unsmear singletons (HLT -> offline) ------------------- #
+        features_hlt_for_unmerge_std = features_hlt_std
+        hlt_const_for_unmerge = hlt_const
+        if pre_unsmear_enabled:
+            print("\n" + "=" * 70)
+            print("STEP 3B: PRE-UNSMEAR SINGLETONS (HLT -> offline)")
+            print("=" * 70)
+            const_means_pre, const_stds_pre = get_stats(const_off, masks_off, train_idx)
+            hlt_std_pre = standardize(hlt_const, hlt_mask, const_means_pre, const_stds_pre)
+            off_std_pre = standardize(const_off, masks_off, const_means_pre, const_stds_pre)
+
+            singleton_true = (origin_counts == 1) & hlt_mask
+            pre_w = float(CONFIG["pre_unsmear"]["weight"])
+            pre_weights = (1.0 + (pre_w - 1.0) * singleton_true.astype(np.float32))
+            pre_weights[~hlt_mask] = 0.0
+
+            timesteps = CONFIG["unsmear_training"]["timesteps"]
+            betas = torch.tensor(make_beta_schedule(timesteps, "cosine"), dtype=torch.float32, device=device)
+            alpha = 1.0 - betas
+            alpha_bar = torch.cumprod(alpha, dim=0)
+            diff_cfg = {
+                "pred_type": CONFIG["unsmear_training"]["pred_type"],
+                "x0_weight": 1.0,
+                "snr_weight": CONFIG["unsmear_training"]["snr_weight"],
+                "snr_gamma": CONFIG["unsmear_training"]["snr_gamma"],
+                "self_cond_prob": CONFIG["unsmear_training"]["self_cond_prob"],
+                "cond_drop_prob": CONFIG["unsmear_training"]["cond_drop_prob"],
+                "jet_loss_weight": CONFIG["unsmear_training"]["jet_loss_weight"],
+            }
+            samp_cfg = {
+                "sample_steps": CONFIG["unsmear_training"]["sample_steps"],
+                "n_samples_eval": CONFIG["unsmear_training"]["n_samples_eval"],
+                "method": CONFIG["unsmear_training"]["sampling_method"],
+                "guidance_scale": CONFIG["unsmear_training"]["guidance_scale"],
+            }
+
+            pre_unsmear_dir = (
+                Path(args.pre_unsmear_kfold_model_dir)
+                if args.pre_unsmear_kfold_model_dir is not None
+                else save_root / "pre_unsmear_kfold_models"
+            )
+            pre_unsmear_dir.mkdir(parents=True, exist_ok=True)
+
+            def build_pre_unsmear_model():
+                return ConditionalDenoiser(
+                    input_dim=4,
+                    cond_dim=4,
+                    embed_dim=CONFIG["model"]["embed_dim"],
+                    num_heads=CONFIG["model"]["num_heads"],
+                    num_layers=CONFIG["model"]["num_layers"],
+                    ff_dim=CONFIG["model"]["ff_dim"],
+                    dropout=CONFIG["model"]["dropout"],
+                    use_cross_attn=CONFIG["unsmear_training"]["use_cross_attn"],
+                    self_cond=True,
+                    two_head=False,
+                ).to(device)
+
+            def _load_pre_unsmear_model(fid):
+                fold_dir = pre_unsmear_dir / f"fold_{fid}"
+                ckpt_path = fold_dir / "unsmear_diffusion_ema.pt"
+                if not ckpt_path.exists():
+                    ckpt_path = fold_dir / "unsmear_diffusion.pt"
+                if not ckpt_path.exists():
+                    raise FileNotFoundError(f"Missing pre-unsmear fold checkpoint: {ckpt_path}")
+                model = build_pre_unsmear_model()
+                ckpt = torch.load(ckpt_path, map_location=device)
+                state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+                model.load_state_dict(state)
+                return model
+
+            unsmear_std_pre = np.zeros_like(hlt_std_pre, dtype=np.float32)
+            if pre_unsmear_k_folds > 1:
+                splits = make_kfold_splits(train_idx, pre_unsmear_k_folds, seed=RANDOM_SEED)
+                if pre_unsmear_use_pretrained:
+                    for fold_id, holdout in enumerate(splits):
+                        model = _load_pre_unsmear_model(fold_id)
+                        unsmear_std_pre[holdout] = generate_unsmeared_constituents(
+                            model,
+                            hlt_std_pre[holdout],
+                            hlt_mask[holdout],
+                            betas,
+                            alpha,
+                            alpha_bar,
+                            samp_cfg,
+                            CONFIG["unsmear_training"]["pred_type"],
+                            device,
+                        )
+                else:
+                    print("Training pre-unsmearer folds inside pipeline (this may be slow).")
+                    for fold_id, holdout in enumerate(splits):
+                        train_sub = np.concatenate([s for i, s in enumerate(splits) if i != fold_id])
+                        print(f"Pre-unsmear fold {fold_id+1}/{pre_unsmear_k_folds} | train={len(train_sub)} holdout={len(holdout)}")
+                        train_pair = JetPairDataset(
+                            off_std_pre[train_sub],
+                            hlt_std_pre[train_sub],
+                            masks_off[train_sub],
+                            hlt_mask[train_sub],
+                            weights=pre_weights[train_sub],
+                        )
+                        val_pair = JetPairDataset(
+                            off_std_pre[holdout],
+                            hlt_std_pre[holdout],
+                            masks_off[holdout],
+                            hlt_mask[holdout],
+                            weights=pre_weights[holdout],
+                        )
+                        bs_uns = CONFIG["unsmear_training"]["batch_size"]
+                        train_pair_loader = DataLoader(train_pair, batch_size=bs_uns, shuffle=True, drop_last=True, **DL_KWARGS)
+                        val_pair_loader = DataLoader(val_pair, batch_size=bs_uns, shuffle=False, **DL_KWARGS)
+                        pre_model = build_pre_unsmear_model()
+                        ema_pre = EMA(pre_model, decay=0.995)
+                        opt_pre = torch.optim.AdamW(
+                            pre_model.parameters(),
+                            lr=CONFIG["unsmear_training"]["lr"],
+                            weight_decay=CONFIG["unsmear_training"]["weight_decay"],
+                        )
+                        sch_pre = get_scheduler(opt_pre, CONFIG["unsmear_training"]["warmup_epochs"], CONFIG["unsmear_training"]["epochs"])
+                        best_val = 1e9
+                        best_state_ema = None
+                        no_improve = 0
+                        for ep in tqdm(range(CONFIG["unsmear_training"]["epochs"]), desc=f"PreUnsmear-F{fold_id+1}"):
+                            loss = unsmear_train_epoch(pre_model, ema_pre, train_pair_loader, opt_pre, device, alpha_bar, diff_cfg)
+                            sch_pre.step()
+                            if (ep + 1) % 5 == 0:
+                                eval_model = build_pre_unsmear_model()
+                                ema_pre.apply_to(eval_model)
+                                val_l1, val_l2 = eval_reconstruction(
+                                    eval_model, val_pair_loader, device, betas, alpha, alpha_bar,
+                                    const_means_pre, const_stds_pre, samp_cfg, CONFIG["unsmear_training"]["pred_type"]
+                                )
+                                print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
+                                if val_l1 < best_val:
+                                    best_val = val_l1
+                                    best_state_ema = {k: v.detach().cpu().clone() for k, v in ema_pre.shadow.items()}
+                                    no_improve = 0
+                                else:
+                                    no_improve += 1
+                                if no_improve >= CONFIG["unsmear_training"]["patience"]:
+                                    print(f"Early stopping pre-unsmearer at epoch {ep+1}")
+                                    break
+                        if best_state_ema is not None:
+                            eval_model = build_pre_unsmear_model()
+                            eval_model.load_state_dict(best_state_ema, strict=False)
+                        else:
+                            eval_model = pre_model
+                        fold_dir = pre_unsmear_dir / f"fold_{fold_id}"
+                        fold_dir.mkdir(parents=True, exist_ok=True)
+                        torch.save({"model": eval_model.state_dict()}, fold_dir / "unsmear_diffusion_ema.pt")
+                        unsmear_std_pre[holdout] = generate_unsmeared_constituents(
+                            eval_model,
+                            hlt_std_pre[holdout],
+                            hlt_mask[holdout],
+                            betas,
+                            alpha,
+                            alpha_bar,
+                            samp_cfg,
+                            CONFIG["unsmear_training"]["pred_type"],
+                            device,
+                        )
+
+                # val/test generation
+                if pre_unsmear_ensemble_valtest:
+                    preds_val = []
+                    preds_test = []
+                    for fold_id in range(pre_unsmear_k_folds):
+                        model = _load_pre_unsmear_model(fold_id)
+                        preds_val.append(generate_unsmeared_constituents(
+                            model, hlt_std_pre[val_idx], hlt_mask[val_idx],
+                            betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device
+                        ))
+                        preds_test.append(generate_unsmeared_constituents(
+                            model, hlt_std_pre[test_idx], hlt_mask[test_idx],
+                            betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device
+                        ))
+                    unsmear_std_pre[val_idx] = np.mean(np.stack(preds_val, axis=0), axis=0)
+                    unsmear_std_pre[test_idx] = np.mean(np.stack(preds_test, axis=0), axis=0)
+                else:
+                    model = _load_pre_unsmear_model(0)
+                    unsmear_std_pre[val_idx] = generate_unsmeared_constituents(
+                        model, hlt_std_pre[val_idx], hlt_mask[val_idx],
+                        betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device
+                    )
+                    unsmear_std_pre[test_idx] = generate_unsmeared_constituents(
+                        model, hlt_std_pre[test_idx], hlt_mask[test_idx],
+                        betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device
+                    )
+            else:
+                # Single model (train or load)
+                if pre_unsmear_use_pretrained:
+                    model = _load_pre_unsmear_model(0)
+                else:
+                    train_pair = JetPairDataset(
+                        off_std_pre[train_idx],
+                        hlt_std_pre[train_idx],
+                        masks_off[train_idx],
+                        hlt_mask[train_idx],
+                        weights=pre_weights[train_idx],
+                    )
+                    val_pair = JetPairDataset(
+                        off_std_pre[val_idx],
+                        hlt_std_pre[val_idx],
+                        masks_off[val_idx],
+                        hlt_mask[val_idx],
+                        weights=pre_weights[val_idx],
+                    )
+                    bs_uns = CONFIG["unsmear_training"]["batch_size"]
+                    train_pair_loader = DataLoader(train_pair, batch_size=bs_uns, shuffle=True, drop_last=True, **DL_KWARGS)
+                    val_pair_loader = DataLoader(val_pair, batch_size=bs_uns, shuffle=False, **DL_KWARGS)
+                    model = build_pre_unsmear_model()
+                    ema_pre = EMA(model, decay=0.995)
+                    opt_pre = torch.optim.AdamW(
+                        model.parameters(),
+                        lr=CONFIG["unsmear_training"]["lr"],
+                        weight_decay=CONFIG["unsmear_training"]["weight_decay"],
+                    )
+                    sch_pre = get_scheduler(opt_pre, CONFIG["unsmear_training"]["warmup_epochs"], CONFIG["unsmear_training"]["epochs"])
+                    best_val = 1e9
+                    best_state_ema = None
+                    no_improve = 0
+                    for ep in tqdm(range(CONFIG["unsmear_training"]["epochs"]), desc="PreUnsmear"):
+                        loss = unsmear_train_epoch(model, ema_pre, train_pair_loader, opt_pre, device, alpha_bar, diff_cfg)
+                        sch_pre.step()
+                        if (ep + 1) % 5 == 0:
+                            eval_model = build_pre_unsmear_model()
+                            ema_pre.apply_to(eval_model)
+                            val_l1, val_l2 = eval_reconstruction(
+                                eval_model, val_pair_loader, device, betas, alpha, alpha_bar,
+                                const_means_pre, const_stds_pre, samp_cfg, CONFIG["unsmear_training"]["pred_type"]
+                            )
+                            print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
+                            if val_l1 < best_val:
+                                best_val = val_l1
+                                best_state_ema = {k: v.detach().cpu().clone() for k, v in ema_pre.shadow.items()}
+                                no_improve = 0
+                            else:
+                                no_improve += 1
+                            if no_improve >= CONFIG["unsmear_training"]["patience"]:
+                                print(f"Early stopping pre-unsmearer at epoch {ep+1}")
+                                break
+                    if best_state_ema is not None:
+                        eval_model = build_pre_unsmear_model()
+                        eval_model.load_state_dict(best_state_ema, strict=False)
+                    else:
+                        eval_model = model
+                    fold_dir = pre_unsmear_dir / "fold_0"
+                    fold_dir.mkdir(parents=True, exist_ok=True)
+                    torch.save({"model": eval_model.state_dict()}, fold_dir / "unsmear_diffusion_ema.pt")
+                    model = eval_model
+                unsmear_std_pre = generate_unsmeared_constituents(
+                    model,
+                    hlt_std_pre,
+                    hlt_mask,
+                    betas,
+                    alpha,
+                    alpha_bar,
+                    samp_cfg,
+                    CONFIG["unsmear_training"]["pred_type"],
+                    device,
+                )
+
+            unsmear_const_pre = unstandardize(unsmear_std_pre, const_means_pre, const_stds_pre)
+            unsmear_const_pre[:, :, 0] = np.clip(unsmear_const_pre[:, :, 0], 0.0, None)
+            unsmear_const_pre[:, :, 1] = np.clip(unsmear_const_pre[:, :, 1], -5.0, 5.0)
+            unsmear_const_pre[:, :, 2] = np.arctan2(np.sin(unsmear_const_pre[:, :, 2]), np.cos(unsmear_const_pre[:, :, 2]))
+            unsmear_const_pre[:, :, 3] = np.where(
+                hlt_mask, unsmear_const_pre[:, :, 0] * np.cosh(np.clip(unsmear_const_pre[:, :, 1], -5.0, 5.0)), 0.0
+            )
+
+            pred_singleton = (pred_counts == 1) & hlt_mask
+            hlt_const_pre = hlt_const.copy()
+            hlt_const_pre[pred_singleton] = unsmear_const_pre[pred_singleton]
+            features_hlt_pre = compute_features(hlt_const_pre, hlt_mask)
+            features_hlt_pre_std = standardize(features_hlt_pre, hlt_mask, feat_means, feat_stds)
+            features_hlt_for_unmerge_std = features_hlt_pre_std
+            hlt_const_for_unmerge = hlt_const_pre
     
         # ------------------- Train unmerger ------------------- #
         print("\n" + "=" * 70)
@@ -1895,6 +2328,7 @@ def main():
         tgt_stats = []
         unmerged_const = np.zeros((len(all_labels), args.max_constits, 4), dtype=np.float32)
         unmerged_mask = np.zeros((len(all_labels), args.max_constits), dtype=bool)
+        unmerged_merge_flag = np.zeros((len(all_labels), args.max_constits), dtype=np.float32)
     
         def compute_unmerge_loss(mu, logvar, target, true_count, hlt_token):
             if CONFIG["unmerge_training"]["loss_type"] == "hungarian":
@@ -1912,11 +2346,6 @@ def main():
                 train_sub = fold_trains[fold_id]
                 hold_sub = fold_holds[fold_id]
                 print(f"\n--- Unmerge Fold {fold_id+1}/{k_folds} | train={len(train_sub)} holdout={len(hold_sub)} ---")
-                fold_resume = _resume_path(resume_root, fold_id)
-                fold_done = _done_path(resume_root, fold_id)
-                if kfold_train_only_mode and fold_done.exists():
-                    print(f"Fold {fold_id+1} already marked done at {fold_done}. Skipping.")
-                    sys.exit(0)
                 if kfold_train_only_mode and fold_id != kfold_train_only:
                     print("Skipping fold (train-only mode).")
                     continue
@@ -1925,11 +2354,11 @@ def main():
                     count_model, unmerge_model, tgt_mean, tgt_std = _load_fold_models(fold_id)
                     unmerge_models.append(unmerge_model)
                     tgt_stats.append((tgt_mean, tgt_std))
-                    sub_const, sub_mask = build_unmerged_dataset_subset(
+                    sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
                         hold_sub,
-                        features_hlt_std,
+                        features_hlt_for_unmerge_std,
                         hlt_mask,
-                        hlt_const,
+                        hlt_const_for_unmerge,
                         pred_counts,
                         unmerge_model,
                         tgt_mean,
@@ -1942,6 +2371,8 @@ def main():
                     if sub_const is not None:
                         unmerged_const[hold_sub] = sub_const
                         unmerged_mask[hold_sub] = sub_mask
+                        if sub_flag is not None:
+                            unmerged_merge_flag[hold_sub] = sub_flag
                     continue
                 if kfold_train_only_mode and not kfold_use_pretrained:
                     count_model = count_models_by_fold[fold_id]
@@ -1965,8 +2396,8 @@ def main():
                 tgt_mean = flat_train.mean(axis=0)
                 tgt_std = flat_train.std(axis=0) + 1e-8
     
-                train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
-                val_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
+                train_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, train_samples, max_count, tgt_mean, tgt_std)
+                val_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, val_samples, max_count, tgt_mean, tgt_std)
                 train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True, **DL_KWARGS)
                 val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
     
@@ -1978,17 +2409,8 @@ def main():
                 opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
                 sch_u = get_scheduler(opt_u, CONFIG["unmerge_training"]["warmup_epochs"], CONFIG["unmerge_training"]["epochs"])
                 best_val_loss, best_state_u, no_improve = 1e9, None, 0
-                start_epoch = 0
-                resume_enabled = args.resume or fold_resume.exists()
-                if resume_enabled and fold_resume.exists():
-                    ckpt = _load_unmerge_resume(fold_resume, unmerge_model, opt_u, sch_u, device)
-                    start_epoch = int(ckpt.get("epoch", -1)) + 1
-                    best_val_loss = float(ckpt.get("best_val_loss", best_val_loss))
-                    best_state_u = ckpt.get("best_state_u", best_state_u)
-                    no_improve = int(ckpt.get("no_improve", no_improve))
-                    print(f"Resuming fold {fold_id+1} from epoch {start_epoch}")
-
-                for ep in tqdm(range(start_epoch, CONFIG["unmerge_training"]["epochs"]), desc=f"Unmerge-F{fold_id+1}"):
+    
+                for ep in tqdm(range(CONFIG["unmerge_training"]["epochs"]), desc=f"Unmerge-F{fold_id+1}"):
                     unmerge_model.train()
                     total_loss = 0.0
                     n_batches = 0
@@ -2064,26 +2486,17 @@ def main():
                     if no_improve >= CONFIG["unmerge_training"]["patience"]:
                         print(f"Early stopping unmerge at epoch {ep+1}")
                         break
-                    if _time_exceeded(run_start, args.max_hours, args.time_margin_min):
-                        print("Time limit reached: saving resume checkpoint and exiting.")
-                        _save_unmerge_resume(fold_resume, ep, unmerge_model, opt_u, sch_u, best_val_loss, best_state_u, no_improve)
-                        if fold_done.exists():
-                            fold_done.unlink()
-                        sys.exit(99)
                 if best_state_u is not None:
                     unmerge_model.load_state_dict(best_state_u)
                 unmerge_models.append(unmerge_model)
                 tgt_stats.append((tgt_mean, tgt_std))
                 _save_unmerge_model(fold_id, unmerge_model, tgt_mean, tgt_std)
-                if fold_resume.exists():
-                    fold_resume.unlink()
-                fold_done.write_text("done")
     
-                sub_const, sub_mask = build_unmerged_dataset_subset(
+                sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
                     hold_sub,
-                    features_hlt_std,
+                    features_hlt_for_unmerge_std,
                     hlt_mask,
-                    hlt_const,
+                    hlt_const_for_unmerge,
                     pred_counts,
                     unmerge_model,
                     tgt_mean,
@@ -2096,6 +2509,8 @@ def main():
                 if sub_const is not None:
                     unmerged_const[hold_sub] = sub_const
                     unmerged_mask[hold_sub] = sub_mask
+                    if sub_flag is not None:
+                        unmerged_merge_flag[hold_sub] = sub_flag
     
             if kfold_train_only_mode:
                 print("K-fold train-only mode complete; saved fold models. Exiting.")
@@ -2104,11 +2519,11 @@ def main():
             # val/test generation with ensemble
             if kfold_ensemble_valtest:
                 print("Ensembling unmerge models for val/test...")
-                val_const, val_mask = build_unmerged_dataset_ensemble_subset(
+                val_const, val_mask, val_flag = build_unmerged_dataset_ensemble_subset(
                     val_idx,
-                    features_hlt_std,
+                    features_hlt_for_unmerge_std,
                     hlt_mask,
-                    hlt_const,
+                    hlt_const_for_unmerge,
                     pred_counts,
                     unmerge_models,
                     tgt_stats,
@@ -2117,11 +2532,11 @@ def main():
                     device,
                     BS_un,
                 )
-                test_const, test_mask = build_unmerged_dataset_ensemble_subset(
+                test_const, test_mask, test_flag = build_unmerged_dataset_ensemble_subset(
                     test_idx,
-                    features_hlt_std,
+                    features_hlt_for_unmerge_std,
                     hlt_mask,
-                    hlt_const,
+                    hlt_const_for_unmerge,
                     pred_counts,
                     unmerge_models,
                     tgt_stats,
@@ -2131,11 +2546,11 @@ def main():
                     BS_un,
                 )
             else:
-                val_const, val_mask = build_unmerged_dataset_subset(
+                val_const, val_mask, val_flag = build_unmerged_dataset_subset(
                     val_idx,
-                    features_hlt_std,
+                    features_hlt_for_unmerge_std,
                     hlt_mask,
-                    hlt_const,
+                    hlt_const_for_unmerge,
                     pred_counts,
                     unmerge_models[-1],
                     tgt_stats[-1][0],
@@ -2145,11 +2560,11 @@ def main():
                     device,
                     BS_un,
                 )
-                test_const, test_mask = build_unmerged_dataset_subset(
+                test_const, test_mask, test_flag = build_unmerged_dataset_subset(
                     test_idx,
-                    features_hlt_std,
+                    features_hlt_for_unmerge_std,
                     hlt_mask,
-                    hlt_const,
+                    hlt_const_for_unmerge,
                     pred_counts,
                     unmerge_models[-1],
                     tgt_stats[-1][0],
@@ -2162,9 +2577,13 @@ def main():
             if val_const is not None:
                 unmerged_const[val_idx] = val_const
                 unmerged_mask[val_idx] = val_mask
+                if val_flag is not None:
+                    unmerged_merge_flag[val_idx] = val_flag
             if test_const is not None:
                 unmerged_const[test_idx] = test_const
                 unmerged_mask[test_idx] = test_mask
+                if test_flag is not None:
+                    unmerged_merge_flag[test_idx] = test_flag
     
         else:
             all_idx = np.concatenate([train_idx, val_idx, test_idx])
@@ -2188,9 +2607,9 @@ def main():
             tgt_mean = flat_train.mean(axis=0)
             tgt_std = flat_train.std(axis=0) + 1e-8
     
-            train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std)
-            val_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, val_samples, max_count, tgt_mean, tgt_std)
-            test_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, test_samples, max_count, tgt_mean, tgt_std)
+            train_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, train_samples, max_count, tgt_mean, tgt_std)
+            val_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, val_samples, max_count, tgt_mean, tgt_std)
+            test_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, test_samples, max_count, tgt_mean, tgt_std)
             train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True, **DL_KWARGS)
             val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
             test_loader_un = DataLoader(test_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
@@ -2308,10 +2727,10 @@ def main():
             print("\n" + "=" * 70)
             print("STEP 5: BUILD UNMERGED DATASET")
             print("=" * 70)
-            unmerged_const, unmerged_mask = build_unmerged_dataset(
-                features_hlt_std,
+            unmerged_const, unmerged_mask, unmerged_merge_flag = build_unmerged_dataset(
+                features_hlt_for_unmerge_std,
                 hlt_mask,
-                hlt_const,
+                hlt_const_for_unmerge,
                 pred_counts,
                 unmerge_model,
                 tgt_mean,
@@ -2321,11 +2740,377 @@ def main():
                 device,
                 BS_un,
             )
+            if args.stop_after_unmerge:
+                # Build cache and exit early (used for long pipelines with dependent jobs)
+                features_unmerged = compute_features(unmerged_const, unmerged_mask)
+                features_unmerged_std = standardize(features_unmerged, unmerged_mask, feat_means, feat_stds)
+                cache_path = save_root / "unmerged_cache.npz"
+                np.savez(
+                    cache_path,
+                    features_unmerged_std=features_unmerged_std,
+                    unmerged_const=unmerged_const,
+                    unmerged_mask=unmerged_mask,
+                    unmerged_merge_flag=unmerged_merge_flag,
+                    labels=all_labels,
+                    train_idx=train_idx,
+                    val_idx=val_idx,
+                    test_idx=test_idx,
+                )
+                print(f"Saved unmerged cache to: {cache_path}")
+                print("Stopping after unmerge (per --stop_after_unmerge).")
+                return
     mc_feats_std = None
     mc_masks_std = None
-    if not classifier_only:
+    need_unsmear = (
+        (not classifier_only)
+        or args.unsmear_k_folds > 1
+        or args.unsmear_kfold_use_pretrained
+        or args.unsmear_kfold_train_only >= 0
+    )
+    if need_unsmear:
+        if unmerged_const is None:
+            raise ValueError("Unsmearer requires unmerged_const in cache. Re-run with --save_unmerged_cache.")
+
+        print("\n" + "=" * 70)
+        print("STEP 5A: UNSMEARER (unmerged -> offline)")
+        print("=" * 70)
+        # Standardize in raw constituent space (pt, eta, phi, E)
+        const_means, const_stds = get_stats(const_off, masks_off, train_idx)
+        unmerged_std = standardize(unmerged_const, unmerged_mask, const_means, const_stds)
+        off_std = standardize(const_off, masks_off, const_means, const_stds)
+        merge_flag = unmerged_merge_flag if "unmerged_merge_flag" in locals() else None
+        use_merge_flag = CONFIG["unsmear_training"].get("merge_flag", False)
+        use_two_head = CONFIG["unsmear_training"].get("two_head", False)
+        merge_weight = float(CONFIG["unsmear_training"].get("merge_weight", 0.0))
+
+        if use_two_head and use_merge_flag:
+            print("Warning: unsmear_two_head enabled; disabling merge-flag conditioning.")
+            use_merge_flag = False
+        if use_two_head and merge_flag is None:
+            print("Warning: unsmear_two_head enabled but merge flags not found; disabling two-head mode.")
+            use_two_head = False
+
+        if merge_flag is not None:
+            merge_flag = merge_flag.astype(np.float32)
+            merge_flag[~unmerged_mask] = 0.0
+
+        if use_merge_flag and merge_flag is not None:
+            unmerged_cond = np.concatenate([unmerged_std, merge_flag[..., None]], axis=-1)
+            cond_dim = 5
+            print(f"Unsmear: using merge-flag conditioning (weight={merge_weight:.2f}).")
+        else:
+            if use_merge_flag and merge_flag is None:
+                print("Warning: unsmear_merge_flag enabled but merge flags not found; disabling.")
+            unmerged_cond = unmerged_std
+            cond_dim = 4
+
+        merge_weights = None
+        if merge_flag is not None and (use_merge_flag or use_two_head) and merge_weight > 0:
+            merge_weights = (1.0 + merge_flag * merge_weight).astype(np.float32)
+            merge_weights[~unmerged_mask] = 0.0
+
+        bs_uns = CONFIG["unsmear_training"]["batch_size"]
+        diff_cfg = {
+            "pred_type": CONFIG["unsmear_training"]["pred_type"],
+            "x0_weight": 1.0,
+            "snr_weight": CONFIG["unsmear_training"]["snr_weight"],
+            "snr_gamma": CONFIG["unsmear_training"]["snr_gamma"],
+            "self_cond_prob": CONFIG["unsmear_training"]["self_cond_prob"],
+            "cond_drop_prob": CONFIG["unsmear_training"]["cond_drop_prob"],
+            "jet_loss_weight": CONFIG["unsmear_training"]["jet_loss_weight"],
+        }
+        samp_cfg = {
+            "sample_steps": CONFIG["unsmear_training"]["sample_steps"],
+            "n_samples_eval": CONFIG["unsmear_training"]["n_samples_eval"],
+            "method": CONFIG["unsmear_training"]["sampling_method"],
+            "guidance_scale": CONFIG["unsmear_training"]["guidance_scale"],
+        }
+        timesteps = CONFIG["unsmear_training"]["timesteps"]
+        betas = torch.tensor(make_beta_schedule(timesteps, "cosine"), dtype=torch.float32, device=device)
+        alpha = 1.0 - betas
+        alpha_bar = torch.cumprod(alpha, dim=0)
+
+        unsmear_k_folds = max(1, args.unsmear_k_folds)
+        unsmear_kfold_dir = (
+            Path(args.unsmear_kfold_model_dir)
+            if args.unsmear_kfold_model_dir is not None
+            else save_root / "unsmear_kfold_models"
+        )
+
+        def build_unsmear_model():
+            return ConditionalDenoiser(
+                input_dim=4,
+                cond_dim=cond_dim,
+                embed_dim=CONFIG["model"]["embed_dim"],
+                num_heads=CONFIG["model"]["num_heads"],
+                num_layers=CONFIG["model"]["num_layers"],
+                ff_dim=CONFIG["model"]["ff_dim"],
+                dropout=CONFIG["model"]["dropout"],
+                use_cross_attn=CONFIG["unsmear_training"]["use_cross_attn"],
+                self_cond=True,
+                two_head=use_two_head,
+            ).to(device)
+
+        if args.unsmear_kfold_train_only >= 0:
+            fold_id = args.unsmear_kfold_train_only
+            splits = make_kfold_splits(train_idx, unsmear_k_folds, seed=RANDOM_SEED)
+            if fold_id >= len(splits):
+                raise ValueError(f"unsmear_kfold_train_only={fold_id} out of range for K={unsmear_k_folds}")
+            holdout = splits[fold_id]
+            train_sub = np.concatenate([s for i, s in enumerate(splits) if i != fold_id])
+            print(f"Unsmear fold {fold_id+1}/{unsmear_k_folds} | train={len(train_sub)} holdout={len(holdout)}")
+
+            train_pair = JetPairDataset(
+                off_std[train_sub],
+                unmerged_cond[train_sub],
+                masks_off[train_sub],
+                unmerged_mask[train_sub],
+                weights=merge_weights[train_sub] if merge_weights is not None else None,
+                merge_flag=merge_flag[train_sub] if merge_flag is not None else None,
+            )
+            val_pair = JetPairDataset(
+                off_std[holdout],
+                unmerged_cond[holdout],
+                masks_off[holdout],
+                unmerged_mask[holdout],
+                weights=merge_weights[holdout] if merge_weights is not None else None,
+                merge_flag=merge_flag[holdout] if merge_flag is not None else None,
+            )
+            train_pair_loader = DataLoader(train_pair, batch_size=bs_uns, shuffle=True, drop_last=True, **DL_KWARGS)
+            val_pair_loader = DataLoader(val_pair, batch_size=bs_uns, shuffle=False, **DL_KWARGS)
+
+            unsmear_model = build_unsmear_model()
+            ema_uns = EMA(unsmear_model, decay=0.995)
+            opt_uns = torch.optim.AdamW(
+                unsmear_model.parameters(),
+                lr=CONFIG["unsmear_training"]["lr"],
+                weight_decay=CONFIG["unsmear_training"]["weight_decay"],
+            )
+            sch_uns = get_scheduler(opt_uns, CONFIG["unsmear_training"]["warmup_epochs"], CONFIG["unsmear_training"]["epochs"])
+            best_val = 1e9
+            best_state_ema = None
+            no_improve = 0
+            for ep in tqdm(range(CONFIG["unsmear_training"]["epochs"]), desc=f"Unsmear-F{fold_id+1}"):
+                loss = unsmear_train_epoch(unsmear_model, ema_uns, train_pair_loader, opt_uns, device, alpha_bar, diff_cfg)
+                sch_uns.step()
+                if (ep + 1) % 5 == 0:
+                    eval_model = build_unsmear_model()
+                    ema_uns.apply_to(eval_model)
+                    val_l1, val_l2 = eval_reconstruction(
+                        eval_model, val_pair_loader, device, betas, alpha, alpha_bar,
+                        const_means, const_stds, samp_cfg, CONFIG["unsmear_training"]["pred_type"]
+                    )
+                    print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
+                    if val_l1 < best_val:
+                        best_val = val_l1
+                        best_state_ema = {k: v.detach().cpu().clone() for k, v in ema_uns.shadow.items()}
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                    if no_improve >= CONFIG["unsmear_training"]["patience"]:
+                        print(f"Early stopping unsmearer at epoch {ep+1}")
+                        break
+            if best_state_ema is not None:
+                ema_uns.shadow = best_state_ema
+            fold_dir = unsmear_kfold_dir / f"fold_{fold_id}"
+            fold_dir.mkdir(parents=True, exist_ok=True)
+            eval_model = build_unsmear_model()
+            ema_uns.apply_to(eval_model)
+            torch.save({"model": eval_model.state_dict()}, fold_dir / "unsmear_diffusion_ema.pt")
+            print(f"Saved unsmearer fold model to: {fold_dir / 'unsmear_diffusion_ema.pt'}")
+            return
+
+        if args.unsmear_kfold_use_pretrained and unsmear_k_folds > 1:
+            unsmear_std = np.zeros_like(unmerged_std, dtype=np.float32)
+            splits = make_kfold_splits(train_idx, unsmear_k_folds, seed=RANDOM_SEED)
+            for fold_id, holdout in enumerate(splits):
+                fold_dir = unsmear_kfold_dir / f"fold_{fold_id}"
+                ckpt_path = fold_dir / "unsmear_diffusion_ema.pt"
+                if not ckpt_path.exists():
+                    ckpt_path = fold_dir / "unsmear_diffusion.pt"
+                if not ckpt_path.exists():
+                    raise FileNotFoundError(f"Missing unsmearer fold checkpoint: {ckpt_path}")
+                unsmear_model = build_unsmear_model()
+                ckpt = torch.load(ckpt_path, map_location=device)
+                state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+                unsmear_model.load_state_dict(state)
+                unsmear_std[holdout] = generate_unsmeared_constituents(
+                    unsmear_model, unmerged_cond[holdout], unmerged_mask[holdout],
+                    betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device,
+                    merge_flag=merge_flag[holdout] if merge_flag is not None else None,
+                )
+            if args.unsmear_kfold_ensemble_valtest:
+                preds_val = []
+                preds_test = []
+                for fold_id in range(unsmear_k_folds):
+                    fold_dir = unsmear_kfold_dir / f"fold_{fold_id}"
+                    ckpt_path = fold_dir / "unsmear_diffusion_ema.pt"
+                    if not ckpt_path.exists():
+                        ckpt_path = fold_dir / "unsmear_diffusion.pt"
+                    unsmear_model = build_unsmear_model()
+                    ckpt = torch.load(ckpt_path, map_location=device)
+                    state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+                    unsmear_model.load_state_dict(state)
+                    preds_val.append(
+                        generate_unsmeared_constituents(
+                            unsmear_model, unmerged_cond[val_idx], unmerged_mask[val_idx],
+                            betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device,
+                            merge_flag=merge_flag[val_idx] if merge_flag is not None else None,
+                        )
+                    )
+                    preds_test.append(
+                        generate_unsmeared_constituents(
+                            unsmear_model, unmerged_cond[test_idx], unmerged_mask[test_idx],
+                            betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device,
+                            merge_flag=merge_flag[test_idx] if merge_flag is not None else None,
+                        )
+                    )
+                unsmear_std[val_idx] = np.mean(np.stack(preds_val, axis=0), axis=0)
+                unsmear_std[test_idx] = np.mean(np.stack(preds_test, axis=0), axis=0)
+            else:
+                fold_dir = unsmear_kfold_dir / "fold_0"
+                ckpt_path = fold_dir / "unsmear_diffusion_ema.pt"
+                if not ckpt_path.exists():
+                    ckpt_path = fold_dir / "unsmear_diffusion.pt"
+                unsmear_model = build_unsmear_model()
+                ckpt = torch.load(ckpt_path, map_location=device)
+                state = ckpt["model"] if isinstance(ckpt, dict) and "model" in ckpt else ckpt
+                unsmear_model.load_state_dict(state)
+                unsmear_std[val_idx] = generate_unsmeared_constituents(
+                    unsmear_model, unmerged_cond[val_idx], unmerged_mask[val_idx],
+                    betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device,
+                    merge_flag=merge_flag[val_idx] if merge_flag is not None else None,
+                )
+                unsmear_std[test_idx] = generate_unsmeared_constituents(
+                    unsmear_model, unmerged_cond[test_idx], unmerged_mask[test_idx],
+                    betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device,
+                    merge_flag=merge_flag[test_idx] if merge_flag is not None else None,
+                )
+        else:
+            train_pair = JetPairDataset(
+                off_std[train_idx],
+                unmerged_cond[train_idx],
+                masks_off[train_idx],
+                unmerged_mask[train_idx],
+                weights=merge_weights[train_idx] if merge_weights is not None else None,
+                merge_flag=merge_flag[train_idx] if merge_flag is not None else None,
+            )
+            val_pair = JetPairDataset(
+                off_std[val_idx],
+                unmerged_cond[val_idx],
+                masks_off[val_idx],
+                unmerged_mask[val_idx],
+                weights=merge_weights[val_idx] if merge_weights is not None else None,
+                merge_flag=merge_flag[val_idx] if merge_flag is not None else None,
+            )
+            test_pair = JetPairDataset(
+                off_std[test_idx],
+                unmerged_cond[test_idx],
+                masks_off[test_idx],
+                unmerged_mask[test_idx],
+                weights=merge_weights[test_idx] if merge_weights is not None else None,
+                merge_flag=merge_flag[test_idx] if merge_flag is not None else None,
+            )
+
+            train_pair_loader = DataLoader(train_pair, batch_size=bs_uns, shuffle=True, drop_last=True, **DL_KWARGS)
+            val_pair_loader = DataLoader(val_pair, batch_size=bs_uns, shuffle=False, **DL_KWARGS)
+            test_pair_loader = DataLoader(test_pair, batch_size=bs_uns, shuffle=False, **DL_KWARGS)
+
+            unsmear_model = build_unsmear_model()
+            ema_uns = EMA(unsmear_model, decay=0.995)
+            opt_uns = torch.optim.AdamW(
+                unsmear_model.parameters(),
+                lr=CONFIG["unsmear_training"]["lr"],
+                weight_decay=CONFIG["unsmear_training"]["weight_decay"],
+            )
+            sch_uns = get_scheduler(opt_uns, CONFIG["unsmear_training"]["warmup_epochs"], CONFIG["unsmear_training"]["epochs"])
+
+            best_val = 1e9
+            best_state = None
+            best_state_ema = None
+            no_improve = 0
+
+            for ep in tqdm(range(CONFIG["unsmear_training"]["epochs"]), desc="Unsmear"):
+                loss = unsmear_train_epoch(unsmear_model, ema_uns, train_pair_loader, opt_uns, device, alpha_bar, diff_cfg)
+                sch_uns.step()
+                if (ep + 1) % 5 == 0:
+                    eval_model = build_unsmear_model()
+                    ema_uns.apply_to(eval_model)
+                    val_l1, val_l2 = eval_reconstruction(
+                        eval_model, val_pair_loader, device, betas, alpha, alpha_bar,
+                        const_means, const_stds, samp_cfg, CONFIG["unsmear_training"]["pred_type"]
+                    )
+                    print(f"Ep {ep+1}: train_loss={loss:.6f}, val_l1={val_l1:.6f}, val_l2={val_l2:.6f}")
+                    if val_l1 < best_val:
+                        best_val = val_l1
+                        best_state = {k: v.detach().cpu().clone() for k, v in unsmear_model.state_dict().items()}
+                        best_state_ema = {k: v.detach().cpu().clone() for k, v in ema_uns.shadow.items()}
+                        no_improve = 0
+                    else:
+                        no_improve += 1
+                    if no_improve >= CONFIG["unsmear_training"]["patience"]:
+                        print(f"Early stopping unsmearer at epoch {ep+1}")
+                        break
+
+            if best_state is not None:
+                unsmear_model.load_state_dict(best_state)
+                ema_uns.shadow = best_state_ema
+
+            eval_model = build_unsmear_model()
+            ema_uns.apply_to(eval_model)
+            val_l1, val_l2 = eval_reconstruction(
+                eval_model, val_pair_loader, device, betas, alpha, alpha_bar,
+                const_means, const_stds, samp_cfg, CONFIG["unsmear_training"]["pred_type"]
+            )
+            test_l1, test_l2 = eval_reconstruction(
+                eval_model, test_pair_loader, device, betas, alpha, alpha_bar,
+                const_means, const_stds, samp_cfg, CONFIG["unsmear_training"]["pred_type"]
+            )
+            print("\nUnsmear reconstruction:")
+            print(f"  Val L1: {val_l1:.6f} | Val L2: {val_l2:.6f}")
+            print(f"  Test L1: {test_l1:.6f} | Test L2: {test_l2:.6f}")
+            np.savez(
+                save_root / "unsmear_results.npz",
+                val_l1=val_l1,
+                val_l2=val_l2,
+                test_l1=test_l1,
+                test_l2=test_l2,
+                feat_means=const_means,
+                feat_stds=const_stds,
+                timesteps=timesteps,
+                sample_steps=CONFIG["unsmear_training"]["sample_steps"],
+                n_samples_eval=CONFIG["unsmear_training"]["n_samples_eval"],
+                pred_type=CONFIG["unsmear_training"]["pred_type"],
+                sampling_method=CONFIG["unsmear_training"]["sampling_method"],
+                guidance_scale=CONFIG["unsmear_training"]["guidance_scale"],
+            )
+            torch.save({"model": eval_model.state_dict()}, save_root / "unsmear_diffusion_ema.pt")
+
+            # Generate unsmeared constituents from unmerged inputs
+            unsmear_std = generate_unsmeared_constituents(
+                eval_model,
+                unmerged_cond,
+                unmerged_mask,
+                betas,
+                alpha,
+                alpha_bar,
+                samp_cfg,
+                CONFIG["unsmear_training"]["pred_type"],
+                device,
+                merge_flag=merge_flag if merge_flag is not None else None,
+            )
+        unsmear_const = unstandardize(unsmear_std, const_means, const_stds)
+        unsmear_const[:, :, 0] = np.clip(unsmear_const[:, :, 0], 0.0, None)
+        unsmear_const[:, :, 1] = np.clip(unsmear_const[:, :, 1], -5.0, 5.0)
+        unsmear_const[:, :, 2] = np.arctan2(np.sin(unsmear_const[:, :, 2]), np.cos(unsmear_const[:, :, 2]))
+        unsmear_const[:, :, 3] = np.where(
+            unmerged_mask, unsmear_const[:, :, 0] * np.cosh(np.clip(unsmear_const[:, :, 1], -5.0, 5.0)), 0.0
+        )
+
         features_unmerged = compute_features(unmerged_const, unmerged_mask)
         features_unmerged_std = standardize(features_unmerged, unmerged_mask, feat_means, feat_stds)
+        features_unsmeared = compute_features(unsmear_const, unmerged_mask)
+        features_unsmeared_std = standardize(features_unsmeared, unmerged_mask, feat_means, feat_stds)
 
         mc_enabled = CONFIG["mc_sampling"]["enabled"]
         if k_folds > 1 and mc_enabled:
@@ -2342,9 +3127,9 @@ def main():
             mc_n = CONFIG["mc_sampling"]["n_samples"]
             mc_seed = CONFIG["mc_sampling"]["seed"]
             mc_consts, mc_masks = build_unmerged_dataset_mc(
-                features_hlt_std,
+                features_hlt_for_unmerge_std,
                 hlt_mask,
-                hlt_const,
+                hlt_const_for_unmerge,
                 pred_counts,
                 unmerge_model,
                 tgt_mean,
@@ -2368,7 +3153,9 @@ def main():
             np.savez(
                 cache_path,
                 features_unmerged_std=features_unmerged_std,
+                unmerged_const=unmerged_const,
                 unmerged_mask=unmerged_mask,
+                unmerged_merge_flag=unmerged_merge_flag,
                 labels=all_labels,
                 train_idx=train_idx,
                 val_idx=val_idx,
@@ -2444,6 +3231,144 @@ def main():
         unmerge_cls.load_state_dict(best_state_ucls)
 
     auc_unmerge, preds_unmerge, _ = eval_classifier(unmerge_cls, test_loader_um, device)
+
+    # ------------------- Train unmerge+unsmear classifier ------------------- #
+    print("\n" + "=" * 70)
+    print("STEP 6B: UNMERGE + UNSMEAR CLASSIFIER")
+    print("=" * 70)
+    train_uns = JetDataset(features_unsmeared_std[train_idx], unmerged_mask[train_idx], all_labels[train_idx])
+    val_uns = JetDataset(features_unsmeared_std[val_idx], unmerged_mask[val_idx], all_labels[val_idx])
+    test_uns = JetDataset(features_unsmeared_std[test_idx], unmerged_mask[test_idx], all_labels[test_idx])
+    train_uns_loader = DataLoader(train_uns, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+    val_uns_loader = DataLoader(val_uns, batch_size=BS, shuffle=False, **DL_KWARGS)
+    test_uns_loader = DataLoader(test_uns, batch_size=BS, shuffle=False, **DL_KWARGS)
+
+    unsmear_cls = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
+    opt_uns_cls = torch.optim.AdamW(unsmear_cls.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+    sch_uns_cls = get_scheduler(opt_uns_cls, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+    best_auc_uns, best_state_uns, no_improve = 0.0, None, 0
+    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="UnmergeUnsmearCls"):
+        _, train_auc = train_classifier(unsmear_cls, train_uns_loader, opt_uns_cls, device)
+        val_auc, _, _ = eval_classifier(unsmear_cls, val_uns_loader, device)
+        sch_uns_cls.step()
+        if val_auc > best_auc_uns:
+            best_auc_uns = val_auc
+            best_state_uns = {k: v.detach().cpu().clone() for k, v in unsmear_cls.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+        if (ep + 1) % 5 == 0:
+            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_uns:.4f}")
+        if no_improve >= CONFIG["training"]["patience"]:
+            print(f"Early stopping unmerge+unsmear classifier at epoch {ep+1}")
+            break
+    if best_state_uns is not None:
+        unsmear_cls.load_state_dict(best_state_uns)
+
+    auc_unsmeared, preds_unsmeared, _ = eval_classifier(unsmear_cls, test_uns_loader, device)
+
+    # ------------------- Train unmerge+unsmear classifier + KD ------------------- #
+    print("\n" + "=" * 70)
+    print("STEP 7C: UNMERGE + UNSMEAR + KD")
+    print("=" * 70)
+    kd_train_ds_uns = UnmergeKDDataset(
+        features_unsmeared_std[train_idx],
+        unmerged_mask[train_idx],
+        features_off_std[train_idx],
+        masks_off[train_idx],
+        all_labels[train_idx],
+    )
+    kd_val_ds_uns = UnmergeKDDataset(
+        features_unsmeared_std[val_idx],
+        unmerged_mask[val_idx],
+        features_off_std[val_idx],
+        masks_off[val_idx],
+        all_labels[val_idx],
+    )
+    kd_test_ds_uns = UnmergeKDDataset(
+        features_unsmeared_std[test_idx],
+        unmerged_mask[test_idx],
+        features_off_std[test_idx],
+        masks_off[test_idx],
+        all_labels[test_idx],
+    )
+    kd_train_loader_uns = DataLoader(kd_train_ds_uns, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+    kd_val_loader_uns = DataLoader(kd_val_ds_uns, batch_size=BS, shuffle=False, **DL_KWARGS)
+    kd_test_loader_uns = DataLoader(kd_test_ds_uns, batch_size=BS, shuffle=False, **DL_KWARGS)
+
+    kd_student_uns = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
+    opt_kd_uns = torch.optim.AdamW(
+        kd_student_uns.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"]
+    )
+    sch_kd_uns = get_scheduler(opt_kd_uns, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+
+    best_auc_kd_uns, best_state_kd_uns, no_improve = 0.0, None, 0
+    kd_active = not kd_cfg["adaptive_alpha"]
+    stable_count = 0
+    prev_val_loss = None
+
+    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Unmerge+Unsmear+KD"):
+        current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
+        kd_cfg_ep = dict(kd_cfg)
+        kd_cfg_ep["alpha_kd"] = current_alpha
+
+        train_loss, train_auc = train_kd_epoch(
+            kd_student_uns, teacher, kd_train_loader_uns, opt_kd_uns, device, kd_cfg_ep
+        )
+        val_auc, _, _ = evaluate_kd(kd_student_uns, kd_val_loader_uns, device)
+        sch_kd_uns.step()
+
+        if not kd_active and kd_cfg["adaptive_alpha"]:
+            val_loss = evaluate_bce_loss_unmerged(kd_student_uns, kd_val_loader_uns, device)
+            if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
+                stable_count += 1
+            else:
+                stable_count = 0
+            prev_val_loss = val_loss
+            if ep + 1 >= kd_cfg["alpha_warmup_min_epochs"] and stable_count >= kd_cfg["alpha_stable_patience"]:
+                kd_active = True
+                print(f"Activating KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
+
+        if val_auc > best_auc_kd_uns:
+            best_auc_kd_uns = val_auc
+            best_state_kd_uns = {k: v.detach().cpu().clone() for k, v in kd_student_uns.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (ep + 1) % 5 == 0:
+            print(
+                f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_kd_uns:.4f} | alpha_kd={current_alpha:.2f}"
+            )
+        if no_improve >= CONFIG["training"]["patience"]:
+            print(f"Early stopping KD student (unsmear) at epoch {ep+1}")
+            break
+
+    if best_state_kd_uns is not None:
+        kd_student_uns.load_state_dict(best_state_kd_uns)
+
+    if kd_cfg["self_train"]:
+        print("\nSTEP 7D: SELF-TRAIN (pseudo-label fine-tune, unsmear)")
+        opt_st_uns = torch.optim.AdamW(kd_student_uns.parameters(), lr=kd_cfg["self_train_lr"])
+        best_auc_st_uns = best_auc_kd_uns
+        no_improve = 0
+        for ep in range(kd_cfg["self_train_epochs"]):
+            st_loss = self_train_student(kd_student_uns, teacher, kd_train_loader_uns, opt_st_uns, device, kd_cfg)
+            val_auc, _, _ = evaluate_kd(kd_student_uns, kd_val_loader_uns, device)
+            if val_auc > best_auc_st_uns:
+                best_auc_st_uns = val_auc
+                best_state_kd_uns = {k: v.detach().cpu().clone() for k, v in kd_student_uns.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+            if (ep + 1) % 2 == 0:
+                print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st_uns:.4f}")
+            if no_improve >= kd_cfg["self_train_patience"]:
+                break
+        if best_state_kd_uns is not None:
+            kd_student_uns.load_state_dict(best_state_kd_uns)
+
+    auc_unsmeared_kd, preds_unsmeared_kd, _ = evaluate_kd(kd_student_uns, kd_test_loader_uns, device)
 
     # ------------------- Train unmerge-model classifier + KD ------------------- #
     print("\n" + "=" * 70)
@@ -2550,11 +3475,15 @@ def main():
     print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
     print(f"Unmerge Model    AUC: {auc_unmerge:.4f}")
     print(f"Unmerge + KD     AUC: {auc_unmerge_kd:.4f}")
+    print(f"Unmerge+Unsmear  AUC: {auc_unsmeared:.4f}")
+    print(f"Unmerge+Unsmear+KD AUC: {auc_unsmeared_kd:.4f}")
 
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
     fpr_u, tpr_u, _ = roc_curve(labs, preds_unmerge)
+    fpr_s, tpr_s, _ = roc_curve(labs, preds_unsmeared)
     fpr_k, tpr_k, _ = roc_curve(labs, preds_unmerge_kd)
+    fpr_skd, tpr_skd, _ = roc_curve(labs, preds_unsmeared_kd)
 
     def plot_roc(lines, out_name):
         plt.figure(figsize=(8, 6))
@@ -2573,7 +3502,9 @@ def main():
             (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
             (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
             (tpr_u, fpr_u, ":", f"Unmerge Model (AUC={auc_unmerge:.3f})", "forestgreen"),
-            (tpr_k, fpr_k, "-.", f"Unmerge+KD (AUC={auc_unmerge_kd:.3f})", "darkorange"),
+            (tpr_k, fpr_k, "--", f"Unmerge+KD (AUC={auc_unmerge_kd:.3f})", "darkorange"),
+            (tpr_s, fpr_s, "-.", f"Unmerge+Unsmear (AUC={auc_unsmeared:.3f})", "purple"),
+            (tpr_skd, fpr_skd, ":", f"Unmerge+Unsmear+KD (AUC={auc_unsmeared_kd:.3f})", "teal"),
         ],
         "results_all.png",
     )
@@ -2581,12 +3512,6 @@ def main():
         [
             (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
             (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
-        ],
-        "results_teacher_baseline.png",
-    )
-    plot_roc(
-        [
-            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
             (tpr_u, fpr_u, ":", f"Unmerge Model (AUC={auc_unmerge:.3f})", "forestgreen"),
         ],
         "results_teacher_unmerge.png",
@@ -2594,6 +3519,23 @@ def main():
     plot_roc(
         [
             (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+            (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
+            (tpr_s, fpr_s, "-.", f"Unmerge+Unsmear (AUC={auc_unsmeared:.3f})", "purple"),
+        ],
+        "results_teacher_unmerge_unsmear.png",
+    )
+    plot_roc(
+        [
+            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+            (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
+            (tpr_skd, fpr_skd, ":", f"Unmerge+Unsmear+KD (AUC={auc_unsmeared_kd:.3f})", "teal"),
+        ],
+        "results_teacher_unmerge_unsmear_kd.png",
+    )
+    plot_roc(
+        [
+            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+            (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
             (tpr_k, fpr_k, "-.", f"Unmerge+KD (AUC={auc_unmerge_kd:.3f})", "darkorange"),
         ],
         "results_teacher_unmerge_kd.png",
@@ -2604,15 +3546,21 @@ def main():
         auc_teacher=auc_teacher,
         auc_baseline=auc_baseline,
         auc_unmerge=auc_unmerge,
+        auc_unmerge_unsmear=auc_unsmeared,
         auc_unmerge_kd=auc_unmerge_kd,
+        auc_unmerge_unsmear_kd=auc_unsmeared_kd,
         fpr_teacher=fpr_t,
         tpr_teacher=tpr_t,
         fpr_baseline=fpr_b,
         tpr_baseline=tpr_b,
         fpr_unmerge=fpr_u,
         tpr_unmerge=tpr_u,
+        fpr_unmerge_unsmear=fpr_s,
+        tpr_unmerge_unsmear=tpr_s,
         fpr_unmerge_kd=fpr_k,
         tpr_unmerge_kd=tpr_k,
+        fpr_unmerge_unsmear_kd=fpr_skd,
+        tpr_unmerge_unsmear_kd=tpr_skd,
         unmerge_test_loss=test_loss,
         max_merge_count=max_count,
     )
@@ -2624,6 +3572,8 @@ def main():
         torch.save({"model": unmerge_model.state_dict(), "loss": best_val_loss}, save_root / "unmerge_predictor.pt")
         torch.save({"model": unmerge_cls.state_dict(), "auc": auc_unmerge}, save_root / "unmerge_classifier.pt")
         torch.save({"model": kd_student.state_dict(), "auc": auc_unmerge_kd}, save_root / "unmerge_kd.pt")
+        torch.save({"model": unsmear_cls.state_dict(), "auc": auc_unsmeared}, save_root / "unmerge_unsmear_classifier.pt")
+        torch.save({"model": kd_student_uns.state_dict(), "auc": auc_unsmeared_kd}, save_root / "unmerge_unsmear_kd.pt")
 
     print(f"\nSaved results to: {save_root}")
 
