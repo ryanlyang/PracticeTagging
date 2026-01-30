@@ -14,8 +14,25 @@ TRAIN_PATH=${TRAIN_PATH:-""}
 DEP_IDS_DEFAULT="21034612 21034613 21034614 21034615 21034616 21034618 21034619 21034620 21034621 21034622 21034624 21034625 21034626 21034627 21034628 21034629 21034630 21034631 21034632 21034633 21034634 21034636 21034637 21034638 21034639 21034640 21034642 21034643 21034644 21034645 21034646"
 DEP_IDS=${DEP_IDS:-$DEP_IDS_DEFAULT}
 
-# Convert to Slurm afterok string
-DEP_STR=$(echo "$DEP_IDS" | tr ' ' ':')
+# Build a dependency list of job IDs that SLURM recognizes
+valid_ids=()
+for id in $DEP_IDS; do
+  if squeue -j "$id" -h 2>/dev/null | rg -q .; then
+    valid_ids+=("$id")
+    continue
+  fi
+  if sacct -j "$id" --format=JobID -n 2>/dev/null | rg -q "^${id}"; then
+    valid_ids+=("$id")
+    continue
+  fi
+  echo "Warning: job id $id not found in squeue/sacct; skipping from dependency list"
+done
+
+DEP_OPT=""
+if [ ${#valid_ids[@]} -gt 0 ]; then
+  DEP_STR=$(IFS=:; echo "${valid_ids[*]}")
+  DEP_OPT="--dependency=afterok:$DEP_STR"
+fi
 
 submit_final_cfg() {
   local name="$1"; shift
@@ -25,7 +42,7 @@ submit_final_cfg() {
   if [ -n "$extra_exports" ]; then
     export_list="$export_list,$extra_exports"
   fi
-  sbatch --dependency=afterok:$DEP_STR \
+  sbatch $DEP_OPT \
     --export="$export_list" \
     run_unmerge_distr_kfold_final.sh
 }
