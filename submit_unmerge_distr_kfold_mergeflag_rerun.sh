@@ -19,10 +19,14 @@ DEP_STR=$(echo "$DEP_IDS" | tr ' ' ':')
 
 submit_final_cfg() {
   local name="$1"; shift
+  local extra_exports="$*"
   echo "Submitting final classifier job for: $name"
+  local export_list="SAVE_DIR=$BASE_DIR,RUN_NAME=$name,K_FOLDS=$K_FOLDS,KFOLD_ENSEMBLE=$KFOLD_ENSEMBLE,N_TRAIN_JETS=$N_TRAIN_JETS,MAX_CONSTITS=$MAX_CONSTITS,MAX_MERGE_COUNT=$MAX_MERGE_COUNT,TRAIN_PATH=$TRAIN_PATH"
+  if [ -n "$extra_exports" ]; then
+    export_list="$export_list,$extra_exports"
+  fi
   sbatch --dependency=afterok:$DEP_STR \
-    --export=SAVE_DIR="$BASE_DIR",RUN_NAME="$name",K_FOLDS="$K_FOLDS",KFOLD_ENSEMBLE="$KFOLD_ENSEMBLE",\
-N_TRAIN_JETS="$N_TRAIN_JETS",MAX_CONSTITS="$MAX_CONSTITS",MAX_MERGE_COUNT="$MAX_MERGE_COUNT",TRAIN_PATH="$TRAIN_PATH",$* \
+    --export="$export_list" \
     run_unmerge_distr_kfold_final.sh
 }
 
