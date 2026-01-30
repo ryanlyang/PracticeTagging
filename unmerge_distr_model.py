@@ -1135,28 +1135,34 @@ def build_unmerged_dataset(
 
     new_const = np.zeros((n_jets, max_constits, 4), dtype=np.float32)
     new_mask = np.zeros((n_jets, max_constits), dtype=bool)
+    new_flag = np.zeros((n_jets, max_constits), dtype=np.float32)
 
     for j in range(n_jets):
         parts = []
+        flags = []
         for idx in range(max_part):
             if not mask_hlt[j, idx]:
                 continue
             if pred_counts[j, idx] <= 1:
                 parts.append(hlt_const[j, idx])
+                flags.append(0.0)
             else:
                 pred = pred_map.get((j, idx))
                 if pred is not None:
                     parts.extend(list(pred))
+                    flags.extend([1.0] * len(pred))
         if len(parts) == 0:
             continue
         parts = np.array(parts, dtype=np.float32)
         order = np.argsort(parts[:, 0])[::-1]
         parts = parts[order]
+        flags = np.array(flags, dtype=np.float32)[order]
         n_keep = min(len(parts), max_constits)
         new_const[j, :n_keep] = parts[:n_keep]
         new_mask[j, :n_keep] = True
+        new_flag[j, :n_keep] = flags[:n_keep]
 
-    return new_const, new_mask
+    return new_const, new_mask, new_flag
 
 
 def _build_samples_for_indices(indices, origin_lists, hlt_mask, pred_counts, max_count, max_constits):
@@ -1218,12 +1224,12 @@ def build_unmerged_dataset_subset(
     batch_size,
 ):
     if len(indices) == 0:
-        return None, None
+        return None, None, None
     sub_feat = feat_hlt_std[indices]
     sub_mask = mask_hlt[indices]
     sub_hlt = hlt_const[indices]
     sub_counts = pred_counts[indices]
-    sub_const, sub_mask_new = build_unmerged_dataset(
+    sub_const, sub_mask_new, sub_flag = build_unmerged_dataset(
         sub_feat,
         sub_mask,
         sub_hlt,
@@ -1236,7 +1242,7 @@ def build_unmerged_dataset_subset(
         device,
         batch_size,
     )
-    return sub_const, sub_mask_new
+    return sub_const, sub_mask_new, sub_flag
 
 
 def build_unmerged_dataset_ensemble_subset(
@@ -1253,12 +1259,13 @@ def build_unmerged_dataset_ensemble_subset(
     batch_size,
 ):
     if len(indices) == 0:
-        return None, None
+        return None, None, None
     sum_const = None
     sum_mask = None
     count = None
+    flag = None
     for model, (tgt_mean, tgt_std) in zip(unmerge_models, tgt_stats):
-        sub_const, sub_mask = build_unmerged_dataset_subset(
+        sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
             indices,
             feat_hlt_std,
             mask_hlt,
@@ -1278,16 +1285,17 @@ def build_unmerged_dataset_ensemble_subset(
             sum_const = np.zeros_like(sub_const, dtype=np.float32)
             sum_mask = np.zeros_like(sub_mask, dtype=np.int32)
             count = np.zeros_like(sub_mask, dtype=np.int32)
+            flag = sub_flag
         valid = sub_mask
         sum_const += sub_const
         sum_mask += valid.astype(np.int32)
         count += valid.astype(np.int32)
     if sum_const is None:
-        return None, None
+        return None, None, None
     count = np.maximum(count, 1)
     avg_const = sum_const / count[..., None]
     avg_mask = sum_mask > 0
-    return avg_const, avg_mask
+    return avg_const, avg_mask, flag
 
 
 def build_unmerged_dataset_mc(
@@ -1700,6 +1708,7 @@ def main():
         cache = np.load(args.load_unmerged_cache, allow_pickle=True)
         features_unmerged_std = cache["features_unmerged_std"]
         unmerged_mask = cache["unmerged_mask"]
+        unmerged_merge_flag = cache["unmerged_merge_flag"] if "unmerged_merge_flag" in cache else None
         if "train_idx" in cache:
             train_idx = cache["train_idx"]
             val_idx = cache["val_idx"]
@@ -1834,6 +1843,7 @@ def main():
         tgt_stats = []
         unmerged_const = np.zeros((len(all_labels), args.max_constits, 4), dtype=np.float32)
         unmerged_mask = np.zeros((len(all_labels), args.max_constits), dtype=bool)
+        unmerged_merge_flag = np.zeros((len(all_labels), args.max_constits), dtype=np.float32)
     
         def compute_unmerge_loss(mu, logvar, target, true_count, hlt_token):
             if CONFIG["unmerge_training"]["loss_type"] == "hungarian":
@@ -1859,7 +1869,7 @@ def main():
                     count_model, unmerge_model, tgt_mean, tgt_std = _load_fold_models(fold_id)
                     unmerge_models.append(unmerge_model)
                     tgt_stats.append((tgt_mean, tgt_std))
-                    sub_const, sub_mask = build_unmerged_dataset_subset(
+                    sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
                         hold_sub,
                         features_hlt_std,
                         hlt_mask,
@@ -1876,6 +1886,8 @@ def main():
                     if sub_const is not None:
                         unmerged_const[hold_sub] = sub_const
                         unmerged_mask[hold_sub] = sub_mask
+                        if sub_flag is not None:
+                            unmerged_merge_flag[hold_sub] = sub_flag
                     continue
                 if kfold_train_only_mode and not kfold_use_pretrained:
                     count_model = count_models_by_fold[fold_id]
@@ -1995,7 +2007,7 @@ def main():
                 tgt_stats.append((tgt_mean, tgt_std))
                 _save_unmerge_model(fold_id, unmerge_model, tgt_mean, tgt_std)
     
-                sub_const, sub_mask = build_unmerged_dataset_subset(
+                sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
                     hold_sub,
                     features_hlt_std,
                     hlt_mask,
@@ -2012,6 +2024,8 @@ def main():
                 if sub_const is not None:
                     unmerged_const[hold_sub] = sub_const
                     unmerged_mask[hold_sub] = sub_mask
+                    if sub_flag is not None:
+                        unmerged_merge_flag[hold_sub] = sub_flag
     
             if kfold_train_only_mode:
                 print("K-fold train-only mode complete; saved fold models. Exiting.")
@@ -2020,7 +2034,7 @@ def main():
             # val/test generation with ensemble
             if kfold_ensemble_valtest:
                 print("Ensembling unmerge models for val/test...")
-                val_const, val_mask = build_unmerged_dataset_ensemble_subset(
+                val_const, val_mask, val_flag = build_unmerged_dataset_ensemble_subset(
                     val_idx,
                     features_hlt_std,
                     hlt_mask,
@@ -2033,7 +2047,7 @@ def main():
                     device,
                     BS_un,
                 )
-                test_const, test_mask = build_unmerged_dataset_ensemble_subset(
+                test_const, test_mask, test_flag = build_unmerged_dataset_ensemble_subset(
                     test_idx,
                     features_hlt_std,
                     hlt_mask,
@@ -2047,7 +2061,7 @@ def main():
                     BS_un,
                 )
             else:
-                val_const, val_mask = build_unmerged_dataset_subset(
+                val_const, val_mask, val_flag = build_unmerged_dataset_subset(
                     val_idx,
                     features_hlt_std,
                     hlt_mask,
@@ -2061,7 +2075,7 @@ def main():
                     device,
                     BS_un,
                 )
-                test_const, test_mask = build_unmerged_dataset_subset(
+                test_const, test_mask, test_flag = build_unmerged_dataset_subset(
                     test_idx,
                     features_hlt_std,
                     hlt_mask,
@@ -2078,9 +2092,13 @@ def main():
             if val_const is not None:
                 unmerged_const[val_idx] = val_const
                 unmerged_mask[val_idx] = val_mask
+                if val_flag is not None:
+                    unmerged_merge_flag[val_idx] = val_flag
             if test_const is not None:
                 unmerged_const[test_idx] = test_const
                 unmerged_mask[test_idx] = test_mask
+                if test_flag is not None:
+                    unmerged_merge_flag[test_idx] = test_flag
     
         else:
             all_idx = np.concatenate([train_idx, val_idx, test_idx])
@@ -2224,7 +2242,7 @@ def main():
             print("\n" + "=" * 70)
             print("STEP 5: BUILD UNMERGED DATASET")
             print("=" * 70)
-            unmerged_const, unmerged_mask = build_unmerged_dataset(
+            unmerged_const, unmerged_mask, unmerged_merge_flag = build_unmerged_dataset(
                 features_hlt_std,
                 hlt_mask,
                 hlt_const,
@@ -2285,6 +2303,7 @@ def main():
                 cache_path,
                 features_unmerged_std=features_unmerged_std,
                 unmerged_mask=unmerged_mask,
+                unmerged_merge_flag=unmerged_merge_flag,
                 labels=all_labels,
                 train_idx=train_idx,
                 val_idx=val_idx,
@@ -2360,6 +2379,52 @@ def main():
         unmerge_cls.load_state_dict(best_state_ucls)
 
     auc_unmerge, preds_unmerge, _ = eval_classifier(unmerge_cls, test_loader_um, device)
+
+    # ------------------- Train unmerge-model classifier (merge-flag) ------------------- #
+    print("\n" + "=" * 70)
+    print("STEP 6B: UNMERGE MODEL + MERGE-FLAG CLASSIFIER")
+    print("=" * 70)
+    merge_flag = unmerged_merge_flag if "unmerged_merge_flag" in locals() else None
+    if merge_flag is None:
+        print("Warning: merge-flag data not found; skipping merge-flag classifier runs.")
+        auc_unmerge_flag = float("nan")
+        preds_unmerge_flag = np.zeros_like(preds_unmerge)
+    else:
+        merge_flag = merge_flag.astype(np.float32)
+        merge_flag[~unmerged_mask] = 0.0
+        features_unmerged_flag = np.concatenate([features_unmerged_std, merge_flag[..., None]], axis=-1)
+        train_flag = JetDataset(features_unmerged_flag[train_idx], unmerged_mask[train_idx], all_labels[train_idx])
+        val_flag = JetDataset(features_unmerged_flag[val_idx], unmerged_mask[val_idx], all_labels[val_idx])
+        test_flag = JetDataset(features_unmerged_flag[test_idx], unmerged_mask[test_idx], all_labels[test_idx])
+        train_flag_loader = DataLoader(train_flag, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+        val_flag_loader = DataLoader(val_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
+        test_flag_loader = DataLoader(test_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
+
+        unmerge_flag_cls = ParticleTransformer(input_dim=8, **CONFIG["model"]).to(device)
+        opt_ucls_f = torch.optim.AdamW(
+            unmerge_flag_cls.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"]
+        )
+        sch_ucls_f = get_scheduler(opt_ucls_f, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+        best_auc_uf, best_state_uf, no_improve = 0.0, None, 0
+        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="UnmergeFlagCls"):
+            _, train_auc = train_classifier(unmerge_flag_cls, train_flag_loader, opt_ucls_f, device)
+            val_auc, _, _ = eval_classifier(unmerge_flag_cls, val_flag_loader, device)
+            sch_ucls_f.step()
+            if val_auc > best_auc_uf:
+                best_auc_uf = val_auc
+                best_state_uf = {k: v.detach().cpu().clone() for k, v in unmerge_flag_cls.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+            if (ep + 1) % 5 == 0:
+                print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_uf:.4f}")
+            if no_improve >= CONFIG["training"]["patience"]:
+                print(f"Early stopping unmerge merge-flag classifier at epoch {ep+1}")
+                break
+        if best_state_uf is not None:
+            unmerge_flag_cls.load_state_dict(best_state_uf)
+
+        auc_unmerge_flag, preds_unmerge_flag, _ = eval_classifier(unmerge_flag_cls, test_flag_loader, device)
 
     # ------------------- Train unmerge-model classifier + KD ------------------- #
     print("\n" + "=" * 70)
@@ -2458,19 +2523,128 @@ def main():
 
     auc_unmerge_kd, preds_unmerge_kd, _ = evaluate_kd(kd_student, kd_test_loader, device)
 
+    # ------------------- Train unmerge-model classifier + KD (merge-flag) ------------------- #
+    print("\n" + "=" * 70)
+    print("STEP 7C: UNMERGE MODEL + MERGE-FLAG + KD")
+    print("=" * 70)
+    if merge_flag is None:
+        auc_unmerge_flag_kd = float("nan")
+        preds_unmerge_flag_kd = np.zeros_like(preds_unmerge)
+    else:
+        kd_train_ds_f = UnmergeKDDataset(
+            features_unmerged_flag[train_idx],
+            unmerged_mask[train_idx],
+            features_off_std[train_idx],
+            masks_off[train_idx],
+            all_labels[train_idx],
+        )
+        kd_val_ds_f = UnmergeKDDataset(
+            features_unmerged_flag[val_idx],
+            unmerged_mask[val_idx],
+            features_off_std[val_idx],
+            masks_off[val_idx],
+            all_labels[val_idx],
+        )
+        kd_test_ds_f = UnmergeKDDataset(
+            features_unmerged_flag[test_idx],
+            unmerged_mask[test_idx],
+            features_off_std[test_idx],
+            masks_off[test_idx],
+            all_labels[test_idx],
+        )
+        kd_train_loader_f = DataLoader(kd_train_ds_f, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+        kd_val_loader_f = DataLoader(kd_val_ds_f, batch_size=BS, shuffle=False, **DL_KWARGS)
+        kd_test_loader_f = DataLoader(kd_test_ds_f, batch_size=BS, shuffle=False, **DL_KWARGS)
+
+        kd_student_f = ParticleTransformer(input_dim=8, **CONFIG["model"]).to(device)
+        opt_kd_f = torch.optim.AdamW(kd_student_f.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+        sch_kd_f = get_scheduler(opt_kd_f, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+
+        best_auc_kd_f, best_state_kd_f, no_improve = 0.0, None, 0
+        kd_active = not kd_cfg["adaptive_alpha"]
+        stable_count = 0
+        prev_val_loss = None
+
+        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Unmerge+Flag+KD"):
+            current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
+            kd_cfg_ep = dict(kd_cfg)
+            kd_cfg_ep["alpha_kd"] = current_alpha
+
+            train_loss, train_auc = train_kd_epoch(kd_student_f, teacher, kd_train_loader_f, opt_kd_f, device, kd_cfg_ep)
+            val_auc, _, _ = evaluate_kd(kd_student_f, kd_val_loader_f, device)
+            sch_kd_f.step()
+
+            if not kd_active and kd_cfg["adaptive_alpha"]:
+                val_loss = evaluate_bce_loss_unmerged(kd_student_f, kd_val_loader_f, device)
+                if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                prev_val_loss = val_loss
+                if ep + 1 >= kd_cfg["alpha_warmup_min_epochs"] and stable_count >= kd_cfg["alpha_stable_patience"]:
+                    kd_active = True
+                    print(f"Activating KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
+
+            if val_auc > best_auc_kd_f:
+                best_auc_kd_f = val_auc
+                best_state_kd_f = {k: v.detach().cpu().clone() for k, v in kd_student_f.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (ep + 1) % 5 == 0:
+                print(
+                    f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_kd_f:.4f} | alpha_kd={current_alpha:.2f}"
+                )
+            if no_improve >= CONFIG["training"]["patience"]:
+                print(f"Early stopping KD student (merge-flag) at epoch {ep+1}")
+                break
+
+        if best_state_kd_f is not None:
+            kd_student_f.load_state_dict(best_state_kd_f)
+
+        if kd_cfg["self_train"]:
+            print("\nSTEP 7D: SELF-TRAIN (pseudo-label fine-tune, merge-flag)")
+            opt_st_f = torch.optim.AdamW(kd_student_f.parameters(), lr=kd_cfg["self_train_lr"])
+            best_auc_st_f = best_auc_kd_f
+            no_improve = 0
+            for ep in range(kd_cfg["self_train_epochs"]):
+                st_loss = self_train_student(kd_student_f, teacher, kd_train_loader_f, opt_st_f, device, kd_cfg)
+                val_auc, _, _ = evaluate_kd(kd_student_f, kd_val_loader_f, device)
+                if val_auc > best_auc_st_f:
+                    best_auc_st_f = val_auc
+                    best_state_kd_f = {k: v.detach().cpu().clone() for k, v in kd_student_f.state_dict().items()}
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if (ep + 1) % 2 == 0:
+                    print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st_f:.4f}")
+                if no_improve >= kd_cfg["self_train_patience"]:
+                    break
+            if best_state_kd_f is not None:
+                kd_student_f.load_state_dict(best_state_kd_f)
+
+        auc_unmerge_flag_kd, preds_unmerge_flag_kd, _ = evaluate_kd(kd_student_f, kd_test_loader_f, device)
+
     # ------------------- Final evaluation ------------------- #
     print("\n" + "=" * 70)
     print("FINAL TEST EVALUATION")
     print("=" * 70)
+    if "test_loss" not in locals():
+        test_loss = float("nan")
     print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
     print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
     print(f"Unmerge Model    AUC: {auc_unmerge:.4f}")
     print(f"Unmerge + KD     AUC: {auc_unmerge_kd:.4f}")
+    print(f"Unmerge+MF       AUC: {auc_unmerge_flag:.4f}")
+    print(f"Unmerge+MF+KD    AUC: {auc_unmerge_flag_kd:.4f}")
 
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
     fpr_u, tpr_u, _ = roc_curve(labs, preds_unmerge)
     fpr_k, tpr_k, _ = roc_curve(labs, preds_unmerge_kd)
+    fpr_f, tpr_f, _ = roc_curve(labs, preds_unmerge_flag)
+    fpr_fk, tpr_fk, _ = roc_curve(labs, preds_unmerge_flag_kd)
 
     def plot_roc(lines, out_name):
         plt.figure(figsize=(8, 6))
@@ -2490,6 +2664,8 @@ def main():
             (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
             (tpr_u, fpr_u, ":", f"Unmerge Model (AUC={auc_unmerge:.3f})", "forestgreen"),
             (tpr_k, fpr_k, "-.", f"Unmerge+KD (AUC={auc_unmerge_kd:.3f})", "darkorange"),
+            (tpr_f, fpr_f, "--", f"Unmerge+MF (AUC={auc_unmerge_flag:.3f})", "goldenrod"),
+            (tpr_fk, fpr_fk, "-.", f"Unmerge+MF+KD (AUC={auc_unmerge_flag_kd:.3f})", "slateblue"),
         ],
         "results_all.png",
     )
@@ -2514,6 +2690,20 @@ def main():
         ],
         "results_teacher_unmerge_kd.png",
     )
+    plot_roc(
+        [
+            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+            (tpr_f, fpr_f, "-.", f"Unmerge+MF (AUC={auc_unmerge_flag:.3f})", "goldenrod"),
+        ],
+        "results_teacher_unmerge_mergeflag.png",
+    )
+    plot_roc(
+        [
+            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+            (tpr_fk, fpr_fk, "-.", f"Unmerge+MF+KD (AUC={auc_unmerge_flag_kd:.3f})", "slateblue"),
+        ],
+        "results_teacher_unmerge_mergeflag_kd.png",
+    )
 
     np.savez(
         save_root / "results.npz",
@@ -2521,6 +2711,8 @@ def main():
         auc_baseline=auc_baseline,
         auc_unmerge=auc_unmerge,
         auc_unmerge_kd=auc_unmerge_kd,
+        auc_unmerge_mergeflag=auc_unmerge_flag,
+        auc_unmerge_mergeflag_kd=auc_unmerge_flag_kd,
         fpr_teacher=fpr_t,
         tpr_teacher=tpr_t,
         fpr_baseline=fpr_b,
@@ -2529,6 +2721,10 @@ def main():
         tpr_unmerge=tpr_u,
         fpr_unmerge_kd=fpr_k,
         tpr_unmerge_kd=tpr_k,
+        fpr_unmerge_mergeflag=fpr_f,
+        tpr_unmerge_mergeflag=tpr_f,
+        fpr_unmerge_mergeflag_kd=fpr_fk,
+        tpr_unmerge_mergeflag_kd=tpr_fk,
         unmerge_test_loss=test_loss,
         max_merge_count=max_count,
     )
@@ -2540,6 +2736,9 @@ def main():
         torch.save({"model": unmerge_model.state_dict(), "loss": best_val_loss}, save_root / "unmerge_predictor.pt")
         torch.save({"model": unmerge_cls.state_dict(), "auc": auc_unmerge}, save_root / "unmerge_classifier.pt")
         torch.save({"model": kd_student.state_dict(), "auc": auc_unmerge_kd}, save_root / "unmerge_kd.pt")
+        if merge_flag is not None:
+            torch.save({"model": unmerge_flag_cls.state_dict(), "auc": auc_unmerge_flag}, save_root / "unmerge_mergeflag.pt")
+            torch.save({"model": kd_student_f.state_dict(), "auc": auc_unmerge_flag_kd}, save_root / "unmerge_mergeflag_kd.pt")
 
     print(f"\nSaved results to: {save_root}")
 

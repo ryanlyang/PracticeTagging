@@ -3560,6 +3560,8 @@ def main():
     print("\n" + "=" * 70)
     print("FINAL TEST EVALUATION")
     print("=" * 70)
+    if "test_loss" not in locals():
+        test_loss = float("nan")
     print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
     print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
     print(f"Unmerge Model    AUC: {auc_unmerge:.4f}")
