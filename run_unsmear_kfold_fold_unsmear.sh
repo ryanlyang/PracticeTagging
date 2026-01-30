@@ -6,7 +6,7 @@
 ## Set log directory (can override with LOG_DIR env)
 #SBATCH --output=unmerge_distr_kfold_unsmear_logs/unsmear_kfold_fold_%j.out
 #SBATCH --error=unmerge_distr_kfold_unsmear_logs/unsmear_kfold_fold_%j.err
-#SBATCH --time=11-00:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
