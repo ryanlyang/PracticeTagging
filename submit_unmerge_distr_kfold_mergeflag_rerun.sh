@@ -17,11 +17,11 @@ DEP_IDS=${DEP_IDS:-$DEP_IDS_DEFAULT}
 # Build a dependency list of job IDs that SLURM recognizes
 valid_ids=()
 for id in $DEP_IDS; do
-  if squeue -j "$id" -h 2>/dev/null | rg -q .; then
+  if squeue -j "$id" -h 2>/dev/null | grep -q .; then
     valid_ids+=("$id")
     continue
   fi
-  if sacct -j "$id" --format=JobID -n 2>/dev/null | rg -q "^${id}"; then
+  if sacct -j "$id" --format=JobID -n 2>/dev/null | grep -q "^${id}"; then
     valid_ids+=("$id")
     continue
   fi
