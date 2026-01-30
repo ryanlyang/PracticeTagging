@@ -1,9 +1,9 @@
 #!/bin/bash
 
-#SBATCH --job-name=unmerge_distr_f
-#SBATCH --output=unmerge_distr_kfold_logs/unmerge_distr_fold_%j.out
-#SBATCH --error=unmerge_distr_kfold_logs/unmerge_distr_fold_%j.err
-#SBATCH --time=5-00:00:00
+#SBATCH --job-name=unmerge_full
+#SBATCH --output=unmerge_distr_kfold_logs/unmerge_distr_full_%j.out
+#SBATCH --error=unmerge_distr_kfold_logs/unmerge_distr_full_%j.err
+#SBATCH --time=11-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=256G
@@ -13,12 +13,11 @@
 mkdir -p unmerge_distr_kfold_logs
 
 echo "=========================================="
-echo "Unmerge Distributional Model (K-fold train-only)"
+echo "Unmerge Distributional Model (Full-train)"
 echo "=========================================="
 echo "Job ID: $SLURM_JOB_ID"
 echo "Node: $SLURM_NODELIST"
 echo "Start Time: $(date)"
-echo "Fold: ${FOLD_ID:-0}"
 echo "=========================================="
 echo ""
 
@@ -39,7 +38,7 @@ N_TRAIN_JETS=${N_TRAIN_JETS:-200000}
 MAX_CONSTITS=${MAX_CONSTITS:-80}
 MAX_MERGE_COUNT=${MAX_MERGE_COUNT:-10}
 SAVE_DIR=${SAVE_DIR:-"checkpoints/unmerge_distr_kfold"}
-RUN_NAME=${RUN_NAME:-"kfold_run"}
+RUN_NAME=${RUN_NAME:-"kfold_run_full"}
 UNMERGE_LOSS=${UNMERGE_LOSS:-"hungarian"}
 NUM_WORKERS=${NUM_WORKERS:-6}
 USE_TRUE_COUNT=${USE_TRUE_COUNT:-0}
@@ -49,9 +48,6 @@ CURR_EPOCHS=${CURR_EPOCHS:-20}
 PHYSICS_WEIGHT=${PHYSICS_WEIGHT:-0.2}
 NLL_WEIGHT=${NLL_WEIGHT:-1.0}
 NO_DISTRIBUTIONAL=${NO_DISTRIBUTIONAL:-0}
-K_FOLDS=${K_FOLDS:-5}
-KFOLD_MODEL_DIR=${KFOLD_MODEL_DIR:-"$SAVE_DIR/$RUN_NAME/kfold_models"}
-FOLD_ID=${FOLD_ID:-0}
 
 CMD="python unmerge_distr_model.py \
   --save_dir $SAVE_DIR \
@@ -65,9 +61,8 @@ CMD="python unmerge_distr_model.py \
   --curriculum_epochs $CURR_EPOCHS \
   --physics_weight $PHYSICS_WEIGHT \
   --nll_weight $NLL_WEIGHT \
-  --k_folds $K_FOLDS \
-  --kfold_train_only $FOLD_ID \
-  --kfold_model_dir $KFOLD_MODEL_DIR"
+  --k_folds 1 \
+  --stop_after_unmerge"
 
 if [ -n "$TRAIN_PATH" ]; then
   CMD="$CMD --train_path $TRAIN_PATH"
@@ -102,10 +97,10 @@ EXIT_CODE=$?
 echo ""
 echo "=========================================="
 if [ $EXIT_CODE -eq 0 ]; then
-  echo "Fold run completed successfully"
-  echo "Fold models saved to: $KFOLD_MODEL_DIR/fold_$FOLD_ID"
+  echo "Full-train run completed successfully"
+  echo "Full model saved to: $SAVE_DIR/$RUN_NAME/unmerge_predictor.pt"
 else
-  echo "Fold run failed with exit code: $EXIT_CODE"
+  echo "Full-train run failed with exit code: $EXIT_CODE"
 fi
 echo "End Time: $(date)"
 echo "=========================================="

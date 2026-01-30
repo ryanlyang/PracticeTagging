@@ -1409,6 +1409,7 @@ def main():
     parser.add_argument("--no_mc", action="store_true", help="Disable Monte-Carlo sampling/consistency training.")
     parser.add_argument("--k_folds", type=int, default=1, help="K-fold OOF training for count+unmerge (K>1).")
     parser.add_argument("--kfold_ensemble_valtest", action="store_true", help="Ensemble K models for val/test generation.")
+    parser.add_argument("--kfold_valtest_full_dir", type=str, default=None, help="Use a single full-train unmerger for val/test generation.")
     parser.add_argument("--kfold_train_only", type=int, default=-1, help="Train only a single fold (0-based) and save models, then exit.")
     parser.add_argument("--kfold_model_dir", type=str, default=None, help="Directory to save/load fold models.")
     parser.add_argument("--kfold_use_pretrained", action="store_true", help="Use pre-trained fold models and skip fold training.")
@@ -1416,6 +1417,7 @@ def main():
     parser.add_argument("--save_unmerged_cache", action="store_true", help="Save unmerged dataset cache for classifier-only runs.")
     parser.add_argument("--load_unmerged_cache", type=str, default=None, help="Load unmerged dataset cache for classifier-only runs.")
     parser.add_argument("--load_mc_cache", type=str, default=None, help="Load MC unmerged dataset cache for classifier-only runs.")
+    parser.add_argument("--stop_after_unmerge", action="store_true", help="Stop after unmerge training (skip dataset build + classifiers).")
     parser.add_argument("--teacher_checkpoint", type=str, default=None, help="Path to pretrained teacher checkpoint (skip training).")
     parser.add_argument("--baseline_checkpoint", type=str, default=None, help="Path to pretrained baseline checkpoint (skip training).")
     parser.add_argument("--skip_baseline", action="store_true", help="Skip baseline training/evaluation.")
@@ -1477,8 +1479,10 @@ def main():
         CONFIG["kd"]["alpha_warmup_min_epochs"] = int(args.alpha_warmup_min_epochs)
     k_folds = max(1, int(args.k_folds))
     kfold_ensemble_valtest = bool(args.kfold_ensemble_valtest)
+    kfold_valtest_full_dir = args.kfold_valtest_full_dir
     kfold_train_only = int(args.kfold_train_only)
     classifier_only = bool(args.classifier_only)
+    stop_after_unmerge = bool(args.stop_after_unmerge)
     kfold_use_pretrained = bool(args.kfold_use_pretrained)
 
     save_root = Path(args.save_dir) / args.run_name
@@ -2030,9 +2034,55 @@ def main():
             if kfold_train_only_mode:
                 print("K-fold train-only mode complete; saved fold models. Exiting.")
                 return
-    
+
+            full_unmerge = None
+            full_tgt_mean = None
+            full_tgt_std = None
+            if kfold_valtest_full_dir:
+                full_dir = Path(kfold_valtest_full_dir)
+                ckpt_full = torch.load(full_dir / "unmerge_predictor.pt", map_location=device)
+                if "tgt_mean" not in ckpt_full or "tgt_std" not in ckpt_full:
+                    raise RuntimeError(
+                        f"Full unmerger at {full_dir} is missing tgt_mean/tgt_std; "
+                        "retrain with updated saving."
+                    )
+                full_unmerge = UnmergePredictor(input_dim=7, max_count=max_count, **CONFIG["unmerge_model"]).to(device)
+                full_unmerge.load_state_dict(ckpt_full["model"])
+                full_tgt_mean = ckpt_full["tgt_mean"]
+                full_tgt_std = ckpt_full["tgt_std"]
+
             # val/test generation with ensemble
-            if kfold_ensemble_valtest:
+            if full_unmerge is not None:
+                print(f"Using full-train unmerger for val/test from: {full_dir}")
+                val_const, val_mask, val_flag = build_unmerged_dataset_subset(
+                    val_idx,
+                    features_hlt_std,
+                    hlt_mask,
+                    hlt_const,
+                    pred_counts,
+                    full_unmerge,
+                    full_tgt_mean,
+                    full_tgt_std,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+                test_const, test_mask, test_flag = build_unmerged_dataset_subset(
+                    test_idx,
+                    features_hlt_std,
+                    hlt_mask,
+                    hlt_const,
+                    pred_counts,
+                    full_unmerge,
+                    full_tgt_mean,
+                    full_tgt_std,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+            elif kfold_ensemble_valtest:
                 print("Ensembling unmerge models for val/test...")
                 val_const, val_mask, val_flag = build_unmerged_dataset_ensemble_subset(
                     val_idx,
@@ -2238,6 +2288,16 @@ def main():
                     n_batches += 1
             test_loss = test_loss / max(n_batches, 1)
             print(f"Unmerge test loss: {test_loss:.4f}")
+
+            if stop_after_unmerge:
+                if not args.skip_save_models:
+                    unmerge_ckpt = {"model": unmerge_model.state_dict(), "loss": best_val_loss}
+                    if "tgt_mean" in locals():
+                        unmerge_ckpt["tgt_mean"] = tgt_mean
+                        unmerge_ckpt["tgt_std"] = tgt_std
+                    torch.save(unmerge_ckpt, save_root / "unmerge_predictor.pt")
+                print("Stopping after unmerge training as requested.")
+                return
     
             print("\n" + "=" * 70)
             print("STEP 5: BUILD UNMERGED DATASET")
@@ -2733,7 +2793,11 @@ def main():
         torch.save({"model": teacher.state_dict(), "auc": auc_teacher}, save_root / "teacher.pt")
         torch.save({"model": baseline.state_dict(), "auc": auc_baseline}, save_root / "baseline.pt")
         torch.save({"model": count_model.state_dict(), "acc": best_acc}, save_root / "merge_count.pt")
-        torch.save({"model": unmerge_model.state_dict(), "loss": best_val_loss}, save_root / "unmerge_predictor.pt")
+        unmerge_ckpt = {"model": unmerge_model.state_dict(), "loss": best_val_loss}
+        if "tgt_mean" in locals():
+            unmerge_ckpt["tgt_mean"] = tgt_mean
+            unmerge_ckpt["tgt_std"] = tgt_std
+        torch.save(unmerge_ckpt, save_root / "unmerge_predictor.pt")
         torch.save({"model": unmerge_cls.state_dict(), "auc": auc_unmerge}, save_root / "unmerge_classifier.pt")
         torch.save({"model": kd_student.state_dict(), "auc": auc_unmerge_kd}, save_root / "unmerge_kd.pt")
         if merge_flag is not None:

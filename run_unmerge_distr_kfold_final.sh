@@ -52,6 +52,7 @@ K_FOLDS=${K_FOLDS:-5}
 KFOLD_ENSEMBLE=${KFOLD_ENSEMBLE:-1}
 KFOLD_MODEL_DIR=${KFOLD_MODEL_DIR:-"$SAVE_DIR/$RUN_NAME/kfold_models"}
 MC_SWEEP=${MC_SWEEP:-0}
+KFOLD_VALTEST_FULL_DIR=${KFOLD_VALTEST_FULL_DIR:-""}
 
 CMD="python unmerge_distr_model.py \
   --save_dir $SAVE_DIR \
@@ -80,6 +81,10 @@ fi
 
 if [ "$KFOLD_ENSEMBLE" -eq 1 ]; then
   CMD="$CMD --kfold_ensemble_valtest"
+fi
+
+if [ -n "$KFOLD_VALTEST_FULL_DIR" ]; then
+  CMD="$CMD --kfold_valtest_full_dir $KFOLD_VALTEST_FULL_DIR"
 fi
 
 if [ "$NO_CURRICULUM" -eq 1 ]; then
