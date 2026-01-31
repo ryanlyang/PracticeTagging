@@ -1,5 +1,5 @@
 #!/bin/bash
-# Submit a kfold-final unsmear job with random-per-jet (or token) selection for val/test.
+# Submit a kfold-final job that skips unsmearing and runs the dual-view classifier set.
 
 SAVE_DIR=${SAVE_DIR:-"checkpoints/unmerge_distr_kfold_unsmear_sweep"}
 RUN_NAME=${RUN_NAME:-"kfold_base_det_unsmear"}
@@ -20,9 +20,10 @@ NO_CURRICULUM=${NO_CURRICULUM:-1}
 CURR_START=${CURR_START:-2}
 CURR_EPOCHS=${CURR_EPOCHS:-20}
 USE_TRUE_COUNT=${USE_TRUE_COUNT:-0}
+CLASSIFIER_PROFILE=${CLASSIFIER_PROFILE:-"dualview_list"}
 
 export SAVE_DIR RUN_NAME K_FOLDS KFOLD_ENSEMBLE KFOLD_RANDOM_VALTEST KFOLD_RANDOM_MODE KFOLD_RANDOM_SEED \
   N_TRAIN_JETS MAX_CONSTITS MAX_MERGE_COUNT TRAIN_PATH UNMERGE_LOSS PHYSICS_WEIGHT NLL_WEIGHT \
-  NO_DISTRIBUTIONAL NO_CURRICULUM CURR_START CURR_EPOCHS USE_TRUE_COUNT
+  NO_DISTRIBUTIONAL NO_CURRICULUM CURR_START CURR_EPOCHS USE_TRUE_COUNT CLASSIFIER_PROFILE
 
-sbatch run_unmerge_distr_kfold_final_unsmear.sh
+sbatch run_unmerge_distr_kfold_final.sh
