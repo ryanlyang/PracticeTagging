@@ -270,6 +270,24 @@ def evaluate_bce_loss(model, loader, device):
 
 
 @torch.no_grad()
+def evaluate_bce_loss_dual(model, loader, device):
+    model.eval()
+    total = 0.0
+    count = 0
+    for batch in loader:
+        xa = batch["feat_a"].to(device)
+        ma = batch["mask_a"].to(device)
+        xb = batch["feat_b"].to(device)
+        mb = batch["mask_b"].to(device)
+        y = batch["label"].to(device)
+        logits = model(xa, ma, xb, mb).squeeze(1)
+        loss = F.binary_cross_entropy_with_logits(logits, y)
+        total += loss.item() * len(y)
+        count += len(y)
+    return total / max(count, 1)
+
+
+@torch.no_grad()
 def evaluate_bce_loss_unmerged(model, loader, device):
     model.eval()
     total = 0.0
@@ -494,6 +512,27 @@ class JetDataset(Dataset):
         return {"feat": self.feat[i], "mask": self.mask[i], "label": self.labels[i]}
 
 
+class DualViewJetDataset(Dataset):
+    def __init__(self, feat_a, mask_a, feat_b, mask_b, labels):
+        self.feat_a = torch.tensor(feat_a, dtype=torch.float32)
+        self.mask_a = torch.tensor(mask_a, dtype=torch.bool)
+        self.feat_b = torch.tensor(feat_b, dtype=torch.float32)
+        self.mask_b = torch.tensor(mask_b, dtype=torch.bool)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, i):
+        return {
+            "feat_a": self.feat_a[i],
+            "mask_a": self.mask_a[i],
+            "feat_b": self.feat_b[i],
+            "mask_b": self.mask_b[i],
+            "label": self.labels[i],
+        }
+
+
 class MergeCountDataset(Dataset):
     def __init__(self, feat, mask, count_label):
         self.feat = torch.tensor(feat, dtype=torch.float32)
@@ -522,6 +561,31 @@ class UnmergeKDDataset(Dataset):
         return {
             "unmerged": self.unmerged[i],
             "mask_unmerged": self.mask_unmerged[i],
+            "off": self.off[i],
+            "mask_off": self.mask_off[i],
+            "label": self.labels[i],
+        }
+
+
+class DualViewKDDataset(Dataset):
+    def __init__(self, feat_a, mask_a, feat_b, mask_b, feat_off, mask_off, labels):
+        self.feat_a = torch.tensor(feat_a, dtype=torch.float32)
+        self.mask_a = torch.tensor(mask_a, dtype=torch.bool)
+        self.feat_b = torch.tensor(feat_b, dtype=torch.float32)
+        self.mask_b = torch.tensor(mask_b, dtype=torch.bool)
+        self.off = torch.tensor(feat_off, dtype=torch.float32)
+        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, i):
+        return {
+            "feat_a": self.feat_a[i],
+            "mask_a": self.mask_a[i],
+            "feat_b": self.feat_b[i],
+            "mask_b": self.mask_b[i],
             "off": self.off[i],
             "mask_off": self.mask_off[i],
             "label": self.labels[i],
@@ -638,6 +702,68 @@ class ParticleTransformer(nn.Module):
             return logits, attn_weights.squeeze(1)
         if return_embedding:
             return logits, z
+        return logits
+
+
+class DualViewCrossAttnClassifier(nn.Module):
+    def __init__(self, input_dim_a=7, input_dim_b=7, embed_dim=128, num_heads=8, num_layers=6, ff_dim=512, dropout=0.1):
+        super().__init__()
+        self.embed_dim = embed_dim
+        self.input_proj_a = nn.Sequential(
+            nn.Linear(input_dim_a, embed_dim),
+            nn.BatchNorm1d(embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.input_proj_b = nn.Sequential(
+            nn.Linear(input_dim_b, embed_dim),
+            nn.BatchNorm1d(embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim,
+            nhead=num_heads,
+            dim_feedforward=ff_dim,
+            dropout=dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder_a = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+        self.encoder_b = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+        self.pool_query = nn.Parameter(torch.randn(1, 1, embed_dim) * 0.02)
+        self.pool_attn_a = nn.MultiheadAttention(embed_dim, num_heads=4, dropout=dropout, batch_first=True)
+        self.pool_attn_b = nn.MultiheadAttention(embed_dim, num_heads=4, dropout=dropout, batch_first=True)
+        self.cross_a_to_b = nn.MultiheadAttention(embed_dim, num_heads=4, dropout=dropout, batch_first=True)
+        self.cross_b_to_a = nn.MultiheadAttention(embed_dim, num_heads=4, dropout=dropout, batch_first=True)
+        self.norm = nn.LayerNorm(embed_dim * 4)
+        self.classifier = nn.Sequential(
+            nn.Linear(embed_dim * 4, 256),
+            nn.BatchNorm1d(256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.BatchNorm1d(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),
+        )
+
+    def forward(self, feat_a, mask_a, feat_b, mask_b):
+        bsz, seq_len, _ = feat_a.shape
+        h_a = self.input_proj_a(feat_a.view(-1, feat_a.size(-1))).view(bsz, seq_len, -1)
+        h_b = self.input_proj_b(feat_b.view(-1, feat_b.size(-1))).view(bsz, seq_len, -1)
+        h_a = self.encoder_a(h_a, src_key_padding_mask=~mask_a)
+        h_b = self.encoder_b(h_b, src_key_padding_mask=~mask_b)
+        query = self.pool_query.expand(bsz, -1, -1)
+        pooled_a, _ = self.pool_attn_a(query, h_a, h_a, key_padding_mask=~mask_a, need_weights=False)
+        pooled_b, _ = self.pool_attn_b(query, h_b, h_b, key_padding_mask=~mask_b, need_weights=False)
+        cross_a, _ = self.cross_a_to_b(pooled_a, h_b, h_b, key_padding_mask=~mask_b, need_weights=False)
+        cross_b, _ = self.cross_b_to_a(pooled_b, h_a, h_a, key_padding_mask=~mask_a, need_weights=False)
+        fused = torch.cat([pooled_a, pooled_b, cross_a, cross_b], dim=-1).squeeze(1)
+        fused = self.norm(fused)
+        logits = self.classifier(fused)
         return logits
 
 
@@ -947,6 +1073,29 @@ def train_classifier_mc(model, loader, opt, device, consistency_weight):
     return total_loss / len(preds), auc
 
 
+def train_classifier_dual(model, loader, opt, device):
+    model.train()
+    total_loss = 0.0
+    preds, labs = [], []
+    for batch in loader:
+        xa = batch["feat_a"].to(device)
+        ma = batch["mask_a"].to(device)
+        xb = batch["feat_b"].to(device)
+        mb = batch["mask_b"].to(device)
+        y = batch["label"].to(device)
+        opt.zero_grad()
+        logits = model(xa, ma, xb, mb).squeeze(1)
+        loss = F.binary_cross_entropy_with_logits(logits, y)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+        total_loss += loss.item() * len(y)
+        preds.extend(safe_sigmoid(logits).detach().cpu().numpy().flatten())
+        labs.extend(y.detach().cpu().numpy().flatten())
+    auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
+    return total_loss / len(preds), auc
+
+
 @torch.no_grad()
 def eval_classifier(model, loader, device):
     model.eval()
@@ -956,6 +1105,28 @@ def eval_classifier(model, loader, device):
         x = batch["feat"].to(device)
         mask = batch["mask"].to(device)
         logits = model(x, mask).squeeze(1)
+        if not warned and not torch.isfinite(logits).all():
+            print("Warning: NaN/Inf in logits during evaluation; replacing with 0.5.")
+            warned = True
+        preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
+        labs.extend(batch["label"].cpu().numpy().flatten())
+    preds = np.array(preds)
+    labs = np.array(labs)
+    auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
+    return auc, preds, labs
+
+
+@torch.no_grad()
+def eval_classifier_dual(model, loader, device):
+    model.eval()
+    preds, labs = [], []
+    warned = False
+    for batch in loader:
+        xa = batch["feat_a"].to(device)
+        ma = batch["mask_a"].to(device)
+        xb = batch["feat_b"].to(device)
+        mb = batch["mask_b"].to(device)
+        logits = model(xa, ma, xb, mb).squeeze(1)
         if not warned and not torch.isfinite(logits).all():
             print("Warning: NaN/Inf in logits during evaluation; replacing with 0.5.")
             warned = True
@@ -1021,6 +1192,52 @@ def train_kd_epoch(student, teacher, loader, opt, device, kd_cfg):
     return total_loss / len(preds), auc
 
 
+def train_kd_epoch_dual(student, teacher, loader, opt, device, kd_cfg):
+    student.train()
+    teacher.eval()
+
+    total_loss = 0.0
+    preds, labs = [], []
+
+    T = kd_cfg["temperature"]
+    a_kd = kd_cfg["alpha_kd"]
+
+    for batch in loader:
+        xa = batch["feat_a"].to(device)
+        ma = batch["mask_a"].to(device)
+        xb = batch["feat_b"].to(device)
+        mb = batch["mask_b"].to(device)
+        x_o = batch["off"].to(device)
+        m_o = batch["mask_off"].to(device)
+        y = batch["label"].to(device)
+
+        with torch.no_grad():
+            t_logits = teacher(x_o, m_o).squeeze(1)
+
+        opt.zero_grad()
+        s_logits = student(xa, ma, xb, mb).squeeze(1)
+
+        loss_hard = F.binary_cross_entropy_with_logits(s_logits, y)
+        if kd_cfg["conf_weighted"]:
+            loss_kd = kd_loss_conf_weighted(s_logits, t_logits, T)
+        else:
+            s_soft = torch.sigmoid(s_logits / T)
+            t_soft = torch.sigmoid(t_logits / T)
+            loss_kd = F.binary_cross_entropy(s_soft, t_soft) * (T ** 2)
+
+        loss = (1.0 - a_kd) * loss_hard + a_kd * loss_kd
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
+        opt.step()
+
+        total_loss += loss.item() * len(y)
+        preds.extend(safe_sigmoid(s_logits).detach().cpu().numpy().flatten())
+        labs.extend(y.detach().cpu().numpy().flatten())
+
+    auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
+    return total_loss / len(preds), auc
+
+
 @torch.no_grad()
 def evaluate_kd(student, loader, device):
     student.eval()
@@ -1030,6 +1247,25 @@ def evaluate_kd(student, loader, device):
         m_u = batch["mask_unmerged"].to(device)
         y = batch["label"].to(device)
         logits = student(x_u, m_u).squeeze(1)
+        preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
+        labs.extend(y.cpu().numpy().flatten())
+    preds = np.array(preds)
+    labs = np.array(labs)
+    auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else 0.0
+    return auc, preds, labs
+
+
+@torch.no_grad()
+def evaluate_kd_dual(student, loader, device):
+    student.eval()
+    preds, labs = [], []
+    for batch in loader:
+        xa = batch["feat_a"].to(device)
+        ma = batch["mask_a"].to(device)
+        xb = batch["feat_b"].to(device)
+        mb = batch["mask_b"].to(device)
+        y = batch["label"].to(device)
+        logits = student(xa, ma, xb, mb).squeeze(1)
         preds.extend(safe_sigmoid(logits).cpu().numpy().flatten())
         labs.extend(y.cpu().numpy().flatten())
     preds = np.array(preds)
@@ -1064,6 +1300,44 @@ def self_train_student(student, teacher, loader, opt, device, cfg):
 
         opt.zero_grad()
         logits = student(x_u, m_u).squeeze(1)
+        loss = (F.binary_cross_entropy_with_logits(logits, probs, reduction="none") * conf).mean()
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
+        opt.step()
+
+        total_loss += loss.item() * len(probs)
+        count += len(probs)
+    return total_loss / max(count, 1)
+
+
+def self_train_student_dual(student, teacher, loader, opt, device, cfg):
+    student.train()
+    teacher.eval()
+    conf_min = cfg["self_train_conf_min"]
+    conf_power = cfg["self_train_conf_power"]
+    total_loss = 0.0
+    count = 0
+    for batch in loader:
+        xa = batch["feat_a"].to(device)
+        ma = batch["mask_a"].to(device)
+        xb = batch["feat_b"].to(device)
+        mb = batch["mask_b"].to(device)
+        x_o = batch["off"].to(device)
+        m_o = batch["mask_off"].to(device)
+
+        with torch.no_grad():
+            if cfg["self_train_source"] == "teacher":
+                t_logits = teacher(x_o, m_o).squeeze(1)
+                probs = torch.sigmoid(t_logits)
+            else:
+                s_logits = student(xa, ma, xb, mb).squeeze(1)
+                probs = torch.sigmoid(s_logits)
+
+            conf = torch.clamp(2 * torch.abs(probs - 0.5), 0.0, 1.0)
+            conf = torch.clamp(conf, min=conf_min) ** conf_power
+
+        opt.zero_grad()
+        logits = student(xa, ma, xb, mb).squeeze(1)
         loss = (F.binary_cross_entropy_with_logits(logits, probs, reduction="none") * conf).mean()
         loss.backward()
         torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
@@ -1630,6 +1904,10 @@ def main():
     kfold_random_valtest = bool(args.kfold_random_valtest)
     kfold_random_mode = str(args.kfold_random_mode)
     kfold_random_seed = int(args.kfold_random_seed)
+    if kfold_ensemble_valtest and not kfold_random_valtest:
+        kfold_random_valtest = True
+        kfold_random_mode = "jet"
+        print("Info: kfold_ensemble_valtest enabled -> using random-per-jet selection for val/test.")
     kfold_train_only = int(args.kfold_train_only)
     classifier_only = bool(args.classifier_only)
     kfold_use_pretrained = bool(args.kfold_use_pretrained)
@@ -2100,17 +2378,11 @@ def main():
     
             if kfold_ensemble_valtest:
                 if kfold_random_valtest:
-                    print("Preparing per-fold count predictions for random val/test selection...")
-                    pred_counts_val_list = [
-                        predict_counts(m, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
-                    pred_counts_test_list = [
-                        predict_counts(m, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
+                    print("Ensembling count models for val/test (random applies only to unmerge outputs)...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
                     pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                    pred_counts_val_list = [pred_counts[val_idx]] * len(count_models)
+                    pred_counts_test_list = [pred_counts[test_idx]] * len(count_models)
                 else:
                     print("Ensembling count models for val/test...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
@@ -2135,17 +2407,11 @@ def main():
                 fold_holds.append(hold_sub)
             if kfold_ensemble_valtest:
                 if kfold_random_valtest:
-                    print("Preparing per-fold count predictions for random val/test selection...")
-                    pred_counts_val_list = [
-                        predict_counts(m, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
-                    pred_counts_test_list = [
-                        predict_counts(m, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
+                    print("Ensembling count models for val/test (random applies only to unmerge outputs)...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
                     pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                    pred_counts_val_list = [pred_counts[val_idx]] * len(count_models)
+                    pred_counts_test_list = [pred_counts[test_idx]] * len(count_models)
                 else:
                     print("Ensembling count models for val/test...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
@@ -2357,8 +2623,14 @@ def main():
                             model, hlt_std_pre[test_idx], hlt_mask[test_idx],
                             betas, alpha, alpha_bar, samp_cfg, CONFIG["unsmear_training"]["pred_type"], device
                         ))
-                    unsmear_std_pre[val_idx] = np.mean(np.stack(preds_val, axis=0), axis=0)
-                    unsmear_std_pre[test_idx] = np.mean(np.stack(preds_test, axis=0), axis=0)
+                    print("Info: pre-unsmear k-fold ensemble -> random-per-jet selection for val/test.")
+                    stack_val = np.stack(preds_val, axis=0)
+                    stack_test = np.stack(preds_test, axis=0)
+                    rng = np.random.RandomState(kfold_random_seed + 1)
+                    pick_val = rng.randint(pre_unsmear_k_folds, size=len(val_idx))
+                    pick_test = rng.randint(pre_unsmear_k_folds, size=len(test_idx))
+                    unsmear_std_pre[val_idx] = stack_val[pick_val, np.arange(len(val_idx))]
+                    unsmear_std_pre[test_idx] = stack_test[pick_test, np.arange(len(test_idx))]
                 else:
                     model = _load_pre_unsmear_model(0)
                     unsmear_std_pre[val_idx] = generate_unsmeared_constituents(
@@ -3141,8 +3413,14 @@ def main():
                             merge_flag=merge_flag[test_idx] if merge_flag is not None else None,
                         )
                     )
-                unsmear_std[val_idx] = np.mean(np.stack(preds_val, axis=0), axis=0)
-                unsmear_std[test_idx] = np.mean(np.stack(preds_test, axis=0), axis=0)
+                print("Info: unsmear k-fold ensemble -> random-per-jet selection for val/test.")
+                stack_val = np.stack(preds_val, axis=0)
+                stack_test = np.stack(preds_test, axis=0)
+                rng = np.random.RandomState(kfold_random_seed)
+                pick_val = rng.randint(unsmear_k_folds, size=len(val_idx))
+                pick_test = rng.randint(unsmear_k_folds, size=len(test_idx))
+                unsmear_std[val_idx] = stack_val[pick_val, np.arange(len(val_idx))]
+                unsmear_std[test_idx] = stack_test[pick_test, np.arange(len(test_idx))]
             else:
                 fold_dir = unsmear_kfold_dir / "fold_0"
                 ckpt_path = fold_dir / "unsmear_diffusion_ema.pt"
@@ -3443,212 +3721,173 @@ def main():
 
     auc_unsmeared, preds_unsmeared, _ = eval_classifier(unsmear_cls, test_uns_loader, device)
 
-    # ------------------- Train unmerge+unsmear classifier (merge-flag) ------------------- #
+    # ------------------- Dual-view classifiers (HLT + unsmeared) ------------------- #
     print("\n" + "=" * 70)
-    print("STEP 6C: UNMERGE + UNSMEAR + MERGE-FLAG CLASSIFIER")
+    print("STEP 6C: UNMERGE + UNSMEAR + DUAL-VIEW CLASSIFIER")
     print("=" * 70)
     merge_flag = unmerged_merge_flag if "unmerged_merge_flag" in locals() else None
-    if merge_flag is None:
-        print("Warning: merge-flag data not found; skipping merge-flag classifier runs.")
-        auc_unsmeared_flag = float("nan")
-        preds_unsmeared_flag = np.zeros_like(preds_unsmeared)
-    else:
+    features_unsmeared_flag = None
+    if merge_flag is not None:
         merge_flag = merge_flag.astype(np.float32)
         merge_flag[~unmerged_mask] = 0.0
         features_unsmeared_flag = np.concatenate([features_unsmeared_std, merge_flag[..., None]], axis=-1)
-        train_uns_flag = JetDataset(features_unsmeared_flag[train_idx], unmerged_mask[train_idx], all_labels[train_idx])
-        val_uns_flag = JetDataset(features_unsmeared_flag[val_idx], unmerged_mask[val_idx], all_labels[val_idx])
-        test_uns_flag = JetDataset(features_unsmeared_flag[test_idx], unmerged_mask[test_idx], all_labels[test_idx])
-        train_uns_flag_loader = DataLoader(train_uns_flag, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
-        val_uns_flag_loader = DataLoader(val_uns_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
-        test_uns_flag_loader = DataLoader(test_uns_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
 
-        unsmear_flag_cls = ParticleTransformer(input_dim=8, **CONFIG["model"]).to(device)
-        opt_uns_flag = torch.optim.AdamW(
-            unsmear_flag_cls.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"]
+    train_dual = DualViewJetDataset(
+        features_hlt_std[train_idx], hlt_mask[train_idx],
+        features_unsmeared_std[train_idx], unmerged_mask[train_idx],
+        all_labels[train_idx],
+    )
+    val_dual = DualViewJetDataset(
+        features_hlt_std[val_idx], hlt_mask[val_idx],
+        features_unsmeared_std[val_idx], unmerged_mask[val_idx],
+        all_labels[val_idx],
+    )
+    test_dual = DualViewJetDataset(
+        features_hlt_std[test_idx], hlt_mask[test_idx],
+        features_unsmeared_std[test_idx], unmerged_mask[test_idx],
+        all_labels[test_idx],
+    )
+    train_dual_loader = DataLoader(train_dual, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+    val_dual_loader = DataLoader(val_dual, batch_size=BS, shuffle=False, **DL_KWARGS)
+    test_dual_loader = DataLoader(test_dual, batch_size=BS, shuffle=False, **DL_KWARGS)
+
+    dual_cls = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=7, **CONFIG["model"]).to(device)
+    opt_dual = torch.optim.AdamW(dual_cls.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+    sch_dual = get_scheduler(opt_dual, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+    best_auc_dual, best_state_dual, no_improve = 0.0, None, 0
+    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="UnmergeUnsmearDual"):
+        _, train_auc = train_classifier_dual(dual_cls, train_dual_loader, opt_dual, device)
+        val_auc, _, _ = eval_classifier_dual(dual_cls, val_dual_loader, device)
+        sch_dual.step()
+        if val_auc > best_auc_dual:
+            best_auc_dual = val_auc
+            best_state_dual = {k: v.detach().cpu().clone() for k, v in dual_cls.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+        if (ep + 1) % 5 == 0:
+            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_dual:.4f}")
+        if no_improve >= CONFIG["training"]["patience"]:
+            print(f"Early stopping unmerge+unsmear dual-view at epoch {ep+1}")
+            break
+    if best_state_dual is not None:
+        dual_cls.load_state_dict(best_state_dual)
+    auc_unsmeared_dual, preds_unsmeared_dual, _ = eval_classifier_dual(dual_cls, test_dual_loader, device)
+
+    # ------------------- Dual-view + merge-flag classifier ------------------- #
+    print("\n" + "=" * 70)
+    print("STEP 6D: UNMERGE + UNSMEAR + DUAL-VIEW + MERGE-FLAG CLASSIFIER")
+    print("=" * 70)
+    if features_unsmeared_flag is None:
+        print("Warning: merge-flag data not found; skipping dual-view merge-flag runs.")
+        auc_unsmeared_dual_flag = float("nan")
+        preds_unsmeared_dual_flag = np.zeros_like(preds_unsmeared_dual)
+    else:
+        train_dual_flag = DualViewJetDataset(
+            features_hlt_std[train_idx], hlt_mask[train_idx],
+            features_unsmeared_flag[train_idx], unmerged_mask[train_idx],
+            all_labels[train_idx],
         )
-        sch_uns_flag = get_scheduler(opt_uns_flag, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
-        best_auc_uns_flag, best_state_uns_flag, no_improve = 0.0, None, 0
-        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="UnmergeUnsmearFlagCls"):
-            _, train_auc = train_classifier(unsmear_flag_cls, train_uns_flag_loader, opt_uns_flag, device)
-            val_auc, _, _ = eval_classifier(unsmear_flag_cls, val_uns_flag_loader, device)
-            sch_uns_flag.step()
-            if val_auc > best_auc_uns_flag:
-                best_auc_uns_flag = val_auc
-                best_state_uns_flag = {k: v.detach().cpu().clone() for k, v in unsmear_flag_cls.state_dict().items()}
+        val_dual_flag = DualViewJetDataset(
+            features_hlt_std[val_idx], hlt_mask[val_idx],
+            features_unsmeared_flag[val_idx], unmerged_mask[val_idx],
+            all_labels[val_idx],
+        )
+        test_dual_flag = DualViewJetDataset(
+            features_hlt_std[test_idx], hlt_mask[test_idx],
+            features_unsmeared_flag[test_idx], unmerged_mask[test_idx],
+            all_labels[test_idx],
+        )
+        train_dual_flag_loader = DataLoader(train_dual_flag, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+        val_dual_flag_loader = DataLoader(val_dual_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
+        test_dual_flag_loader = DataLoader(test_dual_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
+
+        dual_flag_cls = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=8, **CONFIG["model"]).to(device)
+        opt_dual_flag = torch.optim.AdamW(dual_flag_cls.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+        sch_dual_flag = get_scheduler(opt_dual_flag, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+        best_auc_dual_flag, best_state_dual_flag, no_improve = 0.0, None, 0
+        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="UnmergeUnsmearDualFlag"):
+            _, train_auc = train_classifier_dual(dual_flag_cls, train_dual_flag_loader, opt_dual_flag, device)
+            val_auc, _, _ = eval_classifier_dual(dual_flag_cls, val_dual_flag_loader, device)
+            sch_dual_flag.step()
+            if val_auc > best_auc_dual_flag:
+                best_auc_dual_flag = val_auc
+                best_state_dual_flag = {k: v.detach().cpu().clone() for k, v in dual_flag_cls.state_dict().items()}
                 no_improve = 0
             else:
                 no_improve += 1
             if (ep + 1) % 5 == 0:
-                print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_uns_flag:.4f}")
+                print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_dual_flag:.4f}")
             if no_improve >= CONFIG["training"]["patience"]:
-                print(f"Early stopping unmerge+unsmear merge-flag classifier at epoch {ep+1}")
+                print(f"Early stopping unmerge+unsmear dual-view merge-flag at epoch {ep+1}")
                 break
-        if best_state_uns_flag is not None:
-            unsmear_flag_cls.load_state_dict(best_state_uns_flag)
+        if best_state_dual_flag is not None:
+            dual_flag_cls.load_state_dict(best_state_dual_flag)
+        auc_unsmeared_dual_flag, preds_unsmeared_dual_flag, _ = eval_classifier_dual(dual_flag_cls, test_dual_flag_loader, device)
 
-        auc_unsmeared_flag, preds_unsmeared_flag, _ = eval_classifier(unsmear_flag_cls, test_uns_flag_loader, device)
-
-    # ------------------- Train unmerge+unsmear classifier + KD ------------------- #
+    # ------------------- Dual-view + merge-flag + KD ------------------- #
     print("\n" + "=" * 70)
-    print("STEP 7C: UNMERGE + UNSMEAR + KD")
+    print("STEP 7: UNMERGE + UNSMEAR + DUAL-VIEW + MERGE-FLAG + KD")
     print("=" * 70)
-    kd_train_ds_uns = UnmergeKDDataset(
-        features_unsmeared_std[train_idx],
-        unmerged_mask[train_idx],
-        features_off_std[train_idx],
-        masks_off[train_idx],
-        all_labels[train_idx],
-    )
-    kd_val_ds_uns = UnmergeKDDataset(
-        features_unsmeared_std[val_idx],
-        unmerged_mask[val_idx],
-        features_off_std[val_idx],
-        masks_off[val_idx],
-        all_labels[val_idx],
-    )
-    kd_test_ds_uns = UnmergeKDDataset(
-        features_unsmeared_std[test_idx],
-        unmerged_mask[test_idx],
-        features_off_std[test_idx],
-        masks_off[test_idx],
-        all_labels[test_idx],
-    )
-    kd_train_loader_uns = DataLoader(kd_train_ds_uns, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
-    kd_val_loader_uns = DataLoader(kd_val_ds_uns, batch_size=BS, shuffle=False, **DL_KWARGS)
-    kd_test_loader_uns = DataLoader(kd_test_ds_uns, batch_size=BS, shuffle=False, **DL_KWARGS)
-
-    kd_student_uns = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
-    opt_kd_uns = torch.optim.AdamW(
-        kd_student_uns.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"]
-    )
-    sch_kd_uns = get_scheduler(opt_kd_uns, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
-
-    best_auc_kd_uns, best_state_kd_uns, no_improve = 0.0, None, 0
-    kd_active = not kd_cfg["adaptive_alpha"]
-    stable_count = 0
-    prev_val_loss = None
-
-    for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Unmerge+Unsmear+KD"):
-        current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
-        kd_cfg_ep = dict(kd_cfg)
-        kd_cfg_ep["alpha_kd"] = current_alpha
-
-        train_loss, train_auc = train_kd_epoch(
-            kd_student_uns, teacher, kd_train_loader_uns, opt_kd_uns, device, kd_cfg_ep
-        )
-        val_auc, _, _ = evaluate_kd(kd_student_uns, kd_val_loader_uns, device)
-        sch_kd_uns.step()
-
-        if not kd_active and kd_cfg["adaptive_alpha"]:
-            val_loss = evaluate_bce_loss_unmerged(kd_student_uns, kd_val_loader_uns, device)
-            if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
-                stable_count += 1
-            else:
-                stable_count = 0
-            prev_val_loss = val_loss
-            if ep + 1 >= kd_cfg["alpha_warmup_min_epochs"] and stable_count >= kd_cfg["alpha_stable_patience"]:
-                kd_active = True
-                print(f"Activating KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
-
-        if val_auc > best_auc_kd_uns:
-            best_auc_kd_uns = val_auc
-            best_state_kd_uns = {k: v.detach().cpu().clone() for k, v in kd_student_uns.state_dict().items()}
-            no_improve = 0
-        else:
-            no_improve += 1
-
-        if (ep + 1) % 5 == 0:
-            print(
-                f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_kd_uns:.4f} | alpha_kd={current_alpha:.2f}"
-            )
-        if no_improve >= CONFIG["training"]["patience"]:
-            print(f"Early stopping KD student (unsmear) at epoch {ep+1}")
-            break
-
-    if best_state_kd_uns is not None:
-        kd_student_uns.load_state_dict(best_state_kd_uns)
-
-    if kd_cfg["self_train"]:
-        print("\nSTEP 7D: SELF-TRAIN (pseudo-label fine-tune, unsmear)")
-        opt_st_uns = torch.optim.AdamW(kd_student_uns.parameters(), lr=kd_cfg["self_train_lr"])
-        best_auc_st_uns = best_auc_kd_uns
-        no_improve = 0
-        for ep in range(kd_cfg["self_train_epochs"]):
-            st_loss = self_train_student(kd_student_uns, teacher, kd_train_loader_uns, opt_st_uns, device, kd_cfg)
-            val_auc, _, _ = evaluate_kd(kd_student_uns, kd_val_loader_uns, device)
-            if val_auc > best_auc_st_uns:
-                best_auc_st_uns = val_auc
-                best_state_kd_uns = {k: v.detach().cpu().clone() for k, v in kd_student_uns.state_dict().items()}
-                no_improve = 0
-            else:
-                no_improve += 1
-            if (ep + 1) % 2 == 0:
-                print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st_uns:.4f}")
-            if no_improve >= kd_cfg["self_train_patience"]:
-                break
-        if best_state_kd_uns is not None:
-            kd_student_uns.load_state_dict(best_state_kd_uns)
-
-    auc_unsmeared_kd, preds_unsmeared_kd, _ = evaluate_kd(kd_student_uns, kd_test_loader_uns, device)
-
-    # ------------------- Train unmerge+unsmear classifier + KD (merge-flag) ------------------- #
-    print("\n" + "=" * 70)
-    print("STEP 7E: UNMERGE + UNSMEAR + MERGE-FLAG + KD")
-    print("=" * 70)
-    if merge_flag is None:
-        auc_unsmeared_flag_kd = float("nan")
-        preds_unsmeared_flag_kd = np.zeros_like(preds_unsmeared)
+    if features_unsmeared_flag is None:
+        auc_unsmeared_dual_flag_kd = float("nan")
+        preds_unsmeared_dual_flag_kd = np.zeros_like(preds_unsmeared_dual)
     else:
-        kd_train_ds_uns_flag = UnmergeKDDataset(
+        kd_train_ds_dv = DualViewKDDataset(
+            features_hlt_std[train_idx],
+            hlt_mask[train_idx],
             features_unsmeared_flag[train_idx],
             unmerged_mask[train_idx],
             features_off_std[train_idx],
             masks_off[train_idx],
             all_labels[train_idx],
         )
-        kd_val_ds_uns_flag = UnmergeKDDataset(
+        kd_val_ds_dv = DualViewKDDataset(
+            features_hlt_std[val_idx],
+            hlt_mask[val_idx],
             features_unsmeared_flag[val_idx],
             unmerged_mask[val_idx],
             features_off_std[val_idx],
             masks_off[val_idx],
             all_labels[val_idx],
         )
-        kd_test_ds_uns_flag = UnmergeKDDataset(
+        kd_test_ds_dv = DualViewKDDataset(
+            features_hlt_std[test_idx],
+            hlt_mask[test_idx],
             features_unsmeared_flag[test_idx],
             unmerged_mask[test_idx],
             features_off_std[test_idx],
             masks_off[test_idx],
             all_labels[test_idx],
         )
-        kd_train_loader_uns_flag = DataLoader(kd_train_ds_uns_flag, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
-        kd_val_loader_uns_flag = DataLoader(kd_val_ds_uns_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
-        kd_test_loader_uns_flag = DataLoader(kd_test_ds_uns_flag, batch_size=BS, shuffle=False, **DL_KWARGS)
+        kd_train_loader_dv = DataLoader(kd_train_ds_dv, batch_size=BS, shuffle=True, drop_last=True, **DL_KWARGS)
+        kd_val_loader_dv = DataLoader(kd_val_ds_dv, batch_size=BS, shuffle=False, **DL_KWARGS)
+        kd_test_loader_dv = DataLoader(kd_test_ds_dv, batch_size=BS, shuffle=False, **DL_KWARGS)
 
-        kd_student_uns_flag = ParticleTransformer(input_dim=8, **CONFIG["model"]).to(device)
-        opt_kd_uns_flag = torch.optim.AdamW(
-            kd_student_uns_flag.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"]
+        kd_student_dv = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=8, **CONFIG["model"]).to(device)
+        opt_kd_dv = torch.optim.AdamW(
+            kd_student_dv.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"]
         )
-        sch_kd_uns_flag = get_scheduler(opt_kd_uns_flag, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+        sch_kd_dv = get_scheduler(opt_kd_dv, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
 
-        best_auc_kd_uns_flag, best_state_kd_uns_flag, no_improve = 0.0, None, 0
+        best_auc_kd_dv, best_state_kd_dv, no_improve = 0.0, None, 0
         kd_active = not kd_cfg["adaptive_alpha"]
         stable_count = 0
         prev_val_loss = None
 
-        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="Unmerge+Unsmear+Flag+KD"):
+        for ep in tqdm(range(CONFIG["training"]["epochs"]), desc="UnmergeUnsmearDualFlag+KD"):
             current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
             kd_cfg_ep = dict(kd_cfg)
             kd_cfg_ep["alpha_kd"] = current_alpha
 
-            train_loss, train_auc = train_kd_epoch(
-                kd_student_uns_flag, teacher, kd_train_loader_uns_flag, opt_kd_uns_flag, device, kd_cfg_ep
+            train_loss, train_auc = train_kd_epoch_dual(
+                kd_student_dv, teacher, kd_train_loader_dv, opt_kd_dv, device, kd_cfg_ep
             )
-            val_auc, _, _ = evaluate_kd(kd_student_uns_flag, kd_val_loader_uns_flag, device)
-            sch_kd_uns_flag.step()
+            val_auc, _, _ = evaluate_kd_dual(kd_student_dv, kd_val_loader_dv, device)
+            sch_kd_dv.step()
 
             if not kd_active and kd_cfg["adaptive_alpha"]:
-                val_loss = evaluate_bce_loss_unmerged(kd_student_uns_flag, kd_val_loader_uns_flag, device)
+                val_loss = evaluate_bce_loss_dual(kd_student_dv, kd_val_loader_dv, device)
                 if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
                     stable_count += 1
                 else:
@@ -3658,46 +3897,46 @@ def main():
                     kd_active = True
                     print(f"Activating KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
 
-            if val_auc > best_auc_kd_uns_flag:
-                best_auc_kd_uns_flag = val_auc
-                best_state_kd_uns_flag = {k: v.detach().cpu().clone() for k, v in kd_student_uns_flag.state_dict().items()}
+            if val_auc > best_auc_kd_dv:
+                best_auc_kd_dv = val_auc
+                best_state_kd_dv = {k: v.detach().cpu().clone() for k, v in kd_student_dv.state_dict().items()}
                 no_improve = 0
             else:
                 no_improve += 1
 
             if (ep + 1) % 5 == 0:
                 print(
-                    f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_kd_uns_flag:.4f} | alpha_kd={current_alpha:.2f}"
+                    f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_kd_dv:.4f} | alpha_kd={current_alpha:.2f}"
                 )
             if no_improve >= CONFIG["training"]["patience"]:
-                print(f"Early stopping KD student (unsmear merge-flag) at epoch {ep+1}")
+                print(f"Early stopping KD student (dual-view merge-flag) at epoch {ep+1}")
                 break
 
-        if best_state_kd_uns_flag is not None:
-            kd_student_uns_flag.load_state_dict(best_state_kd_uns_flag)
+        if best_state_kd_dv is not None:
+            kd_student_dv.load_state_dict(best_state_kd_dv)
 
         if kd_cfg["self_train"]:
-            print("\nSTEP 7F: SELF-TRAIN (pseudo-label fine-tune, unsmear merge-flag)")
-            opt_st_uns_flag = torch.optim.AdamW(kd_student_uns_flag.parameters(), lr=kd_cfg["self_train_lr"])
-            best_auc_st_uns_flag = best_auc_kd_uns_flag
+            print("\nSTEP 7B: SELF-TRAIN (pseudo-label fine-tune, dual-view merge-flag)")
+            opt_st_dv = torch.optim.AdamW(kd_student_dv.parameters(), lr=kd_cfg["self_train_lr"])
+            best_auc_st_dv = best_auc_kd_dv
             no_improve = 0
             for ep in range(kd_cfg["self_train_epochs"]):
-                st_loss = self_train_student(kd_student_uns_flag, teacher, kd_train_loader_uns_flag, opt_st_uns_flag, device, kd_cfg)
-                val_auc, _, _ = evaluate_kd(kd_student_uns_flag, kd_val_loader_uns_flag, device)
-                if val_auc > best_auc_st_uns_flag:
-                    best_auc_st_uns_flag = val_auc
-                    best_state_kd_uns_flag = {k: v.detach().cpu().clone() for k, v in kd_student_uns_flag.state_dict().items()}
+                st_loss = self_train_student_dual(kd_student_dv, teacher, kd_train_loader_dv, opt_st_dv, device, kd_cfg)
+                val_auc, _, _ = evaluate_kd_dual(kd_student_dv, kd_val_loader_dv, device)
+                if val_auc > best_auc_st_dv:
+                    best_auc_st_dv = val_auc
+                    best_state_kd_dv = {k: v.detach().cpu().clone() for k, v in kd_student_dv.state_dict().items()}
                     no_improve = 0
                 else:
                     no_improve += 1
                 if (ep + 1) % 2 == 0:
-                    print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st_uns_flag:.4f}")
+                    print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st_dv:.4f}")
                 if no_improve >= kd_cfg["self_train_patience"]:
                     break
-            if best_state_kd_uns_flag is not None:
-                kd_student_uns_flag.load_state_dict(best_state_kd_uns_flag)
+            if best_state_kd_dv is not None:
+                kd_student_dv.load_state_dict(best_state_kd_dv)
 
-        auc_unsmeared_flag_kd, preds_unsmeared_flag_kd, _ = evaluate_kd(kd_student_uns_flag, kd_test_loader_uns_flag, device)
+        auc_unsmeared_dual_flag_kd, preds_unsmeared_dual_flag_kd, _ = evaluate_kd_dual(kd_student_dv, kd_test_loader_dv, device)
 
     # ------------------- Final evaluation ------------------- #
     print("\n" + "=" * 70)
@@ -3709,17 +3948,23 @@ def main():
     print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
     print(f"Unmerge Model    AUC: {auc_unmerge:.4f}")
     print(f"Unmerge+Unsmear  AUC: {auc_unsmeared:.4f}")
-    print(f"Unmerge+Unsmear+KD AUC: {auc_unsmeared_kd:.4f}")
-    print(f"Unmerge+Unsmear+MF AUC: {auc_unsmeared_flag:.4f}")
-    print(f"Unmerge+Unsmear+MF+KD AUC: {auc_unsmeared_flag_kd:.4f}")
+    print(f"Unmerge+Unsmear+DualView AUC: {auc_unsmeared_dual:.4f}")
+    if np.isfinite(auc_unsmeared_dual_flag):
+        print(f"Unmerge+Unsmear+DualView+MF AUC: {auc_unsmeared_dual_flag:.4f}")
+    if np.isfinite(auc_unsmeared_dual_flag_kd):
+        print(f"Unmerge+Unsmear+DualView+MF+KD AUC: {auc_unsmeared_dual_flag_kd:.4f}")
 
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
     fpr_u, tpr_u, _ = roc_curve(labs, preds_unmerge)
     fpr_s, tpr_s, _ = roc_curve(labs, preds_unsmeared)
-    fpr_skd, tpr_skd, _ = roc_curve(labs, preds_unsmeared_kd)
-    fpr_sf, tpr_sf, _ = roc_curve(labs, preds_unsmeared_flag)
-    fpr_sfk, tpr_sfk, _ = roc_curve(labs, preds_unsmeared_flag_kd)
+    fpr_sd, tpr_sd, _ = roc_curve(labs, preds_unsmeared_dual)
+    fpr_sdf, tpr_sdf = np.array([]), np.array([])
+    fpr_sdfk, tpr_sdfk = np.array([]), np.array([])
+    if np.isfinite(auc_unsmeared_dual_flag):
+        fpr_sdf, tpr_sdf, _ = roc_curve(labs, preds_unsmeared_dual_flag)
+    if np.isfinite(auc_unsmeared_dual_flag_kd):
+        fpr_sdfk, tpr_sdfk, _ = roc_curve(labs, preds_unsmeared_dual_flag_kd)
 
     def plot_roc(lines, out_name):
         plt.figure(figsize=(8, 6))
@@ -3739,9 +3984,9 @@ def main():
             (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
             (tpr_u, fpr_u, ":", f"Unmerge Model (AUC={auc_unmerge:.3f})", "forestgreen"),
             (tpr_s, fpr_s, "-.", f"Unmerge+Unsmear (AUC={auc_unsmeared:.3f})", "purple"),
-            (tpr_skd, fpr_skd, ":", f"Unmerge+Unsmear+KD (AUC={auc_unsmeared_kd:.3f})", "teal"),
-            (tpr_sf, fpr_sf, "--", f"Unmerge+Unsmear+MF (AUC={auc_unsmeared_flag:.3f})", "goldenrod"),
-            (tpr_sfk, fpr_sfk, "-.", f"Unmerge+Unsmear+MF+KD (AUC={auc_unsmeared_flag_kd:.3f})", "slateblue"),
+            (tpr_sd, fpr_sd, "--", f"Unmerge+Unsmear+DualView (AUC={auc_unsmeared_dual:.3f})", "teal"),
+            (tpr_sdf, fpr_sdf, "-.", f"Unmerge+Unsmear+DualView+MF (AUC={auc_unsmeared_dual_flag:.3f})", "goldenrod"),
+            (tpr_sdfk, fpr_sdfk, "-.", f"Unmerge+Unsmear+DualView+MF+KD (AUC={auc_unsmeared_dual_flag_kd:.3f})", "slateblue"),
         ],
         "results_all.png",
     )
@@ -3765,26 +4010,28 @@ def main():
         [
             (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
             (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
-            (tpr_skd, fpr_skd, ":", f"Unmerge+Unsmear+KD (AUC={auc_unsmeared_kd:.3f})", "teal"),
+            (tpr_sd, fpr_sd, "--", f"Unmerge+Unsmear+DualView (AUC={auc_unsmeared_dual:.3f})", "teal"),
         ],
-        "results_teacher_unmerge_unsmear_kd.png",
+        "results_teacher_unmerge_unsmear_dualview.png",
     )
-    plot_roc(
-        [
-            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
-            (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
-            (tpr_sf, fpr_sf, "-.", f"Unmerge+Unsmear+MF (AUC={auc_unsmeared_flag:.3f})", "goldenrod"),
-        ],
-        "results_teacher_unmerge_unsmear_mergeflag.png",
-    )
-    plot_roc(
-        [
-            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
-            (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
-            (tpr_sfk, fpr_sfk, "-.", f"Unmerge+Unsmear+MF+KD (AUC={auc_unsmeared_flag_kd:.3f})", "slateblue"),
-        ],
-        "results_teacher_unmerge_unsmear_mergeflag_kd.png",
-    )
+    if np.isfinite(auc_unsmeared_dual_flag):
+        plot_roc(
+            [
+                (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+                (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
+                (tpr_sdf, fpr_sdf, "-.", f"Unmerge+Unsmear+DualView+MF (AUC={auc_unsmeared_dual_flag:.3f})", "goldenrod"),
+            ],
+            "results_teacher_unmerge_unsmear_dualview_mergeflag.png",
+        )
+    if np.isfinite(auc_unsmeared_dual_flag_kd):
+        plot_roc(
+            [
+                (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+                (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
+                (tpr_sdfk, fpr_sdfk, "-.", f"Unmerge+Unsmear+DualView+MF+KD (AUC={auc_unsmeared_dual_flag_kd:.3f})", "slateblue"),
+            ],
+            "results_teacher_unmerge_unsmear_dualview_mergeflag_kd.png",
+        )
 
     np.savez(
         save_root / "results.npz",
@@ -3792,9 +4039,9 @@ def main():
         auc_baseline=auc_baseline,
         auc_unmerge=auc_unmerge,
         auc_unmerge_unsmear=auc_unsmeared,
-        auc_unmerge_unsmear_kd=auc_unsmeared_kd,
-        auc_unmerge_unsmear_mergeflag=auc_unsmeared_flag,
-        auc_unmerge_unsmear_mergeflag_kd=auc_unsmeared_flag_kd,
+        auc_unmerge_unsmear_dualview=auc_unsmeared_dual,
+        auc_unmerge_unsmear_dualview_mergeflag=auc_unsmeared_dual_flag,
+        auc_unmerge_unsmear_dualview_mergeflag_kd=auc_unsmeared_dual_flag_kd,
         fpr_teacher=fpr_t,
         tpr_teacher=tpr_t,
         fpr_baseline=fpr_b,
@@ -3803,12 +4050,12 @@ def main():
         tpr_unmerge=tpr_u,
         fpr_unmerge_unsmear=fpr_s,
         tpr_unmerge_unsmear=tpr_s,
-        fpr_unmerge_unsmear_kd=fpr_skd,
-        tpr_unmerge_unsmear_kd=tpr_skd,
-        fpr_unmerge_unsmear_mergeflag=fpr_sf,
-        tpr_unmerge_unsmear_mergeflag=tpr_sf,
-        fpr_unmerge_unsmear_mergeflag_kd=fpr_sfk,
-        tpr_unmerge_unsmear_mergeflag_kd=tpr_sfk,
+        fpr_unmerge_unsmear_dualview=fpr_sd,
+        tpr_unmerge_unsmear_dualview=tpr_sd,
+        fpr_unmerge_unsmear_dualview_mergeflag=fpr_sdf,
+        tpr_unmerge_unsmear_dualview_mergeflag=tpr_sdf,
+        fpr_unmerge_unsmear_dualview_mergeflag_kd=fpr_sdfk,
+        tpr_unmerge_unsmear_dualview_mergeflag_kd=tpr_sdfk,
         unmerge_test_loss=test_loss,
         max_merge_count=max_count,
     )
@@ -3820,10 +4067,17 @@ def main():
         torch.save({"model": unmerge_model.state_dict(), "loss": best_val_loss}, save_root / "unmerge_predictor.pt")
         torch.save({"model": unmerge_cls.state_dict(), "auc": auc_unmerge}, save_root / "unmerge_classifier.pt")
         torch.save({"model": unsmear_cls.state_dict(), "auc": auc_unsmeared}, save_root / "unmerge_unsmear_classifier.pt")
-        torch.save({"model": kd_student_uns.state_dict(), "auc": auc_unsmeared_kd}, save_root / "unmerge_unsmear_kd.pt")
-        if merge_flag is not None:
-            torch.save({"model": unsmear_flag_cls.state_dict(), "auc": auc_unsmeared_flag}, save_root / "unmerge_unsmear_mergeflag.pt")
-            torch.save({"model": kd_student_uns_flag.state_dict(), "auc": auc_unsmeared_flag_kd}, save_root / "unmerge_unsmear_mergeflag_kd.pt")
+        torch.save({"model": dual_cls.state_dict(), "auc": auc_unsmeared_dual}, save_root / "unmerge_unsmear_dualview_classifier.pt")
+        if np.isfinite(auc_unsmeared_dual_flag) and "dual_flag_cls" in locals():
+            torch.save(
+                {"model": dual_flag_cls.state_dict(), "auc": auc_unsmeared_dual_flag},
+                save_root / "unmerge_unsmear_dualview_mergeflag.pt",
+            )
+        if np.isfinite(auc_unsmeared_dual_flag_kd) and "kd_student_dv" in locals():
+            torch.save(
+                {"model": kd_student_dv.state_dict(), "auc": auc_unsmeared_dual_flag_kd},
+                save_root / "unmerge_unsmear_dualview_mergeflag_kd.pt",
+            )
 
     print(f"\nSaved results to: {save_root}")
 

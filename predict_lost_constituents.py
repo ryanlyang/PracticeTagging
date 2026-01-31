@@ -450,6 +450,7 @@ def main():
     parser.add_argument("--max_merge_count", type=int, default=10)
     parser.add_argument("--k_folds", type=int, default=1, help="K-fold OOF training (K>1).")
     parser.add_argument("--kfold_ensemble_valtest", action="store_true", help="Ensemble K models for val/test.")
+    parser.add_argument("--kfold_random_valtest", action="store_true", help="Randomly select one fold per jet for val/test.")
     args = parser.parse_args()
 
     if args.pt_resolution is not None:
@@ -592,20 +593,21 @@ def main():
             models.append(model)
 
         if args.kfold_ensemble_valtest:
-            print("Ensembling K models for val/test...")
-            # majority vote
-            def ensemble_predict(loader):
+            if not args.kfold_random_valtest:
+                args.kfold_random_valtest = True
+                print("Info: kfold_ensemble_valtest enabled -> using random-per-jet selection for val/test.")
+
+            def random_predict(loader, seed):
                 preds_stack = []
                 for m in models:
                     preds_stack.append(predict_classes(m, loader, device))
                 preds_stack = np.stack(preds_stack, axis=0)  # (K, B, L)
-                counts = np.zeros((preds_stack.shape[1], preds_stack.shape[2], max_count), dtype=np.int32)
-                for c in range(max_count):
-                    counts[..., c] = (preds_stack == c).sum(axis=0)
-                return counts.argmax(axis=2)
+                rng = np.random.RandomState(seed)
+                pick = rng.randint(preds_stack.shape[0], size=preds_stack.shape[1])
+                return preds_stack[pick, np.arange(preds_stack.shape[1])]
 
-            val_preds = ensemble_predict(val_loader)
-            test_preds = ensemble_predict(test_loader)
+            val_preds = random_predict(val_loader, RANDOM_SEED)
+            test_preds = random_predict(test_loader, RANDOM_SEED + 1)
             val_labs = count_label[val_idx]
             test_labs = count_label[test_idx]
             val_acc = (val_preds[masks_hlt[val_idx]] == val_labs[masks_hlt[val_idx]]).mean()

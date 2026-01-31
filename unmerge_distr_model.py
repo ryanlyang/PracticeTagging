@@ -1758,9 +1758,13 @@ def main():
     parser.add_argument(
         "--classifier_profile",
         type=str,
-        default="all",
-        choices=["all", "dualview_list"],
-        help="Which classifier variants to run. 'dualview_list' runs: unmerge, dual-view, dual-view+merge-flag, dual-view+merge-flag+KD.",
+        default="final_list",
+        choices=["final_list", "all", "dualview_list"],
+        help=(
+            "Which classifier variants to run. 'final_list' (default) runs: "
+            "unmerge, unmerge+merge-flag, dual-view, dual-view+merge-flag, dual-view+merge-flag+KD. "
+            "'all' and 'dualview_list' are aliases for 'final_list'."
+        ),
     )
     parser.add_argument("--no_mc", action="store_true", help="Disable Monte-Carlo sampling/consistency training.")
     parser.add_argument("--k_folds", type=int, default=1, help="K-fold OOF training for count+unmerge (K>1).")
@@ -1811,12 +1815,15 @@ def main():
     CONFIG["mc_sampling"]["seed"] = int(args.mc_seed)
     CONFIG["mc_sampling"]["enabled"] = (not args.no_mc) and (CONFIG["mc_sampling"]["n_samples"] > 1)
     classifier_profile = str(args.classifier_profile)
-    dual_view_classifier = bool(args.dual_view_classifier) or classifier_profile == "dualview_list"
-    run_unmerge_kd = classifier_profile == "all"
-    run_mergeflag = classifier_profile == "all"
-    run_mergeflag_kd = classifier_profile == "all"
-    run_dual_flag = classifier_profile == "dualview_list"
-    run_dual_flag_kd = classifier_profile == "dualview_list"
+    if classifier_profile in ("all", "dualview_list"):
+        classifier_profile = "final_list"
+    run_mergeflag = classifier_profile == "final_list"
+    run_dual = classifier_profile == "final_list" or bool(args.dual_view_classifier)
+    run_dual_flag = classifier_profile == "final_list"
+    run_dual_flag_kd = classifier_profile == "final_list"
+    # Keep legacy KD variants disabled for the new default list
+    run_unmerge_kd = False
+    run_mergeflag_kd = False
     if args.alpha_kd is not None:
         CONFIG["kd"]["alpha_kd"] = float(args.alpha_kd)
     if args.kd_temp is not None:
@@ -1847,6 +1854,10 @@ def main():
     kfold_ensemble_valtest = bool(args.kfold_ensemble_valtest)
     kfold_random_valtest = bool(args.kfold_random_valtest)
     kfold_random_mode = str(args.kfold_random_mode)
+    if kfold_ensemble_valtest and not kfold_random_valtest:
+        kfold_random_valtest = True
+        kfold_random_mode = "jet"
+        print("Info: kfold_ensemble_valtest enabled -> using random-per-jet selection for val/test.")
     kfold_random_seed = int(args.kfold_random_seed)
     kfold_valtest_full_dir = args.kfold_valtest_full_dir
     kfold_train_only = int(args.kfold_train_only)
@@ -2152,17 +2163,11 @@ def main():
     
             if kfold_ensemble_valtest:
                 if kfold_random_valtest:
-                    print("Preparing per-fold count predictions for random val/test selection...")
-                    pred_counts_val_list = [
-                        predict_counts(m, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
-                    pred_counts_test_list = [
-                        predict_counts(m, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
+                    print("Ensembling count models for val/test (random applies only to unmerge outputs)...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
                     pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                    pred_counts_val_list = [pred_counts[val_idx]] * len(count_models)
+                    pred_counts_test_list = [pred_counts[test_idx]] * len(count_models)
                 else:
                     print("Ensembling count models for val/test...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
@@ -2187,17 +2192,11 @@ def main():
                 fold_holds.append(hold_sub)
             if kfold_ensemble_valtest:
                 if kfold_random_valtest:
-                    print("Preparing per-fold count predictions for random val/test selection...")
-                    pred_counts_val_list = [
-                        predict_counts(m, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
-                    pred_counts_test_list = [
-                        predict_counts(m, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
-                        for m in count_models
-                    ]
+                    print("Ensembling count models for val/test (random applies only to unmerge outputs)...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
                     pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                    pred_counts_val_list = [pred_counts[val_idx]] * len(count_models)
+                    pred_counts_test_list = [pred_counts[test_idx]] * len(count_models)
                 else:
                     print("Ensembling count models for val/test...")
                     pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
@@ -2848,7 +2847,7 @@ def main():
         features_unmerged_flag = np.concatenate([features_unmerged_std, merge_flag[..., None]], axis=-1)
 
     # Dual-view loaders (HLT + unmerged)
-    if dual_view_classifier:
+    if run_dual:
         train_ds_dual = DualViewJetDataset(
             features_hlt_std[train_idx], hlt_mask[train_idx],
             features_unmerged_std[train_idx], unmerged_mask[train_idx],
@@ -2979,7 +2978,7 @@ def main():
     # ------------------- Dual-view classifier (HLT + unmerged) ------------------- #
     auc_dual = float("nan")
     preds_dual = np.zeros_like(preds_unmerge)
-    if dual_view_classifier:
+    if run_dual:
         print("\n" + "=" * 70)
         print("STEP 6C: DUAL-VIEW CLASSIFIER (HLT + UNMERGED)")
         print("=" * 70)
