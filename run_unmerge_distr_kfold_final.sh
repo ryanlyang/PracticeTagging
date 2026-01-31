@@ -56,6 +56,7 @@ KFOLD_RANDOM_SEED=${KFOLD_RANDOM_SEED:-42}
 KFOLD_MODEL_DIR=${KFOLD_MODEL_DIR:-"$SAVE_DIR/$RUN_NAME/kfold_models"}
 MC_SWEEP=${MC_SWEEP:-0}
 KFOLD_VALTEST_FULL_DIR=${KFOLD_VALTEST_FULL_DIR:-""}
+CLASSIFIER_PROFILE=${CLASSIFIER_PROFILE:-""}
 
 CMD="python unmerge_distr_model.py \
   --save_dir $SAVE_DIR \
@@ -101,6 +102,9 @@ fi
 if [ "$NO_DISTRIBUTIONAL" -eq 1 ]; then
   CMD="$CMD --no_distributional"
 fi
+if [ -n "$CLASSIFIER_PROFILE" ]; then
+  CMD="$CMD --classifier_profile $CLASSIFIER_PROFILE"
+fi
 
 if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
   CMD="$CMD --device cuda"
@@ -117,6 +121,15 @@ eval $CMD
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -eq 0 ]; then
+  RUN_SWEEPS=1
+  if [ -n "$CLASSIFIER_PROFILE" ] && [ "$CLASSIFIER_PROFILE" != "all" ]; then
+    RUN_SWEEPS=0
+  fi
+
+  if [ $RUN_SWEEPS -ne 1 ]; then
+    echo ""
+    echo "Skipping classifier-only sweeps (classifier_profile=$CLASSIFIER_PROFILE)"
+  else
   echo ""
   echo "=========================================="
   echo "Classifier-only sweeps (sequential)"
@@ -139,16 +152,17 @@ if [ $EXIT_CODE -eq 0 ]; then
     declare -a KD_TEMP=("" "" "" "" "" "")
     declare -a NO_CONF=(0 0 0 0 0 0)
   else
-    declare -a TAGS=("mc0_st1" "mc4_st1" "mc4_hiCons" "mc0_nost" "kd0_mc0" "kd0_mc4" "rep_hi" "nce_hi" "attn_hi" "temp_lo" "temp_hi" "conf_off")
-    declare -a MC_S=(1 4 4 1 1 4 1 1 1 1 1 1)
-    declare -a MC_W=(0.1 0.1 0.3 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1)
-    declare -a NO_ST=(0 0 0 1 1 1 0 0 0 0 0 0)
-    declare -a ALPHA_KD=("" "" "" "" "0.0" "0.0" "" "" "" "" "" "")
-    declare -a ALPHA_REP=("" "" "" "" "" "" "0.30" "" "" "" "" "")
-    declare -a ALPHA_NCE=("" "" "" "" "" "" "" "0.30" "" "" "" "")
-    declare -a ALPHA_ATTN=("" "" "" "" "" "" "" "" "0.15" "" "" "")
-    declare -a KD_TEMP=("" "" "" "" "" "" "" "" "" "5.0" "9.0" "")
-    declare -a NO_CONF=(0 0 0 0 0 0 0 0 0 0 0 1)
+    declare -a TAGS=("mc0_st1" "mc4_st1" "mc4_hiCons" "mc0_nost" "kd0_mc0" "kd0_mc4" "rep_hi" "nce_hi" "attn_hi" "temp_lo" "temp_hi" "conf_off" "dual_view")
+    declare -a MC_S=(1 4 4 1 1 4 1 1 1 1 1 1 1)
+    declare -a MC_W=(0.1 0.1 0.3 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1 0.1)
+    declare -a NO_ST=(0 0 0 1 1 1 0 0 0 0 0 0 0)
+    declare -a ALPHA_KD=("" "" "" "" "0.0" "0.0" "" "" "" "" "" "" "")
+    declare -a ALPHA_REP=("" "" "" "" "" "" "0.30" "" "" "" "" "" "")
+    declare -a ALPHA_NCE=("" "" "" "" "" "" "" "0.30" "" "" "" "" "")
+    declare -a ALPHA_ATTN=("" "" "" "" "" "" "" "" "0.15" "" "" "" "")
+    declare -a KD_TEMP=("" "" "" "" "" "" "" "" "" "5.0" "9.0" "" "")
+    declare -a NO_CONF=(0 0 0 0 0 0 0 0 0 0 0 1 0)
+    declare -a DUAL_VIEW=(0 0 0 0 0 0 0 0 0 0 0 0 1)
   fi
 
   for i in "${!TAGS[@]}"; do
@@ -162,6 +176,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     aattn=${ALPHA_ATTN[$i]}
     kdt=${KD_TEMP[$i]}
     nconf=${NO_CONF[$i]}
+    dv=${DUAL_VIEW[$i]}
 
     CMD_CLS="python unmerge_distr_model.py \
       --save_dir $SAVE_DIR \
@@ -198,6 +213,9 @@ if [ $EXIT_CODE -eq 0 ]; then
     if [ "$nconf" -eq 1 ]; then
       CMD_CLS="$CMD_CLS --no_conf_kd"
     fi
+    if [ "$dv" -eq 1 ]; then
+      CMD_CLS="$CMD_CLS --dual_view_classifier"
+    fi
     if [ "$ms" -gt 1 ] && [ -f "$MC_CACHE_PATH" ]; then
       CMD_CLS="$CMD_CLS --load_mc_cache $MC_CACHE_PATH"
     fi
@@ -212,6 +230,7 @@ if [ $EXIT_CODE -eq 0 ]; then
     echo "$CMD_CLS"
     eval $CMD_CLS
   done
+  fi
 fi
 
 echo ""
