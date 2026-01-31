@@ -1298,6 +1298,80 @@ def build_unmerged_dataset_ensemble_subset(
     return avg_const, avg_mask, flag
 
 
+def build_unmerged_dataset_random_ensemble_subset(
+    indices,
+    feat_hlt_std,
+    mask_hlt,
+    hlt_const,
+    pred_counts_list,
+    unmerge_models,
+    tgt_stats,
+    max_count,
+    max_constits,
+    device,
+    batch_size,
+    rng,
+    mode,
+):
+    if len(indices) == 0:
+        return None, None, None
+    sub_feat = feat_hlt_std[indices]
+    sub_mask = mask_hlt[indices]
+    sub_hlt = hlt_const[indices]
+
+    sub_const_list = []
+    sub_mask_list = []
+    sub_flag_list = []
+    for pred_counts, model, (tgt_mean, tgt_std) in zip(pred_counts_list, unmerge_models, tgt_stats):
+        sub_const, sub_mask_new, sub_flag = build_unmerged_dataset(
+            sub_feat,
+            sub_mask,
+            sub_hlt,
+            pred_counts,
+            model,
+            tgt_mean,
+            tgt_std,
+            max_count,
+            max_constits,
+            device,
+            batch_size,
+        )
+        sub_const_list.append(sub_const)
+        sub_mask_list.append(sub_mask_new)
+        sub_flag_list.append(sub_flag)
+
+    K = len(sub_const_list)
+    if K == 0:
+        return None, None, None
+
+    out_const = np.zeros_like(sub_const_list[0], dtype=np.float32)
+    out_mask = np.zeros_like(sub_mask_list[0], dtype=bool)
+    out_flag = np.zeros_like(sub_flag_list[0], dtype=np.int32) if sub_flag_list[0] is not None else None
+
+    if mode == "jet":
+        choices = rng.integers(0, K, size=out_const.shape[0])
+        for k in range(K):
+            sel = choices == k
+            if not np.any(sel):
+                continue
+            out_const[sel] = sub_const_list[k][sel]
+            out_mask[sel] = sub_mask_list[k][sel]
+            if out_flag is not None:
+                out_flag[sel] = sub_flag_list[k][sel]
+    else:
+        choices = rng.integers(0, K, size=out_mask.shape)
+        for k in range(K):
+            sel = choices == k
+            if not np.any(sel):
+                continue
+            out_const[sel] = sub_const_list[k][sel]
+            out_mask[sel] = sub_mask_list[k][sel]
+            if out_flag is not None:
+                out_flag[sel] = sub_flag_list[k][sel]
+
+    return out_const, out_mask, out_flag
+
+
 def build_unmerged_dataset_mc(
     feat_hlt_std,
     mask_hlt,
@@ -1409,6 +1483,9 @@ def main():
     parser.add_argument("--no_mc", action="store_true", help="Disable Monte-Carlo sampling/consistency training.")
     parser.add_argument("--k_folds", type=int, default=1, help="K-fold OOF training for count+unmerge (K>1).")
     parser.add_argument("--kfold_ensemble_valtest", action="store_true", help="Ensemble K models for val/test generation.")
+    parser.add_argument("--kfold_random_valtest", action="store_true", help="Randomly select one of K unmergers per jet/token for val/test generation.")
+    parser.add_argument("--kfold_random_mode", type=str, default="jet", choices=["jet", "token"], help="Random selection granularity.")
+    parser.add_argument("--kfold_random_seed", type=int, default=42, help="Random seed for kfold random selection.")
     parser.add_argument("--kfold_valtest_full_dir", type=str, default=None, help="Use a single full-train unmerger for val/test generation.")
     parser.add_argument("--kfold_train_only", type=int, default=-1, help="Train only a single fold (0-based) and save models, then exit.")
     parser.add_argument("--kfold_model_dir", type=str, default=None, help="Directory to save/load fold models.")
@@ -1479,6 +1556,9 @@ def main():
         CONFIG["kd"]["alpha_warmup_min_epochs"] = int(args.alpha_warmup_min_epochs)
     k_folds = max(1, int(args.k_folds))
     kfold_ensemble_valtest = bool(args.kfold_ensemble_valtest)
+    kfold_random_valtest = bool(args.kfold_random_valtest)
+    kfold_random_mode = str(args.kfold_random_mode)
+    kfold_random_seed = int(args.kfold_random_seed)
     kfold_valtest_full_dir = args.kfold_valtest_full_dir
     kfold_train_only = int(args.kfold_train_only)
     classifier_only = bool(args.classifier_only)
@@ -1735,6 +1815,8 @@ def main():
     if not classifier_only:
         fold_trains = []
         fold_holds = []
+        pred_counts_val_list = None
+        pred_counts_test_list = None
         if k_folds > 1 and not kfold_use_pretrained:
             kf = KFold(n_splits=k_folds, shuffle=True, random_state=RANDOM_SEED)
             train_idx_array = np.array(train_idx)
@@ -1780,9 +1862,22 @@ def main():
                 _save_count_model(fold_id, count_model)
     
             if kfold_ensemble_valtest:
-                print("Ensembling count models for val/test...")
-                pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
-                pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                if kfold_random_valtest:
+                    print("Preparing per-fold count predictions for random val/test selection...")
+                    pred_counts_val_list = [
+                        predict_counts(m, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                        for m in count_models
+                    ]
+                    pred_counts_test_list = [
+                        predict_counts(m, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                        for m in count_models
+                    ]
+                    pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                    pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                else:
+                    print("Ensembling count models for val/test...")
+                    pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                    pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
             else:
                 pred_counts[val_idx] = predict_counts(count_models[-1], features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
                 pred_counts[test_idx] = predict_counts(count_models[-1], features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
@@ -1802,9 +1897,22 @@ def main():
                 fold_trains.append(train_sub)
                 fold_holds.append(hold_sub)
             if kfold_ensemble_valtest:
-                print("Ensembling count models for val/test...")
-                pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
-                pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                if kfold_random_valtest:
+                    print("Preparing per-fold count predictions for random val/test selection...")
+                    pred_counts_val_list = [
+                        predict_counts(m, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                        for m in count_models
+                    ]
+                    pred_counts_test_list = [
+                        predict_counts(m, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                        for m in count_models
+                    ]
+                    pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                    pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
+                else:
+                    print("Ensembling count models for val/test...")
+                    pred_counts[val_idx] = predict_counts_ensemble(count_models, features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
+                    pred_counts[test_idx] = predict_counts_ensemble(count_models, features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
             else:
                 pred_counts[val_idx] = predict_counts(count_models[-1], features_hlt_std[val_idx], hlt_mask[val_idx], BS_cnt, device, max_count)
                 pred_counts[test_idx] = predict_counts(count_models[-1], features_hlt_std[test_idx], hlt_mask[test_idx], BS_cnt, device, max_count)
@@ -2083,33 +2191,69 @@ def main():
                     BS_un,
                 )
             elif kfold_ensemble_valtest:
-                print("Ensembling unmerge models for val/test...")
-                val_const, val_mask, val_flag = build_unmerged_dataset_ensemble_subset(
-                    val_idx,
-                    features_hlt_std,
-                    hlt_mask,
-                    hlt_const,
-                    pred_counts,
-                    unmerge_models,
-                    tgt_stats,
-                    max_count,
-                    args.max_constits,
-                    device,
-                    BS_un,
-                )
-                test_const, test_mask, test_flag = build_unmerged_dataset_ensemble_subset(
-                    test_idx,
-                    features_hlt_std,
-                    hlt_mask,
-                    hlt_const,
-                    pred_counts,
-                    unmerge_models,
-                    tgt_stats,
-                    max_count,
-                    args.max_constits,
-                    device,
-                    BS_un,
-                )
+                if kfold_random_valtest:
+                    if pred_counts_val_list is None or pred_counts_test_list is None:
+                        raise RuntimeError("kfold_random_valtest requested but per-fold count predictions are missing.")
+                    rng = np.random.default_rng(kfold_random_seed)
+                    print(f"Randomly selecting unmerge outputs for val/test (mode={kfold_random_mode})...")
+                    val_const, val_mask, val_flag = build_unmerged_dataset_random_ensemble_subset(
+                        val_idx,
+                        features_hlt_std,
+                        hlt_mask,
+                        hlt_const,
+                        pred_counts_val_list,
+                        unmerge_models,
+                        tgt_stats,
+                        max_count,
+                        args.max_constits,
+                        device,
+                        BS_un,
+                        rng,
+                        kfold_random_mode,
+                    )
+                    test_const, test_mask, test_flag = build_unmerged_dataset_random_ensemble_subset(
+                        test_idx,
+                        features_hlt_std,
+                        hlt_mask,
+                        hlt_const,
+                        pred_counts_test_list,
+                        unmerge_models,
+                        tgt_stats,
+                        max_count,
+                        args.max_constits,
+                        device,
+                        BS_un,
+                        rng,
+                        kfold_random_mode,
+                    )
+                else:
+                    print("Ensembling unmerge models for val/test...")
+                    val_const, val_mask, val_flag = build_unmerged_dataset_ensemble_subset(
+                        val_idx,
+                        features_hlt_std,
+                        hlt_mask,
+                        hlt_const,
+                        pred_counts,
+                        unmerge_models,
+                        tgt_stats,
+                        max_count,
+                        args.max_constits,
+                        device,
+                        BS_un,
+                    )
+                    test_const, test_mask, test_flag = build_unmerged_dataset_ensemble_subset(
+                        test_idx,
+                        features_hlt_std,
+                        hlt_mask,
+                        hlt_const,
+                        pred_counts,
+                        unmerge_models,
+                        tgt_stats,
+                        max_count,
+                        args.max_constits,
+                        device,
+                        BS_un,
+                    )
             else:
                 val_const, val_mask, val_flag = build_unmerged_dataset_subset(
                     val_idx,
