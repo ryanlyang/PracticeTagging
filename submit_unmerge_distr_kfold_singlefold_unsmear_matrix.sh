@@ -22,11 +22,11 @@ submit_run() {
   local name="$1"; shift
   local extra="$1"
   echo "Submitting singlefold unsmear run: $name"
-  local export_list="SAVE_DIR=$BASE_DIR,RUN_NAME=$name,K_FOLDS=$K_FOLDS,KFOLD_ENSEMBLE=0,KFOLD_RANDOM_VALTEST=0,KFOLD_FIXED_FOLD=$KFOLD_FIXED_FOLD,KFOLD_MODEL_DIR=$KFOLD_MODEL_DIR,N_TRAIN_JETS=$N_TRAIN_JETS,MAX_CONSTITS=$MAX_CONSTITS,MAX_MERGE_COUNT=$MAX_MERGE_COUNT,TRAIN_PATH=$TRAIN_PATH,UNSMEAR_K_FOLDS=1,LOG_DIR=$LOG_DIR"
+  local export_list="SAVE_DIR=$BASE_DIR,RUN_NAME=$name,K_FOLDS=$K_FOLDS,KFOLD_ENSEMBLE=0,KFOLD_RANDOM_VALTEST=0,KFOLD_FIXED_FOLD=$KFOLD_FIXED_FOLD,KFOLD_MODEL_DIR=$KFOLD_MODEL_DIR,N_TRAIN_JETS=$N_TRAIN_JETS,MAX_CONSTITS=$MAX_CONSTITS,MAX_MERGE_COUNT=$MAX_MERGE_COUNT,TRAIN_PATH=$TRAIN_PATH,UNSMEAR_K_FOLDS=1,LOG_DIR=$LOG_DIR,NO_DISTRIBUTIONAL=1,UNMERGE_LOSS=chamfer"
   if [ -n "$extra" ]; then
     export_list="$export_list,$extra"
   fi
-  sbatch --export=ALL,$export_list run_unmerge_distr_kfold_final_unsmear.sh
+  sbatch --output="$LOG_DIR/unmerge_distr_final_%j.out" --error="$LOG_DIR/unmerge_distr_final_%j.err" --export=ALL,$export_list run_unmerge_distr_kfold_final_unsmear.sh
   sleep 0.2
 }
 
