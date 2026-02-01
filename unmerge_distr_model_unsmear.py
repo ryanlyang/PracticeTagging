@@ -157,6 +157,10 @@ CONFIG = {
         "merge_flag": False,
         "merge_weight": 2.0,
         "two_head": False,
+        "local_attn": False,
+        "local_attn_radius": 0.2,
+        "local_attn_scale": 2.0,
+        "feat_head_mode": "single",
     },
     "pre_unsmear": {
         "enabled": False,
@@ -1812,6 +1816,7 @@ def main():
     parser.add_argument("--kfold_train_only", type=int, default=-1, help="Train only a single fold (0-based) and save models, then exit.")
     parser.add_argument("--kfold_model_dir", type=str, default=None, help="Directory to save/load fold models.")
     parser.add_argument("--kfold_use_pretrained", action="store_true", help="Use pre-trained fold models and skip fold training.")
+    parser.add_argument("--kfold_fixed_fold", type=int, default=-1, help="Use a single pretrained fold model for all splits (train/val/test).")
     # Unsmearer k-fold controls (for unmerge->unsmear stage)
     parser.add_argument("--unsmear_k_folds", type=int, default=1, help="K-fold OOF training for unsmearer (K>1).")
     parser.add_argument("--unsmear_kfold_train_only", type=int, default=-1, help="Train only a single unsmearer fold (0-based) and save model, then exit.")
@@ -1821,6 +1826,10 @@ def main():
     parser.add_argument("--unsmear_merge_flag", action="store_true", help="Append merge-flag channel to unsmearer conditioning.")
     parser.add_argument("--unsmear_merge_weight", type=float, default=CONFIG["unsmear_training"]["merge_weight"], help="Loss weight multiplier for merged tokens.")
     parser.add_argument("--unsmear_two_head", action="store_true", help="Use two-head unsmearer routed by merge flag (no merge-flag conditioning).")
+    parser.add_argument("--unsmear_local_attn", action="store_true", help="Enable local neighborhood mixing in unsmearer.")
+    parser.add_argument("--unsmear_local_attn_radius", type=float, default=CONFIG["unsmear_training"]["local_attn_radius"])
+    parser.add_argument("--unsmear_local_attn_scale", type=float, default=CONFIG["unsmear_training"]["local_attn_scale"])
+    parser.add_argument("--unsmear_feat_head_mode", type=str, default=CONFIG["unsmear_training"]["feat_head_mode"], choices=["single", "ptetaph"])
     # Pre-unsmear (singleton-only) controls
     parser.add_argument("--pre_unsmear_singletons", action="store_true", help="Pre-unsmear singleton tokens (HLT->offline) before unmerger training.")
     parser.add_argument("--pre_unsmear_weight", type=float, default=CONFIG["pre_unsmear"]["weight"], help="Loss weight multiplier for predicted singleton tokens during pre-unsmear training.")
@@ -1870,6 +1879,10 @@ def main():
     CONFIG["unsmear_training"]["merge_flag"] = bool(args.unsmear_merge_flag)
     CONFIG["unsmear_training"]["merge_weight"] = float(args.unsmear_merge_weight)
     CONFIG["unsmear_training"]["two_head"] = bool(args.unsmear_two_head)
+    CONFIG["unsmear_training"]["local_attn"] = bool(args.unsmear_local_attn)
+    CONFIG["unsmear_training"]["local_attn_radius"] = float(args.unsmear_local_attn_radius)
+    CONFIG["unsmear_training"]["local_attn_scale"] = float(args.unsmear_local_attn_scale)
+    CONFIG["unsmear_training"]["feat_head_mode"] = str(args.unsmear_feat_head_mode)
     CONFIG["pre_unsmear"]["enabled"] = bool(args.pre_unsmear_singletons)
     CONFIG["pre_unsmear"]["weight"] = float(args.pre_unsmear_weight)
     CONFIG["pre_unsmear"]["k_folds"] = int(args.pre_unsmear_k_folds)
@@ -1911,6 +1924,18 @@ def main():
     kfold_train_only = int(args.kfold_train_only)
     classifier_only = bool(args.classifier_only)
     kfold_use_pretrained = bool(args.kfold_use_pretrained)
+    kfold_fixed_fold = int(args.kfold_fixed_fold)
+    if kfold_fixed_fold >= 0:
+        if k_folds <= 1:
+            raise ValueError("--kfold_fixed_fold requires --k_folds > 1")
+        if not kfold_use_pretrained:
+            raise ValueError("--kfold_fixed_fold requires --kfold_use_pretrained")
+        if kfold_fixed_fold >= k_folds:
+            raise ValueError(f"kfold_fixed_fold={kfold_fixed_fold} out of range for k_folds={k_folds}")
+        if kfold_ensemble_valtest or kfold_random_valtest:
+            print("Info: kfold_fixed_fold enabled -> disabling ensemble/random val/test.")
+        kfold_ensemble_valtest = False
+        kfold_random_valtest = False
     pre_unsmear_k_folds = max(1, int(args.pre_unsmear_k_folds))
     pre_unsmear_train_only = int(args.pre_unsmear_kfold_train_only)
     pre_unsmear_use_pretrained = bool(args.pre_unsmear_kfold_use_pretrained)
@@ -2090,6 +2115,10 @@ def main():
                 use_cross_attn=CONFIG["unsmear_training"]["use_cross_attn"],
                 self_cond=True,
                 two_head=False,
+                feat_head_mode=CONFIG["unsmear_training"]["feat_head_mode"],
+                local_attn=CONFIG["unsmear_training"]["local_attn"],
+                local_attn_radius=CONFIG["unsmear_training"]["local_attn_radius"],
+                local_attn_scale=CONFIG["unsmear_training"]["local_attn_scale"],
             ).to(device)
 
         splits = make_kfold_splits(train_idx, pre_unsmear_k_folds, seed=RANDOM_SEED)
@@ -2394,17 +2423,26 @@ def main():
             count_models = []
             pred_counts = np.zeros_like(hlt_mask, dtype=np.int64)
             train_idx_array = np.array(train_idx)
-            kf = KFold(n_splits=k_folds, shuffle=True, random_state=RANDOM_SEED)
-            for fold_id, (train_sub_rel, hold_rel) in enumerate(kf.split(train_idx_array)):
-                train_sub = train_idx_array[train_sub_rel]
-                hold_sub = train_idx_array[hold_rel]
-                print(f"Loading count fold {fold_id+1}/{k_folds} from {kfold_model_dir}...")
-                count_model, _, _, _ = _load_fold_models(fold_id)
-                count_models.append(count_model)
-                count_models_by_fold[fold_id] = count_model
-                pred_counts[hold_sub] = predict_counts(count_model, features_hlt_std[hold_sub], hlt_mask[hold_sub], BS_cnt, device, max_count)
-                fold_trains.append(train_sub)
-                fold_holds.append(hold_sub)
+            if kfold_fixed_fold >= 0:
+                print(f"Loading count fold {kfold_fixed_fold+1}/{k_folds} from {kfold_model_dir} (fixed for all splits)...")
+                count_model, _, _, _ = _load_fold_models(kfold_fixed_fold)
+                count_models = [count_model]
+                count_models_by_fold[0] = count_model
+                pred_counts = predict_counts(count_model, features_hlt_std, hlt_mask, BS_cnt, device, max_count)
+                fold_trains.append(train_idx_array)
+                fold_holds.append(train_idx_array)
+            else:
+                kf = KFold(n_splits=k_folds, shuffle=True, random_state=RANDOM_SEED)
+                for fold_id, (train_sub_rel, hold_rel) in enumerate(kf.split(train_idx_array)):
+                    train_sub = train_idx_array[train_sub_rel]
+                    hold_sub = train_idx_array[hold_rel]
+                    print(f"Loading count fold {fold_id+1}/{k_folds} from {kfold_model_dir}...")
+                    count_model, _, _, _ = _load_fold_models(fold_id)
+                    count_models.append(count_model)
+                    count_models_by_fold[fold_id] = count_model
+                    pred_counts[hold_sub] = predict_counts(count_model, features_hlt_std[hold_sub], hlt_mask[hold_sub], BS_cnt, device, max_count)
+                    fold_trains.append(train_sub)
+                    fold_holds.append(hold_sub)
             if kfold_ensemble_valtest:
                 if kfold_random_valtest:
                     print("Ensembling count models for val/test (random applies only to unmerge outputs)...")
@@ -2504,6 +2542,10 @@ def main():
                     use_cross_attn=CONFIG["unsmear_training"]["use_cross_attn"],
                     self_cond=True,
                     two_head=False,
+                    feat_head_mode=CONFIG["unsmear_training"]["feat_head_mode"],
+                    local_attn=CONFIG["unsmear_training"]["local_attn"],
+                    local_attn_radius=CONFIG["unsmear_training"]["local_attn_radius"],
+                    local_attn_scale=CONFIG["unsmear_training"]["local_attn_scale"],
                 ).to(device)
 
             def _load_pre_unsmear_model(fid):
@@ -2754,18 +2796,221 @@ def main():
             return loss
     
         if k_folds > 1:
-            for fold_id in range(k_folds):
-                train_sub = fold_trains[fold_id]
-                hold_sub = fold_holds[fold_id]
-                print(f"\n--- Unmerge Fold {fold_id+1}/{k_folds} | train={len(train_sub)} holdout={len(hold_sub)} ---")
-                if kfold_train_only_mode and fold_id != kfold_train_only:
-                    print("Skipping fold (train-only mode).")
-                    continue
-                if kfold_use_pretrained:
-                    print(f"Loading unmerge fold {fold_id+1}/{k_folds} from {kfold_model_dir}...")
-                    count_model, unmerge_model, tgt_mean, tgt_std = _load_fold_models(fold_id)
+            if kfold_fixed_fold >= 0:
+                print(f"\n--- Unmerge Fold {kfold_fixed_fold+1}/{k_folds} (fixed for all splits) ---")
+                print(f"Loading unmerge fold {kfold_fixed_fold+1}/{k_folds} from {kfold_model_dir}...")
+                _, unmerge_model, tgt_mean, tgt_std = _load_fold_models(kfold_fixed_fold)
+                unmerge_models = [unmerge_model]
+                tgt_stats = [(tgt_mean, tgt_std)]
+
+                train_const, train_mask, train_flag = build_unmerged_dataset_subset(
+                    train_idx,
+                    features_hlt_for_unmerge_std,
+                    hlt_mask,
+                    hlt_const_for_unmerge,
+                    pred_counts,
+                    unmerge_model,
+                    tgt_mean,
+                    tgt_std,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+                val_const, val_mask, val_flag = build_unmerged_dataset_subset(
+                    val_idx,
+                    features_hlt_for_unmerge_std,
+                    hlt_mask,
+                    hlt_const_for_unmerge,
+                    pred_counts,
+                    unmerge_model,
+                    tgt_mean,
+                    tgt_std,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+                test_const, test_mask, test_flag = build_unmerged_dataset_subset(
+                    test_idx,
+                    features_hlt_for_unmerge_std,
+                    hlt_mask,
+                    hlt_const_for_unmerge,
+                    pred_counts,
+                    unmerge_model,
+                    tgt_mean,
+                    tgt_std,
+                    max_count,
+                    args.max_constits,
+                    device,
+                    BS_un,
+                )
+                if train_const is not None:
+                    unmerged_const[train_idx] = train_const
+                    unmerged_mask[train_idx] = train_mask
+                    if train_flag is not None:
+                        unmerged_merge_flag[train_idx] = train_flag
+                if val_const is not None:
+                    unmerged_const[val_idx] = val_const
+                    unmerged_mask[val_idx] = val_mask
+                    if val_flag is not None:
+                        unmerged_merge_flag[val_idx] = val_flag
+                if test_const is not None:
+                    unmerged_const[test_idx] = test_const
+                    unmerged_mask[test_idx] = test_mask
+                    if test_flag is not None:
+                        unmerged_merge_flag[test_idx] = test_flag
+            else:
+                for fold_id in range(k_folds):
+                    train_sub = fold_trains[fold_id]
+                    hold_sub = fold_holds[fold_id]
+                    print(f"\n--- Unmerge Fold {fold_id+1}/{k_folds} | train={len(train_sub)} holdout={len(hold_sub)} ---")
+                    if kfold_train_only_mode and fold_id != kfold_train_only:
+                        print("Skipping fold (train-only mode).")
+                        continue
+                    if kfold_use_pretrained:
+                        print(f"Loading unmerge fold {fold_id+1}/{k_folds} from {kfold_model_dir}...")
+                        count_model, unmerge_model, tgt_mean, tgt_std = _load_fold_models(fold_id)
+                        unmerge_models.append(unmerge_model)
+                        tgt_stats.append((tgt_mean, tgt_std))
+                        sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
+                            hold_sub,
+                            features_hlt_for_unmerge_std,
+                            hlt_mask,
+                            hlt_const_for_unmerge,
+                            pred_counts,
+                            unmerge_model,
+                            tgt_mean,
+                            tgt_std,
+                            max_count,
+                            args.max_constits,
+                            device,
+                            BS_un,
+                        )
+                        if sub_const is not None:
+                            unmerged_const[hold_sub] = sub_const
+                            unmerged_mask[hold_sub] = sub_mask
+                            if sub_flag is not None:
+                                unmerged_merge_flag[hold_sub] = sub_flag
+                        continue
+                    if kfold_train_only_mode and not kfold_use_pretrained:
+                        count_model = count_models_by_fold[fold_id]
+                    else:
+                        count_model = count_models[fold_id]
+                    pred_counts_train = predict_counts(count_model, features_hlt_std[train_sub], hlt_mask[train_sub], BS_cnt, device, max_count)
+                    pred_counts_train_full = np.zeros_like(pred_counts)
+                    pred_counts_train_full[train_sub] = pred_counts_train
+                    pred_counts_hold = pred_counts[hold_sub]
+                    pred_counts_hold_full = np.zeros_like(pred_counts)
+                    pred_counts_hold_full[hold_sub] = pred_counts_hold
+
+                    train_samples = _build_samples_for_indices(train_sub, origin_lists, hlt_mask, pred_counts_train_full, max_count, args.max_constits)
+                    val_samples = _build_samples_for_indices(hold_sub, origin_lists, hlt_mask, pred_counts_hold_full, max_count, args.max_constits)
+                    print(f"Merged samples: train={len(train_samples):,}, holdout={len(val_samples):,}")
+                    if len(train_samples) == 0:
+                        raise RuntimeError("No merged samples in training fold.")
+    
+                    train_targets = [const_off[s[0], s[2], :4] for s in train_samples]
+                    flat_train = np.concatenate(train_targets, axis=0)
+                    tgt_mean = flat_train.mean(axis=0)
+                    tgt_std = flat_train.std(axis=0) + 1e-8
+    
+                    train_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, train_samples, max_count, tgt_mean, tgt_std)
+                    val_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, val_samples, max_count, tgt_mean, tgt_std)
+                    train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True, **DL_KWARGS)
+                    val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
+    
+                    unmerge_model = UnmergePredictor(
+                        input_dim=7,
+                        max_count=max_count,
+                        **CONFIG["unmerge_model"],
+                    ).to(device)
+                    opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
+                    sch_u = get_scheduler(opt_u, CONFIG["unmerge_training"]["warmup_epochs"], CONFIG["unmerge_training"]["epochs"])
+                    best_val_loss, best_state_u, no_improve = 1e9, None, 0
+    
+                    for ep in tqdm(range(CONFIG["unmerge_training"]["epochs"]), desc=f"Unmerge-F{fold_id+1}"):
+                        unmerge_model.train()
+                        total_loss = 0.0
+                        n_batches = 0
+                        if CONFIG["unmerge_training"]["curriculum"]:
+                            frac = min(1.0, (ep + 1) / max(CONFIG["unmerge_training"]["curriculum_epochs"], 1))
+                            curr_max = int(CONFIG["unmerge_training"]["curriculum_start"] + frac * (max_count - CONFIG["unmerge_training"]["curriculum_start"]))
+                        else:
+                            curr_max = max_count
+
+                        for batch in train_loader_un:
+                            x = batch["hlt"].to(device)
+                            mask = batch["mask"].to(device)
+                            token_idx = batch["token_idx"].to(device)
+                            true_count = batch["true_count"].to(device)
+                            if CONFIG["unmerge_training"]["use_true_count"]:
+                                count_in = true_count.clamp(min=2, max=max_count)
+                            else:
+                                count_in = batch["pred_count"].to(device)
+                            if curr_max < max_count:
+                                keep = true_count <= curr_max
+                                if keep.sum() == 0:
+                                    continue
+                                x = x[keep]
+                                mask = mask[keep]
+                                token_idx = token_idx[keep]
+                                count_in = count_in[keep]
+                                true_count = true_count[keep]
+                                target = batch["target"].to(device)[keep]
+                                hlt_token = batch["hlt_token"].to(device)[keep]
+                            else:
+                                target = batch["target"].to(device)
+                                hlt_token = batch["hlt_token"].to(device)
+
+                            opt_u.zero_grad()
+                            mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                            loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                            loss.backward()
+                            torch.nn.utils.clip_grad_norm_(unmerge_model.parameters(), 1.0)
+                            opt_u.step()
+                            total_loss += loss.item()
+                            n_batches += 1
+
+                        train_loss = total_loss / max(n_batches, 1)
+                        val_loss = 0.0
+                        n_batches = 0
+                        unmerge_model.eval()
+                        with torch.no_grad():
+                            for batch in val_loader_un:
+                                x = batch["hlt"].to(device)
+                                mask = batch["mask"].to(device)
+                                token_idx = batch["token_idx"].to(device)
+                                true_count = batch["true_count"].to(device)
+                                if CONFIG["unmerge_training"]["use_true_count"]:
+                                    count_in = true_count.clamp(min=2, max=max_count)
+                                else:
+                                    count_in = batch["pred_count"].to(device)
+                                target = batch["target"].to(device)
+                                hlt_token = batch["hlt_token"].to(device)
+                                mu, logvar = unmerge_model(x, mask, token_idx, count_in)
+                                loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
+                                val_loss += loss.item()
+                                n_batches += 1
+                        val_loss = val_loss / max(n_batches, 1)
+                        sch_u.step()
+                        if val_loss < best_val_loss:
+                            best_val_loss = val_loss
+                            best_state_u = {k: v.detach().cpu().clone() for k, v in unmerge_model.state_dict().items()}
+                            no_improve = 0
+                        else:
+                            no_improve += 1
+                        if (ep + 1) % 5 == 0:
+                            print(f"Ep {ep+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, best={best_val_loss:.4f}")
+                        if no_improve >= CONFIG["unmerge_training"]["patience"]:
+                            print(f"Early stopping unmerge at epoch {ep+1}")
+                            break
+                    if best_state_u is not None:
+                        unmerge_model.load_state_dict(best_state_u)
                     unmerge_models.append(unmerge_model)
                     tgt_stats.append((tgt_mean, tgt_std))
+                    _save_unmerge_model(fold_id, unmerge_model, tgt_mean, tgt_std)
+    
                     sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
                         hold_sub,
                         features_hlt_for_unmerge_std,
@@ -2785,144 +3030,6 @@ def main():
                         unmerged_mask[hold_sub] = sub_mask
                         if sub_flag is not None:
                             unmerged_merge_flag[hold_sub] = sub_flag
-                    continue
-                if kfold_train_only_mode and not kfold_use_pretrained:
-                    count_model = count_models_by_fold[fold_id]
-                else:
-                    count_model = count_models[fold_id]
-                pred_counts_train = predict_counts(count_model, features_hlt_std[train_sub], hlt_mask[train_sub], BS_cnt, device, max_count)
-                pred_counts_train_full = np.zeros_like(pred_counts)
-                pred_counts_train_full[train_sub] = pred_counts_train
-                pred_counts_hold = pred_counts[hold_sub]
-                pred_counts_hold_full = np.zeros_like(pred_counts)
-                pred_counts_hold_full[hold_sub] = pred_counts_hold
-
-                train_samples = _build_samples_for_indices(train_sub, origin_lists, hlt_mask, pred_counts_train_full, max_count, args.max_constits)
-                val_samples = _build_samples_for_indices(hold_sub, origin_lists, hlt_mask, pred_counts_hold_full, max_count, args.max_constits)
-                print(f"Merged samples: train={len(train_samples):,}, holdout={len(val_samples):,}")
-                if len(train_samples) == 0:
-                    raise RuntimeError("No merged samples in training fold.")
-    
-                train_targets = [const_off[s[0], s[2], :4] for s in train_samples]
-                flat_train = np.concatenate(train_targets, axis=0)
-                tgt_mean = flat_train.mean(axis=0)
-                tgt_std = flat_train.std(axis=0) + 1e-8
-    
-                train_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, train_samples, max_count, tgt_mean, tgt_std)
-                val_ds_un = UnmergeDataset(features_hlt_for_unmerge_std, hlt_mask, hlt_const_for_unmerge, const_off, val_samples, max_count, tgt_mean, tgt_std)
-                train_loader_un = DataLoader(train_ds_un, batch_size=BS_un, shuffle=True, drop_last=True, **DL_KWARGS)
-                val_loader_un = DataLoader(val_ds_un, batch_size=BS_un, shuffle=False, **DL_KWARGS)
-    
-                unmerge_model = UnmergePredictor(
-                    input_dim=7,
-                    max_count=max_count,
-                    **CONFIG["unmerge_model"],
-                ).to(device)
-                opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
-                sch_u = get_scheduler(opt_u, CONFIG["unmerge_training"]["warmup_epochs"], CONFIG["unmerge_training"]["epochs"])
-                best_val_loss, best_state_u, no_improve = 1e9, None, 0
-    
-                for ep in tqdm(range(CONFIG["unmerge_training"]["epochs"]), desc=f"Unmerge-F{fold_id+1}"):
-                    unmerge_model.train()
-                    total_loss = 0.0
-                    n_batches = 0
-                    if CONFIG["unmerge_training"]["curriculum"]:
-                        frac = min(1.0, (ep + 1) / max(CONFIG["unmerge_training"]["curriculum_epochs"], 1))
-                        curr_max = int(CONFIG["unmerge_training"]["curriculum_start"] + frac * (max_count - CONFIG["unmerge_training"]["curriculum_start"]))
-                    else:
-                        curr_max = max_count
-    
-                    for batch in train_loader_un:
-                        x = batch["hlt"].to(device)
-                        mask = batch["mask"].to(device)
-                        token_idx = batch["token_idx"].to(device)
-                        true_count = batch["true_count"].to(device)
-                        if CONFIG["unmerge_training"]["use_true_count"]:
-                            count_in = true_count.clamp(min=2, max=max_count)
-                        else:
-                            count_in = batch["pred_count"].to(device)
-                        if curr_max < max_count:
-                            keep = true_count <= curr_max
-                            if keep.sum() == 0:
-                                continue
-                            x = x[keep]
-                            mask = mask[keep]
-                            token_idx = token_idx[keep]
-                            count_in = count_in[keep]
-                            true_count = true_count[keep]
-                            target = batch["target"].to(device)[keep]
-                            hlt_token = batch["hlt_token"].to(device)[keep]
-                        else:
-                            target = batch["target"].to(device)
-                            hlt_token = batch["hlt_token"].to(device)
-    
-                        opt_u.zero_grad()
-                        mu, logvar = unmerge_model(x, mask, token_idx, count_in)
-                        loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
-                        loss.backward()
-                        torch.nn.utils.clip_grad_norm_(unmerge_model.parameters(), 1.0)
-                        opt_u.step()
-                        total_loss += loss.item()
-                        n_batches += 1
-    
-                    train_loss = total_loss / max(n_batches, 1)
-                    val_loss = 0.0
-                    n_batches = 0
-                    unmerge_model.eval()
-                    with torch.no_grad():
-                        for batch in val_loader_un:
-                            x = batch["hlt"].to(device)
-                            mask = batch["mask"].to(device)
-                            token_idx = batch["token_idx"].to(device)
-                            true_count = batch["true_count"].to(device)
-                            if CONFIG["unmerge_training"]["use_true_count"]:
-                                count_in = true_count.clamp(min=2, max=max_count)
-                            else:
-                                count_in = batch["pred_count"].to(device)
-                            target = batch["target"].to(device)
-                            hlt_token = batch["hlt_token"].to(device)
-                            mu, logvar = unmerge_model(x, mask, token_idx, count_in)
-                            loss = compute_unmerge_loss(mu, logvar, target, true_count, hlt_token)
-                            val_loss += loss.item()
-                            n_batches += 1
-                    val_loss = val_loss / max(n_batches, 1)
-                    sch_u.step()
-                    if val_loss < best_val_loss:
-                        best_val_loss = val_loss
-                        best_state_u = {k: v.detach().cpu().clone() for k, v in unmerge_model.state_dict().items()}
-                        no_improve = 0
-                    else:
-                        no_improve += 1
-                    if (ep + 1) % 5 == 0:
-                        print(f"Ep {ep+1}: train_loss={train_loss:.4f}, val_loss={val_loss:.4f}, best={best_val_loss:.4f}")
-                    if no_improve >= CONFIG["unmerge_training"]["patience"]:
-                        print(f"Early stopping unmerge at epoch {ep+1}")
-                        break
-                if best_state_u is not None:
-                    unmerge_model.load_state_dict(best_state_u)
-                unmerge_models.append(unmerge_model)
-                tgt_stats.append((tgt_mean, tgt_std))
-                _save_unmerge_model(fold_id, unmerge_model, tgt_mean, tgt_std)
-    
-                sub_const, sub_mask, sub_flag = build_unmerged_dataset_subset(
-                    hold_sub,
-                    features_hlt_for_unmerge_std,
-                    hlt_mask,
-                    hlt_const_for_unmerge,
-                    pred_counts,
-                    unmerge_model,
-                    tgt_mean,
-                    tgt_std,
-                    max_count,
-                    args.max_constits,
-                    device,
-                    BS_un,
-                )
-                if sub_const is not None:
-                    unmerged_const[hold_sub] = sub_const
-                    unmerged_mask[hold_sub] = sub_mask
-                    if sub_flag is not None:
-                        unmerged_merge_flag[hold_sub] = sub_flag
     
             if kfold_train_only_mode:
                 print("K-fold train-only mode complete; saved fold models. Exiting.")
@@ -3297,6 +3404,10 @@ def main():
                 use_cross_attn=CONFIG["unsmear_training"]["use_cross_attn"],
                 self_cond=True,
                 two_head=use_two_head,
+                feat_head_mode=CONFIG["unsmear_training"]["feat_head_mode"],
+                local_attn=CONFIG["unsmear_training"]["local_attn"],
+                local_attn_radius=CONFIG["unsmear_training"]["local_attn_radius"],
+                local_attn_scale=CONFIG["unsmear_training"]["local_attn_scale"],
             ).to(device)
 
         if args.unsmear_kfold_train_only >= 0:

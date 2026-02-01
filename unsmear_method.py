@@ -92,6 +92,10 @@ CONFIG = {
         "ema_decay": 0.995,
         "jet_loss_weight": 0.1,  # jet-level summary loss
         "two_head": False,
+        "feat_head_mode": "single",  # single | ptetaph (separate pt/E vs eta/phi heads)
+        "local_attn": False,
+        "local_attn_radius": 0.2,
+        "local_attn_scale": 2.0,
     },
     "training": {
         "batch_size": 256,
@@ -349,6 +353,31 @@ def get_timestep_embedding(timesteps, dim):
 
 
 # ----------------------------- Model ----------------------------- #
+class FeatureHead(nn.Module):
+    def __init__(self, embed_dim, input_dim, mode="single"):
+        super().__init__()
+        self.mode = mode
+        if mode == "single":
+            self.out = nn.Linear(embed_dim, input_dim)
+        elif mode == "ptetaph":
+            self.out_ptE = nn.Linear(embed_dim, 2)
+            self.out_etaphi = nn.Linear(embed_dim, 2)
+        else:
+            raise ValueError(f"Unsupported feat_head_mode: {mode}")
+
+    def forward(self, h):
+        if self.mode == "single":
+            return self.out(h)
+        ptE = self.out_ptE(h)
+        etaphi = self.out_etaphi(h)
+        out = torch.zeros(h.size(0), h.size(1), 4, device=h.device, dtype=h.dtype)
+        out[..., 0] = ptE[..., 0]
+        out[..., 3] = ptE[..., 1]
+        out[..., 1] = etaphi[..., 0]
+        out[..., 2] = etaphi[..., 1]
+        return out
+
+
 class ConditionalDenoiser(nn.Module):
     def __init__(
         self,
@@ -362,6 +391,10 @@ class ConditionalDenoiser(nn.Module):
         use_cross_attn=True,
         self_cond=True,
         two_head=False,
+        feat_head_mode="single",
+        local_attn=False,
+        local_attn_radius=0.2,
+        local_attn_scale=2.0,
     ):
         super().__init__()
         self.input_dim = input_dim
@@ -370,6 +403,12 @@ class ConditionalDenoiser(nn.Module):
         self.use_cross_attn = use_cross_attn
         self.self_cond = self_cond
         self.two_head = two_head
+        self.feat_head_mode = feat_head_mode
+        self.local_attn = local_attn
+        self.local_attn_radius = local_attn_radius
+        self.local_attn_scale = local_attn_scale
+        if self.local_attn:
+            self.local_attn_gamma = nn.Parameter(torch.tensor(1.0))
         self.x_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
             nn.GELU(),
@@ -424,10 +463,10 @@ class ConditionalDenoiser(nn.Module):
             )
             self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
         if self.two_head:
-            self.out_normal = nn.Linear(embed_dim, input_dim)
-            self.out_merged = nn.Linear(embed_dim, input_dim)
+            self.out_normal = FeatureHead(embed_dim, input_dim, mode=self.feat_head_mode)
+            self.out_merged = FeatureHead(embed_dim, input_dim, mode=self.feat_head_mode)
         else:
-            self.out = nn.Linear(embed_dim, input_dim)
+            self.out = FeatureHead(embed_dim, input_dim, mode=self.feat_head_mode)
 
     def forward(self, x_t, cond, mask, t, self_cond=None, merge_flag=None):
         # x_t, cond: (B, N, F) ; mask: (B, N)
@@ -440,6 +479,19 @@ class ConditionalDenoiser(nn.Module):
             h = h + self.sc_proj(self_cond)
         t_emb = self.t_mlp(get_timestep_embedding(t, self.embed_dim))
         h = h + t_emb.unsqueeze(1)
+        if self.local_attn:
+            eta = cond[:, :, 1]
+            phi = cond[:, :, 2]
+            deta = eta.unsqueeze(2) - eta.unsqueeze(1)
+            dphi = phi.unsqueeze(2) - phi.unsqueeze(1)
+            dphi = torch.atan2(torch.sin(dphi), torch.cos(dphi))
+            dr = torch.sqrt(deta ** 2 + dphi ** 2 + 1e-12)
+            w = torch.exp(-((dr / max(self.local_attn_radius, 1e-6)) ** 2) * self.local_attn_scale)
+            m = mask.float()
+            w = w * m.unsqueeze(1) * m.unsqueeze(2)
+            denom = w.sum(dim=-1, keepdim=True).clamp(min=1e-6)
+            local_ctx = torch.bmm(w, h) / denom
+            h = h + self.local_attn_gamma * local_ctx
         if self.use_cross_attn:
             mem = self.cond_encoder(self.c_proj(cond), src_key_padding_mask=~mask)
             h = self.decoder(h, mem, tgt_key_padding_mask=~mask, memory_key_padding_mask=~mask)
@@ -914,6 +966,10 @@ def main():
     parser.add_argument("--x0_weight", type=float, default=CONFIG["diffusion"]["x0_weight"])
     parser.add_argument("--pred_type", type=str, default=CONFIG["diffusion"]["pred_type"], choices=["eps", "x0", "v"])
     parser.add_argument("--two_head", action="store_true", default=CONFIG["diffusion"]["two_head"], help="Use two-head denoiser (merge-flag routed) if merge_flag is provided.")
+    parser.add_argument("--feat_head_mode", type=str, default=CONFIG["diffusion"]["feat_head_mode"], choices=["single", "ptetaph"], help="Output head mode for diffusion model.")
+    parser.add_argument("--local_attn", action="store_true", default=CONFIG["diffusion"]["local_attn"], help="Enable local neighborhood mixing inside the denoiser.")
+    parser.add_argument("--local_attn_radius", type=float, default=CONFIG["diffusion"]["local_attn_radius"])
+    parser.add_argument("--local_attn_scale", type=float, default=CONFIG["diffusion"]["local_attn_scale"])
     parser.add_argument("--snr_weight", action="store_true", default=CONFIG["diffusion"]["snr_weight"])
     parser.add_argument("--snr_gamma", type=float, default=CONFIG["diffusion"]["snr_gamma"])
     parser.add_argument("--self_cond_prob", type=float, default=CONFIG["diffusion"]["self_cond_prob"])
@@ -1033,6 +1089,10 @@ def main():
             use_cross_attn=args.use_cross_attn,
             self_cond=not args.no_self_cond,
             two_head=args.two_head,
+            feat_head_mode=args.feat_head_mode,
+            local_attn=args.local_attn,
+            local_attn_radius=args.local_attn_radius,
+            local_attn_scale=args.local_attn_scale,
         ).to(device)
         ckpt_path = Path(args.diffusion_ckpt) if args.diffusion_ckpt else (save_root / "unsmear_diffusion_ema.pt")
         ckpt = torch.load(ckpt_path, map_location=device)
@@ -1049,6 +1109,10 @@ def main():
             use_cross_attn=args.use_cross_attn,
             self_cond=not args.no_self_cond,
             two_head=args.two_head,
+            feat_head_mode=args.feat_head_mode,
+            local_attn=args.local_attn,
+            local_attn_radius=args.local_attn_radius,
+            local_attn_scale=args.local_attn_scale,
         ).to(device)
         ema = EMA(model, decay=args.ema_decay)
 
@@ -1099,6 +1163,10 @@ def main():
                     use_cross_attn=args.use_cross_attn,
                     self_cond=not args.no_self_cond,
                     two_head=args.two_head,
+                    feat_head_mode=args.feat_head_mode,
+                    local_attn=args.local_attn,
+                    local_attn_radius=args.local_attn_radius,
+                    local_attn_scale=args.local_attn_scale,
                 ).to(device)
                 ema.apply_to(eval_model)
                 val_l1, val_l2 = eval_reconstruction(
@@ -1132,6 +1200,10 @@ def main():
             use_cross_attn=args.use_cross_attn,
             self_cond=not args.no_self_cond,
             two_head=args.two_head,
+            feat_head_mode=args.feat_head_mode,
+            local_attn=args.local_attn,
+            local_attn_radius=args.local_attn_radius,
+            local_attn_scale=args.local_attn_scale,
         ).to(device)
         ema.apply_to(eval_model)
         val_l1, val_l2 = eval_reconstruction(
