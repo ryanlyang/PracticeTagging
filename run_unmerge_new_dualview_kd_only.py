@@ -112,7 +112,7 @@ def main():
 
     print("Applying HLT effects...")
     hlt_const, hlt_mask, origin_counts, origin_lists, _ = apply_hlt_effects_with_tracking(
-        const_off, masks_off, CONFIG["hlt_effects"], seed=RANDOM_SEED
+        const_off, masks_off, CONFIG, seed=RANDOM_SEED
     )
 
     features_off = compute_features(const_off)
