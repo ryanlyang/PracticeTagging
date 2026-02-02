@@ -5,7 +5,7 @@
 #SBATCH --job-name=unmerge_dv_kd
 #SBATCH --output=unmerge_new_dualview_kd_logs/unmerge_dv_kd_%j.out
 #SBATCH --error=unmerge_new_dualview_kd_logs/unmerge_dv_kd_%j.err
-#SBATCH --time=8-00:00:00
+#SBATCH --time=4-00:00:00
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=128G
