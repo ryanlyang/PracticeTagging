@@ -16,7 +16,7 @@ mkdir -p unmerge_preunsmear_logs
 RUN_NAME=${RUN_NAME:-"preunsmear_base_relpos"}
 
 echo "Submitting base pre-unsmear + unmerge job: $RUN_NAME"
-base_jid=$(sbatch --export=ALL,\
+base_jid=$(sbatch --time=5-00:00:00 --export=ALL,\
 SAVE_DIR="$BASE_DIR",\
 RUN_NAME="$RUN_NAME",\
 N_TRAIN_JETS="$N_TRAIN_JETS",\
@@ -62,7 +62,7 @@ submit_variant () {
   if [ -n "$extra_export" ]; then
     extra_export=",$extra_export"
   fi
-  sbatch --dependency=afterok:$base_jid --export=ALL,\
+  sbatch --time=4-00:00:00 --dependency=afterok:$base_jid --export=ALL,\
 SAVE_DIR="$BASE_DIR",\
 RUN_NAME="$name",\
 N_TRAIN_JETS="$N_TRAIN_JETS",\
