@@ -85,9 +85,21 @@ def main():
     save_root.mkdir(parents=True, exist_ok=True)
 
     print("Loading data...")
+    train_path = Path(args.train_path)
+    if train_path.is_dir():
+        train_files = sorted(train_path.glob("*.h5"))
+    else:
+        # allow comma-separated list of files
+        train_files = [Path(p) for p in str(args.train_path).split(",") if p.strip()]
+    if len(train_files) == 0:
+        raise FileNotFoundError(f"No .h5 files found in: {args.train_path}")
+
     max_jets_needed = args.offset_jets + args.n_train_jets
-    const_off_full, masks_off_full, all_labels_full = utils.load_from_files(
-        args.train_path, max_jets_needed, args.max_constits
+    const_off_full, masks_off_full, all_labels_full, _, _ = utils.load_from_files(
+        [str(p) for p in train_files],
+        max_jets=max_jets_needed,
+        max_constits=args.max_constits,
+        use_train_weights=False,
     )
     if const_off_full.shape[0] < max_jets_needed:
         raise RuntimeError(
