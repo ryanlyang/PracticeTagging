@@ -811,6 +811,32 @@ class MergeCountPredictor(nn.Module):
         return logits
 
 
+class RelPosEncoderLayer(nn.Module):
+    def __init__(self, embed_dim, num_heads, ff_dim, dropout):
+        super().__init__()
+        self.self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=dropout, batch_first=True)
+        self.norm1 = nn.LayerNorm(embed_dim)
+        self.norm2 = nn.LayerNorm(embed_dim)
+        self.ff = nn.Sequential(
+            nn.Linear(embed_dim, ff_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(ff_dim, embed_dim),
+            nn.Dropout(dropout),
+        )
+
+    def forward(self, x, mask, rel_bias):
+        # rel_bias: [B, H, L, L] -> [B*H, L, L] for MHA
+        B, L, _ = x.shape
+        attn_mask = rel_bias.reshape(B * rel_bias.size(1), L, L)
+        h = self.norm1(x)
+        attn_out, _ = self.self_attn(h, h, h, attn_mask=attn_mask, key_padding_mask=~mask, need_weights=False)
+        x = x + attn_out
+        h2 = self.norm2(x)
+        x = x + self.ff(h2)
+        return x
+
+
 class UnmergePredictor(nn.Module):
     def __init__(
         self,
@@ -823,11 +849,14 @@ class UnmergePredictor(nn.Module):
         ff_dim,
         dropout,
         count_embed_dim,
+        relpos_mode="none",
     ):
         super().__init__()
         self.input_dim = input_dim
         self.max_count = max_count
         self.embed_dim = embed_dim
+        self.relpos_mode = relpos_mode
+        self.num_heads = num_heads
 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
@@ -836,16 +865,31 @@ class UnmergePredictor(nn.Module):
             nn.Dropout(dropout),
         )
 
-        enc_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim,
-            nhead=num_heads,
-            dim_feedforward=ff_dim,
-            dropout=dropout,
-            activation="gelu",
-            batch_first=True,
-            norm_first=True,
-        )
-        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+        if relpos_mode not in {"none", "attn"}:
+            raise ValueError(f"Unsupported relpos_mode: {relpos_mode}")
+
+        if relpos_mode == "none":
+            enc_layer = nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=num_heads,
+                dim_feedforward=ff_dim,
+                dropout=dropout,
+                activation="gelu",
+                batch_first=True,
+                norm_first=True,
+            )
+            self.encoder = nn.TransformerEncoder(enc_layer, num_layers=num_layers)
+            self.relpos_mlp = None
+            self.encoder_layers = None
+        else:
+            self.relpos_mlp = nn.Sequential(
+                nn.Linear(3, embed_dim),
+                nn.GELU(),
+                nn.Linear(embed_dim, num_heads),
+            )
+            self.encoder_layers = nn.ModuleList(
+                [RelPosEncoderLayer(embed_dim, num_heads, ff_dim, dropout) for _ in range(num_layers)]
+            )
 
         self.count_embed = nn.Embedding(max_count + 1, count_embed_dim)
         self.cond_proj = nn.Sequential(
@@ -881,7 +925,12 @@ class UnmergePredictor(nn.Module):
         h = x.view(-1, self.input_dim)
         h = self.input_proj(h)
         h = h.view(batch_size, seq_len, -1)
-        h = self.encoder(h, src_key_padding_mask=~mask)
+        if self.relpos_mode == "none":
+            h = self.encoder(h, src_key_padding_mask=~mask)
+        else:
+            rel_bias = self._build_relpos_bias(x)
+            for layer in self.encoder_layers:
+                h = layer(h, mask, rel_bias)
 
         idx = token_idx.view(-1, 1, 1).expand(-1, 1, self.embed_dim)
         h_t = h.gather(1, idx).squeeze(1)
@@ -902,6 +951,21 @@ class UnmergePredictor(nn.Module):
         else:
             logvar = torch.zeros_like(mean)
         return mean, logvar
+
+    def _build_relpos_bias(self, x):
+        # x: [B, L, input_dim]; use delta_eta/delta_phi from features (0,1)
+        eta = x[:, :, 0]
+        phi = x[:, :, 1]
+        deta = eta[:, :, None] - eta[:, None, :]
+        dphi = torch.atan2(
+            torch.sin(phi[:, :, None] - phi[:, None, :]),
+            torch.cos(phi[:, :, None] - phi[:, None, :]),
+        )
+        dR = torch.sqrt(deta ** 2 + dphi ** 2 + 1e-8)
+        rel = torch.stack([deta, dphi, dR], dim=-1)
+        rel_bias = self.relpos_mlp(rel)  # [B, L, L, H]
+        rel_bias = rel_bias.permute(0, 3, 1, 2).contiguous()  # [B, H, L, L]
+        return rel_bias
 
 
 def compute_class_weights(labels, mask, num_classes):
@@ -1808,6 +1872,7 @@ def main():
     parser.add_argument("--mc_consistency_weight", type=float, default=CONFIG["mc_sampling"]["consistency_weight"], help="Consistency loss weight for MC samples.")
     parser.add_argument("--mc_seed", type=int, default=CONFIG["mc_sampling"]["seed"], help="Seed for MC sampling.")
     parser.add_argument("--no_mc", action="store_true", help="Disable Monte-Carlo sampling/consistency training.")
+    parser.add_argument("--unmerge_relpos_mode", type=str, default="none", choices=["none", "attn"], help="Relative position encoding mode for unmerger.")
     parser.add_argument("--k_folds", type=int, default=1, help="K-fold OOF training for count+unmerge (K>1).")
     parser.add_argument("--kfold_ensemble_valtest", action="store_true", help="Ensemble K models for val/test generation.")
     parser.add_argument("--kfold_random_valtest", action="store_true", help="Randomly select one of K unmergers per jet/token for val/test generation.")
@@ -1860,6 +1925,7 @@ def main():
     parser.add_argument("--alpha_stable_delta", type=float, default=None, help="Override adaptive alpha delta.")
     parser.add_argument("--alpha_warmup_min_epochs", type=int, default=None, help="Override adaptive alpha min epochs.")
     args = parser.parse_args()
+    unmerge_relpos_mode = str(args.unmerge_relpos_mode)
 
     CONFIG["unmerge_training"]["loss_type"] = args.unmerge_loss
     if args.no_true_count:
@@ -2209,13 +2275,15 @@ def main():
     def _save_unmerge_model(fid, unmerge_model, tgt_mean, tgt_std):
         fold_dir = _fold_dir(fid)
         fold_dir.mkdir(parents=True, exist_ok=True)
+        unmerge_cfg = dict(CONFIG["unmerge_model"])
+        unmerge_cfg["relpos_mode"] = unmerge_relpos_mode
         torch.save(
             {
                 "model": unmerge_model.state_dict(),
                 "tgt_mean": tgt_mean,
                 "tgt_std": tgt_std,
                 "max_count": max_count,
-                "config": CONFIG["unmerge_model"],
+                "config": unmerge_cfg,
             },
             fold_dir / "unmerge_predictor.pt",
         )
@@ -2226,7 +2294,14 @@ def main():
         count_model = MergeCountPredictor(input_dim=7, num_classes=max_count, **CONFIG["merge_count_model"]).to(device)
         count_model.load_state_dict(ckpt_c["model"])
         ckpt_u = torch.load(fold_dir / "unmerge_predictor.pt", map_location=device)
-        unmerge_model = UnmergePredictor(input_dim=7, max_count=max_count, **CONFIG["unmerge_model"]).to(device)
+        ckpt_cfg = ckpt_u.get("config", {})
+        relpos_mode = ckpt_cfg.get("relpos_mode", "none")
+        unmerge_model = UnmergePredictor(
+            input_dim=7,
+            max_count=max_count,
+            relpos_mode=relpos_mode,
+            **CONFIG["unmerge_model"],
+        ).to(device)
         unmerge_model.load_state_dict(ckpt_u["model"])
         tgt_mean = ckpt_u["tgt_mean"]
         tgt_std = ckpt_u["tgt_std"]
@@ -2326,9 +2401,8 @@ def main():
             auc_baseline, preds_baseline, _ = eval_classifier(baseline, test_loader_hlt, device)
 
     # ------------------- Train merge-count predictor ------------------- #
-    if classifier_only:
-        if args.load_unmerged_cache is None:
-            raise ValueError("--classifier_only requires --load_unmerged_cache")
+    cache_loaded = False
+    if args.load_unmerged_cache is not None:
         print("\n" + "=" * 70)
         print("STEP 3: LOAD UNMERGED CACHE")
         print("=" * 70)
@@ -2346,7 +2420,10 @@ def main():
         mc_cache = None
         if args.load_mc_cache is not None:
             mc_cache = np.load(args.load_mc_cache, allow_pickle=True)
+        cache_loaded = True
         print(f"Loaded unmerged cache: {args.load_unmerged_cache}")
+    elif classifier_only:
+        raise ValueError("--classifier_only requires --load_unmerged_cache")
     else:
         print("\n" + "=" * 70)
         print("STEP 3: MERGE COUNT PREDICTOR")
@@ -2358,7 +2435,7 @@ def main():
         pred_counts_val_list = None
         pred_counts_test_list = None
 
-    if not classifier_only:
+    if not classifier_only and not cache_loaded:
         fold_trains = []
         fold_holds = []
         if k_folds > 1 and not kfold_use_pretrained:
@@ -2923,6 +3000,7 @@ def main():
                     unmerge_model = UnmergePredictor(
                         input_dim=7,
                         max_count=max_count,
+                        relpos_mode=unmerge_relpos_mode,
                         **CONFIG["unmerge_model"],
                     ).to(device)
                     opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
@@ -3172,6 +3250,7 @@ def main():
             unmerge_model = UnmergePredictor(
                 input_dim=7,
                 max_count=max_count,
+                relpos_mode=unmerge_relpos_mode,
                 **CONFIG["unmerge_model"],
             ).to(device)
             opt_u = torch.optim.AdamW(unmerge_model.parameters(), lr=CONFIG["unmerge_training"]["lr"], weight_decay=CONFIG["unmerge_training"]["weight_decay"])
@@ -3677,7 +3756,7 @@ def main():
         features_unsmeared = compute_features(unsmear_const, unmerged_mask)
         features_unsmeared_std = standardize(features_unsmeared, unmerged_mask, feat_means, feat_stds)
 
-        mc_enabled = CONFIG["mc_sampling"]["enabled"]
+        mc_enabled = CONFIG["mc_sampling"]["enabled"] and (not cache_loaded)
         if k_folds > 1 and mc_enabled:
             print("Warning: MC sampling with k-fold unmerge not supported; disabling MC.")
             mc_enabled = False

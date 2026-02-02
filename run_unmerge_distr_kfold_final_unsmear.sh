@@ -81,6 +81,7 @@ PRE_UNSMEAR_K_FOLDS=${PRE_UNSMEAR_K_FOLDS:-$K_FOLDS}
 PRE_UNSMEAR_KFOLD_MODEL_DIR=${PRE_UNSMEAR_KFOLD_MODEL_DIR:-"$SAVE_DIR/$RUN_NAME/pre_unsmear_kfold_models"}
 PRE_UNSMEAR_KFOLD_USE_PRETRAINED=${PRE_UNSMEAR_KFOLD_USE_PRETRAINED:-0}
 PRE_UNSMEAR_KFOLD_ENSEMBLE=${PRE_UNSMEAR_KFOLD_ENSEMBLE:-1}
+UNMERGE_RELPOS_MODE=${UNMERGE_RELPOS_MODE:-"none"}
 
 CMD="python unmerge_distr_model_unsmear.py \
   --save_dir $SAVE_DIR \
@@ -176,6 +177,10 @@ if [ "$PRE_UNSMEAR" -eq 1 ]; then
   if [ "$PRE_UNSMEAR_KFOLD_ENSEMBLE" -eq 1 ]; then
     CMD="$CMD --pre_unsmear_kfold_ensemble_valtest"
   fi
+fi
+
+if [ "$UNMERGE_RELPOS_MODE" != "none" ]; then
+  CMD="$CMD --unmerge_relpos_mode $UNMERGE_RELPOS_MODE"
 fi
 
 if [ -n "$TEACHER_CKPT" ]; then
