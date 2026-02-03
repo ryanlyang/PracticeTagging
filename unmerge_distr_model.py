@@ -369,8 +369,8 @@ def apply_hlt_effects_with_tracking(const, mask, cfg, seed=42):
 
     # Effect 4: Random efficiency loss
     n_lost_eff = 0
-    if hcfg["efficiency_loss": 0.0,
-        random_loss = np.random.random((n_jets, max_part)) < hcfg["efficiency_loss"],
+    if hcfg["efficiency_loss"] > 0:
+        random_loss = np.random.random((n_jets, max_part)) < hcfg["efficiency_loss"]
         lost = random_loss & hlt_mask
         hlt_mask[lost] = False
         hlt[lost] = 0
