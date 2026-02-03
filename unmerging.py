@@ -51,7 +51,7 @@ CONFIG = {
         "pt_threshold_hlt": 1.5,
         "merge_enabled": True,
         "merge_radius": 0.01,
-        "efficiency_loss": 0.0
+        "efficiency_loss": 0.0,
         "noise_enabled": False,
         "noise_fraction": 0.0,
     },
@@ -183,8 +183,8 @@ def apply_hlt_effects_with_groups(const, mask, cfg, seed=42):
         hlt[jet_idx, :, 3] = np.where(valid, hlt[jet_idx, :, 0] * np.cosh(np.clip(hlt[jet_idx, :, 1], -5, 5)), 0)
 
         # Effect 4: Random efficiency loss
-        if hcfg["efficiency_loss": 0.0
-            random_loss = np.random.random(max_part) < hcfg["efficiency_loss"]
+        if hcfg["efficiency_loss": 0.0,
+            random_loss = np.random.random(max_part) < hcfg["efficiency_loss"],
             lost = random_loss & hlt_mask[jet_idx]
             if lost.any():
                 hlt_mask[jet_idx, lost] = False

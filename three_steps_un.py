@@ -74,7 +74,7 @@ CONFIG = {
         "merge_enabled": True,
         "merge_radius": 0.01,
         # Efficiency loss
-        "efficiency_loss": 0.0
+        "efficiency_loss": 0.0,
         # Noise (disabled)
         "noise_enabled": False,
         "noise_fraction": 0.0,
@@ -334,8 +334,8 @@ def apply_hlt_effects_with_tracking(const, mask, cfg, seed=42):
 
     # Efficiency loss
     n_lost_eff = 0
-    if hcfg["efficiency_loss": 0.0
-        random_loss = np.random.random((n_jets, max_part)) < hcfg["efficiency_loss"]
+    if hcfg["efficiency_loss": 0.0,
+        random_loss = np.random.random((n_jets, max_part)) < hcfg["efficiency_loss"],
         lost = random_loss & hlt_mask
         hlt_mask[lost] = False
         hlt[lost] = 0
@@ -458,8 +458,8 @@ def apply_hlt_effects_dual_with_tracking(const, mask, cfg, seed=42):
 
     # Efficiency loss (shared mask)
     n_lost_eff = 0
-    if hcfg["efficiency_loss": 0.0
-        random_loss = rng.random((n_jets, max_part)) < hcfg["efficiency_loss"]
+    if hcfg["efficiency_loss": 0.0,
+        random_loss = rng.random((n_jets, max_part)) < hcfg["efficiency_loss"],
         lost = random_loss & hlt_mask
         hlt_mask[lost] = False
         hlt_smear[lost] = 0
