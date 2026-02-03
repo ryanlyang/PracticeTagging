@@ -532,7 +532,9 @@ def main():
     sch_dv = get_scheduler(opt_dv, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
     best_auc_dv, best_state_dv, no_improve = 0.0, None, 0
     for ep in range(CONFIG["training"]["epochs"]):
-        _, train_auc = train_kd_epoch_dual(dual_cls, teacher, train_loader_dual, opt_dv, device, {"alpha_kd": 0.0})
+        kd_cfg_zero = dict(CONFIG["kd"])
+        kd_cfg_zero["alpha_kd"] = 0.0
+        _, train_auc = train_kd_epoch_dual(dual_cls, teacher, train_loader_dual, opt_dv, device, kd_cfg_zero)
         val_auc, _, _ = evaluate_kd_dual(dual_cls, val_loader_dual, device)
         sch_dv.step()
         if val_auc > best_auc_dv:
@@ -587,7 +589,9 @@ def main():
     sch_dvf = get_scheduler(opt_dvf, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
     best_auc_dvf, best_state_dvf, no_improve = 0.0, None, 0
     for ep in range(CONFIG["training"]["epochs"]):
-        _, train_auc = train_kd_epoch_dual(dual_flag_cls, teacher, train_loader_dual_flag, opt_dvf, device, {"alpha_kd": 0.0})
+        kd_cfg_zero = dict(CONFIG["kd"])
+        kd_cfg_zero["alpha_kd"] = 0.0
+        _, train_auc = train_kd_epoch_dual(dual_flag_cls, teacher, train_loader_dual_flag, opt_dvf, device, kd_cfg_zero)
         val_auc, _, _ = evaluate_kd_dual(dual_flag_cls, val_loader_dual_flag, device)
         sch_dvf.step()
         if val_auc > best_auc_dvf:
