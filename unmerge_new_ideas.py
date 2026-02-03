@@ -58,7 +58,7 @@ CONFIG = {
         "pt_threshold_hlt": 1.5,
         "merge_enabled": True,
         "merge_radius": 0.01,
-        "efficiency_loss": 0.03,
+        "efficiency_loss": 0.0
         "noise_enabled": False,
         "noise_fraction": 0.0,
     },
@@ -108,6 +108,7 @@ CONFIG = {
         "weight_decay": 1e-5,
         "warmup_epochs": 5,
         "patience": 20,
+        "physics_weight": 0.0,
     },
     "kd": {
         "temperature": 7.0,
@@ -347,7 +348,7 @@ def apply_hlt_effects_with_tracking(const, mask, cfg, seed=42):
 
     # Effect 4: Random efficiency loss
     n_lost_eff = 0
-    if hcfg["efficiency_loss"] > 0:
+    if hcfg["efficiency_loss": 0.0
         random_loss = np.random.random((n_jets, max_part)) < hcfg["efficiency_loss"]
         lost = random_loss & hlt_mask
         hlt_mask[lost] = False
@@ -551,8 +552,8 @@ class UnmergeDataset(Dataset):
         true_count = min(len(origin), self.max_count)
         origin = origin[:true_count]
         target_abs = self.constituents_off[jet_idx, origin, :4].astype(np.float32)
+        parent = self.constituents_hlt[jet_idx, token_idx, :4].astype(np.float32)
         if self.target_mode == "normalized":
-            parent = self.constituents_hlt[jet_idx, token_idx, :4].astype(np.float32)
             pt_p = max(parent[0], 1e-8)
             eta_p = parent[1]
             phi_p = parent[2]
@@ -578,6 +579,7 @@ class UnmergeDataset(Dataset):
             "pred_count": torch.tensor(min(pred_count, self.max_count), dtype=torch.long),
             "true_count": torch.tensor(true_count, dtype=torch.long),
             "target": torch.tensor(target_pad, dtype=torch.float32),
+            "parent": torch.tensor(parent, dtype=torch.float32),
         }
 
     def get_true_counts(self):
@@ -996,6 +998,30 @@ def set_chamfer_loss(preds, targets, true_counts):
         loss_i = dist.min(dim=1).values.mean() + dist.min(dim=0).values.mean()
         total += loss_i
     return total / max(preds.size(0), 1)
+
+
+def physics_loss(pred_abs, true_counts, hlt_token):
+    # Compare sum of predicted constituents to merged HLT token (4-vector)
+    # hlt_token: (B, 4) [pt, eta, phi, E]
+    total = 0.0
+    for i in range(pred_abs.size(0)):
+        k = int(true_counts[i].item())
+        pred = pred_abs[i, :k]
+        pt = pred[:, 0]
+        eta = pred[:, 1]
+        phi = pred[:, 2]
+        E = pred[:, 3]
+        px = (pt * torch.cos(phi)).sum()
+        py = (pt * torch.sin(phi)).sum()
+        pz = (pt * torch.sinh(eta)).sum()
+        E_sum = E.sum()
+        pt_sum = torch.sqrt(px ** 2 + py ** 2 + 1e-8)
+        p_sum = torch.sqrt(px ** 2 + py ** 2 + pz ** 2 + 1e-8)
+        eta_sum = 0.5 * torch.log(torch.clamp((p_sum + pz) / (p_sum - pz + 1e-8), 1e-8, 1e8))
+        phi_sum = torch.atan2(py, px)
+        pred_vec = torch.stack([pt_sum, eta_sum, phi_sum, E_sum], dim=0)
+        total += F.l1_loss(pred_vec, hlt_token[i])
+    return total / max(pred_abs.size(0), 1)
 
 
 def get_scheduler(opt, warmup, total):
@@ -1459,8 +1485,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_path", type=str, default="./data")
     parser.add_argument("--n_train_jets", type=int, default=200000)
+    parser.add_argument("--offset_jets", type=int, default=0, help="Skip this many jets to get a new slice.")
     parser.add_argument("--max_constits", type=int, default=80)
     parser.add_argument("--max_merge_count", type=int, default=10)
+    parser.add_argument("--physics_weight", type=float, default=CONFIG["unmerge_training"]["physics_weight"])
     parser.add_argument(
         "--unmerge_head_mode",
         type=str,
@@ -1519,6 +1547,8 @@ def main():
     parser.add_argument("--skip_save_models", action="store_true")
     args = parser.parse_args()
 
+    CONFIG["unmerge_training"]["physics_weight"] = float(args.physics_weight)
+
     save_root = Path(args.save_dir) / args.run_name
     save_root.mkdir(parents=True, exist_ok=True)
 
@@ -1532,12 +1562,20 @@ def main():
         raise FileNotFoundError(f"No .h5 files found in: {train_path}")
 
     print("Loading data via utils.load_from_files...")
-    all_data, all_labels, _, _, _ = utils.load_from_files(
+    max_jets_needed = args.offset_jets + args.n_train_jets
+    all_data_full, all_labels_full, _, _, _ = utils.load_from_files(
         train_files,
-        max_jets=args.n_train_jets,
+        max_jets=max_jets_needed,
         max_constits=args.max_constits,
         use_train_weights=False,
     )
+    if all_data_full.shape[0] < max_jets_needed:
+        raise RuntimeError(
+            f"Not enough jets for offset {args.offset_jets} + n_train_jets {args.n_train_jets}. "
+            f"Got {all_data_full.shape[0]}."
+        )
+    all_data = all_data_full[args.offset_jets:args.offset_jets + args.n_train_jets]
+    all_labels = all_labels_full[args.offset_jets:args.offset_jets + args.n_train_jets]
     all_labels = all_labels.astype(np.int64)
     print(f"Loaded: data={all_data.shape}, labels={all_labels.shape}")
 
@@ -1705,6 +1743,7 @@ def main():
     print(f"Unmerge local attn: mode={args.unmerge_local_attn_mode}, radius={args.unmerge_local_attn_radius}, scale={args.unmerge_local_attn_scale}")
     print(f"Unmerge target mode: {args.unmerge_target_mode}")
     print(f"Unmerge count-balanced: {args.unmerge_count_balanced}")
+    print(f"Unmerge physics weight: {CONFIG['unmerge_training']['physics_weight']}")
     samples = []
     print("Building merged-token sample list...")
     for j in tqdm(range(len(all_labels)), desc="CollectMerged"):
@@ -1752,6 +1791,29 @@ def main():
     flat_train = np.concatenate(train_targets, axis=0)
     tgt_mean = flat_train.mean(axis=0)
     tgt_std = flat_train.std(axis=0) + 1e-8
+    tgt_mean_t = torch.tensor(tgt_mean, dtype=torch.float32, device=device)
+    tgt_std_t = torch.tensor(tgt_std, dtype=torch.float32, device=device)
+
+    def preds_to_abs(preds, parent):
+        preds_unstd = preds * tgt_std_t + tgt_mean_t
+        if args.unmerge_target_mode == "normalized":
+            pt_p = parent[:, 0].clamp(min=1e-8)
+            eta_p = parent[:, 1]
+            phi_p = parent[:, 2]
+            e_p = parent[:, 3].clamp(min=1e-8)
+            pt = torch.clamp(preds_unstd[..., 0] * pt_p[:, None], min=0.0)
+            eta = torch.clamp(preds_unstd[..., 1] + eta_p[:, None], min=-5.0, max=5.0)
+            phi = torch.atan2(
+                torch.sin(preds_unstd[..., 2] + phi_p[:, None]),
+                torch.cos(preds_unstd[..., 2] + phi_p[:, None]),
+            )
+            E = torch.clamp(preds_unstd[..., 3] * e_p[:, None], min=0.0)
+            return torch.stack([pt, eta, phi, E], dim=-1)
+        pt = torch.clamp(preds_unstd[..., 0], min=0.0)
+        eta = torch.clamp(preds_unstd[..., 1], min=-5.0, max=5.0)
+        phi = torch.atan2(torch.sin(preds_unstd[..., 2]), torch.cos(preds_unstd[..., 2]))
+        E = torch.clamp(preds_unstd[..., 3], min=0.0)
+        return torch.stack([pt, eta, phi, E], dim=-1)
 
     BS_un = CONFIG["unmerge_training"]["batch_size"]
     train_ds_un = UnmergeDataset(features_hlt_std, hlt_mask, hlt_const, const_off, train_samples, max_count, tgt_mean, tgt_std, args.unmerge_target_mode)
@@ -1800,9 +1862,13 @@ def main():
             pred_count = batch["pred_count"].to(device)
             true_count = batch["true_count"].to(device)
             target = batch["target"].to(device)
+            parent = batch["parent"].to(device)
             opt_u.zero_grad()
             preds = unmerge_model(x, mask, token_idx, pred_count)
             loss = set_chamfer_loss(preds, target, true_count)
+            if CONFIG["unmerge_training"]["physics_weight"] > 0:
+                pred_abs = preds_to_abs(preds, parent)
+                loss = loss + CONFIG["unmerge_training"]["physics_weight"] * physics_loss(pred_abs, true_count, parent)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(unmerge_model.parameters(), 1.0)
             opt_u.step()
@@ -1820,8 +1886,12 @@ def main():
                 pred_count = batch["pred_count"].to(device)
                 true_count = batch["true_count"].to(device)
                 target = batch["target"].to(device)
+                parent = batch["parent"].to(device)
                 preds = unmerge_model(x, mask, token_idx, pred_count)
                 loss = set_chamfer_loss(preds, target, true_count)
+                if CONFIG["unmerge_training"]["physics_weight"] > 0:
+                    pred_abs = preds_to_abs(preds, parent)
+                    loss = loss + CONFIG["unmerge_training"]["physics_weight"] * physics_loss(pred_abs, true_count, parent)
                 val_loss += loss.item()
                 n_batches += 1
         val_loss = val_loss / max(n_batches, 1)
