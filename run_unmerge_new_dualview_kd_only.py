@@ -22,16 +22,21 @@ from unmerge_new_ideas import (
     UnmergePredictor,
     DualViewCrossAttnClassifier,
     DualViewKDDataset,
+    UnmergeKDDataset,
     JetDataset,
     build_unmerged_dataset,
     predict_counts,
     get_scheduler,
     train_classifier,
     eval_classifier,
+    train_kd_epoch,
+    evaluate_kd,
+    evaluate_bce_loss,
     train_kd_epoch_dual,
     evaluate_kd_dual,
     evaluate_bce_loss_dual,
     self_train_student_dual,
+    self_train_student,
 )
 
 
@@ -200,6 +205,104 @@ def main():
 
     auc_teacher, preds_teacher, labs = eval_classifier(teacher, test_loader_off, device)
     auc_baseline, preds_baseline, _ = eval_classifier(baseline, test_loader_hlt, device)
+
+    # HLT + KD (teacher on offline, student on HLT)
+    kd_train_ds_hlt = UnmergeKDDataset(
+        features_hlt_std[train_idx],
+        hlt_mask[train_idx],
+        features_off_std[train_idx],
+        masks_off[train_idx],
+        all_labels[train_idx],
+    )
+    kd_val_ds_hlt = UnmergeKDDataset(
+        features_hlt_std[val_idx],
+        hlt_mask[val_idx],
+        features_off_std[val_idx],
+        masks_off[val_idx],
+        all_labels[val_idx],
+    )
+    kd_test_ds_hlt = UnmergeKDDataset(
+        features_hlt_std[test_idx],
+        hlt_mask[test_idx],
+        features_off_std[test_idx],
+        masks_off[test_idx],
+        all_labels[test_idx],
+    )
+    kd_train_loader_hlt = torch.utils.data.DataLoader(kd_train_ds_hlt, batch_size=BS, shuffle=True, drop_last=True)
+    kd_val_loader_hlt = torch.utils.data.DataLoader(kd_val_ds_hlt, batch_size=BS, shuffle=False)
+    kd_test_loader_hlt = torch.utils.data.DataLoader(kd_test_ds_hlt, batch_size=BS, shuffle=False)
+
+    hlt_kd = ParticleTransformer(input_dim=7, **CONFIG["model"]).to(device)
+    opt_hlt_kd = torch.optim.AdamW(hlt_kd.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
+    sch_hlt_kd = get_scheduler(opt_hlt_kd, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
+
+    kd_cfg = CONFIG["kd"]
+    best_auc_hlt_kd, best_state_hlt_kd, no_improve = 0.0, None, 0
+    kd_active = not kd_cfg["adaptive_alpha"]
+    stable_count = 0
+    prev_val_loss = None
+
+    for ep in range(CONFIG["training"]["epochs"]):
+        current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
+        kd_cfg_ep = dict(kd_cfg)
+        kd_cfg_ep["alpha_kd"] = current_alpha
+
+        train_loss, train_auc = train_kd_epoch(hlt_kd, teacher, kd_train_loader_hlt, opt_hlt_kd, device, kd_cfg_ep)
+        val_auc, _, _ = evaluate_kd(hlt_kd, kd_val_loader_hlt, device)
+        sch_hlt_kd.step()
+
+        if not kd_active and kd_cfg["adaptive_alpha"]:
+            val_loss = evaluate_bce_loss(hlt_kd, kd_val_loader_hlt, device)
+            if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
+                stable_count += 1
+            else:
+                stable_count = 0
+            prev_val_loss = val_loss
+            if ep + 1 >= kd_cfg["alpha_warmup_min_epochs"] and stable_count >= kd_cfg["alpha_stable_patience"]:
+                kd_active = True
+                print(f"Activating HLT KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
+
+        if val_auc > best_auc_hlt_kd:
+            best_auc_hlt_kd = val_auc
+            best_state_hlt_kd = {k: v.detach().cpu().clone() for k, v in hlt_kd.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (ep + 1) % 5 == 0:
+            print(
+                f"HLT+KD ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, "
+                f"best={best_auc_hlt_kd:.4f} | alpha_kd={current_alpha:.2f}"
+            )
+        if no_improve >= CONFIG["training"]["patience"]:
+            print(f"Early stopping HLT+KD student at epoch {ep+1}")
+            break
+
+    if best_state_hlt_kd is not None:
+        hlt_kd.load_state_dict(best_state_hlt_kd)
+
+    if kd_cfg["self_train"]:
+        print("\nSelf-train HLT+KD...")
+        opt_st = torch.optim.AdamW(hlt_kd.parameters(), lr=kd_cfg["self_train_lr"])
+        best_auc_st = best_auc_hlt_kd
+        no_improve = 0
+        for ep in range(kd_cfg["self_train_epochs"]):
+            st_loss = self_train_student(hlt_kd, teacher, kd_train_loader_hlt, opt_st, device, kd_cfg)
+            val_auc, _, _ = evaluate_kd(hlt_kd, kd_val_loader_hlt, device)
+            if val_auc > best_auc_st:
+                best_auc_st = val_auc
+                best_state_hlt_kd = {k: v.detach().cpu().clone() for k, v in hlt_kd.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+            if (ep + 1) % 2 == 0:
+                print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st:.4f}")
+            if no_improve >= kd_cfg["self_train_patience"]:
+                break
+        if best_state_hlt_kd is not None:
+            hlt_kd.load_state_dict(best_state_hlt_kd)
+
+    auc_hlt_kd, preds_hlt_kd, _ = evaluate_kd(hlt_kd, kd_test_loader_hlt, device)
 
     # Load merge-count predictor
     max_count = args.max_merge_count
@@ -649,6 +752,7 @@ def main():
     # Plot teacher/baseline + all models
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
+    fpr_b_kd, tpr_b_kd, _ = roc_curve(labs, preds_hlt_kd)
     fpr_u, tpr_u, _ = roc_curve(labs, preds_unmerge)
     fpr_uf, tpr_uf, _ = roc_curve(labs, preds_unmerge_flag)
     fpr_dv, tpr_dv, _ = roc_curve(labs, preds_dual)
@@ -661,6 +765,7 @@ def main():
     plt.figure(figsize=(8, 6))
     plt.plot(tpr_t, fpr_t, "-", label=f"Teacher (AUC={auc_teacher:.3f})", color="crimson", linewidth=2)
     plt.plot(tpr_b, fpr_b, "--", label=f"HLT Baseline (AUC={auc_baseline:.3f})", color="steelblue", linewidth=2)
+    plt.plot(tpr_b_kd, fpr_b_kd, "--", label=f"HLT+KD (AUC={auc_hlt_kd:.3f})", color="royalblue", linewidth=2)
     plt.plot(tpr_u, fpr_u, ":", label=f"Unmerge (AUC={auc_unmerge:.3f})", color="forestgreen", linewidth=2)
     plt.plot(tpr_uf, fpr_uf, "-.", label=f"Unmerge+MF (AUC={auc_unmerge_flag:.3f})", color="darkorange", linewidth=2)
     plt.plot(tpr_dv, fpr_dv, "-", label=f"DualView (AUC={auc_dual:.3f})", color="teal", linewidth=2)
@@ -679,6 +784,7 @@ def main():
     plt.figure(figsize=(8, 6))
     plt.plot(tpr_t, fpr_t, "-", label=f"Teacher (AUC={auc_teacher:.3f})", color="crimson", linewidth=2)
     plt.plot(tpr_b, fpr_b, "--", label=f"HLT Baseline (AUC={auc_baseline:.3f})", color="steelblue", linewidth=2)
+    plt.plot(tpr_b_kd, fpr_b_kd, "--", label=f"HLT+KD (AUC={auc_hlt_kd:.3f})", color="royalblue", linewidth=2)
     plt.plot(tpr_dv_k, fpr_dv_k, ":", label=f"DualView+KD (AUC={auc_dual_kd:.3f})", color="slateblue", linewidth=2)
     plt.ylabel("False Positive Rate", fontsize=12)
     plt.xlabel("True Positive Rate (Signal efficiency)", fontsize=12)
@@ -692,6 +798,7 @@ def main():
         save_root / "results.npz",
         auc_teacher=auc_teacher,
         auc_baseline=auc_baseline,
+        auc_hlt_kd=auc_hlt_kd,
         auc_unmerge=auc_unmerge,
         auc_unmerge_flag=auc_unmerge_flag,
         auc_dual=auc_dual,
@@ -702,6 +809,8 @@ def main():
         tpr_teacher=tpr_t,
         fpr_baseline=fpr_b,
         tpr_baseline=tpr_b,
+        fpr_hlt_kd=fpr_b_kd,
+        tpr_hlt_kd=tpr_b_kd,
         fpr_unmerge=fpr_u,
         tpr_unmerge=tpr_u,
         fpr_unmerge_flag=fpr_uf,
@@ -722,6 +831,7 @@ def main():
     torch.save({"model": dual_flag_cls.state_dict(), "auc": auc_dual_flag}, save_root / "dual_view_mergeflag_classifier.pt")
     torch.save({"model": kd_student.state_dict(), "auc": auc_dual_kd}, save_root / "dual_view_kd.pt")
     torch.save({"model": kd_student_flag.state_dict(), "auc": auc_dual_flag_kd}, save_root / "dual_view_mergeflag_kd.pt")
+    torch.save({"model": hlt_kd.state_dict(), "auc": auc_hlt_kd}, save_root / "hlt_kd.pt")
     torch.save({"model": teacher.state_dict(), "auc": auc_teacher}, save_root / "teacher.pt")
     torch.save({"model": baseline.state_dict(), "auc": auc_baseline}, save_root / "baseline.pt")
 
