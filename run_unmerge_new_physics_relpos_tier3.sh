@@ -9,10 +9,16 @@
 
 set -euo pipefail
 
+mkdir -p unmerge_new_physics_logs
+
 RUN_NAME="${RUN_NAME:-physics02_relpos_new200k}"
 PHYSICS_WEIGHT="${PHYSICS_WEIGHT:-0.2}"
 OFFSET_JETS="${OFFSET_JETS:-200000}"
 RELPOS_MODE="${RELPOS_MODE:-attn}"
+
+source ~/.bashrc
+conda activate atlas_kd
+cd "$SLURM_SUBMIT_DIR"
 
 python unmerge_new_ideas.py \
   --save_dir checkpoints/unmerge_new_physics_relpos \
