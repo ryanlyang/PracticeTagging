@@ -4113,7 +4113,7 @@ def main():
             sch_kd_dv_flag.step()
 
             if not kd_active and kd_cfg["adaptive_alpha"]:
-            val_loss = evaluate_bce_loss_dual(kd_student_dv_flag, kd_val_loader_dv_flag, device)
+                val_loss = evaluate_bce_loss_dual(kd_student_dv_flag, kd_val_loader_dv_flag, device)
                 if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
                     stable_count += 1
                 else:
@@ -4125,7 +4125,7 @@ def main():
 
             if val_auc > best_auc_kd_dv:
                 best_auc_kd_dv = val_auc
-                best_state_kd_dv = {k: v.detach().cpu().clone() for k, v in kd_student_dv.state_dict().items()}
+                best_state_kd_dv = {k: v.detach().cpu().clone() for k, v in kd_student_dv_flag.state_dict().items()}
                 no_improve = 0
             else:
                 no_improve += 1
