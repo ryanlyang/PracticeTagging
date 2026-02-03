@@ -131,8 +131,8 @@ def main():
         const_off, masks_off, CONFIG, seed=RANDOM_SEED
     )
 
-    features_off = compute_features(const_off)
-    features_hlt = compute_features(hlt_const)
+    features_off = compute_features(const_off, masks_off)
+    features_hlt = compute_features(hlt_const, hlt_mask)
 
     idx = np.arange(len(all_labels))
     train_idx, temp_idx = train_test_split(idx, test_size=0.30, random_state=RANDOM_SEED, stratify=all_labels)
@@ -384,7 +384,7 @@ def main():
         CONFIG["unmerge_training"]["batch_size"],
         args.unmerge_target_mode,
     )
-    features_unmerged = compute_features(unmerged_const)
+    features_unmerged = compute_features(unmerged_const, unmerged_mask)
     features_unmerged_std = standardize(features_unmerged, unmerged_mask, feat_means, feat_stds)
 
     # Build unmerged dataset
@@ -402,7 +402,7 @@ def main():
         CONFIG["unmerge_training"]["batch_size"],
         args.unmerge_target_mode,
     )
-    features_unmerged = compute_features(unmerged_const)
+    features_unmerged = compute_features(unmerged_const, unmerged_mask)
     features_unmerged_std = standardize(features_unmerged, unmerged_mask, feat_means, feat_stds)
     features_unmerged_flag = np.concatenate(
         [features_unmerged_std, unmerged_flag[..., None]], axis=-1
