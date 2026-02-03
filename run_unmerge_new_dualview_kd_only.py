@@ -313,19 +313,42 @@ def main():
     BS_cnt = CONFIG["merge_count_training"]["batch_size"]
     pred_counts = predict_counts(count_model, features_hlt_std, hlt_mask, BS_cnt, device, max_count)
 
-    # Load unmerge predictor
+    # Load unmerge predictor (auto-match relpos/local-attn to checkpoint)
+    unmerge_ckpt = torch.load(ckpt_dir / "unmerge_predictor.pt", map_location=device)
+    ckpt_keys = list(unmerge_ckpt["model"].keys())
+    has_encoder_layers = any(k.startswith("encoder_layers.") for k in ckpt_keys)
+    has_relpos_mlp = any(k.startswith("relpos_mlp.") for k in ckpt_keys)
+    has_std_encoder = any(k.startswith("encoder.layers.") for k in ckpt_keys)
+
+    relpos_mode = args.unmerge_relpos_mode
+    local_attn_mode = args.unmerge_local_attn_mode
+    if has_std_encoder:
+        # checkpoint is the vanilla transformer encoder
+        if relpos_mode != "none" or local_attn_mode != "none":
+            print("Info: checkpoint uses standard encoder; forcing relpos/local_attn to none for loading.")
+            relpos_mode = "none"
+            local_attn_mode = "none"
+    elif has_encoder_layers:
+        # checkpoint uses custom relpos/local-attn encoder
+        if has_relpos_mlp and relpos_mode == "none":
+            print("Info: checkpoint has relpos_mlp; forcing relpos_mode='attn' for loading.")
+            relpos_mode = "attn"
+        if not has_relpos_mlp and relpos_mode == "none" and local_attn_mode == "none":
+            # need encoder_layers path; local attn has no params, so soft is safest
+            print("Info: checkpoint uses relpos/local-attn encoder; forcing local_attn_mode='soft' for loading.")
+            local_attn_mode = "soft"
+
     unmerge_model = UnmergePredictor(
         input_dim=7,
         max_count=max_count,
         head_mode=args.unmerge_head_mode,
         parent_mode=args.unmerge_parent_mode,
-        relpos_mode=args.unmerge_relpos_mode,
-        local_attn_mode=args.unmerge_local_attn_mode,
+        relpos_mode=relpos_mode,
+        local_attn_mode=local_attn_mode,
         local_attn_radius=args.unmerge_local_attn_radius,
         local_attn_scale=args.unmerge_local_attn_scale,
         **CONFIG["unmerge_model"],
     ).to(device)
-    unmerge_ckpt = torch.load(ckpt_dir / "unmerge_predictor.pt", map_location=device)
     unmerge_model.load_state_dict(unmerge_ckpt["model"])
 
     # Compute target mean/std on train split (same logic as training)
