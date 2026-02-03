@@ -16,7 +16,9 @@ PHYSICS_WEIGHT="${PHYSICS_WEIGHT:-0.2}"
 OFFSET_JETS="${OFFSET_JETS:-200000}"
 RELPOS_MODE="${RELPOS_MODE:-attn}"
 
+set +u
 source ~/.bashrc
+set -u
 conda activate atlas_kd
 cd "$SLURM_SUBMIT_DIR"
 
