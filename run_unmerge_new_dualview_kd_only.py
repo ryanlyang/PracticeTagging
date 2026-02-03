@@ -10,6 +10,9 @@ import utils
 from unmerge_new_ideas import (
     CONFIG,
     RANDOM_SEED,
+    ETA_IDX,
+    PHI_IDX,
+    PT_IDX,
     apply_hlt_effects_with_tracking,
     compute_features,
     get_stats,
@@ -95,20 +98,28 @@ def main():
         raise FileNotFoundError(f"No .h5 files found in: {args.train_path}")
 
     max_jets_needed = args.offset_jets + args.n_train_jets
-    const_off_full, masks_off_full, all_labels_full, _, _ = utils.load_from_files(
+    all_data_full, all_labels_full, _, _, _ = utils.load_from_files(
         [str(p) for p in train_files],
         max_jets=max_jets_needed,
         max_constits=args.max_constits,
         use_train_weights=False,
     )
-    if const_off_full.shape[0] < max_jets_needed:
+    if all_data_full.shape[0] < max_jets_needed:
         raise RuntimeError(
             f"Not enough jets for offset {args.offset_jets} + n_train_jets {args.n_train_jets}. "
-            f"Got {const_off_full.shape[0]}."
+            f"Got {all_data_full.shape[0]}."
         )
-    const_off = const_off_full[args.offset_jets:args.offset_jets + args.n_train_jets]
-    masks_off = masks_off_full[args.offset_jets:args.offset_jets + args.n_train_jets]
+    all_data = all_data_full[args.offset_jets:args.offset_jets + args.n_train_jets]
     all_labels = all_labels_full[args.offset_jets:args.offset_jets + args.n_train_jets]
+    all_labels = all_labels.astype(np.int64)
+
+    eta = all_data[:, :, ETA_IDX].astype(np.float32)
+    phi = all_data[:, :, PHI_IDX].astype(np.float32)
+    pt = all_data[:, :, PT_IDX].astype(np.float32)
+    mask_raw = pt > 0
+    E = pt * np.cosh(np.clip(eta, -5, 5))
+    const_off = np.stack([pt, eta, phi, E], axis=-1).astype(np.float32)
+    masks_off = mask_raw
 
     print("Applying HLT effects...")
     hlt_const, hlt_mask, origin_counts, origin_lists, _ = apply_hlt_effects_with_tracking(
