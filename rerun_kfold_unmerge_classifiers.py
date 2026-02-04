@@ -52,6 +52,7 @@ from unmerge_distr_model_unsmear import (
     evaluate_kd_dual,
     evaluate_bce_loss,
     evaluate_bce_loss_dual,
+    evaluate_bce_loss_unmerged,
     self_train_student,
     self_train_student_dual,
 )
@@ -387,7 +388,9 @@ def main():
         val_auc, _, _ = evaluate_kd(hlt_kd, kd_val_loader_hlt, device)
         sch_hlt_kd.step()
         if not kd_active and kd_cfg["adaptive_alpha"]:
-            val_loss = evaluate_bce_loss(hlt_kd, kd_val_loader_hlt, device)
+            # KD loaders use UnmergeKDDataset keys ("unmerged", "mask_unmerged", ...),
+            # so we must use the matching loss helper.
+            val_loss = evaluate_bce_loss_unmerged(hlt_kd, kd_val_loader_hlt, device)
             if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
                 stable_count += 1
             else:
@@ -472,7 +475,7 @@ def main():
         val_auc, _, _ = evaluate_kd(unmerged_kd, kd_val_loader_um, device)
         sch_ukd.step()
         if not kd_active and kd_cfg["adaptive_alpha"]:
-            val_loss = evaluate_bce_loss(unmerged_kd, kd_val_loader_um, device)
+            val_loss = evaluate_bce_loss_unmerged(unmerged_kd, kd_val_loader_um, device)
             if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
                 stable_count += 1
             else:
@@ -843,4 +846,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
