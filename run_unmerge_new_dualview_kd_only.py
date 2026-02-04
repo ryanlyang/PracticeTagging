@@ -1,4 +1,6 @@
 import argparse
+import csv
+import json
 from pathlib import Path
 
 import numpy as np
@@ -38,7 +40,349 @@ from unmerge_new_ideas import (
     evaluate_bce_loss_dual,
     self_train_student_dual,
     self_train_student,
+    kd_loss_conf_weighted,
 )
+
+
+class KDProjector(torch.nn.Module):
+    def __init__(self, in_dim: int, out_dim: int):
+        super().__init__()
+        hid = max(out_dim, in_dim // 2)
+        self.net = torch.nn.Sequential(
+            torch.nn.LayerNorm(in_dim),
+            torch.nn.Linear(in_dim, hid),
+            torch.nn.GELU(),
+            torch.nn.Linear(hid, out_dim),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+
+def _extract_dual_outputs(model, feat_a, mask_a, feat_b, mask_b):
+    bsz, seq_len, _ = feat_a.shape
+    h_a = model.input_proj_a(feat_a.view(-1, feat_a.size(-1))).view(bsz, seq_len, -1)
+    h_b = model.input_proj_b(feat_b.view(-1, feat_b.size(-1))).view(bsz, seq_len, -1)
+    h_a = model.encoder_a(h_a, src_key_padding_mask=~mask_a)
+    h_b = model.encoder_b(h_b, src_key_padding_mask=~mask_b)
+    query = model.pool_query.expand(bsz, -1, -1)
+    pooled_a, _ = model.pool_attn_a(query, h_a, h_a, key_padding_mask=~mask_a, need_weights=False)
+    pooled_b, _ = model.pool_attn_b(query, h_b, h_b, key_padding_mask=~mask_b, need_weights=False)
+    cross_a, _ = model.cross_a_to_b(pooled_a, h_b, h_b, key_padding_mask=~mask_b, need_weights=False)
+    cross_b, _ = model.cross_b_to_a(pooled_b, h_a, h_a, key_padding_mask=~mask_a, need_weights=False)
+    fused = torch.cat([pooled_a, pooled_b, cross_a, cross_b], dim=-1).squeeze(1)
+    fused = model.norm(fused)
+    logits = model.classifier(fused).squeeze(1)
+    return {
+        "logits": logits,
+        "pooled_a": pooled_a.squeeze(1),
+        "pooled_b": pooled_b.squeeze(1),
+        "cross_a": cross_a.squeeze(1),
+        "cross_b": cross_b.squeeze(1),
+        "fused": fused,
+    }
+
+
+def _pairwise_cosine_sim(z):
+    z = torch.nn.functional.normalize(z, p=2, dim=-1)
+    return z @ z.transpose(0, 1)
+
+
+def _train_kd_epoch_dual_advanced(student, teacher, loader, opt, device, kd_cfg, proj_fused=None):
+    student.train()
+    teacher.eval()
+    if proj_fused is not None:
+        proj_fused.train()
+
+    total_loss = 0.0
+    preds, labs = [], []
+
+    T = kd_cfg["temperature"]
+    a_kd = kd_cfg["alpha_kd"]
+    w_feat = kd_cfg.get("w_feat", 0.0)
+    w_rel = kd_cfg.get("w_rel", 0.0)
+    w_branch = kd_cfg.get("w_branch", 0.0)
+
+    for batch in loader:
+        xa = batch["feat_a"].to(device)
+        ma = batch["mask_a"].to(device)
+        xb = batch["feat_b"].to(device)
+        mb = batch["mask_b"].to(device)
+        x_o = batch["off"].to(device)
+        m_o = batch["mask_off"].to(device)
+        y = batch["label"].to(device)
+
+        with torch.no_grad():
+            t_logits = teacher(x_o, m_o).squeeze(1)
+            _, t_emb_off = teacher(x_o, m_o, return_embedding=True)
+            t_emb_a = t_emb_b = None
+            if w_branch > 0.0:
+                _, t_emb_a = teacher(xa[..., :teacher.input_dim], ma, return_embedding=True)
+                _, t_emb_b = teacher(xb[..., :teacher.input_dim], mb, return_embedding=True)
+
+        opt.zero_grad()
+        out = _extract_dual_outputs(student, xa, ma, xb, mb)
+        s_logits = out["logits"]
+
+        loss_hard = torch.nn.functional.binary_cross_entropy_with_logits(s_logits, y)
+        if kd_cfg["conf_weighted"]:
+            loss_kd = kd_loss_conf_weighted(s_logits, t_logits, T)
+        else:
+            s_soft = torch.sigmoid(s_logits / T)
+            t_soft = torch.sigmoid(t_logits / T)
+            loss_kd = torch.nn.functional.binary_cross_entropy(s_soft, t_soft) * (T ** 2)
+
+        loss = (1.0 - a_kd) * loss_hard + a_kd * loss_kd
+
+        if (w_feat > 0.0 or w_rel > 0.0) and proj_fused is not None:
+            s_emb = proj_fused(out["fused"])
+            if w_feat > 0.0:
+                loss_feat = torch.nn.functional.smooth_l1_loss(s_emb, t_emb_off)
+                loss = loss + w_feat * loss_feat
+            if w_rel > 0.0 and s_emb.size(0) > 1:
+                s_sim = _pairwise_cosine_sim(s_emb)
+                t_sim = _pairwise_cosine_sim(t_emb_off)
+                loss_rel = torch.nn.functional.mse_loss(s_sim, t_sim)
+                loss = loss + w_rel * loss_rel
+
+        if w_branch > 0.0 and t_emb_a is not None and t_emb_b is not None:
+            loss_branch = (
+                torch.nn.functional.smooth_l1_loss(out["pooled_a"], t_emb_a)
+                + torch.nn.functional.smooth_l1_loss(out["pooled_b"], t_emb_b)
+                + 0.5 * torch.nn.functional.smooth_l1_loss(out["cross_a"], t_emb_b)
+                + 0.5 * torch.nn.functional.smooth_l1_loss(out["cross_b"], t_emb_a)
+            )
+            loss = loss + w_branch * loss_branch
+
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(student.parameters(), 1.0)
+        opt.step()
+
+        total_loss += loss.item() * len(y)
+        preds.extend(torch.sigmoid(s_logits).detach().cpu().numpy().flatten())
+        labs.extend(y.detach().cpu().numpy().flatten())
+
+    preds = np.array(preds)
+    labs = np.array(labs)
+    auc = 0.0
+    if len(np.unique(labs)) > 1:
+        from sklearn.metrics import roc_auc_score
+
+        auc = roc_auc_score(labs, preds)
+    return total_loss / max(1, len(preds)), auc
+
+
+def _build_kd_sweep_configs(base_kd_cfg, max_runs=30):
+    cfgs = []
+    # 1) Explicit default (must be first)
+    cfgs.append({"name": "kd_default", "w_feat": 0.0, "w_rel": 0.0, "w_branch": 0.0})
+
+    # core single methods and combinations
+    core = [
+        ("feat_only", 0.10, 0.0, 0.0),
+        ("rel_only", 0.0, 0.10, 0.0),
+        ("branch_only", 0.0, 0.0, 0.10),
+        ("feat_rel", 0.10, 0.10, 0.0),
+        ("feat_branch", 0.10, 0.0, 0.10),
+        ("rel_branch", 0.0, 0.10, 0.10),
+        ("feat_rel_branch", 0.10, 0.10, 0.10),
+    ]
+    for n, wf, wr, wb in core:
+        cfgs.append({"name": n, "w_feat": wf, "w_rel": wr, "w_branch": wb})
+
+    # temperature/alpha variants
+    variants = [
+        {"temperature": 2.0},
+        {"temperature": 4.0},
+        {"alpha_kd": 0.3},
+        {"alpha_kd": 0.7},
+        {"conf_weighted": False},
+        {"self_train": False},
+        {"adaptive_alpha": False},
+    ]
+    for base_name, wf, wr, wb in core + [("kd_default", 0.0, 0.0, 0.0)]:
+        for v in variants:
+            vtag = "_".join(f"{k}{str(val).replace('.', 'p')}" for k, val in v.items())
+            c = {"name": f"{base_name}_{vtag}", "w_feat": wf, "w_rel": wr, "w_branch": wb}
+            c.update(v)
+            cfgs.append(c)
+
+    # deterministic dedupe by name while preserving order
+    dedup = []
+    seen = set()
+    for c in cfgs:
+        if c["name"] not in seen:
+            dedup.append(c)
+            seen.add(c["name"])
+        if len(dedup) >= max_runs:
+            break
+
+    # merge with base kd defaults
+    merged = []
+    for c in dedup:
+        m = dict(base_kd_cfg)
+        m.update(c)
+        merged.append(m)
+    return merged
+
+
+def _run_dual_kd_experiment_set(
+    *,
+    exp_name,
+    kd_cfg_list,
+    student_ctor,
+    teacher,
+    train_loader,
+    val_loader,
+    test_loader,
+    device,
+    epochs,
+    warmup_epochs,
+    patience,
+    lr,
+    weight_decay,
+    save_dir,
+):
+    save_dir.mkdir(parents=True, exist_ok=True)
+    summary_rows = []
+    best_global = None
+
+    for i, kd_cfg in enumerate(kd_cfg_list, start=1):
+        name = kd_cfg["name"]
+        print(f"\n[{exp_name}] KD config {i}/{len(kd_cfg_list)}: {name}")
+        student = student_ctor().to(device)
+
+        proj_fused = None
+        if kd_cfg.get("w_feat", 0.0) > 0.0 or kd_cfg.get("w_rel", 0.0) > 0.0:
+            proj_fused = KDProjector(student.norm.normalized_shape[0], teacher.embed_dim).to(device)
+            params = list(student.parameters()) + list(proj_fused.parameters())
+        else:
+            params = student.parameters()
+
+        opt = torch.optim.AdamW(params, lr=lr, weight_decay=weight_decay)
+        sch = get_scheduler(opt, warmup_epochs, epochs)
+
+        best_auc, best_state, best_state_proj, no_improve = 0.0, None, None, 0
+        kd_active = not kd_cfg.get("adaptive_alpha", False)
+        stable_count = 0
+        prev_val_loss = None
+
+        for ep in range(epochs):
+            current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
+            kd_cfg_ep = dict(kd_cfg)
+            kd_cfg_ep["alpha_kd"] = current_alpha
+
+            train_loss, train_auc = _train_kd_epoch_dual_advanced(
+                student, teacher, train_loader, opt, device, kd_cfg_ep, proj_fused=proj_fused
+            )
+            val_auc, _, _ = evaluate_kd_dual(student, val_loader, device)
+            sch.step()
+
+            if not kd_active and kd_cfg.get("adaptive_alpha", False):
+                val_loss = evaluate_bce_loss_dual(student, val_loader, device)
+                if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                prev_val_loss = val_loss
+                if ep + 1 >= kd_cfg["alpha_warmup_min_epochs"] and stable_count >= kd_cfg["alpha_stable_patience"]:
+                    kd_active = True
+                    print(f"[{name}] Activating KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
+
+            if val_auc > best_auc:
+                best_auc = val_auc
+                best_state = {k: v.detach().cpu().clone() for k, v in student.state_dict().items()}
+                best_state_proj = (
+                    {k: v.detach().cpu().clone() for k, v in proj_fused.state_dict().items()}
+                    if proj_fused is not None
+                    else None
+                )
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (ep + 1) % 5 == 0:
+                print(
+                    f"[{name}] ep {ep+1}: train_auc={train_auc:.4f}, "
+                    f"val_auc={val_auc:.4f}, best={best_auc:.4f} | alpha_kd={current_alpha:.2f}"
+                )
+            if no_improve >= patience:
+                print(f"[{name}] Early stopping at epoch {ep+1}")
+                break
+
+        if best_state is not None:
+            student.load_state_dict(best_state)
+            if proj_fused is not None and best_state_proj is not None:
+                proj_fused.load_state_dict(best_state_proj)
+
+        if kd_cfg.get("self_train", False):
+            print(f"[{name}] Self-train...")
+            opt_st = torch.optim.AdamW(
+                list(student.parameters()) + (list(proj_fused.parameters()) if proj_fused is not None else []),
+                lr=kd_cfg["self_train_lr"],
+            )
+            best_auc_st = best_auc
+            no_improve = 0
+            for ep in range(kd_cfg["self_train_epochs"]):
+                st_loss = self_train_student_dual(student, teacher, train_loader, opt_st, device, kd_cfg)
+                val_auc, _, _ = evaluate_kd_dual(student, val_loader, device)
+                if val_auc > best_auc_st:
+                    best_auc_st = val_auc
+                    best_state = {k: v.detach().cpu().clone() for k, v in student.state_dict().items()}
+                    best_state_proj = (
+                        {k: v.detach().cpu().clone() for k, v in proj_fused.state_dict().items()}
+                        if proj_fused is not None
+                        else None
+                    )
+                    no_improve = 0
+                else:
+                    no_improve += 1
+                if (ep + 1) % 2 == 0:
+                    print(f"[{name}] self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st:.4f}")
+                if no_improve >= kd_cfg["self_train_patience"]:
+                    break
+            if best_state is not None:
+                student.load_state_dict(best_state)
+                if proj_fused is not None and best_state_proj is not None:
+                    proj_fused.load_state_dict(best_state_proj)
+            best_auc = max(best_auc, best_auc_st)
+
+        auc_test, preds_test, _ = evaluate_kd_dual(student, test_loader, device)
+        summary_rows.append(
+            {
+                "name": name,
+                "val_auc": float(best_auc),
+                "test_auc": float(auc_test),
+                "alpha_kd": float(kd_cfg["alpha_kd"]),
+                "temperature": float(kd_cfg["temperature"]),
+                "w_feat": float(kd_cfg.get("w_feat", 0.0)),
+                "w_rel": float(kd_cfg.get("w_rel", 0.0)),
+                "w_branch": float(kd_cfg.get("w_branch", 0.0)),
+                "conf_weighted": int(bool(kd_cfg.get("conf_weighted", True))),
+                "adaptive_alpha": int(bool(kd_cfg.get("adaptive_alpha", True))),
+                "self_train": int(bool(kd_cfg.get("self_train", True))),
+            }
+        )
+
+        torch.save({"model": student.state_dict(), "val_auc": best_auc, "test_auc": auc_test, "cfg": kd_cfg}, save_dir / f"{name}.pt")
+        with open(save_dir / f"{name}.json", "w") as f:
+            json.dump(summary_rows[-1], f, indent=2)
+
+        if best_global is None or best_auc > best_global["val_auc"]:
+            best_global = {"name": name, "val_auc": best_auc, "test_auc": auc_test, "preds": preds_test, "model": student.state_dict()}
+
+    # write summary csv
+    with open(save_dir / "kd_sweep_summary.csv", "w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=list(summary_rows[0].keys()))
+        w.writeheader()
+        for r in summary_rows:
+            w.writerow(r)
+
+    with open(save_dir / "kd_sweep_summary.json", "w") as f:
+        json.dump(summary_rows, f, indent=2)
+
+    print(f"[{exp_name}] Best KD config: {best_global['name']} | val_auc={best_global['val_auc']:.4f} | test_auc={best_global['test_auc']:.4f}")
+    return best_global["test_auc"], best_global["preds"], best_global["name"], summary_rows, best_global["model"]
 
 
 def main():
@@ -83,6 +427,15 @@ def main():
         type=str,
         default="absolute",
         choices=["absolute", "normalized"],
+    )
+    parser.add_argument("--kd_sweep", action="store_true", help="Run KD sweep (~30 configs) for dual-view KD stages.")
+    parser.add_argument("--kd_sweep_max", type=int, default=30, help="Maximum number of KD configs to run.")
+    parser.add_argument(
+        "--kd_sweep_target",
+        type=str,
+        default="dual_flag",
+        choices=["dual", "dual_flag", "both"],
+        help="Which KD stage(s) to sweep. Other stage(s) use default KD config.",
     )
     parser.add_argument("--device", type=str, default="cuda")
     args = parser.parse_args()
@@ -641,141 +994,57 @@ def main():
     kd_val_loader = torch.utils.data.DataLoader(kd_val_ds, batch_size=BS, shuffle=False)
     kd_test_loader = torch.utils.data.DataLoader(kd_test_ds, batch_size=BS, shuffle=False)
 
+    base_kd_cfg = dict(CONFIG["kd"])
+    base_kd_cfg.update({"name": "kd_default", "w_feat": 0.0, "w_rel": 0.0, "w_branch": 0.0})
+    sweep_cfgs = _build_kd_sweep_configs(base_kd_cfg, max_runs=args.kd_sweep_max) if args.kd_sweep else [base_kd_cfg]
+
+    dual_should_sweep = args.kd_sweep and args.kd_sweep_target in ("dual", "both")
+    dual_flag_should_sweep = args.kd_sweep and args.kd_sweep_target in ("dual_flag", "both")
+
+    # DualView + KD
+    dual_cfgs = sweep_cfgs if dual_should_sweep else [base_kd_cfg]
+    auc_dual_kd, preds_dual_kd, best_dual_name, dual_summary, best_dual_state = _run_dual_kd_experiment_set(
+        exp_name="DualView+KD",
+        kd_cfg_list=dual_cfgs,
+        student_ctor=lambda: DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=7, **CONFIG["model"]),
+        teacher=teacher,
+        train_loader=kd_train_loader,
+        val_loader=kd_val_loader,
+        test_loader=kd_test_loader,
+        device=device,
+        epochs=CONFIG["training"]["epochs"],
+        warmup_epochs=CONFIG["training"]["warmup_epochs"],
+        patience=CONFIG["training"]["patience"],
+        lr=CONFIG["training"]["lr"],
+        weight_decay=CONFIG["training"]["weight_decay"],
+        save_dir=save_root / "kd_sweep_dual",
+    )
+
+    # DualView + MergeFlag + KD
+    dual_flag_cfgs = sweep_cfgs if dual_flag_should_sweep else [base_kd_cfg]
+    auc_dual_flag_kd, preds_dual_flag_kd, best_dual_flag_name, dual_flag_summary, best_dual_flag_state = _run_dual_kd_experiment_set(
+        exp_name="DualView+MF+KD",
+        kd_cfg_list=dual_flag_cfgs,
+        student_ctor=lambda: DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=8, **CONFIG["model"]),
+        teacher=teacher,
+        train_loader=train_loader_dual_flag,
+        val_loader=val_loader_dual_flag,
+        test_loader=test_loader_dual_flag,
+        device=device,
+        epochs=CONFIG["training"]["epochs"],
+        warmup_epochs=CONFIG["training"]["warmup_epochs"],
+        patience=CONFIG["training"]["patience"],
+        lr=CONFIG["training"]["lr"],
+        weight_decay=CONFIG["training"]["weight_decay"],
+        save_dir=save_root / "kd_sweep_dual_flag",
+    )
+
     kd_student = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=7, **CONFIG["model"]).to(device)
-    opt_kd = torch.optim.AdamW(kd_student.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
-    sch_kd = get_scheduler(opt_kd, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
-
-    kd_cfg = CONFIG["kd"]
-    best_auc, best_state, no_improve = 0.0, None, 0
-    kd_active = not kd_cfg["adaptive_alpha"]
-    stable_count = 0
-    prev_val_loss = None
-
-    for ep in range(CONFIG["training"]["epochs"]):
-        current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
-        kd_cfg_ep = dict(kd_cfg)
-        kd_cfg_ep["alpha_kd"] = current_alpha
-
-        train_loss, train_auc = train_kd_epoch_dual(kd_student, teacher, kd_train_loader, opt_kd, device, kd_cfg_ep)
-        val_auc, _, _ = evaluate_kd_dual(kd_student, kd_val_loader, device)
-        sch_kd.step()
-
-        if not kd_active and kd_cfg["adaptive_alpha"]:
-            val_loss = evaluate_bce_loss_dual(kd_student, kd_val_loader, device)
-            if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
-                stable_count += 1
-            else:
-                stable_count = 0
-            prev_val_loss = val_loss
-            if ep + 1 >= kd_cfg["alpha_warmup_min_epochs"] and stable_count >= kd_cfg["alpha_stable_patience"]:
-                kd_active = True
-                print(f"Activating KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
-
-        if val_auc > best_auc:
-            best_auc = val_auc
-            best_state = {k: v.detach().cpu().clone() for k, v in kd_student.state_dict().items()}
-            no_improve = 0
-        else:
-            no_improve += 1
-
-        if (ep + 1) % 5 == 0:
-            print(f"Ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc:.4f} | alpha_kd={current_alpha:.2f}")
-        if no_improve >= CONFIG["training"]["patience"]:
-            print(f"Early stopping dual-view KD student at epoch {ep+1}")
-            break
-
-    if best_state is not None:
-        kd_student.load_state_dict(best_state)
-
-    if kd_cfg["self_train"]:
-        print("\nSelf-train dual-view KD...")
-        opt_st = torch.optim.AdamW(kd_student.parameters(), lr=kd_cfg["self_train_lr"])
-        best_auc_st = best_auc
-        no_improve = 0
-        for ep in range(kd_cfg["self_train_epochs"]):
-            st_loss = self_train_student_dual(kd_student, teacher, kd_train_loader, opt_st, device, kd_cfg)
-            val_auc, _, _ = evaluate_kd_dual(kd_student, kd_val_loader, device)
-            if val_auc > best_auc_st:
-                best_auc_st = val_auc
-                best_state = {k: v.detach().cpu().clone() for k, v in kd_student.state_dict().items()}
-                no_improve = 0
-            else:
-                no_improve += 1
-            if (ep + 1) % 2 == 0:
-                print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st:.4f}")
-            if no_improve >= kd_cfg["self_train_patience"]:
-                break
-        if best_state is not None:
-            kd_student.load_state_dict(best_state)
-
-    auc_dual_kd, preds_dual_kd, _ = evaluate_kd_dual(kd_student, kd_test_loader, device)
-
-    # DualView + MergeFlag + KD (reuse existing flow from unmerge_new_ideas)
+    kd_student.load_state_dict(best_dual_state)
     kd_student_flag = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=8, **CONFIG["model"]).to(device)
-    opt_kd_flag = torch.optim.AdamW(kd_student_flag.parameters(), lr=CONFIG["training"]["lr"], weight_decay=CONFIG["training"]["weight_decay"])
-    sch_kd_flag = get_scheduler(opt_kd_flag, CONFIG["training"]["warmup_epochs"], CONFIG["training"]["epochs"])
-    best_auc_flag, best_state_flag, no_improve = 0.0, None, 0
-    kd_active = not kd_cfg["adaptive_alpha"]
-    stable_count = 0
-    prev_val_loss = None
-
-    for ep in range(CONFIG["training"]["epochs"]):
-        current_alpha = kd_cfg["alpha_kd"] if kd_active else 0.0
-        kd_cfg_ep = dict(kd_cfg)
-        kd_cfg_ep["alpha_kd"] = current_alpha
-        train_loss, train_auc = train_kd_epoch_dual(kd_student_flag, teacher, train_loader_dual_flag, opt_kd_flag, device, kd_cfg_ep)
-        val_auc, _, _ = evaluate_kd_dual(kd_student_flag, val_loader_dual_flag, device)
-        sch_kd_flag.step()
-
-        if not kd_active and kd_cfg["adaptive_alpha"]:
-            val_loss = evaluate_bce_loss_dual(kd_student_flag, val_loader_dual_flag, device)
-            if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
-                stable_count += 1
-            else:
-                stable_count = 0
-            prev_val_loss = val_loss
-            if ep + 1 >= kd_cfg["alpha_warmup_min_epochs"] and stable_count >= kd_cfg["alpha_stable_patience"]:
-                kd_active = True
-                print(f"Activating KD ramp at epoch {ep+1} (val_loss={val_loss:.4f})")
-
-        if val_auc > best_auc_flag:
-            best_auc_flag = val_auc
-            best_state_flag = {k: v.detach().cpu().clone() for k, v in kd_student_flag.state_dict().items()}
-            no_improve = 0
-        else:
-            no_improve += 1
-
-        if (ep + 1) % 5 == 0:
-            print(f"DualView+MF+KD ep {ep+1}: train_auc={train_auc:.4f}, val_auc={val_auc:.4f}, best={best_auc_flag:.4f} | alpha_kd={current_alpha:.2f}")
-        if no_improve >= CONFIG["training"]["patience"]:
-            print(f"Early stopping dual-view+MF+KD student at epoch {ep+1}")
-            break
-
-    if best_state_flag is not None:
-        kd_student_flag.load_state_dict(best_state_flag)
-
-    if kd_cfg["self_train"]:
-        print("\nSelf-train dual-view+MF+KD...")
-        opt_st = torch.optim.AdamW(kd_student_flag.parameters(), lr=kd_cfg["self_train_lr"])
-        best_auc_st = best_auc_flag
-        no_improve = 0
-        for ep in range(kd_cfg["self_train_epochs"]):
-            st_loss = self_train_student_dual(kd_student_flag, teacher, train_loader_dual_flag, opt_st, device, kd_cfg)
-            val_auc, _, _ = evaluate_kd_dual(kd_student_flag, val_loader_dual_flag, device)
-            if val_auc > best_auc_st:
-                best_auc_st = val_auc
-                best_state_flag = {k: v.detach().cpu().clone() for k, v in kd_student_flag.state_dict().items()}
-                no_improve = 0
-            else:
-                no_improve += 1
-            if (ep + 1) % 2 == 0:
-                print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={val_auc:.4f}, best={best_auc_st:.4f}")
-            if no_improve >= kd_cfg["self_train_patience"]:
-                break
-        if best_state_flag is not None:
-            kd_student_flag.load_state_dict(best_state_flag)
-
-    auc_dual_flag_kd, preds_dual_flag_kd, _ = evaluate_kd_dual(kd_student_flag, test_loader_dual_flag, device)
+    kd_student_flag.load_state_dict(best_dual_flag_state)
+    print(f"Selected DualView+KD config: {best_dual_name}")
+    print(f"Selected DualView+MF+KD config: {best_dual_flag_name}")
 
     print("\nFINAL TEST EVALUATION")
     print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
@@ -835,6 +1104,10 @@ def main():
 
     np.savez(
         save_root / "results.npz",
+        kd_sweep=int(args.kd_sweep),
+        kd_sweep_target=args.kd_sweep_target,
+        best_dual_kd_name=best_dual_name,
+        best_dual_flag_kd_name=best_dual_flag_name,
         auc_teacher=auc_teacher,
         auc_baseline=auc_baseline,
         auc_hlt_kd=auc_hlt_kd,

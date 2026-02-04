@@ -51,6 +51,9 @@ UNMERGE_LOCAL_ATTN_MODE=${UNMERGE_LOCAL_ATTN_MODE:-"none"}
 UNMERGE_LOCAL_ATTN_RADIUS=${UNMERGE_LOCAL_ATTN_RADIUS:-0.2}
 UNMERGE_LOCAL_ATTN_SCALE=${UNMERGE_LOCAL_ATTN_SCALE:-2.0}
 UNMERGE_TARGET_MODE=${UNMERGE_TARGET_MODE:-"absolute"}
+KD_SWEEP=${KD_SWEEP:-1}
+KD_SWEEP_MAX=${KD_SWEEP_MAX:-30}
+KD_SWEEP_TARGET=${KD_SWEEP_TARGET:-"dual_flag"}
 
 CMD="python run_unmerge_new_dualview_kd_only.py \
   --ckpt_dir $CKPT_DIR \
@@ -70,6 +73,10 @@ CMD="python run_unmerge_new_dualview_kd_only.py \
 
 if [ -n "$TRAIN_PATH" ]; then
   CMD="$CMD --train_path $TRAIN_PATH"
+fi
+
+if [ "$KD_SWEEP" -eq 1 ]; then
+  CMD="$CMD --kd_sweep --kd_sweep_max $KD_SWEEP_MAX --kd_sweep_target $KD_SWEEP_TARGET"
 fi
 
 if python -c "import torch; exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
