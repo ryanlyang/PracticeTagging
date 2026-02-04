@@ -777,6 +777,17 @@ def main():
 
     auc_dual_flag_kd, preds_dual_flag_kd, _ = evaluate_kd_dual(kd_student_flag, test_loader_dual_flag, device)
 
+    print("\nFINAL TEST EVALUATION")
+    print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
+    print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
+    print(f"HLT+KD           AUC: {auc_hlt_kd:.4f}")
+    print(f"Unmerge          AUC: {auc_unmerge:.4f}")
+    print(f"Unmerge+MF       AUC: {auc_unmerge_flag:.4f}")
+    print(f"Dual-View        AUC: {auc_dual:.4f}")
+    print(f"Dual-View+MF     AUC: {auc_dual_flag:.4f}")
+    print(f"Dual-View+KD     AUC: {auc_dual_kd:.4f}")
+    print(f"Dual-View+MF+KD  AUC: {auc_dual_flag_kd:.4f}")
+
     # Plot teacher/baseline + all models
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
