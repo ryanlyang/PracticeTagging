@@ -5,12 +5,12 @@ mkdir -p unmerge_new_physics_logs
 
 declare -a RUNS=(
   "physics02_relpos_new200k|0.2|200000|attn"
-  "physics05|0.5|0|none"
-  "physics03|0.3|0|none"
-  "physics10|1.0|0|none"
-  "physics05_relpos|0.5|0|attn"
-  "physics03_relpos|0.3|0|attn"
-  "physics10_relpos|1.0|0|attn"
+  "physics05|0.5|200000|none"
+  "physics03|0.3|200000|none"
+  "physics10|1.0|200000|none"
+  "physics05_relpos|0.5|200000|attn"
+  "physics03_relpos|0.3|200000|attn"
+  "physics10_relpos|1.0|200000|attn"
 )
 
 for entry in "${RUNS[@]}"; do
