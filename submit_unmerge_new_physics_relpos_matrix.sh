@@ -9,13 +9,13 @@ MAX_CONSTITS=${MAX_CONSTITS:-100}
 MAX_MERGE_COUNT=${MAX_MERGE_COUNT:-10}
 
 declare -a RUNS=(
-  "physics02_relpos_new200k|0.2|200000|attn"
-  "physics05|0.5|200000|none"
-  "physics03|0.3|200000|none"
-  "physics10|1.0|200000|none"
-  "physics05_relpos|0.5|200000|attn"
-  "physics03_relpos|0.3|200000|attn"
-  "physics10_relpos|1.0|200000|attn"
+  "physics02_relpos_new1m|0.2|1000000|attn"
+  "physics05|0.5|1000000|none"
+  "physics03|0.3|1000000|none"
+  "physics10|1.0|1000000|none"
+  "physics05_relpos|0.5|1000000|attn"
+  "physics03_relpos|0.3|1000000|attn"
+  "physics10_relpos|1.0|1000000|attn"
 )
 
 for entry in "${RUNS[@]}"; do
