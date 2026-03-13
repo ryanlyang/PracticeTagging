@@ -145,9 +145,11 @@ CONFIG = {
     "loss": {
         "w_set": 1.0,
         "w_phys": 0.35,
+        "w_pt_ratio": 0.70,
+        "w_e_ratio": 0.35,
         "w_budget": 0.65,
-        "w_sparse": 0.03,
-        "w_local": 0.10,
+        "w_sparse": 0.02,
+        "w_local": 0.03,
         "unselected_penalty": 0.35,
         "gen_local_radius": 0.30,
     },
@@ -223,7 +225,7 @@ def apply_hlt_effects_realistic_nomap(
     mask: np.ndarray,
     cfg: Dict,
     seed: int = RANDOM_SEED,
-) -> Tuple[np.ndarray, np.ndarray, Dict]:
+) -> Tuple[np.ndarray, np.ndarray, Dict, Dict[str, np.ndarray]]:
     """Realistic pseudo-HLT generation without constituent ancestry tracking."""
     rs = np.random.RandomState(int(seed))
     hcfg = cfg["hlt_effects"]
@@ -233,6 +235,8 @@ def apply_hlt_effects_realistic_nomap(
     hlt_mask = mask.copy()
 
     n_initial = int(hlt_mask.sum())
+    merge_lost_per_jet = np.zeros(n_jets, dtype=np.float32)
+    eff_lost_per_jet = np.zeros(n_jets, dtype=np.float32)
 
     # 1) Pre-threshold
     pt_threshold = float(hcfg["pt_threshold_hlt"])
@@ -283,6 +287,7 @@ def apply_hlt_effects_realistic_nomap(
                     hlt[j, a, 3] = hlt[j, a, 3] + hlt[j, b, 3]
                     to_remove.add(b)
                     n_merged += 1
+                    merge_lost_per_jet[j] += 1.0
 
             for idx in to_remove:
                 hlt_mask[j, idx] = False
@@ -332,6 +337,7 @@ def apply_hlt_effects_realistic_nomap(
     lost_eff = (u > eps) & hlt_mask
     hlt_mask[lost_eff] = False
     hlt[lost_eff] = 0
+    eff_lost_per_jet = lost_eff.sum(axis=1).astype(np.float32)
     n_lost_eff = int(lost_eff.sum())
 
     # 4) Smearing + tails + local reassignment
@@ -439,7 +445,11 @@ def apply_hlt_effects_realistic_nomap(
         "avg_offline_per_jet": float(mask.sum(axis=1).mean()),
         "avg_hlt_per_jet": float(hlt_mask.sum(axis=1).mean()),
     }
-    return hlt.astype(np.float32), hlt_mask.astype(bool), stats
+    budget_truth = {
+        "merge_lost_per_jet": merge_lost_per_jet.astype(np.float32),
+        "eff_lost_per_jet": eff_lost_per_jet.astype(np.float32),
+    }
+    return hlt.astype(np.float32), hlt_mask.astype(bool), stats, budget_truth
 
 
 class ReconstructionDataset(Dataset):
@@ -450,12 +460,16 @@ class ReconstructionDataset(Dataset):
         const_hlt: np.ndarray,
         const_off: np.ndarray,
         mask_off: np.ndarray,
+        budget_merge_true: np.ndarray,
+        budget_eff_true: np.ndarray,
     ):
         self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
         self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
         self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
         self.const_off = torch.tensor(const_off, dtype=torch.float32)
         self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
+        self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
+        self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
 
     def __len__(self) -> int:
         return self.feat_hlt.shape[0]
@@ -467,6 +481,8 @@ class ReconstructionDataset(Dataset):
             "const_hlt": self.const_hlt[i],
             "const_off": self.const_off[i],
             "mask_off": self.mask_off[i],
+            "budget_merge_true": self.budget_merge_true[i],
+            "budget_eff_true": self.budget_eff_true[i],
         }
 
 
@@ -623,7 +639,8 @@ class OfflineReconstructor(nn.Module):
         tok_tokens = torch.stack([tok_pt, tok_eta, tok_phi, tok_E], dim=-1)
         tok_weight = (p_keep + p_unsmear + 0.35 * p_reassign + 0.15 * p_split).clamp(0.0, 1.0)
         tok_weight = tok_weight * mask_hlt.float()
-        tok_flag = (p_split + 0.5 * p_reassign).clamp(0.0, 1.0) * mask_hlt.float()
+        tok_merge_flag = torch.zeros_like(tok_weight)
+        tok_eff_flag = torch.zeros_like(tok_weight)
 
         # Split children from each HLT token
         K = self.max_split_children
@@ -639,7 +656,8 @@ class OfflineReconstructor(nn.Module):
 
         child_tokens = torch.stack([child_pt, child_eta, child_phi, child_E], dim=-1).reshape(B, L * K, 4)
         child_weight = split_exist.reshape(B, L * K).clamp(0.0, 1.0)
-        child_flag = torch.ones_like(child_weight)
+        child_merge_flag = torch.ones_like(child_weight)
+        child_eff_flag = torch.zeros_like(child_weight)
 
         # Jet context and budget heads
         q = self.pool_query.expand(B, -1, -1)
@@ -663,7 +681,8 @@ class OfflineReconstructor(nn.Module):
         gen_E = torch.exp(torch.clamp(gen_raw[..., 3], min=-8.0, max=10.0))
         gen_E = torch.maximum(gen_E, gen_pt * torch.cosh(gen_eta))
         gen_tokens = torch.stack([gen_pt, gen_eta, gen_phi, gen_E], dim=-1)
-        gen_flag = torch.ones_like(gen_exist)
+        gen_merge_flag = torch.zeros_like(gen_exist)
+        gen_eff_flag = torch.ones_like(gen_exist)
 
         # Budget-informed calibration of generated/split weights.
         child_sum = child_weight.sum(dim=1, keepdim=True) + eps
@@ -675,12 +694,14 @@ class OfflineReconstructor(nn.Module):
 
         cand_tokens = torch.cat([tok_tokens, child_tokens, gen_tokens], dim=1)
         cand_weights = torch.cat([tok_weight, child_weight, gen_exist], dim=1)
-        cand_flags = torch.cat([tok_flag, child_flag, gen_flag], dim=1)
+        cand_merge_flags = torch.cat([tok_merge_flag, child_merge_flag, gen_merge_flag], dim=1)
+        cand_eff_flags = torch.cat([tok_eff_flag, child_eff_flag, gen_eff_flag], dim=1)
 
         return {
             "cand_tokens": cand_tokens,
             "cand_weights": cand_weights,
-            "cand_flags": cand_flags,
+            "cand_merge_flags": cand_merge_flags,
+            "cand_eff_flags": cand_eff_flags,
             "action_prob": action_prob,
             "child_weight": child_weight,
             "gen_weight": gen_exist,
@@ -734,6 +755,8 @@ def compute_reconstruction_losses(
     mask_hlt: torch.Tensor,
     const_off: torch.Tensor,
     mask_off: torch.Tensor,
+    budget_merge_true: torch.Tensor,
+    budget_eff_true: torch.Tensor,
     loss_cfg: Dict,
 ) -> Dict[str, torch.Tensor]:
     eps = 1e-8
@@ -774,6 +797,12 @@ def compute_reconstruction_losses(
         + (pred_E - true_E).abs()
     ) / norm
     loss_phys = loss_phys.mean()
+    pred_pt = torch.sqrt(pred_px.pow(2) + pred_py.pow(2) + eps)
+    true_pt = torch.sqrt(true_px.pow(2) + true_py.pow(2) + eps)
+    pt_ratio = pred_pt / (true_pt + eps)
+    loss_pt_ratio = F.smooth_l1_loss(pt_ratio, torch.ones_like(pt_ratio))
+    e_ratio = pred_E / (true_E + eps)
+    loss_e_ratio = F.smooth_l1_loss(e_ratio, torch.ones_like(e_ratio))
 
     # Budget/count losses.
     true_count = mask_off.float().sum(dim=1)
@@ -782,16 +811,24 @@ def compute_reconstruction_losses(
 
     pred_count = w.sum(dim=1)
     pred_added = out["child_weight"].sum(dim=1) + out["gen_weight"].sum(dim=1)
+    pred_added_merge = out["child_weight"].sum(dim=1)
+    pred_added_eff = out["gen_weight"].sum(dim=1)
 
     budget_total = out["budget_total"]
     budget_merge = out["budget_merge"]
     budget_eff = out["budget_eff"]
+    budget_true_total = budget_merge_true + budget_eff_true
 
     loss_budget = (
         F.smooth_l1_loss(pred_count, true_count)
         + F.smooth_l1_loss(budget_total, true_count)
         + F.smooth_l1_loss(pred_added, true_added)
         + F.smooth_l1_loss(budget_merge + budget_eff, true_added)
+        + F.smooth_l1_loss(budget_merge, budget_merge_true)
+        + F.smooth_l1_loss(budget_eff, budget_eff_true)
+        + F.smooth_l1_loss(pred_added_merge, budget_merge_true)
+        + F.smooth_l1_loss(pred_added_eff, budget_eff_true)
+        + F.smooth_l1_loss(budget_merge + budget_eff, budget_true_total)
     )
 
     # Sparsity regularization (avoid gratuitous split/gen actions).
@@ -821,6 +858,8 @@ def compute_reconstruction_losses(
     total = (
         float(loss_cfg["w_set"]) * loss_set
         + float(loss_cfg["w_phys"]) * loss_phys
+        + float(loss_cfg["w_pt_ratio"]) * loss_pt_ratio
+        + float(loss_cfg["w_e_ratio"]) * loss_e_ratio
         + float(loss_cfg["w_budget"]) * loss_budget
         + float(loss_cfg["w_sparse"]) * loss_sparse
         + float(loss_cfg["w_local"]) * loss_local
@@ -830,6 +869,8 @@ def compute_reconstruction_losses(
         "total": total,
         "set": loss_set,
         "phys": loss_phys,
+        "pt_ratio": loss_pt_ratio,
+        "e_ratio": loss_e_ratio,
         "budget": loss_budget,
         "sparse": loss_sparse,
         "local": loss_local,
@@ -873,6 +914,8 @@ def train_reconstructor(
         tr_total = 0.0
         tr_set = 0.0
         tr_phys = 0.0
+        tr_pt_ratio = 0.0
+        tr_e_ratio = 0.0
         tr_budget = 0.0
         tr_sparse = 0.0
         tr_local = 0.0
@@ -884,10 +927,21 @@ def train_reconstructor(
             const_hlt = batch["const_hlt"].to(device)
             const_off = batch["const_off"].to(device)
             mask_off = batch["mask_off"].to(device)
+            budget_merge_true = batch["budget_merge_true"].to(device)
+            budget_eff_true = batch["budget_eff_true"].to(device)
 
             opt.zero_grad()
             out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=sc)
-            losses = compute_reconstruction_losses(out, const_hlt, mask_hlt, const_off, mask_off, loss_cfg)
+            losses = compute_reconstruction_losses(
+                out,
+                const_hlt,
+                mask_hlt,
+                const_off,
+                mask_off,
+                budget_merge_true,
+                budget_eff_true,
+                loss_cfg,
+            )
             losses["total"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -896,6 +950,8 @@ def train_reconstructor(
             tr_total += losses["total"].item() * bs
             tr_set += losses["set"].item() * bs
             tr_phys += losses["phys"].item() * bs
+            tr_pt_ratio += losses["pt_ratio"].item() * bs
+            tr_e_ratio += losses["e_ratio"].item() * bs
             tr_budget += losses["budget"].item() * bs
             tr_sparse += losses["sparse"].item() * bs
             tr_local += losses["local"].item() * bs
@@ -905,6 +961,8 @@ def train_reconstructor(
         va_total = 0.0
         va_set = 0.0
         va_phys = 0.0
+        va_pt_ratio = 0.0
+        va_e_ratio = 0.0
         va_budget = 0.0
         va_sparse = 0.0
         va_local = 0.0
@@ -917,14 +975,27 @@ def train_reconstructor(
                 const_hlt = batch["const_hlt"].to(device)
                 const_off = batch["const_off"].to(device)
                 mask_off = batch["mask_off"].to(device)
+                budget_merge_true = batch["budget_merge_true"].to(device)
+                budget_eff_true = batch["budget_eff_true"].to(device)
 
                 out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
-                losses = compute_reconstruction_losses(out, const_hlt, mask_hlt, const_off, mask_off, loss_cfg)
+                losses = compute_reconstruction_losses(
+                    out,
+                    const_hlt,
+                    mask_hlt,
+                    const_off,
+                    mask_off,
+                    budget_merge_true,
+                    budget_eff_true,
+                    loss_cfg,
+                )
 
                 bs = feat_hlt.size(0)
                 va_total += losses["total"].item() * bs
                 va_set += losses["set"].item() * bs
                 va_phys += losses["phys"].item() * bs
+                va_pt_ratio += losses["pt_ratio"].item() * bs
+                va_e_ratio += losses["e_ratio"].item() * bs
                 va_budget += losses["budget"].item() * bs
                 va_sparse += losses["sparse"].item() * bs
                 va_local += losses["local"].item() * bs
@@ -935,6 +1006,8 @@ def train_reconstructor(
         tr_total /= max(n_tr, 1)
         tr_set /= max(n_tr, 1)
         tr_phys /= max(n_tr, 1)
+        tr_pt_ratio /= max(n_tr, 1)
+        tr_e_ratio /= max(n_tr, 1)
         tr_budget /= max(n_tr, 1)
         tr_sparse /= max(n_tr, 1)
         tr_local /= max(n_tr, 1)
@@ -942,6 +1015,8 @@ def train_reconstructor(
         va_total /= max(n_va, 1)
         va_set /= max(n_va, 1)
         va_phys /= max(n_va, 1)
+        va_pt_ratio /= max(n_va, 1)
+        va_e_ratio /= max(n_va, 1)
         va_budget /= max(n_va, 1)
         va_sparse /= max(n_va, 1)
         va_local /= max(n_va, 1)
@@ -954,6 +1029,8 @@ def train_reconstructor(
                 "val_total": va_total,
                 "val_set": va_set,
                 "val_phys": va_phys,
+                "val_pt_ratio": va_pt_ratio,
+                "val_e_ratio": va_e_ratio,
                 "val_budget": va_budget,
                 "val_sparse": va_sparse,
                 "val_local": va_local,
@@ -965,7 +1042,7 @@ def train_reconstructor(
             print(
                 f"Ep {ep+1}: "
                 f"train_total={tr_total:.4f}, val_total={va_total:.4f}, best={best_val:.4f} | "
-                f"set={va_set:.4f}, phys={va_phys:.4f}, budget={va_budget:.4f}, "
+                f"set={va_set:.4f}, phys={va_phys:.4f}, pt_ratio={va_pt_ratio:.4f}, e_ratio={va_e_ratio:.4f}, budget={va_budget:.4f}, "
                 f"sparse={va_sparse:.4f}, local={va_local:.4f}, stage_scale={sc:.2f}"
             )
 
@@ -988,14 +1065,21 @@ def reconstruct_dataset(
     device: torch.device,
     batch_size: int,
     weight_threshold: float = 0.03,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    use_budget_topk: bool = True,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     ds = ReconstructInputDataset(feat_hlt, mask_hlt, const_hlt)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False)
 
     model.eval()
     reco_const = np.zeros((feat_hlt.shape[0], max_constits, 4), dtype=np.float32)
     reco_mask = np.zeros((feat_hlt.shape[0], max_constits), dtype=bool)
-    reco_flag = np.zeros((feat_hlt.shape[0], max_constits), dtype=np.float32)
+    reco_merge_flag = np.zeros((feat_hlt.shape[0], max_constits), dtype=np.float32)
+    reco_eff_flag = np.zeros((feat_hlt.shape[0], max_constits), dtype=np.float32)
+    created_merge_count = np.zeros(feat_hlt.shape[0], dtype=np.int32)
+    created_eff_count = np.zeros(feat_hlt.shape[0], dtype=np.int32)
+    pred_budget_total = np.zeros(feat_hlt.shape[0], dtype=np.float32)
+    pred_budget_merge = np.zeros(feat_hlt.shape[0], dtype=np.float32)
+    pred_budget_eff = np.zeros(feat_hlt.shape[0], dtype=np.float32)
 
     offset = 0
     with torch.no_grad():
@@ -1007,32 +1091,62 @@ def reconstruct_dataset(
 
             cand = out["cand_tokens"].cpu().numpy()
             w = out["cand_weights"].cpu().numpy()
-            f = out["cand_flags"].cpu().numpy()
+            merge_flags = out["cand_merge_flags"].cpu().numpy()
+            eff_flags = out["cand_eff_flags"].cpu().numpy()
+            budget_total = out["budget_total"].cpu().numpy()
+            budget_merge = out["budget_merge"].cpu().numpy()
+            budget_eff = out["budget_eff"].cpu().numpy()
+            n_tok = x.shape[1]
+            n_child = out["child_weight"].shape[1]
+            gen_start = int(n_tok + n_child)
 
             bsz = cand.shape[0]
             for i in range(bsz):
                 order = np.argsort(-w[i])
-                picked = []
-                for idx in order:
-                    if len(picked) >= max_constits:
-                        break
-                    if w[i, idx] < weight_threshold and len(picked) > 0:
-                        break
-                    picked.append(int(idx))
-                if len(picked) == 0:
-                    picked = [int(order[0])]
+                if use_budget_topk:
+                    k_budget = int(np.clip(np.rint(float(budget_total[i])), 1, max_constits))
+                    picked = [int(idx) for idx in order[:k_budget]]
+                    if len(picked) == 0:
+                        picked = [int(order[0])]
+                else:
+                    picked = []
+                    for idx in order:
+                        if len(picked) >= max_constits:
+                            break
+                        if w[i, idx] < weight_threshold and len(picked) > 0:
+                            break
+                        picked.append(int(idx))
+                    if len(picked) == 0:
+                        picked = [int(order[0])]
 
                 n = min(len(picked), max_constits)
                 sel = picked[:n]
                 reco_const[offset + i, :n] = cand[i, sel]
                 reco_mask[offset + i, :n] = True
-                reco_flag[offset + i, :n] = np.clip(f[i, sel], 0.0, 1.0)
+                reco_merge_flag[offset + i, :n] = np.clip(merge_flags[i, sel], 0.0, 1.0)
+                reco_eff_flag[offset + i, :n] = np.clip(eff_flags[i, sel], 0.0, 1.0)
+                sel_arr = np.array(sel, dtype=np.int64)
+                created_merge_count[offset + i] = int(np.sum((sel_arr >= n_tok) & (sel_arr < gen_start)))
+                created_eff_count[offset + i] = int(np.sum(sel_arr >= gen_start))
+                pred_budget_total[offset + i] = float(budget_total[i])
+                pred_budget_merge[offset + i] = float(budget_merge[i])
+                pred_budget_eff[offset + i] = float(budget_eff[i])
 
             offset += bsz
 
     reco_const = np.nan_to_num(reco_const, nan=0.0, posinf=0.0, neginf=0.0)
     reco_const[~reco_mask] = 0.0
-    return reco_const, reco_mask, reco_flag
+    return (
+        reco_const,
+        reco_mask,
+        reco_merge_flag,
+        reco_eff_flag,
+        created_merge_count,
+        created_eff_count,
+        pred_budget_total,
+        pred_budget_merge,
+        pred_budget_eff,
+    )
 
 
 def train_single_view_classifier(
@@ -1211,6 +1325,282 @@ def plot_roc(lines, out_path: Path, min_fpr: float):
     plt.close()
 
 
+def fpr_at_target_tpr(fpr: np.ndarray, tpr: np.ndarray, target_tpr: float) -> float:
+    fpr = np.asarray(fpr, dtype=np.float64)
+    tpr = np.asarray(tpr, dtype=np.float64)
+    if fpr.size == 0 or tpr.size == 0:
+        return float("nan")
+    order = np.argsort(tpr)
+    t = tpr[order]
+    f = fpr[order]
+    # Collapse duplicate TPR values by taking minimum FPR at each TPR.
+    t_unique = np.unique(t)
+    f_unique = np.empty_like(t_unique)
+    for i, tv in enumerate(t_unique):
+        f_unique[i] = np.min(f[t == tv])
+    if target_tpr <= t_unique[0]:
+        return float(f_unique[0])
+    if target_tpr >= t_unique[-1]:
+        return float(f_unique[-1])
+    return float(np.interp(target_tpr, t_unique, f_unique))
+
+
+def plot_constituent_count_diagnostics(
+    save_root: Path,
+    mask_off: np.ndarray,
+    hlt_mask: np.ndarray,
+    reco_mask: np.ndarray,
+    created_merge_count: np.ndarray,
+    created_eff_count: np.ndarray,
+    hlt_stats: Dict,
+) -> Dict[str, float]:
+    off_n = mask_off.sum(axis=1).astype(np.int32)
+    hlt_n = hlt_mask.sum(axis=1).astype(np.int32)
+    reco_n = reco_mask.sum(axis=1).astype(np.int32)
+
+    max_n = int(max(off_n.max(), hlt_n.max(), reco_n.max()))
+    bins = np.arange(0, max_n + 2) - 0.5
+
+    # 1) Count distributions.
+    plt.figure(figsize=(8, 5))
+    plt.hist(off_n, bins=bins, density=True, histtype="step", linewidth=2, color="crimson", label="Offline")
+    plt.hist(hlt_n, bins=bins, density=True, histtype="step", linewidth=2, color="steelblue", label="HLT")
+    plt.hist(reco_n, bins=bins, density=True, histtype="step", linewidth=2, color="forestgreen", label="Reconstructed")
+    plt.xlabel("Constituent count per jet")
+    plt.ylabel("Density")
+    plt.grid(True, alpha=0.3)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(save_root / "constituent_count_hist.png", dpi=300)
+    plt.close()
+
+    # 2) Count error distributions vs offline.
+    err_hlt = hlt_n - off_n
+    err_reco = reco_n - off_n
+    e_min = int(min(err_hlt.min(), err_reco.min()))
+    e_max = int(max(err_hlt.max(), err_reco.max()))
+    bins_e = np.arange(e_min, e_max + 2) - 0.5
+
+    plt.figure(figsize=(8, 5))
+    plt.hist(err_hlt, bins=bins_e, density=True, histtype="step", linewidth=2, color="steelblue", label="HLT - Offline")
+    plt.hist(err_reco, bins=bins_e, density=True, histtype="step", linewidth=2, color="forestgreen", label="Reco - Offline")
+    plt.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+    plt.xlabel("Count error per jet")
+    plt.ylabel("Density")
+    plt.grid(True, alpha=0.3)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(save_root / "constituent_count_error_hist.png", dpi=300)
+    plt.close()
+
+    # 3) Mean predicted count vs offline-count bins.
+    x_vals = []
+    hlt_mean = []
+    reco_mean = []
+    for n in np.unique(off_n):
+        sel = off_n == n
+        if sel.sum() < 10:
+            continue
+        x_vals.append(int(n))
+        hlt_mean.append(float(hlt_n[sel].mean()))
+        reco_mean.append(float(reco_n[sel].mean()))
+
+    if len(x_vals) > 0:
+        x_arr = np.array(x_vals, dtype=np.float64)
+        plt.figure(figsize=(8, 5))
+        plt.plot(x_arr, x_arr, "k:", linewidth=1.5, label="Ideal y=x")
+        plt.plot(x_arr, np.array(hlt_mean), "o-", color="steelblue", label="HLT mean")
+        plt.plot(x_arr, np.array(reco_mean), "s--", color="forestgreen", label="Reconstructed mean")
+        plt.xlabel("Offline constituent count")
+        plt.ylabel("Mean predicted constituent count")
+        plt.grid(True, alpha=0.3)
+        plt.legend(frameon=False)
+        plt.tight_layout()
+        plt.savefig(save_root / "constituent_count_profile.png", dpi=300)
+        plt.close()
+
+    # 3B) Created constituents per-jet distributions by source.
+    cmax = int(max(created_merge_count.max(), created_eff_count.max(), 1))
+    bins_c = np.arange(0, cmax + 2) - 0.5
+    plt.figure(figsize=(8, 5))
+    plt.hist(
+        created_merge_count,
+        bins=bins_c,
+        density=True,
+        histtype="step",
+        linewidth=2,
+        color="darkorange",
+        label="Created by unmerge",
+    )
+    plt.hist(
+        created_eff_count,
+        bins=bins_c,
+        density=True,
+        histtype="step",
+        linewidth=2,
+        color="mediumseagreen",
+        label="Created by efficiency generation",
+    )
+    plt.xlabel("Created constituents per jet")
+    plt.ylabel("Density")
+    plt.grid(True, alpha=0.3)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(save_root / "constituent_created_count_hist.png", dpi=300)
+    plt.close()
+
+    # 4) Created-vs-lost means (per jet).
+    n_jets = max(int(off_n.shape[0]), 1)
+    lost_merge_mean = float(hlt_stats.get("n_merged_pairs", 0)) / float(n_jets)
+    lost_eff_mean = float(hlt_stats.get("n_lost_eff", 0)) / float(n_jets)
+    needed_add_mean = float(np.maximum(off_n - hlt_n, 0).mean())
+    created_merge_mean = float(created_merge_count.mean())
+    created_eff_mean = float(created_eff_count.mean())
+    total_created_mean = created_merge_mean + created_eff_mean
+
+    labels = [
+        "Lost: merging",
+        "Lost: efficiency",
+        "Need add (Offline-HLT)",
+        "Created: unmerge",
+        "Created: efficiency",
+        "Created: total",
+    ]
+    values = [
+        lost_merge_mean,
+        lost_eff_mean,
+        needed_add_mean,
+        created_merge_mean,
+        created_eff_mean,
+        total_created_mean,
+    ]
+    colors = ["steelblue", "cornflowerblue", "slategray", "darkorange", "mediumseagreen", "forestgreen"]
+
+    plt.figure(figsize=(9.5, 5))
+    x = np.arange(len(labels))
+    plt.bar(x, values, color=colors, alpha=0.9)
+    plt.xticks(x, labels, rotation=15, ha="right")
+    plt.ylabel("Mean constituents per jet")
+    plt.grid(True, axis="y", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_root / "constituent_created_vs_lost_mean.png", dpi=300)
+    plt.close()
+
+    summary = {
+        "offline_count_mean": float(off_n.mean()),
+        "hlt_count_mean": float(hlt_n.mean()),
+        "reco_count_mean": float(reco_n.mean()),
+        "hlt_count_bias_vs_offline": float((hlt_n - off_n).mean()),
+        "reco_count_bias_vs_offline": float((reco_n - off_n).mean()),
+        "hlt_count_mae_vs_offline": float(np.abs(hlt_n - off_n).mean()),
+        "reco_count_mae_vs_offline": float(np.abs(reco_n - off_n).mean()),
+        "lost_merge_mean_per_jet": lost_merge_mean,
+        "lost_eff_mean_per_jet": lost_eff_mean,
+        "needed_add_mean_per_jet": needed_add_mean,
+        "created_merge_mean_per_jet": created_merge_mean,
+        "created_eff_mean_per_jet": created_eff_mean,
+        "created_total_mean_per_jet": total_created_mean,
+    }
+    return summary
+
+
+def plot_budget_diagnostics(
+    save_root: Path,
+    true_merge: np.ndarray,
+    true_eff: np.ndarray,
+    pred_merge: np.ndarray,
+    pred_eff: np.ndarray,
+) -> Dict[str, float]:
+    true_merge = true_merge.astype(np.float64)
+    true_eff = true_eff.astype(np.float64)
+    pred_merge = pred_merge.astype(np.float64)
+    pred_eff = pred_eff.astype(np.float64)
+    true_total = true_merge + true_eff
+    pred_total = pred_merge + pred_eff
+
+    err_merge = pred_merge - true_merge
+    err_eff = pred_eff - true_eff
+    err_total = pred_total - true_total
+
+    e_min = int(np.floor(min(err_merge.min(), err_eff.min(), err_total.min())))
+    e_max = int(np.ceil(max(err_merge.max(), err_eff.max(), err_total.max())))
+    bins = np.linspace(e_min - 0.5, e_max + 0.5, num=max(25, e_max - e_min + 2))
+
+    plt.figure(figsize=(8.5, 5))
+    plt.hist(err_merge, bins=bins, density=True, histtype="step", linewidth=2, color="darkorange", label="merge budget error")
+    plt.hist(err_eff, bins=bins, density=True, histtype="step", linewidth=2, color="mediumseagreen", label="eff budget error")
+    plt.hist(err_total, bins=bins, density=True, histtype="step", linewidth=2, color="slateblue", label="total budget error")
+    plt.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+    plt.xlabel("Predicted budget - true budget")
+    plt.ylabel("Density")
+    plt.grid(True, alpha=0.3)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(save_root / "budget_error_hist.png", dpi=300)
+    plt.close()
+
+    # Profile by true budget quantiles.
+    q_edges = np.quantile(true_total, np.linspace(0.0, 1.0, 9))
+    q_edges = np.unique(q_edges)
+    x = []
+    y_true = []
+    y_pred_total = []
+    y_pred_merge = []
+    y_pred_eff = []
+    for i in range(max(len(q_edges) - 1, 0)):
+        lo, hi = q_edges[i], q_edges[i + 1]
+        if i < len(q_edges) - 2:
+            sel = (true_total >= lo) & (true_total < hi)
+        else:
+            sel = (true_total >= lo) & (true_total <= hi)
+        if sel.sum() < 10:
+            continue
+        x.append(float(true_total[sel].mean()))
+        y_true.append(float(true_total[sel].mean()))
+        y_pred_total.append(float(pred_total[sel].mean()))
+        y_pred_merge.append(float(pred_merge[sel].mean()))
+        y_pred_eff.append(float(pred_eff[sel].mean()))
+
+    if len(x) > 0:
+        x = np.array(x, dtype=np.float64)
+        y_true = np.array(y_true, dtype=np.float64)
+        y_pred_total = np.array(y_pred_total, dtype=np.float64)
+        y_pred_merge = np.array(y_pred_merge, dtype=np.float64)
+        y_pred_eff = np.array(y_pred_eff, dtype=np.float64)
+
+        plt.figure(figsize=(8.5, 5))
+        plt.plot(x, y_true, "k:", linewidth=1.5, label="ideal y=x")
+        plt.plot(x, y_pred_total, "o-", color="slateblue", label="pred total")
+        plt.plot(x, y_pred_merge, "s--", color="darkorange", label="pred merge")
+        plt.plot(x, y_pred_eff, "d--", color="mediumseagreen", label="pred eff")
+        plt.xlabel("Mean true total budget in bin")
+        plt.ylabel("Mean predicted budget")
+        plt.grid(True, alpha=0.3)
+        plt.legend(frameon=False)
+        plt.tight_layout()
+        plt.savefig(save_root / "budget_profile.png", dpi=300)
+        plt.close()
+
+    summary = {
+        "merge_mae": float(np.abs(err_merge).mean()),
+        "eff_mae": float(np.abs(err_eff).mean()),
+        "total_mae": float(np.abs(err_total).mean()),
+        "merge_bias": float(err_merge.mean()),
+        "eff_bias": float(err_eff.mean()),
+        "total_bias": float(err_total.mean()),
+        "merge_rmse": float(np.sqrt((err_merge ** 2).mean())),
+        "eff_rmse": float(np.sqrt((err_eff ** 2).mean())),
+        "total_rmse": float(np.sqrt((err_total ** 2).mean())),
+        "true_merge_mean": float(true_merge.mean()),
+        "pred_merge_mean": float(pred_merge.mean()),
+        "true_eff_mean": float(true_eff.mean()),
+        "pred_eff_mean": float(pred_eff.mean()),
+        "true_total_mean": float(true_total.mean()),
+        "pred_total_mean": float(pred_total.mean()),
+    }
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_path", type=str, default="./data")
@@ -1242,6 +1632,7 @@ def main():
     parser.add_argument("--reco_lr", type=float, default=CONFIG["reconstructor_training"]["lr"])
     parser.add_argument("--reco_patience", type=int, default=CONFIG["reconstructor_training"]["patience"])
     parser.add_argument("--reco_weight_threshold", type=float, default=0.03)
+    parser.add_argument("--reco_disable_budget_topk", action="store_true")
 
     parser.add_argument("--skip_save_models", action="store_true")
     args = parser.parse_args()
@@ -1299,12 +1690,14 @@ def main():
     const_off[~masks_off] = 0.0
 
     print("Generating realistic pseudo-HLT (no constituent mapping)...")
-    hlt_const, hlt_mask, hlt_stats = apply_hlt_effects_realistic_nomap(
+    hlt_const, hlt_mask, hlt_stats, budget_truth = apply_hlt_effects_realistic_nomap(
         const_off,
         masks_off,
         CONFIG,
         seed=RANDOM_SEED,
     )
+    budget_merge_true = budget_truth["merge_lost_per_jet"].astype(np.float32)
+    budget_eff_true = budget_truth["eff_lost_per_jet"].astype(np.float32)
 
     print("HLT Simulation Statistics:")
     print(f"  Jets: {hlt_stats['n_jets']:,}")
@@ -1404,10 +1797,22 @@ def main():
     print("=" * 70)
 
     train_ds_reco = ReconstructionDataset(
-        features_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx], const_off[train_idx], masks_off[train_idx]
+        features_hlt_std[train_idx],
+        hlt_mask[train_idx],
+        hlt_const[train_idx],
+        const_off[train_idx],
+        masks_off[train_idx],
+        budget_merge_true[train_idx],
+        budget_eff_true[train_idx],
     )
     val_ds_reco = ReconstructionDataset(
-        features_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx], const_off[val_idx], masks_off[val_idx]
+        features_hlt_std[val_idx],
+        hlt_mask[val_idx],
+        hlt_const[val_idx],
+        const_off[val_idx],
+        masks_off[val_idx],
+        budget_merge_true[val_idx],
+        budget_eff_true[val_idx],
     )
 
     train_loader_reco = DataLoader(
@@ -1445,7 +1850,17 @@ def main():
         print(f"  {k}: {v:.6f}")
 
     print("Building reconstructed dataset for all jets...")
-    reco_const, reco_mask, reco_flag = reconstruct_dataset(
+    (
+        reco_const,
+        reco_mask,
+        reco_merge_flag,
+        reco_eff_flag,
+        created_merge_count,
+        created_eff_count,
+        pred_budget_total,
+        pred_budget_merge,
+        pred_budget_eff,
+    ) = reconstruct_dataset(
         model=reconstructor,
         feat_hlt=features_hlt_std,
         mask_hlt=hlt_mask,
@@ -1454,11 +1869,15 @@ def main():
         device=device,
         batch_size=CONFIG["reconstructor_training"]["batch_size"],
         weight_threshold=float(args.reco_weight_threshold),
+        use_budget_topk=not bool(args.reco_disable_budget_topk),
     )
 
     features_reco = compute_features(reco_const, reco_mask)
     features_reco_std = standardize(features_reco, reco_mask, feat_means, feat_stds)
-    features_reco_flag = np.concatenate([features_reco_std, reco_flag[..., None]], axis=-1).astype(np.float32)
+    features_reco_flag = np.concatenate(
+        [features_reco_std, reco_merge_flag[..., None], reco_eff_flag[..., None]],
+        axis=-1,
+    ).astype(np.float32)
 
     # ====================================================================== #
     # STEP 4: Taggers on reconstructed view
@@ -1496,7 +1915,7 @@ def main():
     print("\n" + "=" * 70)
     print("STEP 4B: UNMERGE MODEL + MERGEFLAG")
     print("=" * 70)
-    unmerge_flag_cls = ParticleTransformer(input_dim=8, **CONFIG["model"]).to(device)
+    unmerge_flag_cls = ParticleTransformer(input_dim=9, **CONFIG["model"]).to(device)
     unmerge_flag_cls = train_single_view_classifier(
         unmerge_flag_cls,
         train_loader_reco_flag,
@@ -1577,7 +1996,7 @@ def main():
     print("\n" + "=" * 70)
     print("STEP 4D: DUAL-VIEW + MERGEFLAG CLASSIFIER")
     print("=" * 70)
-    dual_flag_cls = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=8, **CONFIG["model"]).to(device)
+    dual_flag_cls = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=9, **CONFIG["model"]).to(device)
     dual_flag_cls = train_dual_view_classifier(
         dual_flag_cls,
         train_loader_dual_flag,
@@ -1673,7 +2092,7 @@ def main():
     print("\n" + "=" * 70)
     print("STEP 4F: DUAL-VIEW + MERGEFLAG + KD")
     print("=" * 70)
-    kd_student_dual_flag = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=8, **CONFIG["model"]).to(device)
+    kd_student_dual_flag = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=9, **CONFIG["model"]).to(device)
     kd_student_dual_flag = train_dual_kd_student(
         kd_student_dual_flag,
         teacher,
@@ -1710,6 +2129,26 @@ def main():
     fpr_dvf, tpr_dvf, _ = roc_curve(labs, preds_dual_flag)
     fpr_dv_k, tpr_dv_k, _ = roc_curve(labs, preds_dual_kd)
     fpr_dvf_k, tpr_dvf_k, _ = roc_curve(labs, preds_dual_flag_kd)
+
+    target_tpr = 0.30
+    fpr30_teacher = fpr_at_target_tpr(fpr_t, tpr_t, target_tpr)
+    fpr30_baseline = fpr_at_target_tpr(fpr_b, tpr_b, target_tpr)
+    fpr30_unmerge = fpr_at_target_tpr(fpr_u, tpr_u, target_tpr)
+    fpr30_unmerge_flag = fpr_at_target_tpr(fpr_uf, tpr_uf, target_tpr)
+    fpr30_dual = fpr_at_target_tpr(fpr_dv, tpr_dv, target_tpr)
+    fpr30_dual_flag = fpr_at_target_tpr(fpr_dvf, tpr_dvf, target_tpr)
+    fpr30_dual_kd = fpr_at_target_tpr(fpr_dv_k, tpr_dv_k, target_tpr)
+    fpr30_dual_flag_kd = fpr_at_target_tpr(fpr_dvf_k, tpr_dvf_k, target_tpr)
+
+    print(f"\nFPR at fixed TPR={target_tpr:.2f}")
+    print("  Teacher (Offline):      " + f"{fpr30_teacher:.6f} ({100.0*fpr30_teacher:.3f}%)")
+    print("  Baseline (HLT):         " + f"{fpr30_baseline:.6f} ({100.0*fpr30_baseline:.3f}%)")
+    print("  Unmerge Model:          " + f"{fpr30_unmerge:.6f} ({100.0*fpr30_unmerge:.3f}%)")
+    print("  Unmerge+MF:             " + f"{fpr30_unmerge_flag:.6f} ({100.0*fpr30_unmerge_flag:.3f}%)")
+    print("  Dual-View:              " + f"{fpr30_dual:.6f} ({100.0*fpr30_dual:.3f}%)")
+    print("  Dual-View+MF:           " + f"{fpr30_dual_flag:.6f} ({100.0*fpr30_dual_flag:.3f}%)")
+    print("  Dual-View+KD:           " + f"{fpr30_dual_kd:.6f} ({100.0*fpr30_dual_kd:.3f}%)")
+    print("  Dual-View+MF+KD:        " + f"{fpr30_dual_flag_kd:.6f} ({100.0*fpr30_dual_flag_kd:.3f}%)")
 
     plot_roc(
         [
@@ -1820,6 +2259,47 @@ def main():
             f"{r['response']:.4f} | {r['resolution']:.4f}"
         )
 
+    count_summary = plot_constituent_count_diagnostics(
+        save_root=save_root,
+        mask_off=masks_off,
+        hlt_mask=hlt_mask,
+        reco_mask=reco_mask,
+        created_merge_count=created_merge_count,
+        created_eff_count=created_eff_count,
+        hlt_stats=hlt_stats,
+    )
+    print("\nConstituent-count diagnostics:")
+    print(
+        f"  Means: offline={count_summary['offline_count_mean']:.3f}, "
+        f"hlt={count_summary['hlt_count_mean']:.3f}, reco={count_summary['reco_count_mean']:.3f}"
+    )
+    print(
+        f"  MAE vs offline: hlt={count_summary['hlt_count_mae_vs_offline']:.3f}, "
+        f"reco={count_summary['reco_count_mae_vs_offline']:.3f}"
+    )
+    print(
+        f"  Created means (per jet): unmerge={count_summary['created_merge_mean_per_jet']:.3f}, "
+        f"efficiency={count_summary['created_eff_mean_per_jet']:.3f}, "
+        f"total={count_summary['created_total_mean_per_jet']:.3f}"
+    )
+
+    budget_summary = plot_budget_diagnostics(
+        save_root=save_root,
+        true_merge=budget_merge_true[test_idx],
+        true_eff=budget_eff_true[test_idx],
+        pred_merge=pred_budget_merge[test_idx],
+        pred_eff=pred_budget_eff[test_idx],
+    )
+    print("\nBudget diagnostics (test split):")
+    print(
+        f"  MAE: merge={budget_summary['merge_mae']:.3f}, "
+        f"eff={budget_summary['eff_mae']:.3f}, total={budget_summary['total_mae']:.3f}"
+    )
+    print(
+        f"  Bias: merge={budget_summary['merge_bias']:.3f}, "
+        f"eff={budget_summary['eff_bias']:.3f}, total={budget_summary['total_bias']:.3f}"
+    )
+
     def rr_field(records, key):
         return np.array([r[key] for r in records], dtype=np.float64)
 
@@ -1849,6 +2329,14 @@ def main():
         tpr_dual_kd=tpr_dv_k,
         fpr_dual_flag_kd=fpr_dvf_k,
         tpr_dual_flag_kd=tpr_dvf_k,
+        fpr30_teacher=fpr30_teacher,
+        fpr30_baseline=fpr30_baseline,
+        fpr30_unmerge=fpr30_unmerge,
+        fpr30_unmerge_flag=fpr30_unmerge_flag,
+        fpr30_dual=fpr30_dual,
+        fpr30_dual_flag=fpr30_dual_flag,
+        fpr30_dual_kd=fpr30_dual_kd,
+        fpr30_dual_flag_kd=fpr30_dual_flag_kd,
         jet_response_pt_low=rr_field(rr_hlt_common, "pt_low"),
         jet_response_pt_high=rr_field(rr_hlt_common, "pt_high"),
         jet_response_count=rr_field(rr_hlt_common, "count"),
@@ -1856,6 +2344,20 @@ def main():
         jet_response_hlt_std=rr_field(rr_hlt_common, "resolution"),
         jet_response_corrected_mean=rr_field(rr_reco_common, "response"),
         jet_response_corrected_std=rr_field(rr_reco_common, "resolution"),
+        count_offline_mean=count_summary["offline_count_mean"],
+        count_hlt_mean=count_summary["hlt_count_mean"],
+        count_reco_mean=count_summary["reco_count_mean"],
+        count_hlt_mae=count_summary["hlt_count_mae_vs_offline"],
+        count_reco_mae=count_summary["reco_count_mae_vs_offline"],
+        created_merge_mean=count_summary["created_merge_mean_per_jet"],
+        created_eff_mean=count_summary["created_eff_mean_per_jet"],
+        created_total_mean=count_summary["created_total_mean_per_jet"],
+        budget_merge_mae=budget_summary["merge_mae"],
+        budget_eff_mae=budget_summary["eff_mae"],
+        budget_total_mae=budget_summary["total_mae"],
+        budget_merge_bias=budget_summary["merge_bias"],
+        budget_eff_bias=budget_summary["eff_bias"],
+        budget_total_bias=budget_summary["total_bias"],
         unmerge_test_loss=float(reco_val_metrics.get("val_total", np.nan)),
         max_merge_count=0,
     )
@@ -1865,6 +2367,12 @@ def main():
 
     with open(save_root / "reconstructor_val_metrics.json", "w", encoding="utf-8") as f:
         json.dump(reco_val_metrics, f, indent=2)
+
+    with open(save_root / "constituent_count_summary.json", "w", encoding="utf-8") as f:
+        json.dump(count_summary, f, indent=2)
+
+    with open(save_root / "budget_summary_test.json", "w", encoding="utf-8") as f:
+        json.dump(budget_summary, f, indent=2)
 
     if not args.skip_save_models:
         torch.save({"model": teacher.state_dict(), "auc": auc_teacher}, save_root / "teacher.pt")
@@ -1885,7 +2393,15 @@ def main():
         hlt_mask=hlt_mask.astype(bool),
         reco_const=reco_const.astype(np.float32),
         reco_mask=reco_mask.astype(bool),
-        reco_flag=reco_flag.astype(np.float32),
+        reco_merge_flag=reco_merge_flag.astype(np.float32),
+        reco_eff_flag=reco_eff_flag.astype(np.float32),
+        created_merge_count=created_merge_count.astype(np.int32),
+        created_eff_count=created_eff_count.astype(np.int32),
+        budget_merge_true=budget_merge_true.astype(np.float32),
+        budget_eff_true=budget_eff_true.astype(np.float32),
+        budget_total_pred=pred_budget_total.astype(np.float32),
+        budget_merge_pred=pred_budget_merge.astype(np.float32),
+        budget_eff_pred=pred_budget_eff.astype(np.float32),
         labels=labels.astype(np.int64),
     )
 
