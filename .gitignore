@@ -5,3 +5,4 @@ __pycache__/*
 # plots/*
 checkpoints/*
 data/
+saved_plots/
