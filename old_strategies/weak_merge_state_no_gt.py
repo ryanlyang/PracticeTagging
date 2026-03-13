@@ -620,6 +620,9 @@ def main() -> None:
         test_conf_acc=test_metrics["conf_acc"],
         fpr=fpr,
         tpr=tpr,
+        test_y_true=test_metrics["y_true"],
+        test_y_prob=test_metrics["y_prob"],
+        test_idx=test_idx.astype(np.int32),
     )
     with open(save_root / "history.json", "w") as f:
         json.dump(history, f, indent=2)
@@ -630,6 +633,7 @@ def main() -> None:
         hlt_const=hlt_const.astype(np.float32),
         hlt_mask=hlt_mask.astype(bool),
         origin_counts=origin_counts.astype(np.int16),
+        true_merged=true_merged.astype(np.int8),
         off_const=off_const.astype(np.float32),
         off_mask=off_mask.astype(bool),
         labels=labels.astype(np.int8),

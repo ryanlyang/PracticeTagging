@@ -50,9 +50,7 @@ from unmerge_distr_model_unsmear import (
     train_kd_epoch_dual,
     evaluate_kd,
     evaluate_kd_dual,
-    evaluate_bce_loss,
     evaluate_bce_loss_dual,
-    evaluate_bce_loss_unmerged,
     self_train_student,
     self_train_student_dual,
 )
@@ -98,6 +96,36 @@ def _load_fold_models(kfold_model_dir: Path, fold_id: int, device: torch.device,
     tgt_mean = ckpt_u["tgt_mean"]
     tgt_std = ckpt_u["tgt_std"]
     return count_model, unmerge_model, tgt_mean, tgt_std, dist, relpos_mode
+
+
+@torch.no_grad()
+def _evaluate_bce_loss_single_compat(model, loader, device):
+    """
+    Compatibility BCE evaluator for single-view KD loaders.
+    Supports either:
+      - JetDataset style: {"feat", "mask", "label"}
+      - UnmergeKDDataset style: {"unmerged", "mask_unmerged", "label"}
+    """
+    model.eval()
+    total = 0.0
+    count = 0
+    for batch in loader:
+        if "feat" in batch and "mask" in batch:
+            x = batch["feat"].to(device)
+            mask = batch["mask"].to(device)
+        elif "unmerged" in batch and "mask_unmerged" in batch:
+            x = batch["unmerged"].to(device)
+            mask = batch["mask_unmerged"].to(device)
+        else:
+            raise KeyError(
+                f"Unsupported batch keys for BCE eval: {sorted(list(batch.keys()))}"
+            )
+        y = batch["label"].to(device)
+        logits = model(x, mask).squeeze(1)
+        loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, y)
+        total += float(loss.item()) * len(y)
+        count += len(y)
+    return total / max(count, 1)
 
 
 def main():
@@ -390,7 +418,7 @@ def main():
         if not kd_active and kd_cfg["adaptive_alpha"]:
             # KD loaders use UnmergeKDDataset keys ("unmerged", "mask_unmerged", ...),
             # so we must use the matching loss helper.
-            val_loss = evaluate_bce_loss_unmerged(hlt_kd, kd_val_loader_hlt, device)
+            val_loss = _evaluate_bce_loss_single_compat(hlt_kd, kd_val_loader_hlt, device)
             if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
                 stable_count += 1
             else:
@@ -475,7 +503,7 @@ def main():
         val_auc, _, _ = evaluate_kd(unmerged_kd, kd_val_loader_um, device)
         sch_ukd.step()
         if not kd_active and kd_cfg["adaptive_alpha"]:
-            val_loss = evaluate_bce_loss_unmerged(unmerged_kd, kd_val_loader_um, device)
+            val_loss = _evaluate_bce_loss_single_compat(unmerged_kd, kd_val_loader_um, device)
             if prev_val_loss is not None and abs(prev_val_loss - val_loss) < kd_cfg["alpha_stable_delta"]:
                 stable_count += 1
             else:
