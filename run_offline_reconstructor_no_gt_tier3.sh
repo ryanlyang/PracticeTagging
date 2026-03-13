@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_%j.err
 
@@ -12,7 +12,7 @@ set -euo pipefail
 mkdir -p offline_reconstructor_logs
 
 RUN_NAME="${RUN_NAME:-realistic_no_gt_default}"
-N_TRAIN_JETS="${N_TRAIN_JETS:-50000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-30000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-40}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
