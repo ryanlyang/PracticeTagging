@@ -131,6 +131,8 @@ CONFIG = {
         "dropout": 0.1,
         "max_split_children": 2,
         "max_generated_tokens": 48,
+        "unsmear_min_pt_frac": 0.92,
+        "unsmear_min_e_frac": 0.92,
     },
     "reconstructor_training": {
         "batch_size": 96,
@@ -520,11 +522,15 @@ class OfflineReconstructor(nn.Module):
         dropout: float = 0.1,
         max_split_children: int = 2,
         max_generated_tokens: int = 48,
+        unsmear_min_pt_frac: float = 0.92,
+        unsmear_min_e_frac: float = 0.92,
     ):
         super().__init__()
         self.max_split_children = int(max_split_children)
         self.max_generated_tokens = int(max_generated_tokens)
         self.num_heads = int(num_heads)
+        self.unsmear_min_pt_frac = float(unsmear_min_pt_frac)
+        self.unsmear_min_e_frac = float(unsmear_min_e_frac)
 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
@@ -640,6 +646,9 @@ class OfflineReconstructor(nn.Module):
         tok_eta = (eta + 0.5 * torch.tanh(d_eta)).clamp(min=-5.0, max=5.0)
         tok_phi = wrap_phi_t(phi + d_phi)
         tok_E = torch.exp(torch.clamp(torch.log(E) + d_logE, min=-9.0, max=11.0))
+        # Keep unsmear/reassign from collapsing per-token scale.
+        tok_pt = torch.maximum(tok_pt, pt * self.unsmear_min_pt_frac)
+        tok_E = torch.maximum(tok_E, E * self.unsmear_min_e_frac)
         tok_E = torch.maximum(tok_E, tok_pt * torch.cosh(tok_eta))
 
         tok_tokens = torch.stack([tok_pt, tok_eta, tok_phi, tok_E], dim=-1)
@@ -1109,6 +1118,7 @@ def reconstruct_dataset(
     offset = 0
     with torch.no_grad():
         for batch in tqdm(loader, desc="ReconstructAll"):
+            mask_np = batch["mask_hlt"].cpu().numpy()
             x = batch["feat_hlt"].to(device)
             m = batch["mask_hlt"].to(device)
             c = batch["const_hlt"].to(device)
@@ -1131,11 +1141,14 @@ def reconstruct_dataset(
                 order = np.argsort(-w[i])
                 if use_budget_topk:
                     k_budget = int(np.clip(np.rint(float(budget_total[i])), 1, max_constits))
-                    k_merge = int(np.clip(np.rint(float(budget_merge[i])), 0, min(n_child, max_constits)))
-                    k_eff = int(np.clip(np.rint(float(budget_eff[i])), 0, min(n_gen, max_constits - k_merge)))
-                    k_keep = max(1, min(max_constits - k_merge - k_eff, n_tok))
+                    idx_tok = np.where(mask_np[i])[0].astype(np.int64)
+                    if idx_tok.size == 0:
+                        idx_tok = np.array([0], dtype=np.int64)
 
-                    idx_tok = np.arange(0, n_tok, dtype=np.int64)
+                    k_merge = int(np.clip(np.rint(float(budget_merge[i])), 0, min(n_child, k_budget)))
+                    k_eff = int(np.clip(np.rint(float(budget_eff[i])), 0, min(n_gen, k_budget - k_merge)))
+                    k_keep = max(1, min(k_budget - k_merge - k_eff, int(idx_tok.size)))
+
                     idx_child = np.arange(n_tok, n_tok + n_child, dtype=np.int64)
                     idx_gen = np.arange(gen_start, gen_start + n_gen, dtype=np.int64)
 
