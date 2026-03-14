@@ -752,13 +752,17 @@ class ParticleTransformer(nn.Module):
 
     def forward(self, x, mask, return_attention=False, return_embedding=False):
         batch_size, seq_len, _ = x.shape
+        mask_safe = mask.clone()
+        empty = ~mask_safe.any(dim=1)
+        if empty.any():
+            mask_safe[empty, 0] = True
         h = x.view(-1, self.input_dim)
         h = self.input_proj(h)
         h = h.view(batch_size, seq_len, -1)
-        h = self.encoder(h, src_key_padding_mask=~mask)
+        h = self.encoder(h, src_key_padding_mask=~mask_safe)
         query = self.pool_query.expand(batch_size, -1, -1)
         pooled, attn_weights = self.pool_attn(
-            query, h, h, key_padding_mask=~mask, need_weights=True, average_attn_weights=True
+            query, h, h, key_padding_mask=~mask_safe, need_weights=True, average_attn_weights=True
         )
         z = self.norm(pooled.squeeze(1))
         logits = self.classifier(z)
@@ -818,15 +822,23 @@ class DualViewCrossAttnClassifier(nn.Module):
 
     def forward(self, feat_a, mask_a, feat_b, mask_b):
         bsz, seq_len, _ = feat_a.shape
+        mask_a_safe = mask_a.clone()
+        mask_b_safe = mask_b.clone()
+        empty_a = ~mask_a_safe.any(dim=1)
+        empty_b = ~mask_b_safe.any(dim=1)
+        if empty_a.any():
+            mask_a_safe[empty_a, 0] = True
+        if empty_b.any():
+            mask_b_safe[empty_b, 0] = True
         h_a = self.input_proj_a(feat_a.view(-1, feat_a.size(-1))).view(bsz, seq_len, -1)
         h_b = self.input_proj_b(feat_b.view(-1, feat_b.size(-1))).view(bsz, seq_len, -1)
-        h_a = self.encoder_a(h_a, src_key_padding_mask=~mask_a)
-        h_b = self.encoder_b(h_b, src_key_padding_mask=~mask_b)
+        h_a = self.encoder_a(h_a, src_key_padding_mask=~mask_a_safe)
+        h_b = self.encoder_b(h_b, src_key_padding_mask=~mask_b_safe)
         query = self.pool_query.expand(bsz, -1, -1)
-        pooled_a, _ = self.pool_attn_a(query, h_a, h_a, key_padding_mask=~mask_a, need_weights=False)
-        pooled_b, _ = self.pool_attn_b(query, h_b, h_b, key_padding_mask=~mask_b, need_weights=False)
-        cross_a, _ = self.cross_a_to_b(pooled_a, h_b, h_b, key_padding_mask=~mask_b, need_weights=False)
-        cross_b, _ = self.cross_b_to_a(pooled_b, h_a, h_a, key_padding_mask=~mask_a, need_weights=False)
+        pooled_a, _ = self.pool_attn_a(query, h_a, h_a, key_padding_mask=~mask_a_safe, need_weights=False)
+        pooled_b, _ = self.pool_attn_b(query, h_b, h_b, key_padding_mask=~mask_b_safe, need_weights=False)
+        cross_a, _ = self.cross_a_to_b(pooled_a, h_b, h_b, key_padding_mask=~mask_b_safe, need_weights=False)
+        cross_b, _ = self.cross_b_to_a(pooled_b, h_a, h_a, key_padding_mask=~mask_a_safe, need_weights=False)
         fused = torch.cat([pooled_a, pooled_b, cross_a, cross_b], dim=-1).squeeze(1)
         fused = self.norm(fused)
         logits = self.classifier(fused)
@@ -865,10 +877,14 @@ class MergeCountPredictor(nn.Module):
 
     def forward(self, x, mask):
         batch_size, seq_len, _ = x.shape
+        mask_safe = mask.clone()
+        empty = ~mask_safe.any(dim=1)
+        if empty.any():
+            mask_safe[empty, 0] = True
         h = x.view(-1, self.input_dim)
         h = self.input_proj(h)
         h = h.view(batch_size, seq_len, -1)
-        h = self.encoder(h, src_key_padding_mask=~mask)
+        h = self.encoder(h, src_key_padding_mask=~mask_safe)
         logits = self.head(h)
         return logits
 
@@ -995,15 +1011,19 @@ class UnmergePredictor(nn.Module):
 
     def forward(self, x, mask, token_idx, count):
         batch_size, seq_len, _ = x.shape
+        mask_safe = mask.clone()
+        empty = ~mask_safe.any(dim=1)
+        if empty.any():
+            mask_safe[empty, 0] = True
         h = x.view(-1, self.input_dim)
         h = self.input_proj(h)
         h = h.view(batch_size, seq_len, -1)
         if self.relpos_mode == "none" and self.local_attn_mode == "none":
-            h = self.encoder(h, src_key_padding_mask=~mask)
+            h = self.encoder(h, src_key_padding_mask=~mask_safe)
         else:
             rel_bias = self._build_relpos_bias(x)
             for layer in self.encoder_layers:
-                h = layer(h, mask, rel_bias)
+                h = layer(h, mask_safe, rel_bias)
 
         idx = token_idx.view(-1, 1, 1).expand(-1, 1, self.embed_dim)
         h_t = h.gather(1, idx).squeeze(1)
