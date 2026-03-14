@@ -28,7 +28,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import roc_curve
+from sklearn.metrics import roc_curve, roc_auc_score, average_precision_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
 
@@ -241,6 +241,9 @@ def apply_hlt_effects_realistic_nomap(
 
     hlt = const.copy()
     hlt_mask = mask.copy()
+    # Hidden supervision for diagnostics only (never used for training):
+    # number of offline constituents represented by each surviving HLT token.
+    origin_count = hlt_mask.astype(np.int16)
 
     n_initial = int(hlt_mask.sum())
     merge_lost_per_jet = np.zeros(n_jets, dtype=np.float32)
@@ -250,6 +253,7 @@ def apply_hlt_effects_realistic_nomap(
     pt_threshold = float(hcfg["pt_threshold_hlt"])
     below = (hlt[:, :, 0] < pt_threshold) & hlt_mask
     hlt_mask[below] = False
+    origin_count[below] = 0
     hlt[~hlt_mask] = 0
     n_lost_threshold_pre = int(below.sum())
 
@@ -293,12 +297,15 @@ def apply_hlt_effects_realistic_nomap(
                         wa * np.cos(phi_a) + wb * np.cos(phi_b),
                     )
                     hlt[j, a, 3] = hlt[j, a, 3] + hlt[j, b, 3]
+                    origin_count[j, a] = np.int16(origin_count[j, a] + origin_count[j, b])
+                    origin_count[j, b] = 0
                     to_remove.add(b)
                     n_merged += 1
                     merge_lost_per_jet[j] += 1.0
 
             for idx in to_remove:
                 hlt_mask[j, idx] = False
+                origin_count[j, idx] = 0
                 hlt[j, idx] = 0
 
     # 3) Efficiency model
@@ -344,6 +351,7 @@ def apply_hlt_effects_realistic_nomap(
     u = rs.random_sample((n_jets, max_part))
     lost_eff = (u > eps) & hlt_mask
     hlt_mask[lost_eff] = False
+    origin_count[lost_eff] = 0
     hlt[lost_eff] = 0
     eff_lost_per_jet = lost_eff.sum(axis=1).astype(np.float32)
     n_lost_eff = int(lost_eff.sum())
@@ -435,6 +443,7 @@ def apply_hlt_effects_realistic_nomap(
     if post_thr > 0:
         below_post = (hlt[:, :, 0] < post_thr) & hlt_mask
         hlt_mask[below_post] = False
+        origin_count[below_post] = 0
         hlt[below_post] = 0
         n_lost_threshold_post = int(below_post.sum())
 
@@ -456,6 +465,10 @@ def apply_hlt_effects_realistic_nomap(
     budget_truth = {
         "merge_lost_per_jet": merge_lost_per_jet.astype(np.float32),
         "eff_lost_per_jet": eff_lost_per_jet.astype(np.float32),
+        # Diagnostics-only hidden truth:
+        "token_origin_count": origin_count.astype(np.int16),
+        "token_true_added": np.maximum(origin_count.astype(np.float32) - 1.0, 0.0).astype(np.float32),
+        "token_true_merged": (origin_count > 1).astype(np.uint8),
     }
     return hlt.astype(np.float32), hlt_mask.astype(bool), stats, budget_truth
 
@@ -1100,7 +1113,20 @@ def reconstruct_dataset(
     weight_threshold: float = 0.03,
     use_budget_topk: bool = True,
     flag_conf_power: float = 1.0,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+    np.ndarray,
+]:
     ds = ReconstructInputDataset(feat_hlt, mask_hlt, const_hlt)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False)
 
@@ -1114,6 +1140,9 @@ def reconstruct_dataset(
     pred_budget_total = np.zeros(feat_hlt.shape[0], dtype=np.float32)
     pred_budget_merge = np.zeros(feat_hlt.shape[0], dtype=np.float32)
     pred_budget_eff = np.zeros(feat_hlt.shape[0], dtype=np.float32)
+    pred_parent_added_soft = np.zeros((feat_hlt.shape[0], max_constits), dtype=np.float32)
+    pred_parent_split_prob = np.zeros((feat_hlt.shape[0], max_constits), dtype=np.float32)
+    selected_parent_child_count = np.zeros((feat_hlt.shape[0], max_constits), dtype=np.int16)
 
     offset = 0
     with torch.no_grad():
@@ -1131,9 +1160,12 @@ def reconstruct_dataset(
             budget_total = out["budget_total"].cpu().numpy()
             budget_merge = out["budget_merge"].cpu().numpy()
             budget_eff = out["budget_eff"].cpu().numpy()
+            action_prob = out["action_prob"].cpu().numpy()
+            child_weight_raw = out["child_weight"].cpu().numpy()
             n_tok = x.shape[1]
             n_child = out["child_weight"].shape[1]
             n_gen = out["gen_weight"].shape[1]
+            K = max(int(n_child // max(n_tok, 1)), 1)
             gen_start = int(n_tok + n_child)
 
             bsz = cand.shape[0]
@@ -1194,9 +1226,19 @@ def reconstruct_dataset(
                 sel_arr = np.array(sel, dtype=np.int64)
                 created_merge_count[offset + i] = int(np.sum((sel_arr >= n_tok) & (sel_arr < gen_start)))
                 created_eff_count[offset + i] = int(np.sum(sel_arr >= gen_start))
+                sel_child = sel_arr[(sel_arr >= n_tok) & (sel_arr < gen_start)]
+                if sel_child.size > 0:
+                    parent_idx = ((sel_child - n_tok) // K).astype(np.int64)
+                    parent_idx = parent_idx[(parent_idx >= 0) & (parent_idx < n_tok)]
+                    if parent_idx.size > 0:
+                        binc = np.bincount(parent_idx, minlength=n_tok).astype(np.int16)
+                        selected_parent_child_count[offset + i, :n_tok] = binc[:n_tok]
                 pred_budget_total[offset + i] = float(budget_total[i])
                 pred_budget_merge[offset + i] = float(budget_merge[i])
                 pred_budget_eff[offset + i] = float(budget_eff[i])
+                child_parent_soft = child_weight_raw[i].reshape(n_tok, K).sum(axis=1).astype(np.float32)
+                pred_parent_added_soft[offset + i, :n_tok] = child_parent_soft
+                pred_parent_split_prob[offset + i, :n_tok] = action_prob[i, :n_tok, 2].astype(np.float32)
 
             offset += bsz
 
@@ -1212,6 +1254,9 @@ def reconstruct_dataset(
         pred_budget_total,
         pred_budget_merge,
         pred_budget_eff,
+        pred_parent_added_soft,
+        pred_parent_split_prob,
+        selected_parent_child_count,
     )
 
 
@@ -1667,6 +1712,198 @@ def plot_budget_diagnostics(
     return summary
 
 
+def _safe_corr(a: np.ndarray, b: np.ndarray) -> float:
+    a = np.asarray(a, dtype=np.float64).reshape(-1)
+    b = np.asarray(b, dtype=np.float64).reshape(-1)
+    if a.size == 0 or b.size == 0:
+        return float("nan")
+    if np.std(a) < 1e-12 or np.std(b) < 1e-12:
+        return float("nan")
+    return float(np.corrcoef(a, b)[0, 1])
+
+
+def run_extended_diagnostics(
+    save_root: Path,
+    hlt_mask: np.ndarray,
+    token_origin_count: np.ndarray,
+    pred_parent_added_soft: np.ndarray,
+    pred_parent_split_prob: np.ndarray,
+    selected_parent_child_count: np.ndarray,
+    budget_merge_true: np.ndarray,
+    budget_eff_true: np.ndarray,
+    pred_budget_merge: np.ndarray,
+    pred_budget_eff: np.ndarray,
+    created_merge_count: np.ndarray,
+    created_eff_count: np.ndarray,
+    labels: np.ndarray,
+    max_split_children: int,
+) -> Dict[str, float]:
+    valid = hlt_mask.astype(bool)
+    true_origin = token_origin_count.astype(np.int32)
+    true_added = np.maximum(true_origin - 1, 0).astype(np.float32)
+    true_merged = (true_added > 0).astype(np.int32)
+
+    soft_added = pred_parent_added_soft.astype(np.float32)
+    split_prob = pred_parent_split_prob.astype(np.float32)
+    sel_added = selected_parent_child_count.astype(np.float32)
+
+    t_add = true_added[valid]
+    p_add_soft = soft_added[valid]
+    p_add_sel = sel_added[valid]
+    t_merge = true_merged[valid]
+    p_merge_score = split_prob[valid]
+    p_merge_hard = (p_add_sel >= 1.0).astype(np.int32)
+
+    if t_add.size == 0:
+        summary = {"token_count_eval": 0}
+        with open(save_root / "extended_diagnostics.json", "w", encoding="utf-8") as f:
+            json.dump(summary, f, indent=2)
+        return summary
+
+    merge_auc = float("nan")
+    merge_ap = float("nan")
+    if np.unique(t_merge).size > 1:
+        merge_auc = float(roc_auc_score(t_merge, p_merge_score))
+        merge_ap = float(average_precision_score(t_merge, p_merge_score))
+
+    token_merge_acc_hard = float((p_merge_hard == t_merge).mean())
+    parent_added_soft_mae = float(np.abs(p_add_soft - t_add).mean())
+    parent_added_sel_mae = float(np.abs(p_add_sel - t_add).mean())
+    parent_added_soft_bias = float((p_add_soft - t_add).mean())
+    parent_added_sel_bias = float((p_add_sel - t_add).mean())
+
+    cap = int(max_split_children)
+    sat_tok = (t_add > cap)
+    sat_frac_tokens = float(sat_tok.mean())
+    true_added_total = float(np.sum(t_add))
+    sat_added_frac = float(np.sum(t_add[sat_tok]) / max(true_added_total, 1e-8))
+
+    true_merge_jet = true_added.sum(axis=1)
+    pred_merge_soft_jet = pred_parent_added_soft.sum(axis=1)
+    pred_merge_sel_jet = selected_parent_child_count.sum(axis=1).astype(np.float32)
+    true_eff_jet = budget_eff_true.astype(np.float32)
+    pred_eff_budget_jet = pred_budget_eff.astype(np.float32)
+    pred_eff_created_jet = created_eff_count.astype(np.float32)
+
+    merge_soft_corr = _safe_corr(true_merge_jet, pred_merge_soft_jet)
+    merge_sel_corr = _safe_corr(true_merge_jet, pred_merge_sel_jet)
+    eff_budget_corr = _safe_corr(true_eff_jet, pred_eff_budget_jet)
+    eff_created_corr = _safe_corr(true_eff_jet, pred_eff_created_jet)
+
+    labels = labels.astype(np.int32)
+    by_class = {}
+    for cls in (0, 1):
+        sel = labels == cls
+        if np.sum(sel) == 0:
+            continue
+        v = valid[sel]
+        t_add_c = true_added[sel][v]
+        p_add_c = soft_added[sel][v]
+        sel_add_c = sel_added[sel][v]
+        t_m_c = true_merged[sel][v]
+        p_m_c = split_prob[sel][v]
+        entry = {
+            "token_count": int(t_add_c.size),
+            "parent_added_soft_mae": float(np.abs(p_add_c - t_add_c).mean()) if t_add_c.size else float("nan"),
+            "parent_added_sel_mae": float(np.abs(sel_add_c - t_add_c).mean()) if t_add_c.size else float("nan"),
+            "merge_acc_hard": float(((sel_add_c >= 1.0).astype(np.int32) == t_m_c).mean()) if t_add_c.size else float("nan"),
+            "merge_auc": float(roc_auc_score(t_m_c, p_m_c)) if (t_add_c.size and np.unique(t_m_c).size > 1) else float("nan"),
+        }
+        by_class[str(cls)] = entry
+
+    max_true_add = int(max(np.max(t_add), cap + 1))
+    bins_add = np.arange(0, max_true_add + 2) - 0.5
+    plt.figure(figsize=(8, 5))
+    plt.hist(t_add, bins=bins_add, density=True, histtype="step", linewidth=2, color="black", label="True added per parent")
+    plt.hist(np.clip(np.rint(p_add_sel), 0, max_true_add), bins=bins_add, density=True, histtype="step", linewidth=2, color="darkorange", label="Pred selected added")
+    plt.axvline(cap + 0.5, color="crimson", linestyle="--", linewidth=1.5, label=f"cap={cap}")
+    plt.xlabel("Added constituents per HLT token")
+    plt.ylabel("Density")
+    plt.grid(True, alpha=0.3)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(save_root / "parent_added_count_hist.png", dpi=300)
+    plt.close()
+
+    err_soft = p_add_soft - t_add
+    err_sel = p_add_sel - t_add
+    e_min = int(np.floor(min(np.min(err_soft), np.min(err_sel))))
+    e_max = int(np.ceil(max(np.max(err_soft), np.max(err_sel))))
+    bins_e = np.linspace(e_min - 0.5, e_max + 0.5, num=max(25, e_max - e_min + 2))
+    plt.figure(figsize=(8, 5))
+    plt.hist(err_soft, bins=bins_e, density=True, histtype="step", linewidth=2, color="steelblue", label="soft added error")
+    plt.hist(err_sel, bins=bins_e, density=True, histtype="step", linewidth=2, color="darkorange", label="selected added error")
+    plt.axvline(0.0, color="gray", linestyle=":", linewidth=1)
+    plt.xlabel("Predicted - true added per parent")
+    plt.ylabel("Density")
+    plt.grid(True, alpha=0.3)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(save_root / "parent_added_error_hist.png", dpi=300)
+    plt.close()
+
+    plt.figure(figsize=(8, 5))
+    plt.scatter(true_eff_jet, pred_eff_created_jet, s=6, alpha=0.25, color="forestgreen", label="created eff")
+    lo = float(min(np.min(true_eff_jet), np.min(pred_eff_created_jet)))
+    hi = float(max(np.max(true_eff_jet), np.max(pred_eff_created_jet)))
+    plt.plot([lo, hi], [lo, hi], "k:", linewidth=1.5, label="ideal")
+    plt.xlabel("True eff-lost per jet")
+    plt.ylabel("Created eff tokens per jet")
+    plt.grid(True, alpha=0.3)
+    plt.legend(frameon=False)
+    plt.tight_layout()
+    plt.savefig(save_root / "eff_created_vs_true_scatter.png", dpi=300)
+    plt.close()
+
+    summary = {
+        "token_count_eval": int(t_add.size),
+        "token_merged_frac_true": float(t_merge.mean()),
+        "token_merge_auc_score": merge_auc,
+        "token_merge_ap_score": merge_ap,
+        "token_merge_acc_hard": token_merge_acc_hard,
+        "parent_added_soft_mae": parent_added_soft_mae,
+        "parent_added_sel_mae": parent_added_sel_mae,
+        "parent_added_soft_bias": parent_added_soft_bias,
+        "parent_added_sel_bias": parent_added_sel_bias,
+        "cap_max_split_children": int(cap),
+        "token_saturation_frac_true_gt_cap": sat_frac_tokens,
+        "added_mass_frac_from_saturated_true_tokens": sat_added_frac,
+        "jet_merge_soft_corr": merge_soft_corr,
+        "jet_merge_sel_corr": merge_sel_corr,
+        "jet_eff_budget_corr": eff_budget_corr,
+        "jet_eff_created_corr": eff_created_corr,
+        "jet_eff_created_mae": float(np.abs(pred_eff_created_jet - true_eff_jet).mean()),
+        "jet_eff_created_bias": float((pred_eff_created_jet - true_eff_jet).mean()),
+        "jet_eff_budget_mae": float(np.abs(pred_eff_budget_jet - true_eff_jet).mean()),
+        "jet_eff_budget_bias": float((pred_eff_budget_jet - true_eff_jet).mean()),
+        "by_class": by_class,
+    }
+
+    with open(save_root / "extended_diagnostics.json", "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    lines = [
+        "Extended Diagnostics (hidden-truth eval only)",
+        "=" * 52,
+        f"Token eval count: {summary['token_count_eval']}",
+        f"True merged-token fraction: {summary['token_merged_frac_true']:.4f}",
+        f"Merge flag AUC/AP: {summary['token_merge_auc_score']:.4f} / {summary['token_merge_ap_score']:.4f}",
+        f"Merge hard accuracy (selected>=1): {summary['token_merge_acc_hard']:.4f}",
+        f"Parent added MAE soft/selected: {summary['parent_added_soft_mae']:.4f} / {summary['parent_added_sel_mae']:.4f}",
+        f"Parent added bias soft/selected: {summary['parent_added_soft_bias']:.4f} / {summary['parent_added_sel_bias']:.4f}",
+        f"True saturation fraction (>cap={cap}): {summary['token_saturation_frac_true_gt_cap']:.4f}",
+        f"Added-mass share from saturated parents: {summary['added_mass_frac_from_saturated_true_tokens']:.4f}",
+        f"Jet corr (merge soft/selected): {summary['jet_merge_soft_corr']:.4f} / {summary['jet_merge_sel_corr']:.4f}",
+        f"Jet corr (eff budget/created): {summary['jet_eff_budget_corr']:.4f} / {summary['jet_eff_created_corr']:.4f}",
+        f"Jet eff MAE budget/created: {summary['jet_eff_budget_mae']:.4f} / {summary['jet_eff_created_mae']:.4f}",
+        f"Jet eff bias budget/created: {summary['jet_eff_budget_bias']:.4f} / {summary['jet_eff_created_bias']:.4f}",
+    ]
+    with open(save_root / "extended_diagnostics.txt", "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+    return summary
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_path", type=str, default="./data")
@@ -1765,6 +2002,7 @@ def main():
     )
     budget_merge_true = budget_truth["merge_lost_per_jet"].astype(np.float32)
     budget_eff_true = budget_truth["eff_lost_per_jet"].astype(np.float32)
+    token_origin_count_true = budget_truth["token_origin_count"].astype(np.int16)
 
     print("HLT Simulation Statistics:")
     print(f"  Jets: {hlt_stats['n_jets']:,}")
@@ -1927,6 +2165,9 @@ def main():
         pred_budget_total,
         pred_budget_merge,
         pred_budget_eff,
+        pred_parent_added_soft,
+        pred_parent_split_prob,
+        selected_parent_child_count,
     ) = reconstruct_dataset(
         model=reconstructor,
         feat_hlt=features_hlt_std,
@@ -2388,6 +2629,35 @@ def main():
         f"eff={budget_summary['eff_bias']:.3f}, total={budget_summary['total_bias']:.3f}"
     )
 
+    extended_diag = run_extended_diagnostics(
+        save_root=save_root,
+        hlt_mask=hlt_mask[test_idx],
+        token_origin_count=token_origin_count_true[test_idx],
+        pred_parent_added_soft=pred_parent_added_soft[test_idx],
+        pred_parent_split_prob=pred_parent_split_prob[test_idx],
+        selected_parent_child_count=selected_parent_child_count[test_idx],
+        budget_merge_true=budget_merge_true[test_idx],
+        budget_eff_true=budget_eff_true[test_idx],
+        pred_budget_merge=pred_budget_merge[test_idx],
+        pred_budget_eff=pred_budget_eff[test_idx],
+        created_merge_count=created_merge_count[test_idx],
+        created_eff_count=created_eff_count[test_idx],
+        labels=labels[test_idx],
+        max_split_children=int(CONFIG["reconstructor_model"]["max_split_children"]),
+    )
+    print("\nExtended diagnostics (hidden-truth, eval-only):")
+    print(
+        f"  Token merge AUC/AP: {extended_diag['token_merge_auc_score']:.4f} / "
+        f"{extended_diag['token_merge_ap_score']:.4f}"
+    )
+    print(
+        f"  Parent-added MAE soft/selected: {extended_diag['parent_added_soft_mae']:.3f} / "
+        f"{extended_diag['parent_added_sel_mae']:.3f}"
+    )
+    print(
+        f"  True saturation fraction (>cap): {extended_diag['token_saturation_frac_true_gt_cap']:.3f}"
+    )
+
     def rr_field(records, key):
         return np.array([r[key] for r in records], dtype=np.float64)
 
@@ -2454,6 +2724,17 @@ def main():
         budget_merge_bias=budget_summary["merge_bias"],
         budget_eff_bias=budget_summary["eff_bias"],
         budget_total_bias=budget_summary["total_bias"],
+        diag_token_merge_auc=extended_diag["token_merge_auc_score"],
+        diag_token_merge_ap=extended_diag["token_merge_ap_score"],
+        diag_token_merge_acc_hard=extended_diag["token_merge_acc_hard"],
+        diag_parent_added_soft_mae=extended_diag["parent_added_soft_mae"],
+        diag_parent_added_sel_mae=extended_diag["parent_added_sel_mae"],
+        diag_token_saturation_frac=extended_diag["token_saturation_frac_true_gt_cap"],
+        diag_added_mass_frac_sat=extended_diag["added_mass_frac_from_saturated_true_tokens"],
+        diag_jet_merge_soft_corr=extended_diag["jet_merge_soft_corr"],
+        diag_jet_merge_sel_corr=extended_diag["jet_merge_sel_corr"],
+        diag_jet_eff_budget_corr=extended_diag["jet_eff_budget_corr"],
+        diag_jet_eff_created_corr=extended_diag["jet_eff_created_corr"],
         unmerge_test_loss=float(reco_val_metrics.get("val_total", np.nan)),
         max_merge_count=0,
     )
@@ -2493,6 +2774,11 @@ def main():
         reco_eff_flag=reco_eff_flag.astype(np.float32),
         created_merge_count=created_merge_count.astype(np.int32),
         created_eff_count=created_eff_count.astype(np.int32),
+        token_origin_count_true=token_origin_count_true.astype(np.int16),
+        token_true_added=np.maximum(token_origin_count_true.astype(np.float32) - 1.0, 0.0).astype(np.float32),
+        pred_parent_added_soft=pred_parent_added_soft.astype(np.float32),
+        pred_parent_split_prob=pred_parent_split_prob.astype(np.float32),
+        selected_parent_child_count=selected_parent_child_count.astype(np.int16),
         budget_merge_true=budget_merge_true.astype(np.float32),
         budget_eff_true=budget_eff_true.astype(np.float32),
         budget_total_pred=pred_budget_total.astype(np.float32),
