@@ -1,0 +1,14 @@
+Extended Diagnostics (hidden-truth eval only)
+====================================================
+Token eval count: 87587
+True merged-token fraction: 0.4091
+Merge flag AUC/AP: 0.8605 / 0.7461
+Merge hard accuracy (selected>=1): 0.7733
+Parent added MAE soft/selected: 0.5105 / 0.6045
+Parent added bias soft/selected: 0.1661 / 0.1824
+True saturation fraction (>cap=2): 0.0472
+Added-mass share from saturated parents: 0.3106
+Jet corr (merge soft/selected): 0.6317 / 0.6285
+Jet corr (eff budget/created): 0.5734 / 0.5649
+Jet eff MAE budget/created: 1.5305 / 1.5060
+Jet eff bias budget/created: -0.2921 / -0.2767

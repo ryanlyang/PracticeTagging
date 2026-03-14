@@ -1,0 +1,15 @@
+{
+  "offline_count_mean": 36.928066666666666,
+  "hlt_count_mean": 19.5039,
+  "reco_count_mean": 36.83606666666667,
+  "hlt_count_bias_vs_offline": -17.424166666666668,
+  "reco_count_bias_vs_offline": -0.092,
+  "hlt_count_mae_vs_offline": 17.424166666666668,
+  "reco_count_mae_vs_offline": 1.4632,
+  "lost_merge_mean_per_jet": 14.000966666666667,
+  "lost_eff_mean_per_jet": 3.4232,
+  "needed_add_mean_per_jet": 17.424166666666668,
+  "created_merge_mean_per_jet": 14.846833333333333,
+  "created_eff_mean_per_jet": 3.1917333333333335,
+  "created_total_mean_per_jet": 18.038566666666668
+}

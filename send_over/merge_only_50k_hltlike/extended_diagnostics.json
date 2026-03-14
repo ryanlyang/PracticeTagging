@@ -1,0 +1,38 @@
+{
+  "token_count_eval": 87587,
+  "token_merged_frac_true": 0.40907897290693823,
+  "token_merge_auc_score": 0.8605282720760438,
+  "token_merge_ap_score": 0.7461129820339409,
+  "token_merge_acc_hard": 0.7732654389350018,
+  "parent_added_soft_mae": 0.5104507803916931,
+  "parent_added_sel_mae": 0.6045417785644531,
+  "parent_added_soft_bias": 0.16609850525856018,
+  "parent_added_sel_bias": 0.18242433667182922,
+  "cap_max_split_children": 2,
+  "token_saturation_frac_true_gt_cap": 0.0472330368662016,
+  "added_mass_frac_from_saturated_true_tokens": 0.31064900755882263,
+  "jet_merge_soft_corr": 0.6317300627347469,
+  "jet_merge_sel_corr": 0.6284962327259267,
+  "jet_eff_budget_corr": 0.5734277796139514,
+  "jet_eff_created_corr": 0.5648763552585053,
+  "jet_eff_created_mae": 1.50600004196167,
+  "jet_eff_created_bias": -0.27666667103767395,
+  "jet_eff_budget_mae": 1.5304723978042603,
+  "jet_eff_budget_bias": -0.2920549511909485,
+  "by_class": {
+    "0": {
+      "token_count": 43740,
+      "parent_added_soft_mae": 0.47228264808654785,
+      "parent_added_sel_mae": 0.5687242746353149,
+      "merge_acc_hard": 0.7888888888888889,
+      "merge_auc": 0.874855301523799
+    },
+    "1": {
+      "token_count": 43847,
+      "parent_added_soft_mae": 0.5485258102416992,
+      "parent_added_sel_mae": 0.6402718424797058,
+      "merge_acc_hard": 0.7576801149451502,
+      "merge_auc": 0.8457672442131604
+    }
+  }
+}
