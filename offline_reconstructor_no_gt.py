@@ -2150,6 +2150,26 @@ def main():
     print("  Dual-View+KD:           " + f"{fpr30_dual_kd:.6f} ({100.0*fpr30_dual_kd:.3f}%)")
     print("  Dual-View+MF+KD:        " + f"{fpr30_dual_flag_kd:.6f} ({100.0*fpr30_dual_flag_kd:.3f}%)")
 
+    target_tpr = 0.50
+    fpr50_teacher = fpr_at_target_tpr(fpr_t, tpr_t, target_tpr)
+    fpr50_baseline = fpr_at_target_tpr(fpr_b, tpr_b, target_tpr)
+    fpr50_unmerge = fpr_at_target_tpr(fpr_u, tpr_u, target_tpr)
+    fpr50_unmerge_flag = fpr_at_target_tpr(fpr_uf, tpr_uf, target_tpr)
+    fpr50_dual = fpr_at_target_tpr(fpr_dv, tpr_dv, target_tpr)
+    fpr50_dual_flag = fpr_at_target_tpr(fpr_dvf, tpr_dvf, target_tpr)
+    fpr50_dual_kd = fpr_at_target_tpr(fpr_dv_k, tpr_dv_k, target_tpr)
+    fpr50_dual_flag_kd = fpr_at_target_tpr(fpr_dvf_k, tpr_dvf_k, target_tpr)
+
+    print(f"\nFPR at fixed TPR={target_tpr:.2f}")
+    print("  Teacher (Offline):      " + f"{fpr50_teacher:.6f} ({100.0*fpr50_teacher:.3f}%)")
+    print("  Baseline (HLT):         " + f"{fpr50_baseline:.6f} ({100.0*fpr50_baseline:.3f}%)")
+    print("  Unmerge Model:          " + f"{fpr50_unmerge:.6f} ({100.0*fpr50_unmerge:.3f}%)")
+    print("  Unmerge+MF:             " + f"{fpr50_unmerge_flag:.6f} ({100.0*fpr50_unmerge_flag:.3f}%)")
+    print("  Dual-View:              " + f"{fpr50_dual:.6f} ({100.0*fpr50_dual:.3f}%)")
+    print("  Dual-View+MF:           " + f"{fpr50_dual_flag:.6f} ({100.0*fpr50_dual_flag:.3f}%)")
+    print("  Dual-View+KD:           " + f"{fpr50_dual_kd:.6f} ({100.0*fpr50_dual_kd:.3f}%)")
+    print("  Dual-View+MF+KD:        " + f"{fpr50_dual_flag_kd:.6f} ({100.0*fpr50_dual_flag_kd:.3f}%)")
+
     plot_roc(
         [
             (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
@@ -2337,6 +2357,14 @@ def main():
         fpr30_dual_flag=fpr30_dual_flag,
         fpr30_dual_kd=fpr30_dual_kd,
         fpr30_dual_flag_kd=fpr30_dual_flag_kd,
+        fpr50_teacher=fpr50_teacher,
+        fpr50_baseline=fpr50_baseline,
+        fpr50_unmerge=fpr50_unmerge,
+        fpr50_unmerge_flag=fpr50_unmerge_flag,
+        fpr50_dual=fpr50_dual,
+        fpr50_dual_flag=fpr50_dual_flag,
+        fpr50_dual_kd=fpr50_dual_kd,
+        fpr50_dual_flag_kd=fpr50_dual_flag_kd,
         jet_response_pt_low=rr_field(rr_hlt_common, "pt_low"),
         jet_response_pt_high=rr_field(rr_hlt_common, "pt_high"),
         jet_response_count=rr_field(rr_hlt_common, "count"),
