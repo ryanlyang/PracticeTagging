@@ -148,13 +148,19 @@ CONFIG = {
     "loss": {
         "w_set": 1.0,
         "w_phys": 0.35,
-        "w_pt_ratio": 0.70,
-        "w_e_ratio": 0.35,
+        "w_pt_ratio": 1.00,
+        "w_e_ratio": 0.55,
+        "w_pt_under": 0.80,
+        "w_e_under": 0.45,
         "w_budget": 0.65,
+        "w_budget_merge_aux": 0.60,
+        "w_budget_eff_aux": 1.80,
+        "w_eff_floor": 0.90,
+        "eff_floor_min_tokens": 0.75,
         "w_sparse": 0.02,
-        "w_local": 0.03,
+        "w_local": 0.05,
         "unselected_penalty": 0.35,
-        "gen_local_radius": 0.30,
+        "gen_local_radius": 0.26,
     },
     "model": {
         "embed_dim": 128,
@@ -801,6 +807,9 @@ def compute_reconstruction_losses(
     loss_pt_ratio = F.smooth_l1_loss(pt_ratio, torch.ones_like(pt_ratio))
     e_ratio = pred_E / (true_E + eps)
     loss_e_ratio = F.smooth_l1_loss(e_ratio, torch.ones_like(e_ratio))
+    # Explicit one-sided anti-collapse penalties: penalize under-response more directly.
+    loss_pt_under = F.relu(1.0 - pt_ratio).mean()
+    loss_e_under = F.relu(1.0 - e_ratio).mean()
 
     # Budget/count losses.
     true_count = mask_off.float().sum(dim=1)
@@ -817,16 +826,27 @@ def compute_reconstruction_losses(
     budget_eff = out["budget_eff"]
     budget_true_total = budget_merge_true + budget_eff_true
 
-    loss_budget = (
+    loss_budget_core = (
         F.smooth_l1_loss(pred_count, true_count)
         + F.smooth_l1_loss(budget_total, true_count)
         + F.smooth_l1_loss(pred_added, true_added)
         + F.smooth_l1_loss(budget_merge + budget_eff, true_added)
         + F.smooth_l1_loss(budget_merge, budget_merge_true)
         + F.smooth_l1_loss(budget_eff, budget_eff_true)
-        + F.smooth_l1_loss(pred_added_merge, budget_merge_true)
-        + F.smooth_l1_loss(pred_added_eff, budget_eff_true)
         + F.smooth_l1_loss(budget_merge + budget_eff, budget_true_total)
+    )
+    loss_budget_merge_aux = F.smooth_l1_loss(pred_added_merge, budget_merge_true)
+    loss_budget_eff_aux = F.smooth_l1_loss(pred_added_eff, budget_eff_true)
+    # If true efficiency loss exists in jet, require non-trivial generation.
+    eff_min = float(loss_cfg.get("eff_floor_min_tokens", 0.75))
+    has_eff = (budget_eff_true > 0.5).float()
+    loss_eff_floor = (F.relu(eff_min - pred_added_eff) * has_eff).sum() / (has_eff.sum() + eps)
+
+    loss_budget = (
+        loss_budget_core
+        + float(loss_cfg.get("w_budget_merge_aux", 1.0)) * loss_budget_merge_aux
+        + float(loss_cfg.get("w_budget_eff_aux", 1.0)) * loss_budget_eff_aux
+        + float(loss_cfg.get("w_eff_floor", 0.0)) * loss_eff_floor
     )
 
     # Sparsity regularization (avoid gratuitous split/gen actions).
@@ -858,6 +878,8 @@ def compute_reconstruction_losses(
         + float(loss_cfg["w_phys"]) * loss_phys
         + float(loss_cfg["w_pt_ratio"]) * loss_pt_ratio
         + float(loss_cfg["w_e_ratio"]) * loss_e_ratio
+        + float(loss_cfg.get("w_pt_under", 0.0)) * loss_pt_under
+        + float(loss_cfg.get("w_e_under", 0.0)) * loss_e_under
         + float(loss_cfg["w_budget"]) * loss_budget
         + float(loss_cfg["w_sparse"]) * loss_sparse
         + float(loss_cfg["w_local"]) * loss_local
@@ -869,6 +891,8 @@ def compute_reconstruction_losses(
         "phys": loss_phys,
         "pt_ratio": loss_pt_ratio,
         "e_ratio": loss_e_ratio,
+        "pt_under": loss_pt_under,
+        "e_under": loss_e_under,
         "budget": loss_budget,
         "sparse": loss_sparse,
         "local": loss_local,
@@ -1064,6 +1088,7 @@ def reconstruct_dataset(
     batch_size: int,
     weight_threshold: float = 0.03,
     use_budget_topk: bool = True,
+    flag_conf_power: float = 1.0,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     ds = ReconstructInputDataset(feat_hlt, mask_hlt, const_hlt)
     loader = DataLoader(ds, batch_size=batch_size, shuffle=False)
@@ -1096,6 +1121,7 @@ def reconstruct_dataset(
             budget_eff = out["budget_eff"].cpu().numpy()
             n_tok = x.shape[1]
             n_child = out["child_weight"].shape[1]
+            n_gen = out["gen_weight"].shape[1]
             gen_start = int(n_tok + n_child)
 
             bsz = cand.shape[0]
@@ -1103,7 +1129,33 @@ def reconstruct_dataset(
                 order = np.argsort(-w[i])
                 if use_budget_topk:
                     k_budget = int(np.clip(np.rint(float(budget_total[i])), 1, max_constits))
-                    picked = [int(idx) for idx in order[:k_budget]]
+                    k_merge = int(np.clip(np.rint(float(budget_merge[i])), 0, min(n_child, max_constits)))
+                    k_eff = int(np.clip(np.rint(float(budget_eff[i])), 0, min(n_gen, max_constits - k_merge)))
+                    k_keep = max(1, min(max_constits - k_merge - k_eff, n_tok))
+
+                    idx_tok = np.arange(0, n_tok, dtype=np.int64)
+                    idx_child = np.arange(n_tok, n_tok + n_child, dtype=np.int64)
+                    idx_gen = np.arange(gen_start, gen_start + n_gen, dtype=np.int64)
+
+                    tok_order = idx_tok[np.argsort(-w[i, idx_tok])]
+                    child_order = idx_child[np.argsort(-w[i, idx_child])]
+                    gen_order = idx_gen[np.argsort(-w[i, idx_gen])]
+
+                    picked = [int(idx) for idx in tok_order[:k_keep]]
+                    picked.extend(int(idx) for idx in child_order[:k_merge])
+                    picked.extend(int(idx) for idx in gen_order[:k_eff])
+
+                    # Fill any shortfall with global strongest tokens.
+                    if len(picked) < k_budget:
+                        picked_set = set(picked)
+                        for idx in order:
+                            ii = int(idx)
+                            if ii in picked_set:
+                                continue
+                            picked.append(ii)
+                            picked_set.add(ii)
+                            if len(picked) >= k_budget:
+                                break
                     if len(picked) == 0:
                         picked = [int(order[0])]
                 else:
@@ -1121,8 +1173,9 @@ def reconstruct_dataset(
                 sel = picked[:n]
                 reco_const[offset + i, :n] = cand[i, sel]
                 reco_mask[offset + i, :n] = True
-                reco_merge_flag[offset + i, :n] = np.clip(merge_flags[i, sel], 0.0, 1.0)
-                reco_eff_flag[offset + i, :n] = np.clip(eff_flags[i, sel], 0.0, 1.0)
+                conf = np.clip(w[i, sel], 0.0, 1.0) ** float(flag_conf_power)
+                reco_merge_flag[offset + i, :n] = np.clip(merge_flags[i, sel] * conf, 0.0, 1.0)
+                reco_eff_flag[offset + i, :n] = np.clip(eff_flags[i, sel] * conf, 0.0, 1.0)
                 sel_arr = np.array(sel, dtype=np.int64)
                 created_merge_count[offset + i] = int(np.sum((sel_arr >= n_tok) & (sel_arr < gen_start)))
                 created_eff_count[offset + i] = int(np.sum(sel_arr >= gen_start))
@@ -1630,6 +1683,7 @@ def main():
     parser.add_argument("--reco_lr", type=float, default=CONFIG["reconstructor_training"]["lr"])
     parser.add_argument("--reco_patience", type=int, default=CONFIG["reconstructor_training"]["patience"])
     parser.add_argument("--reco_weight_threshold", type=float, default=0.03)
+    parser.add_argument("--reco_flag_conf_power", type=float, default=1.5)
     parser.add_argument("--reco_disable_budget_topk", action="store_true")
 
     parser.add_argument("--skip_save_models", action="store_true")
@@ -1868,6 +1922,7 @@ def main():
         batch_size=CONFIG["reconstructor_training"]["batch_size"],
         weight_threshold=float(args.reco_weight_threshold),
         use_budget_topk=not bool(args.reco_disable_budget_topk),
+        flag_conf_power=float(args.reco_flag_conf_power),
     )
 
     features_reco = compute_features(reco_const, reco_mask)
