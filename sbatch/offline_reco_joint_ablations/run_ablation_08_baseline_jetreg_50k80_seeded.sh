@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=ab6Flags
-#SBATCH --partition=debug
+#SBATCH --job-name=ab8BaseJR
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=1:30:00
-#SBATCH --output=offline_reconstructor_logs/ablations/ab6_flags_%j.out
-#SBATCH --error=offline_reconstructor_logs/ablations/ab6_flags_%j.err
+#SBATCH --output=offline_reconstructor_logs/ablations/ab8_base_jetreg_%j.out
+#SBATCH --error=offline_reconstructor_logs/ablations/ab8_base_jetreg_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/ablations
 
-RUN_NAME="${RUN_NAME:-ab6_baseline_plus_flags_50k_80c_seeded}"
+RUN_NAME="${RUN_NAME:-ab8_baseline_jetreg_50k_80c_seeded}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint_ablations}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-50000}"
 MAX_CONSTITS="${MAX_CONSTITS:-80}"
@@ -33,6 +33,5 @@ python offline_reconstructor_joint_dualview_ablations.py \
   --offset_jets "${OFFSET_JETS}" \
   --num_workers "${NUM_WORKERS}" \
   --seed "${SEED}" \
-  --use_corrected_flags \
   --enable_jet_regressor \
   --device cuda
