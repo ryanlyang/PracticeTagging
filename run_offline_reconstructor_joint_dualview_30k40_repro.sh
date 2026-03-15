@@ -6,7 +6,7 @@
 # - no final KD stage
 # (The old folder name was misleading; hlt_stats shows n_jets=30000.)
 #SBATCH --job-name=offrecoJ3040
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=0:30:00
