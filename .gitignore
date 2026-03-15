@@ -6,3 +6,5 @@ __pycache__/*
 checkpoints/*
 data/
 saved_plots/
+
+offline_reconstructor_no_gt_nopriv/
