@@ -1159,24 +1159,32 @@ def train_single_view_classifier(
 ) -> nn.Module:
     opt = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
     sch = get_scheduler(opt, train_cfg["warmup_epochs"], train_cfg["epochs"])
-    best_auc = 0.0
+    best_val_fpr50 = float("inf")
+    best_auc_at_best = 0.0
     best_state = None
     no_improve = 0
 
     for ep in tqdm(range(train_cfg["epochs"]), desc=name):
         _, tr_auc = train_classifier(model, train_loader, opt, device)
-        va_auc, _, _ = eval_classifier(model, val_loader, device)
+        va_auc, va_preds, va_labs = eval_classifier(model, val_loader, device)
+        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+        va_fpr50 = fpr_at_target_tpr(va_fpr, va_tpr, 0.50)
         sch.step()
 
-        if va_auc > best_auc:
-            best_auc = va_auc
+        if np.isfinite(va_fpr50) and va_fpr50 < best_val_fpr50:
+            best_val_fpr50 = float(va_fpr50)
+            best_auc_at_best = float(va_auc)
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             no_improve = 0
         else:
             no_improve += 1
 
         if (ep + 1) % 5 == 0:
-            print(f"{name} ep {ep+1}: train_auc={tr_auc:.4f}, val_auc={va_auc:.4f}, best={best_auc:.4f}")
+            print(
+                f"{name} ep {ep+1}: train_auc={tr_auc:.4f}, val_auc={va_auc:.4f}, "
+                f"val_fpr50={va_fpr50:.6f}, best_fpr50={best_val_fpr50:.6f}, "
+                f"auc@best={best_auc_at_best:.4f}"
+            )
         if no_improve >= train_cfg["patience"]:
             print(f"Early stopping {name} at epoch {ep+1}")
             break
@@ -1196,24 +1204,32 @@ def train_dual_view_classifier(
 ) -> nn.Module:
     opt = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
     sch = get_scheduler(opt, train_cfg["warmup_epochs"], train_cfg["epochs"])
-    best_auc = 0.0
+    best_val_fpr50 = float("inf")
+    best_auc_at_best = 0.0
     best_state = None
     no_improve = 0
 
     for ep in tqdm(range(train_cfg["epochs"]), desc=name):
         _, tr_auc = train_classifier_dual(model, train_loader, opt, device)
-        va_auc, _, _ = eval_classifier_dual(model, val_loader, device)
+        va_auc, va_preds, va_labs = eval_classifier_dual(model, val_loader, device)
+        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+        va_fpr50 = fpr_at_target_tpr(va_fpr, va_tpr, 0.50)
         sch.step()
 
-        if va_auc > best_auc:
-            best_auc = va_auc
+        if np.isfinite(va_fpr50) and va_fpr50 < best_val_fpr50:
+            best_val_fpr50 = float(va_fpr50)
+            best_auc_at_best = float(va_auc)
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             no_improve = 0
         else:
             no_improve += 1
 
         if (ep + 1) % 5 == 0:
-            print(f"{name} ep {ep+1}: train_auc={tr_auc:.4f}, val_auc={va_auc:.4f}, best={best_auc:.4f}")
+            print(
+                f"{name} ep {ep+1}: train_auc={tr_auc:.4f}, val_auc={va_auc:.4f}, "
+                f"val_fpr50={va_fpr50:.6f}, best_fpr50={best_val_fpr50:.6f}, "
+                f"auc@best={best_auc_at_best:.4f}"
+            )
         if no_improve >= train_cfg["patience"]:
             print(f"Early stopping {name} at epoch {ep+1}")
             break
@@ -1237,7 +1253,8 @@ def train_dual_kd_student(
     opt = torch.optim.AdamW(student.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
     sch = get_scheduler(opt, train_cfg["warmup_epochs"], train_cfg["epochs"])
 
-    best_auc = 0.0
+    best_val_fpr50 = float("inf")
+    best_auc_at_best = 0.0
     best_state = None
     no_improve = 0
     kd_active = not kd_cfg["adaptive_alpha"]
@@ -1250,7 +1267,9 @@ def train_dual_kd_student(
         kd_cfg_ep["alpha_kd"] = current_alpha
 
         _, tr_auc = train_kd_epoch_dual(student, teacher, kd_train_loader, opt, device, kd_cfg_ep)
-        va_auc, _, _ = evaluate_kd_dual(student, kd_val_loader, device)
+        va_auc, va_preds, va_labs = evaluate_kd_dual(student, kd_val_loader, device)
+        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+        va_fpr50 = fpr_at_target_tpr(va_fpr, va_tpr, 0.50)
         sch.step()
 
         if not kd_active and kd_cfg["adaptive_alpha"]:
@@ -1264,8 +1283,9 @@ def train_dual_kd_student(
                 kd_active = True
                 print(f"Activating KD ramp at epoch {ep+1} (val_loss={va_loss:.4f})")
 
-        if va_auc > best_auc:
-            best_auc = va_auc
+        if np.isfinite(va_fpr50) and va_fpr50 < best_val_fpr50:
+            best_val_fpr50 = float(va_fpr50)
+            best_auc_at_best = float(va_auc)
             best_state = {k: v.detach().cpu().clone() for k, v in student.state_dict().items()}
             no_improve = 0
         else:
@@ -1274,7 +1294,8 @@ def train_dual_kd_student(
         if (ep + 1) % 5 == 0:
             print(
                 f"{name} ep {ep+1}: train_auc={tr_auc:.4f}, val_auc={va_auc:.4f}, "
-                f"best={best_auc:.4f} | alpha_kd={current_alpha:.2f}"
+                f"val_fpr50={va_fpr50:.6f}, best_fpr50={best_val_fpr50:.6f}, "
+                f"auc@best={best_auc_at_best:.4f} | alpha_kd={current_alpha:.2f}"
             )
         if no_improve >= train_cfg["patience"]:
             print(f"Early stopping {name} at epoch {ep+1}")
@@ -1286,19 +1307,24 @@ def train_dual_kd_student(
     if run_self_train:
         print(f"\nSelf-train {name}...")
         opt_st = torch.optim.AdamW(student.parameters(), lr=kd_cfg["self_train_lr"])
-        best_auc_st = best_auc
+        best_fpr50_st = best_val_fpr50
         no_improve = 0
         for ep in range(kd_cfg["self_train_epochs"]):
             st_loss = self_train_student_dual(student, teacher, kd_train_loader, opt_st, device, kd_cfg)
-            va_auc, _, _ = evaluate_kd_dual(student, kd_val_loader, device)
-            if va_auc > best_auc_st:
-                best_auc_st = va_auc
+            va_auc, va_preds, va_labs = evaluate_kd_dual(student, kd_val_loader, device)
+            va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+            va_fpr50 = fpr_at_target_tpr(va_fpr, va_tpr, 0.50)
+            if np.isfinite(va_fpr50) and va_fpr50 < best_fpr50_st:
+                best_fpr50_st = float(va_fpr50)
                 best_state = {k: v.detach().cpu().clone() for k, v in student.state_dict().items()}
                 no_improve = 0
             else:
                 no_improve += 1
             if (ep + 1) % 2 == 0:
-                print(f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={va_auc:.4f}, best={best_auc_st:.4f}")
+                print(
+                    f"Self ep {ep+1}: loss={st_loss:.4f}, val_auc={va_auc:.4f}, "
+                    f"val_fpr50={va_fpr50:.6f}, best_fpr50={best_fpr50_st:.6f}"
+                )
             if no_improve >= kd_cfg["self_train_patience"]:
                 break
         if best_state is not None:
