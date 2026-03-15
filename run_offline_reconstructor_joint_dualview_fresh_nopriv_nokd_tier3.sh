@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=offrecoFNPNO
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=1:30:00
