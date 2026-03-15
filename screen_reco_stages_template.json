@@ -1,0 +1,23 @@
+[
+  {
+    "name": "stage_a_30k",
+    "n_train_jets": 30000,
+    "reco_epochs": 50,
+    "reco_patience": 12,
+    "promote_top_frac": 0.5
+  },
+  {
+    "name": "stage_b_50k",
+    "n_train_jets": 50000,
+    "reco_epochs": 80,
+    "reco_patience": 16,
+    "promote_top_frac": 0.4
+  },
+  {
+    "name": "stage_c_120k",
+    "n_train_jets": 120000,
+    "reco_epochs": 110,
+    "reco_patience": 20,
+    "promote_top_k": 3
+  }
+]
