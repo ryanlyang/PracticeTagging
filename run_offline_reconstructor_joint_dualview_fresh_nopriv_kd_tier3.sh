@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=10:00:00
+#SBATCH --time=1:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_fresh_nopriv_kd_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_fresh_nopriv_kd_%j.err
 
