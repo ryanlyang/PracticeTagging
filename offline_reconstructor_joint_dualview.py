@@ -168,31 +168,42 @@ def build_soft_corrected_view(
     scale_features_by_weight: bool = True,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
-    Builds a differentiable "corrected view" sequence directly from reconstructor candidates.
+    Builds a differentiable fixed-length corrected view.
+    The DualViewCrossAttnClassifier expects both views to share the same sequence length.
+    We therefore map reconstructor outputs back to L token slots (L = HLT token count):
+      - corrected token kinematics from tok branch
+      - parent-level split mass summary
+      - per-token share of efficiency budget
 
     Output feature dims:
-      7 base kinematic features + 3 channels [weight, merge_flag*weight, eff_flag*weight] = 10.
+      7 base kinematic features + 3 channels
+      [tok_weight, parent_added_weight, eff_share] = 10.
     """
-    cand_tokens = reco_out["cand_tokens"]
-    cand_w = reco_out["cand_weights"].clamp(0.0, 1.0)
-    merge_f = reco_out["cand_merge_flags"].clamp(0.0, 1.0)
-    eff_f = reco_out["cand_eff_flags"].clamp(0.0, 1.0)
-
-    mask_b = cand_w > float(weight_floor)
-    # Guarantee at least one valid token per jet for transformer masking stability.
+    eps = 1e-8
+    L = reco_out["action_prob"].shape[1]
+    tok_tokens = reco_out["cand_tokens"][:, :L, :]
+    tok_w = reco_out["cand_weights"][:, :L].clamp(0.0, 1.0)
+    mask_b = tok_w > float(weight_floor)
     none_valid = ~mask_b.any(dim=1)
     if none_valid.any():
         mask_b = mask_b.clone()
         mask_b[none_valid, 0] = True
 
-    feat7 = compute_features_torch(cand_tokens, mask_b)
+    feat7 = compute_features_torch(tok_tokens, mask_b)
     if scale_features_by_weight:
-        feat7 = feat7 * cand_w.unsqueeze(-1)
+        feat7 = feat7 * tok_w.unsqueeze(-1)
 
-    extra = torch.stack(
-        [cand_w, merge_f * cand_w, eff_f * cand_w],
-        dim=-1,
-    )
+    # Parent-level merge-added mass per token from split branch.
+    child_w = reco_out["child_weight"]
+    K = max(int(child_w.shape[1] // max(L, 1)), 1)
+    parent_added = child_w.reshape(child_w.shape[0], L, K).sum(dim=2).clamp(0.0, 1.0)
+
+    # Distribute efficiency budget as a smooth per-token share signal.
+    valid_count = mask_b.float().sum(dim=1, keepdim=True).clamp(min=1.0)
+    eff_share = (reco_out["budget_eff"].unsqueeze(1) / valid_count).clamp(0.0, 1.0)
+    eff_share = eff_share * mask_b.float()
+
+    extra = torch.stack([tok_w, parent_added, eff_share], dim=-1)
     feat_b = torch.cat([feat7, extra], dim=-1)
     feat_b = torch.nan_to_num(feat_b, nan=0.0, posinf=0.0, neginf=0.0)
     feat_b = feat_b * mask_b.unsqueeze(-1).float()
