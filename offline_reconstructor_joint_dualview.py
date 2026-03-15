@@ -179,6 +179,7 @@ def build_soft_corrected_view(
     reco_out: Dict[str, torch.Tensor],
     weight_floor: float = 1e-4,
     scale_features_by_weight: bool = True,
+    include_flags: bool = False,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """
     Builds a differentiable fixed-length corrected view.
@@ -189,8 +190,10 @@ def build_soft_corrected_view(
       - per-token share of efficiency budget
 
     Output feature dims:
-      7 base kinematic features + 3 channels
-      [tok_weight, parent_added_weight, eff_share] = 10.
+      - default: 7 base kinematic features + 3 channels
+        [tok_weight, parent_added_weight, eff_share] = 10.
+      - with include_flags: +2 channels
+        [merge_flag, eff_flag] => 12.
     """
     eps = 1e-8
     L = reco_out["action_prob"].shape[1]
@@ -217,6 +220,10 @@ def build_soft_corrected_view(
     eff_share = eff_share * mask_b.float()
 
     extra = torch.stack([tok_w, parent_added, eff_share], dim=-1)
+    if include_flags:
+        tok_merge_flag = reco_out["cand_merge_flags"][:, :L].clamp(0.0, 1.0)
+        tok_eff_flag = reco_out["cand_eff_flags"][:, :L].clamp(0.0, 1.0)
+        extra = torch.cat([extra, tok_merge_flag.unsqueeze(-1), tok_eff_flag.unsqueeze(-1)], dim=-1)
     feat_b = torch.cat([feat7, extra], dim=-1)
     feat_b = torch.nan_to_num(feat_b, nan=0.0, posinf=0.0, neginf=0.0)
     feat_b = feat_b * mask_b.unsqueeze(-1).float()
@@ -256,6 +263,7 @@ def eval_joint_model(
     loader: DataLoader,
     device: torch.device,
     corrected_weight_floor: float,
+    corrected_use_flags: bool = False,
 ) -> Tuple[float, np.ndarray, np.ndarray, float]:
     dual_model.eval()
     reconstructor.eval()
@@ -274,6 +282,7 @@ def eval_joint_model(
             reco_out,
             weight_floor=corrected_weight_floor,
             scale_features_by_weight=True,
+            include_flags=corrected_use_flags,
         )
         logits = dual_model(feat_hlt_dual, mask_hlt, feat_b, mask_b).squeeze(1)
         p = torch.sigmoid(logits)
@@ -299,9 +308,11 @@ def build_corrected_view_numpy(
     device: torch.device,
     batch_size: int,
     corrected_weight_floor: float,
+    corrected_use_flags: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray]:
     n_jets, seq_len, _ = feat_hlt.shape
-    feat_b = np.zeros((n_jets, seq_len, 10), dtype=np.float32)
+    out_dim_b = 12 if corrected_use_flags else 10
+    feat_b = np.zeros((n_jets, seq_len, out_dim_b), dtype=np.float32)
     mask_b = np.zeros((n_jets, seq_len), dtype=bool)
 
     reconstructor.eval()
@@ -315,6 +326,7 @@ def build_corrected_view_numpy(
             reco_out,
             weight_floor=float(corrected_weight_floor),
             scale_features_by_weight=True,
+            include_flags=bool(corrected_use_flags),
         )
         feat_b[start:end] = fb.detach().cpu().numpy()
         mask_b[start:end] = mb.detach().cpu().numpy()
@@ -325,10 +337,13 @@ def summarize_soft_corrected_view(
     feat_b: np.ndarray,
     mask_b: np.ndarray,
 ) -> Dict[str, float]:
-    # Extra channels: [tok_weight, parent_added_weight, eff_share]
+    # Extra channels: [tok_weight, parent_added_weight, eff_share] (+ optional merge/eff flags)
     tok_w = feat_b[..., 7]
     parent_added = feat_b[..., 8]
     eff_share = feat_b[..., 9]
+    has_flags = feat_b.shape[-1] >= 12
+    merge_flag_soft = feat_b[..., 10] if has_flags else np.zeros_like(tok_w)
+    eff_flag_soft = feat_b[..., 11] if has_flags else np.zeros_like(tok_w)
     valid = mask_b.astype(bool)
     if not np.any(valid):
         return {
@@ -336,9 +351,13 @@ def summarize_soft_corrected_view(
             "mean_tok_weight_valid": 0.0,
             "mean_parent_added_valid": 0.0,
             "mean_eff_share_valid": 0.0,
+            "mean_merge_flag_soft_valid": 0.0,
+            "mean_eff_flag_soft_valid": 0.0,
             "p95_tok_weight_valid": 0.0,
             "p95_parent_added_valid": 0.0,
             "p95_eff_share_valid": 0.0,
+            "p95_merge_flag_soft_valid": 0.0,
+            "p95_eff_flag_soft_valid": 0.0,
         }
     tok_cnt = valid.sum(axis=1).astype(np.float64)
     return {
@@ -346,9 +365,13 @@ def summarize_soft_corrected_view(
         "mean_tok_weight_valid": float(tok_w[valid].mean()),
         "mean_parent_added_valid": float(parent_added[valid].mean()),
         "mean_eff_share_valid": float(eff_share[valid].mean()),
+        "mean_merge_flag_soft_valid": float(merge_flag_soft[valid].mean()) if has_flags else 0.0,
+        "mean_eff_flag_soft_valid": float(eff_flag_soft[valid].mean()) if has_flags else 0.0,
         "p95_tok_weight_valid": float(np.percentile(tok_w[valid], 95.0)),
         "p95_parent_added_valid": float(np.percentile(parent_added[valid], 95.0)),
         "p95_eff_share_valid": float(np.percentile(eff_share[valid], 95.0)),
+        "p95_merge_flag_soft_valid": float(np.percentile(merge_flag_soft[valid], 95.0)) if has_flags else 0.0,
+        "p95_eff_flag_soft_valid": float(np.percentile(eff_flag_soft[valid], 95.0)) if has_flags else 0.0,
     }
 
 
@@ -705,7 +728,8 @@ def predict_jet_regressor(
     batch_size: int,
 ) -> np.ndarray:
     model.eval()
-    out = np.zeros((feat.shape[0], 2), dtype=np.float32)
+    out_dim = int(model.head[-1].out_features)
+    out = np.zeros((feat.shape[0], out_dim), dtype=np.float32)
     for start in range(0, feat.shape[0], int(batch_size)):
         end = min(start + int(batch_size), feat.shape[0])
         x = torch.tensor(feat[start:end], dtype=torch.float32, device=device)
@@ -733,6 +757,7 @@ def train_joint_dual(
     lambda_rank: float,
     lambda_cons: float,
     corrected_weight_floor: float,
+    corrected_use_flags: bool,
     min_epochs: int,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float]]:
     for p in reconstructor.parameters():
@@ -788,6 +813,7 @@ def train_joint_dual(
                 reco_out,
                 weight_floor=corrected_weight_floor,
                 scale_features_by_weight=True,
+                include_flags=corrected_use_flags,
             )
             logits = dual_model(feat_hlt_dual, mask_hlt, feat_b, mask_b).squeeze(1)
 
@@ -844,6 +870,7 @@ def train_joint_dual(
             loader=val_loader,
             device=device,
             corrected_weight_floor=corrected_weight_floor,
+            corrected_use_flags=corrected_use_flags,
         )
 
         improved = np.isfinite(va_fpr50) and va_fpr50 < best_val_fpr50
@@ -923,6 +950,12 @@ def main() -> None:
     parser.add_argument("--lambda_rank", type=float, default=0.45)
     parser.add_argument("--lambda_cons", type=float, default=0.06)
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
+    parser.add_argument("--use_corrected_flags", action="store_true")
+    parser.add_argument("--loss_w_pt_ratio", type=float, default=BASE_CONFIG["loss"]["w_pt_ratio"])
+    parser.add_argument("--loss_w_e_ratio", type=float, default=BASE_CONFIG["loss"]["w_e_ratio"])
+    parser.add_argument("--loss_w_budget", type=float, default=BASE_CONFIG["loss"]["w_budget"])
+    parser.add_argument("--loss_w_sparse", type=float, default=BASE_CONFIG["loss"]["w_sparse"])
+    parser.add_argument("--loss_w_local", type=float, default=BASE_CONFIG["loss"]["w_local"])
 
     # Reconstructor decode controls (used for diagnostics and KD set build).
     parser.add_argument("--reco_weight_threshold", type=float, default=0.03)
@@ -960,6 +993,11 @@ def main() -> None:
     cfg["hlt_effects"]["smear_a"] = float(args.smear_a)
     cfg["hlt_effects"]["smear_b"] = float(args.smear_b)
     cfg["hlt_effects"]["smear_c"] = float(args.smear_c)
+    cfg["loss"]["w_pt_ratio"] = float(args.loss_w_pt_ratio)
+    cfg["loss"]["w_e_ratio"] = float(args.loss_w_e_ratio)
+    cfg["loss"]["w_budget"] = float(args.loss_w_budget)
+    cfg["loss"]["w_sparse"] = float(args.loss_w_sparse)
+    cfg["loss"]["w_local"] = float(args.loss_w_local)
 
     cfg["reconstructor_training"]["epochs"] = int(args.stageA_epochs)
     cfg["reconstructor_training"]["patience"] = int(args.stageA_patience)
@@ -1226,7 +1264,8 @@ def main() -> None:
     print("STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECONSTRUCTOR)")
     print("=" * 70)
     dual_input_dim_a = int(feat_hlt_dual.shape[-1])
-    dual_joint = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=10, **cfg["model"]).to(device)
+    dual_input_dim_b = 12 if bool(args.use_corrected_flags) else 10
+    dual_joint = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=dual_input_dim_b, **cfg["model"]).to(device)
     reconstructor, dual_joint, stageB_metrics = train_joint_dual(
         reconstructor=reconstructor,
         dual_model=dual_joint,
@@ -1245,6 +1284,7 @@ def main() -> None:
         lambda_rank=float(args.lambda_rank),
         lambda_cons=float(args.lambda_cons),
         corrected_weight_floor=float(args.corrected_weight_floor),
+        corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageB_min_epochs),
     )
 
@@ -1269,11 +1309,17 @@ def main() -> None:
         lambda_rank=float(args.lambda_rank),
         lambda_cons=float(args.lambda_cons),
         corrected_weight_floor=float(args.corrected_weight_floor),
+        corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageC_min_epochs),
     )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
-        reconstructor, dual_joint, dl_test_joint, device, corrected_weight_floor=float(args.corrected_weight_floor)
+        reconstructor,
+        dual_joint,
+        dl_test_joint,
+        device,
+        corrected_weight_floor=float(args.corrected_weight_floor),
+        corrected_use_flags=bool(args.use_corrected_flags),
     )
     assert np.array_equal(labs.astype(np.float32), labs_joint.astype(np.float32))
 
@@ -1376,6 +1422,7 @@ def main() -> None:
         device=device,
         batch_size=BS,
         corrected_weight_floor=float(args.corrected_weight_floor),
+        corrected_use_flags=bool(args.use_corrected_flags),
     )
     soft_view_summary_test = summarize_soft_corrected_view(
         feat_b_all[test_idx],
@@ -1426,7 +1473,7 @@ def main() -> None:
         kd_val_loader = DataLoader(kd_val_ds, batch_size=BS, shuffle=False)
         kd_test_loader = DataLoader(kd_test_ds, batch_size=BS, shuffle=False)
 
-        kd_student = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=10, **cfg["model"]).to(device)
+        kd_student = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=dual_input_dim_b, **cfg["model"]).to(device)
         kd_student.load_state_dict(dual_joint.state_dict())
         kd_student = train_dual_kd_student(
             student=kd_student,
