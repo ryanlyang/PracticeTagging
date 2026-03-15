@@ -34,5 +34,6 @@ python offline_reconstructor_joint_dualview_ablations.py \
   --num_workers "${NUM_WORKERS}" \
   --seed "${SEED}" \
   --use_nopriv_total_budget \
+  --enable_jet_regressor \
   --disable_final_kd \
   --device cuda

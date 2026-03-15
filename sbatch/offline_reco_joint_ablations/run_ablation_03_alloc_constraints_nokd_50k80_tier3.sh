@@ -38,5 +38,6 @@ python offline_reconstructor_joint_dualview_ablations.py \
   --enable_allocation_constraints \
   --w_alloc_hard "${W_ALLOC_HARD}" \
   --w_alloc_quota "${W_ALLOC_QUOTA}" \
+  --enable_jet_regressor \
   --disable_final_kd \
   --device cuda

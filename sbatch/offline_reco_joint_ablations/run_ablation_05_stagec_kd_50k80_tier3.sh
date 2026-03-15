@@ -39,5 +39,6 @@ python offline_reconstructor_joint_dualview_ablations.py \
   --lambda_kd_stageC "${LAMBDA_KD_STAGEC}" \
   --stageC_kd_temperature "${KD_TEMP}" \
   --stageC_kd_conf_weighted \
+  --enable_jet_regressor \
   --disable_final_kd \
   --device cuda

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=ab4Cap
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=1:30:00
@@ -35,5 +35,6 @@ python offline_reconstructor_joint_dualview_ablations.py \
   --num_workers "${NUM_WORKERS}" \
   --seed "${SEED}" \
   --max_split_children "${MAX_SPLIT_CHILDREN}" \
+  --enable_jet_regressor \
   --disable_final_kd \
   --device cuda
