@@ -1,23 +1,23 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=offrecoJoint
+#SBATCH --job-name=offrecoJointJR
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=2:30:00
-#SBATCH --output=offline_reconstructor_logs/offline_reco_joint_%j.out
-#SBATCH --error=offline_reconstructor_logs/offline_reco_joint_%j.err
+#SBATCH --output=offline_reconstructor_logs/offline_reco_joint_jetreg_%j.out
+#SBATCH --error=offline_reconstructor_logs/offline_reco_joint_jetreg_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-joint_100k_80c}"
+RUN_NAME="${RUN_NAME:-joint_100k_80c_jetreg}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-80}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
-ENABLE_JET_REGRESSOR="${ENABLE_JET_REGRESSOR:-0}"
+ENABLE_JET_REGRESSOR="${ENABLE_JET_REGRESSOR:-1}"
 
 JET_REG_ARGS=()
 if [ "${ENABLE_JET_REGRESSOR}" = "1" ]; then
@@ -72,3 +72,4 @@ else
   echo "=========================================="
 fi
 exit "$rc"
+

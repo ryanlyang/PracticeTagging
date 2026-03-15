@@ -40,13 +40,19 @@ from unmerge_correct_hlt import (
     RANDOM_SEED,
     load_raw_constituents_from_h5,
     compute_features,
+    compute_jet_pt,
+    build_pt_edges,
+    jet_response_resolution,
+    plot_response_resolution,
     get_stats,
     standardize,
     ParticleTransformer,
     DualViewCrossAttnClassifier,
+    DualViewKDDataset,
     JetDataset,
     get_scheduler,
     eval_classifier,
+    eval_classifier_dual,
 )
 
 from offline_reconstructor_no_gt_local30kv2 import (
@@ -56,8 +62,12 @@ from offline_reconstructor_no_gt_local30kv2 import (
     ReconstructionDataset,
     compute_reconstruction_losses,
     train_reconstructor,
+    reconstruct_dataset,
     plot_roc,
     fpr_at_target_tpr,
+    plot_constituent_count_diagnostics,
+    plot_budget_diagnostics,
+    train_dual_kd_student,
 )
 
 
@@ -79,7 +89,8 @@ def _deepcopy_config() -> Dict:
 class JointDualDataset(Dataset):
     def __init__(
         self,
-        feat_hlt: np.ndarray,
+        feat_hlt_reco: np.ndarray,
+        feat_hlt_dual: np.ndarray,
         mask_hlt: np.ndarray,
         const_hlt: np.ndarray,
         const_off: np.ndarray,
@@ -88,7 +99,8 @@ class JointDualDataset(Dataset):
         budget_eff_true: np.ndarray,
         labels: np.ndarray,
     ):
-        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
+        self.feat_hlt_reco = torch.tensor(feat_hlt_reco, dtype=torch.float32)
+        self.feat_hlt_dual = torch.tensor(feat_hlt_dual, dtype=torch.float32)
         self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
         self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
         self.const_off = torch.tensor(const_off, dtype=torch.float32)
@@ -98,11 +110,12 @@ class JointDualDataset(Dataset):
         self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
 
     def __len__(self) -> int:
-        return self.feat_hlt.shape[0]
+        return self.feat_hlt_reco.shape[0]
 
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
         return {
-            "feat_hlt": self.feat_hlt[i],
+            "feat_hlt_reco": self.feat_hlt_reco[i],
+            "feat_hlt_dual": self.feat_hlt_dual[i],
             "mask_hlt": self.mask_hlt[i],
             "const_hlt": self.const_hlt[i],
             "const_off": self.const_off[i],
@@ -250,18 +263,19 @@ def eval_joint_model(
     preds = []
     labs = []
     for batch in loader:
-        feat_hlt = batch["feat_hlt"].to(device)
+        feat_hlt_reco = batch["feat_hlt_reco"].to(device)
+        feat_hlt_dual = batch["feat_hlt_dual"].to(device)
         mask_hlt = batch["mask_hlt"].to(device)
         const_hlt = batch["const_hlt"].to(device)
         y = batch["label"].to(device)
 
-        reco_out = reconstructor(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
+        reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
         feat_b, mask_b = build_soft_corrected_view(
             reco_out,
             weight_floor=corrected_weight_floor,
             scale_features_by_weight=True,
         )
-        logits = dual_model(feat_hlt, mask_hlt, feat_b, mask_b).squeeze(1)
+        logits = dual_model(feat_hlt_dual, mask_hlt, feat_b, mask_b).squeeze(1)
         p = torch.sigmoid(logits)
         preds.append(p.detach().cpu().numpy())
         labs.append(y.detach().cpu().numpy())
@@ -274,6 +288,236 @@ def eval_joint_model(
     fpr, tpr, _ = roc_curve(labs, preds)
     fpr50 = fpr_at_target_tpr(fpr, tpr, 0.50)
     return float(auc), preds, labs, float(fpr50)
+
+
+@torch.no_grad()
+def build_corrected_view_numpy(
+    reconstructor: OfflineReconstructor,
+    feat_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    const_hlt: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+    corrected_weight_floor: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    n_jets, seq_len, _ = feat_hlt.shape
+    feat_b = np.zeros((n_jets, seq_len, 10), dtype=np.float32)
+    mask_b = np.zeros((n_jets, seq_len), dtype=bool)
+
+    reconstructor.eval()
+    for start in range(0, n_jets, int(batch_size)):
+        end = min(start + int(batch_size), n_jets)
+        x = torch.tensor(feat_hlt[start:end], dtype=torch.float32, device=device)
+        m = torch.tensor(mask_hlt[start:end], dtype=torch.bool, device=device)
+        c = torch.tensor(const_hlt[start:end], dtype=torch.float32, device=device)
+        reco_out = reconstructor(x, m, c, stage_scale=1.0)
+        fb, mb = build_soft_corrected_view(
+            reco_out,
+            weight_floor=float(corrected_weight_floor),
+            scale_features_by_weight=True,
+        )
+        feat_b[start:end] = fb.detach().cpu().numpy()
+        mask_b[start:end] = mb.detach().cpu().numpy()
+    return feat_b, mask_b
+
+
+def summarize_soft_corrected_view(
+    feat_b: np.ndarray,
+    mask_b: np.ndarray,
+) -> Dict[str, float]:
+    # Extra channels: [tok_weight, parent_added_weight, eff_share]
+    tok_w = feat_b[..., 7]
+    parent_added = feat_b[..., 8]
+    eff_share = feat_b[..., 9]
+    valid = mask_b.astype(bool)
+    if not np.any(valid):
+        return {
+            "mean_tokens_active_per_jet": 0.0,
+            "mean_tok_weight_valid": 0.0,
+            "mean_parent_added_valid": 0.0,
+            "mean_eff_share_valid": 0.0,
+            "p95_tok_weight_valid": 0.0,
+            "p95_parent_added_valid": 0.0,
+            "p95_eff_share_valid": 0.0,
+        }
+    tok_cnt = valid.sum(axis=1).astype(np.float64)
+    return {
+        "mean_tokens_active_per_jet": float(tok_cnt.mean()),
+        "mean_tok_weight_valid": float(tok_w[valid].mean()),
+        "mean_parent_added_valid": float(parent_added[valid].mean()),
+        "mean_eff_share_valid": float(eff_share[valid].mean()),
+        "p95_tok_weight_valid": float(np.percentile(tok_w[valid], 95.0)),
+        "p95_parent_added_valid": float(np.percentile(parent_added[valid], 95.0)),
+        "p95_eff_share_valid": float(np.percentile(eff_share[valid], 95.0)),
+    }
+
+
+class JetRegressionDataset(Dataset):
+    def __init__(self, feat: np.ndarray, mask: np.ndarray, target_log: np.ndarray):
+        self.feat = torch.tensor(feat, dtype=torch.float32)
+        self.mask = torch.tensor(mask, dtype=torch.bool)
+        self.target_log = torch.tensor(target_log, dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return self.feat.shape[0]
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "feat": self.feat[i],
+            "mask": self.mask[i],
+            "target_log": self.target_log[i],
+        }
+
+
+class JetLevelRegressor(nn.Module):
+    def __init__(
+        self,
+        input_dim: int,
+        embed_dim: int = 128,
+        num_heads: int = 8,
+        num_layers: int = 4,
+        ff_dim: int = 512,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.input_proj = nn.Linear(int(input_dim), int(embed_dim))
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=int(embed_dim),
+            nhead=int(num_heads),
+            dim_feedforward=int(ff_dim),
+            dropout=float(dropout),
+            batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=int(num_layers))
+        self.norm = nn.LayerNorm(int(embed_dim))
+        self.head = nn.Sequential(
+            nn.Linear(int(embed_dim), int(embed_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(embed_dim), 2),  # [log_pt_offline, log_E_offline]
+        )
+
+    def forward(self, feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        x = self.input_proj(feat)
+        x = self.encoder(x, src_key_padding_mask=~mask)
+        w = mask.float().unsqueeze(-1)
+        pooled = (x * w).sum(dim=1) / w.sum(dim=1).clamp(min=1.0)
+        pooled = self.norm(pooled)
+        return self.head(pooled)
+
+
+def _mae_from_logpred(pred_log: torch.Tensor, tgt_log: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+    pred = torch.exp(pred_log)
+    tgt = torch.exp(tgt_log)
+    mae_pt = (pred[:, 0] - tgt[:, 0]).abs().mean()
+    mae_e = (pred[:, 1] - tgt[:, 1]).abs().mean()
+    return mae_pt, mae_e
+
+
+def train_jet_regressor(
+    model: JetLevelRegressor,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    epochs: int,
+    patience: int,
+    lr: float,
+    weight_decay: float,
+    warmup_epochs: int,
+) -> Tuple[JetLevelRegressor, Dict[str, float]]:
+    opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
+    sch = get_scheduler(opt, int(warmup_epochs), int(epochs))
+    best_state = None
+    best_val = float("inf")
+    best_metrics: Dict[str, float] = {}
+    no_improve = 0
+
+    for ep in tqdm(range(int(epochs)), desc="JetRegressor"):
+        model.train()
+        tr = 0.0
+        n_tr = 0
+        for batch in train_loader:
+            feat = batch["feat"].to(device)
+            mask = batch["mask"].to(device)
+            tgt = batch["target_log"].to(device)
+            opt.zero_grad()
+            pred = model(feat, mask)
+            loss = F.smooth_l1_loss(pred, tgt)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+            bs = feat.size(0)
+            tr += loss.item() * bs
+            n_tr += bs
+        sch.step()
+        tr /= max(n_tr, 1)
+
+        model.eval()
+        va = 0.0
+        n_va = 0
+        mae_pt_vals = []
+        mae_e_vals = []
+        with torch.no_grad():
+            for batch in val_loader:
+                feat = batch["feat"].to(device)
+                mask = batch["mask"].to(device)
+                tgt = batch["target_log"].to(device)
+                pred = model(feat, mask)
+                loss = F.smooth_l1_loss(pred, tgt)
+                bs = feat.size(0)
+                va += loss.item() * bs
+                n_va += bs
+                mae_pt, mae_e = _mae_from_logpred(pred, tgt)
+                mae_pt_vals.append(float(mae_pt.item()))
+                mae_e_vals.append(float(mae_e.item()))
+        va /= max(n_va, 1)
+        mae_pt_val = float(np.mean(mae_pt_vals)) if len(mae_pt_vals) > 0 else float("nan")
+        mae_e_val = float(np.mean(mae_e_vals)) if len(mae_e_vals) > 0 else float("nan")
+
+        if va < best_val:
+            best_val = float(va)
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_metrics = {
+                "best_val_loss": float(va),
+                "best_val_mae_pt": float(mae_pt_val),
+                "best_val_mae_e": float(mae_e_val),
+            }
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (ep + 1) % 5 == 0:
+            print(
+                f"JetReg ep {ep+1}: train_loss={tr:.5f}, val_loss={va:.5f}, "
+                f"val_mae_pt={mae_pt_val:.3f}, val_mae_e={mae_e_val:.3f}, best={best_val:.5f}"
+            )
+        if no_improve >= int(patience):
+            print(f"Early stopping JetRegressor at epoch {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model, best_metrics
+
+
+@torch.no_grad()
+def predict_jet_regressor(
+    model: JetLevelRegressor,
+    feat: np.ndarray,
+    mask: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+) -> np.ndarray:
+    model.eval()
+    out = np.zeros((feat.shape[0], 2), dtype=np.float32)
+    for start in range(0, feat.shape[0], int(batch_size)):
+        end = min(start + int(batch_size), feat.shape[0])
+        x = torch.tensor(feat[start:end], dtype=torch.float32, device=device)
+        m = torch.tensor(mask[start:end], dtype=torch.bool, device=device)
+        pred = model(x, m)
+        out[start:end] = pred.detach().cpu().numpy().astype(np.float32)
+    return out
 
 
 def train_joint_dual(
@@ -294,6 +538,7 @@ def train_joint_dual(
     lambda_rank: float,
     lambda_cons: float,
     corrected_weight_floor: float,
+    min_epochs: int,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float]]:
     for p in reconstructor.parameters():
         p.requires_grad = not freeze_reconstructor
@@ -326,7 +571,8 @@ def train_joint_dual(
         n_tr = 0
 
         for batch in train_loader:
-            feat_hlt = batch["feat_hlt"].to(device)
+            feat_hlt_reco = batch["feat_hlt_reco"].to(device)
+            feat_hlt_dual = batch["feat_hlt_dual"].to(device)
             mask_hlt = batch["mask_hlt"].to(device)
             const_hlt = batch["const_hlt"].to(device)
             const_off = batch["const_off"].to(device)
@@ -339,16 +585,16 @@ def train_joint_dual(
 
             if freeze_reconstructor:
                 with torch.no_grad():
-                    reco_out = reconstructor(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
+                    reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
             else:
-                reco_out = reconstructor(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
+                reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
 
             feat_b, mask_b = build_soft_corrected_view(
                 reco_out,
                 weight_floor=corrected_weight_floor,
                 scale_features_by_weight=True,
             )
-            logits = dual_model(feat_hlt, mask_hlt, feat_b, mask_b).squeeze(1)
+            logits = dual_model(feat_hlt_dual, mask_hlt, feat_b, mask_b).squeeze(1)
 
             loss_cls = F.binary_cross_entropy_with_logits(logits, y)
             loss_rank = low_fpr_surrogate_loss(logits, y, target_tpr=0.50, tau=0.05)
@@ -381,7 +627,7 @@ def train_joint_dual(
                 torch.nn.utils.clip_grad_norm_(reconstructor.parameters(), 1.0)
             opt.step()
 
-            bs = feat_hlt.size(0)
+            bs = feat_hlt_reco.size(0)
             tr_loss += loss.item() * bs
             tr_cls += loss_cls.item() * bs
             tr_rank += loss_rank.item() * bs
@@ -422,7 +668,7 @@ def train_joint_dual(
                 f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, best_fpr50={best_val_fpr50:.6f}"
             )
 
-        if no_improve >= int(patience):
+        if (ep + 1) >= int(min_epochs) and no_improve >= int(patience):
             print(f"Early stopping {stage_name} at epoch {ep+1}")
             break
 
@@ -469,17 +715,46 @@ def main() -> None:
     # Stage B (tagger pretrain, reconstructor frozen)
     parser.add_argument("--stageB_epochs", type=int, default=45)
     parser.add_argument("--stageB_patience", type=int, default=12)
+    parser.add_argument("--stageB_min_epochs", type=int, default=12)
     parser.add_argument("--stageB_lr_dual", type=float, default=4e-4)
 
     # Stage C (joint finetune)
     parser.add_argument("--stageC_epochs", type=int, default=65)
     parser.add_argument("--stageC_patience", type=int, default=14)
+    parser.add_argument("--stageC_min_epochs", type=int, default=25)
     parser.add_argument("--stageC_lr_dual", type=float, default=2e-4)
     parser.add_argument("--stageC_lr_reco", type=float, default=1e-4)
     parser.add_argument("--lambda_reco", type=float, default=0.35)
     parser.add_argument("--lambda_rank", type=float, default=0.45)
     parser.add_argument("--lambda_cons", type=float, default=0.06)
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
+
+    # Reconstructor decode controls (used for diagnostics and KD set build).
+    parser.add_argument("--reco_weight_threshold", type=float, default=0.03)
+    parser.add_argument("--reco_disable_budget_topk", action="store_true")
+
+    # Response/resolution diagnostics.
+    parser.add_argument("--response_n_bins", type=int, default=8)
+    parser.add_argument("--response_min_count", type=int, default=30)
+
+    # Stage D (final KD with frozen reconstructor and fixed corrected view)
+    parser.add_argument("--disable_final_kd", action="store_true")
+    parser.add_argument("--stageD_kd_epochs", type=int, default=-1)
+    parser.add_argument("--stageD_kd_patience", type=int, default=-1)
+    parser.add_argument("--stageD_kd_lr", type=float, default=-1.0)
+
+    # Optional frozen jet-level regressor -> additional dual-view input channels.
+    parser.add_argument("--enable_jet_regressor", action="store_true")
+    parser.add_argument("--jet_reg_epochs", type=int, default=40)
+    parser.add_argument("--jet_reg_patience", type=int, default=10)
+    parser.add_argument("--jet_reg_lr", type=float, default=3e-4)
+    parser.add_argument("--jet_reg_weight_decay", type=float, default=1e-5)
+    parser.add_argument("--jet_reg_warmup_epochs", type=int, default=3)
+    parser.add_argument("--jet_reg_embed_dim", type=int, default=128)
+    parser.add_argument("--jet_reg_num_heads", type=int, default=8)
+    parser.add_argument("--jet_reg_num_layers", type=int, default=4)
+    parser.add_argument("--jet_reg_ff_dim", type=int, default=512)
+    parser.add_argument("--jet_reg_dropout", type=float, default=0.1)
 
     args = parser.parse_args()
 
@@ -590,6 +865,100 @@ def main() -> None:
     )
     auc_baseline, preds_baseline, _ = eval_classifier(baseline, dl_test_hlt, device)
 
+    # Optional jet-level regressor to provide frozen global calibration features to dual-view tagger.
+    jet_regressor = None
+    jet_reg_metrics: Dict[str, object] = {"enabled": bool(args.enable_jet_regressor)}
+    feat_hlt_dual = feat_hlt_std.astype(np.float32, copy=True)
+    if bool(args.enable_jet_regressor):
+        print("\n" + "=" * 70)
+        print("STEP 1B: JET-LEVEL REGRESSOR (HLT -> offline log pT/log E)")
+        print("=" * 70)
+        jet_pt_off = compute_jet_pt(const_off, masks_off).astype(np.float32)
+        jet_e_off = (const_off[:, :, 3] * masks_off.astype(np.float32)).sum(axis=1).astype(np.float32)
+        jet_pt_hlt = compute_jet_pt(hlt_const, hlt_mask).astype(np.float32)
+        jet_e_hlt = (hlt_const[:, :, 3] * hlt_mask.astype(np.float32)).sum(axis=1).astype(np.float32)
+
+        target_log = np.stack(
+            [
+                np.log(np.clip(jet_pt_off, 1e-8, None)),
+                np.log(np.clip(jet_e_off, 1e-8, None)),
+            ],
+            axis=-1,
+        ).astype(np.float32)
+
+        jet_reg_train_ds = JetRegressionDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], target_log[train_idx])
+        jet_reg_val_ds = JetRegressionDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], target_log[val_idx])
+        jet_reg_train_loader = DataLoader(
+            jet_reg_train_ds,
+            batch_size=int(cfg["training"]["batch_size"]),
+            shuffle=True,
+            drop_last=True,
+        )
+        jet_reg_val_loader = DataLoader(
+            jet_reg_val_ds,
+            batch_size=int(cfg["training"]["batch_size"]),
+            shuffle=False,
+        )
+
+        jet_regressor = JetLevelRegressor(
+            input_dim=7,
+            embed_dim=int(args.jet_reg_embed_dim),
+            num_heads=int(args.jet_reg_num_heads),
+            num_layers=int(args.jet_reg_num_layers),
+            ff_dim=int(args.jet_reg_ff_dim),
+            dropout=float(args.jet_reg_dropout),
+        ).to(device)
+        jet_regressor, jet_reg_best = train_jet_regressor(
+            model=jet_regressor,
+            train_loader=jet_reg_train_loader,
+            val_loader=jet_reg_val_loader,
+            device=device,
+            epochs=int(args.jet_reg_epochs),
+            patience=int(args.jet_reg_patience),
+            lr=float(args.jet_reg_lr),
+            weight_decay=float(args.jet_reg_weight_decay),
+            warmup_epochs=int(args.jet_reg_warmup_epochs),
+        )
+        pred_log_all = predict_jet_regressor(
+            model=jet_regressor,
+            feat=feat_hlt_std,
+            mask=hlt_mask,
+            device=device,
+            batch_size=int(cfg["training"]["batch_size"]),
+        )
+        hlt_log_pt = np.log(np.clip(jet_pt_hlt, 1e-8, None))
+        hlt_log_e = np.log(np.clip(jet_e_hlt, 1e-8, None))
+        extra_global = np.stack(
+            [
+                pred_log_all[:, 0],
+                pred_log_all[:, 1],
+                pred_log_all[:, 0] - hlt_log_pt,
+                pred_log_all[:, 1] - hlt_log_e,
+            ],
+            axis=-1,
+        ).astype(np.float32)
+        extra_global = np.repeat(extra_global[:, None, :], feat_hlt_std.shape[1], axis=1)
+        feat_hlt_dual = np.concatenate([feat_hlt_std, extra_global], axis=-1).astype(np.float32)
+        feat_hlt_dual[~hlt_mask] = 0.0
+
+        # eval metrics on val/test (linear scale MAE).
+        jet_reg_val_pred = pred_log_all[val_idx]
+        jet_reg_test_pred = pred_log_all[test_idx]
+        jet_reg_val_true = target_log[val_idx]
+        jet_reg_test_true = target_log[test_idx]
+        jet_reg_metrics = {
+            "enabled": True,
+            "best": jet_reg_best,
+            "val_mae_pt": float(np.mean(np.abs(np.exp(jet_reg_val_pred[:, 0]) - np.exp(jet_reg_val_true[:, 0])))),
+            "val_mae_e": float(np.mean(np.abs(np.exp(jet_reg_val_pred[:, 1]) - np.exp(jet_reg_val_true[:, 1])))),
+            "test_mae_pt": float(np.mean(np.abs(np.exp(jet_reg_test_pred[:, 0]) - np.exp(jet_reg_test_true[:, 0])))),
+            "test_mae_e": float(np.mean(np.abs(np.exp(jet_reg_test_pred[:, 1]) - np.exp(jet_reg_test_true[:, 1])))),
+        }
+        print(
+            "Jet regressor test MAE: "
+            f"pT={jet_reg_metrics['test_mae_pt']:.3f}, E={jet_reg_metrics['test_mae_e']:.3f}"
+        )
+
     # Stage A: reconstructor pretrain
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)")
@@ -634,19 +1003,19 @@ def main() -> None:
 
     # Joint datasets
     ds_train_joint = JointDualDataset(
-        feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
+        feat_hlt_std[train_idx], feat_hlt_dual[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
         const_off[train_idx], masks_off[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
         labels[train_idx],
     )
     ds_val_joint = JointDualDataset(
-        feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
+        feat_hlt_std[val_idx], feat_hlt_dual[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         labels[val_idx],
     )
     ds_test_joint = JointDualDataset(
-        feat_hlt_std[test_idx], hlt_mask[test_idx], hlt_const[test_idx],
+        feat_hlt_std[test_idx], feat_hlt_dual[test_idx], hlt_mask[test_idx], hlt_const[test_idx],
         const_off[test_idx], masks_off[test_idx],
         budget_merge_true[test_idx], budget_eff_true[test_idx],
         labels[test_idx],
@@ -669,7 +1038,8 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECONSTRUCTOR)")
     print("=" * 70)
-    dual_joint = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=10, **cfg["model"]).to(device)
+    dual_input_dim_a = int(feat_hlt_dual.shape[-1])
+    dual_joint = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=10, **cfg["model"]).to(device)
     reconstructor, dual_joint, stageB_metrics = train_joint_dual(
         reconstructor=reconstructor,
         dual_model=dual_joint,
@@ -688,6 +1058,7 @@ def main() -> None:
         lambda_rank=float(args.lambda_rank),
         lambda_cons=float(args.lambda_cons),
         corrected_weight_floor=float(args.corrected_weight_floor),
+        min_epochs=int(args.stageB_min_epochs),
     )
 
     print("\n" + "=" * 70)
@@ -711,12 +1082,188 @@ def main() -> None:
         lambda_rank=float(args.lambda_rank),
         lambda_cons=float(args.lambda_cons),
         corrected_weight_floor=float(args.corrected_weight_floor),
+        min_epochs=int(args.stageC_min_epochs),
     )
 
-    auc_joint, preds_joint, labs_joint, fpr50_joint = eval_joint_model(
+    auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
         reconstructor, dual_joint, dl_test_joint, device, corrected_weight_floor=float(args.corrected_weight_floor)
     )
     assert np.array_equal(labs.astype(np.float32), labs_joint.astype(np.float32))
+
+    # Build hard reconstructed view for diagnostics.
+    print("\n" + "=" * 70)
+    print("STEP 5: RECONSTRUCTION DIAGNOSTICS")
+    print("=" * 70)
+    (
+        reco_const,
+        reco_mask,
+        reco_merge_flag,
+        reco_eff_flag,
+        created_merge_count,
+        created_eff_count,
+        pred_budget_total,
+        pred_budget_merge,
+        pred_budget_eff,
+    ) = reconstruct_dataset(
+        model=reconstructor,
+        feat_hlt=feat_hlt_std,
+        mask_hlt=hlt_mask,
+        const_hlt=hlt_const,
+        max_constits=args.max_constits,
+        device=device,
+        batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+        weight_threshold=float(args.reco_weight_threshold),
+        use_budget_topk=not bool(args.reco_disable_budget_topk),
+    )
+
+    # Jet pT response/resolution diagnostics (test split).
+    pt_truth_test = compute_jet_pt(const_off[test_idx], masks_off[test_idx])
+    pt_hlt_test = compute_jet_pt(hlt_const[test_idx], hlt_mask[test_idx])
+    pt_reco_test = compute_jet_pt(reco_const[test_idx], reco_mask[test_idx])
+    pt_edges = build_pt_edges(pt_truth_test, int(args.response_n_bins))
+    rr_hlt = jet_response_resolution(pt_truth_test, pt_hlt_test, pt_edges, int(args.response_min_count))
+    rr_reco = jet_response_resolution(pt_truth_test, pt_reco_test, pt_edges, int(args.response_min_count))
+    plot_response_resolution(
+        rr_hlt,
+        rr_reco,
+        "HLT (reco)",
+        "Joint-corrected HLT (reco)",
+        save_root / "jet_response_resolution.png",
+    )
+    rr_hlt_map = {(r["pt_low"], r["pt_high"]): r for r in rr_hlt}
+    rr_reco_map = {(r["pt_low"], r["pt_high"]): r for r in rr_reco}
+    rr_keys = sorted(set(rr_hlt_map.keys()) & set(rr_reco_map.keys()))
+    rr_hlt_common = [rr_hlt_map[k] for k in rr_keys]
+    rr_reco_common = [rr_reco_map[k] for k in rr_keys]
+
+    print("\nJet pT response/resolution by truth pT bin (test split):")
+    print("  pT_low - pT_high | N | HLT resp | HLT reso | Corrected resp | Corrected reso")
+    for h, r in zip(rr_hlt_common, rr_reco_common):
+        print(
+            f"  {h['pt_low']:.1f} - {h['pt_high']:.1f} | {h['count']:5d} | "
+            f"{h['response']:.4f} | {h['resolution']:.4f} | "
+            f"{r['response']:.4f} | {r['resolution']:.4f}"
+        )
+
+    count_summary = plot_constituent_count_diagnostics(
+        save_root=save_root,
+        mask_off=masks_off,
+        hlt_mask=hlt_mask,
+        reco_mask=reco_mask,
+        created_merge_count=created_merge_count,
+        created_eff_count=created_eff_count,
+        hlt_stats=hlt_stats,
+    )
+    budget_summary = plot_budget_diagnostics(
+        save_root=save_root,
+        true_merge=budget_merge_true[test_idx],
+        true_eff=budget_eff_true[test_idx],
+        pred_merge=pred_budget_merge[test_idx],
+        pred_eff=pred_budget_eff[test_idx],
+    )
+    print("\nConstituent-count diagnostics:")
+    print(
+        f"  Means: offline={count_summary['offline_count_mean']:.3f}, "
+        f"hlt={count_summary['hlt_count_mean']:.3f}, reco={count_summary['reco_count_mean']:.3f}"
+    )
+    print(
+        f"  MAE vs offline: hlt={count_summary['hlt_count_mae_vs_offline']:.3f}, "
+        f"reco={count_summary['reco_count_mae_vs_offline']:.3f}"
+    )
+    print("\nBudget diagnostics (test split):")
+    print(
+        f"  MAE: merge={budget_summary['merge_mae']:.3f}, "
+        f"eff={budget_summary['eff_mae']:.3f}, total={budget_summary['total_mae']:.3f}"
+    )
+    print(
+        f"  Bias: merge={budget_summary['merge_bias']:.3f}, "
+        f"eff={budget_summary['eff_bias']:.3f}, total={budget_summary['total_bias']:.3f}"
+    )
+
+    # Build fixed corrected view tensors for final KD stage and additional diagnostics.
+    feat_b_all, mask_b_all = build_corrected_view_numpy(
+        reconstructor=reconstructor,
+        feat_hlt=feat_hlt_std,
+        mask_hlt=hlt_mask,
+        const_hlt=hlt_const,
+        device=device,
+        batch_size=BS,
+        corrected_weight_floor=float(args.corrected_weight_floor),
+    )
+    soft_view_summary_test = summarize_soft_corrected_view(
+        feat_b_all[test_idx],
+        mask_b_all[test_idx],
+    )
+
+    # Stage D: final KD with reconstructor frozen.
+    stageD_metrics: Dict[str, object] = {}
+    kd_student = None
+    auc_joint_kd = float("nan")
+    preds_joint_kd = None
+    tpr_j_kd = np.array([], dtype=np.float64)
+    fpr_j_kd = np.array([], dtype=np.float64)
+    fpr30_joint_kd = float("nan")
+    fpr50_joint_kd = float("nan")
+    if not bool(args.disable_final_kd):
+        print("\n" + "=" * 70)
+        print("STEP 6: STAGE D (FINAL KD, FROZEN RECONSTRUCTOR)")
+        print("=" * 70)
+        kd_train_cfg = json.loads(json.dumps(cfg["training"]))
+        kd_cfg = json.loads(json.dumps(cfg["kd"]))
+        if int(args.stageD_kd_epochs) > 0:
+            kd_train_cfg["epochs"] = int(args.stageD_kd_epochs)
+        if int(args.stageD_kd_patience) > 0:
+            kd_train_cfg["patience"] = int(args.stageD_kd_patience)
+        if float(args.stageD_kd_lr) > 0:
+            kd_train_cfg["lr"] = float(args.stageD_kd_lr)
+
+        kd_train_ds = DualViewKDDataset(
+            feat_hlt_dual[train_idx], hlt_mask[train_idx],
+            feat_b_all[train_idx], mask_b_all[train_idx],
+            feat_off_std[train_idx], masks_off[train_idx],
+            labels[train_idx],
+        )
+        kd_val_ds = DualViewKDDataset(
+            feat_hlt_dual[val_idx], hlt_mask[val_idx],
+            feat_b_all[val_idx], mask_b_all[val_idx],
+            feat_off_std[val_idx], masks_off[val_idx],
+            labels[val_idx],
+        )
+        kd_test_ds = DualViewKDDataset(
+            feat_hlt_dual[test_idx], hlt_mask[test_idx],
+            feat_b_all[test_idx], mask_b_all[test_idx],
+            feat_off_std[test_idx], masks_off[test_idx],
+            labels[test_idx],
+        )
+        kd_train_loader = DataLoader(kd_train_ds, batch_size=BS, shuffle=True, drop_last=True)
+        kd_val_loader = DataLoader(kd_val_ds, batch_size=BS, shuffle=False)
+        kd_test_loader = DataLoader(kd_test_ds, batch_size=BS, shuffle=False)
+
+        kd_student = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=10, **cfg["model"]).to(device)
+        kd_student.load_state_dict(dual_joint.state_dict())
+        kd_student = train_dual_kd_student(
+            student=kd_student,
+            teacher=teacher,
+            kd_train_loader=kd_train_loader,
+            kd_val_loader=kd_val_loader,
+            device=device,
+            train_cfg=kd_train_cfg,
+            kd_cfg=kd_cfg,
+            name="StageD-Joint+KD",
+            run_self_train=bool(kd_cfg.get("self_train", True)),
+        )
+        auc_joint_kd, preds_joint_kd, labs_joint_kd = eval_classifier_dual(kd_student, kd_test_loader, device)
+        assert np.array_equal(labs.astype(np.float32), labs_joint_kd.astype(np.float32))
+        fpr_j_kd, tpr_j_kd, _ = roc_curve(labs, preds_joint_kd)
+        fpr30_joint_kd = fpr_at_target_tpr(fpr_j_kd, tpr_j_kd, 0.30)
+        fpr50_joint_kd = fpr_at_target_tpr(fpr_j_kd, tpr_j_kd, 0.50)
+        stageD_metrics = {
+            "enabled": 1.0,
+            "train_cfg": kd_train_cfg,
+            "kd_cfg": kd_cfg,
+        }
+    else:
+        stageD_metrics = {"enabled": 0.0}
 
     # Final metrics
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
@@ -736,55 +1283,92 @@ def main() -> None:
     print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
     print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
     print(f"Joint Dual-View  AUC: {auc_joint:.4f}")
+    if preds_joint_kd is not None:
+        print(f"Joint Dual-View+KD AUC: {auc_joint_kd:.4f}")
     print()
     print(f"FPR@30 Teacher/Baseline/Joint: {fpr30_teacher:.6f} / {fpr30_baseline:.6f} / {fpr30_joint:.6f}")
     print(f"FPR@50 Teacher/Baseline/Joint: {fpr50_teacher:.6f} / {fpr50_baseline:.6f} / {fpr50_joint:.6f}")
+    if preds_joint_kd is not None:
+        print(f"FPR@30 Joint+KD: {fpr30_joint_kd:.6f}")
+        print(f"FPR@50 Joint+KD: {fpr50_joint_kd:.6f}")
 
+    plot_lines = [
+        (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
+        (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
+        (tpr_j, fpr_j, "-.", f"Joint Dual (AUC={auc_joint:.3f})", "darkslateblue"),
+    ]
+    if preds_joint_kd is not None:
+        plot_lines.append((tpr_j_kd, fpr_j_kd, ":", f"Joint Dual+KD (AUC={auc_joint_kd:.3f})", "darkgreen"))
     plot_roc(
-        [
-            (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
-            (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),
-            (tpr_j, fpr_j, "-.", f"Joint Dual (AUC={auc_joint:.3f})", "darkslateblue"),
-        ],
+        plot_lines,
         save_root / "results_teacher_baseline_joint.png",
         min_fpr=1e-4,
     )
+
+    def rr_field(records, key):
+        return np.array([r[key] for r in records], dtype=np.float64)
 
     np.savez(
         save_root / "results.npz",
         auc_teacher=auc_teacher,
         auc_baseline=auc_baseline,
         auc_joint=auc_joint,
+        auc_joint_kd=auc_joint_kd,
         fpr_teacher=fpr_t,
         tpr_teacher=tpr_t,
         fpr_baseline=fpr_b,
         tpr_baseline=tpr_b,
         fpr_joint=fpr_j,
         tpr_joint=tpr_j,
+        fpr_joint_kd=fpr_j_kd,
+        tpr_joint_kd=tpr_j_kd,
         fpr30_teacher=fpr30_teacher,
         fpr30_baseline=fpr30_baseline,
         fpr30_joint=fpr30_joint,
+        fpr30_joint_kd=fpr30_joint_kd,
         fpr50_teacher=fpr50_teacher,
         fpr50_baseline=fpr50_baseline,
         fpr50_joint=fpr50_joint,
+        fpr50_joint_kd=fpr50_joint_kd,
+        jet_response_pt_low=rr_field(rr_hlt_common, "pt_low"),
+        jet_response_pt_high=rr_field(rr_hlt_common, "pt_high"),
+        jet_response_count=rr_field(rr_hlt_common, "count"),
+        jet_response_hlt_mean=rr_field(rr_hlt_common, "response"),
+        jet_response_hlt_std=rr_field(rr_hlt_common, "resolution"),
+        jet_response_corrected_mean=rr_field(rr_reco_common, "response"),
+        jet_response_corrected_std=rr_field(rr_reco_common, "resolution"),
     )
+
+    with open(save_root / "constituent_count_summary.json", "w", encoding="utf-8") as f:
+        json.dump(count_summary, f, indent=2)
+    with open(save_root / "budget_summary_test.json", "w", encoding="utf-8") as f:
+        json.dump(budget_summary, f, indent=2)
+    with open(save_root / "soft_corrected_view_summary_test.json", "w", encoding="utf-8") as f:
+        json.dump(soft_view_summary_test, f, indent=2)
+    with open(save_root / "jet_regression_metrics.json", "w", encoding="utf-8") as f:
+        json.dump(jet_reg_metrics, f, indent=2)
 
     with open(save_root / "joint_stage_metrics.json", "w", encoding="utf-8") as f:
         json.dump(
             {
+                "jet_regressor": jet_reg_metrics,
                 "stageA_reconstructor": reco_val_metrics,
                 "stageB_joint": stageB_metrics,
                 "stageC_joint": stageC_metrics,
+                "stageD_kd": stageD_metrics,
                 "test": {
                     "auc_teacher": float(auc_teacher),
                     "auc_baseline": float(auc_baseline),
                     "auc_joint": float(auc_joint),
+                    "auc_joint_kd": float(auc_joint_kd) if preds_joint_kd is not None else None,
                     "fpr30_teacher": float(fpr30_teacher),
                     "fpr30_baseline": float(fpr30_baseline),
                     "fpr30_joint": float(fpr30_joint),
+                    "fpr30_joint_kd": float(fpr30_joint_kd) if preds_joint_kd is not None else None,
                     "fpr50_teacher": float(fpr50_teacher),
                     "fpr50_baseline": float(fpr50_baseline),
                     "fpr50_joint": float(fpr50_joint),
+                    "fpr50_joint_kd": float(fpr50_joint_kd) if preds_joint_kd is not None else None,
                 },
             },
             f,
@@ -797,8 +1381,12 @@ def main() -> None:
     if not args.skip_save_models:
         torch.save({"model": teacher.state_dict(), "auc": auc_teacher}, save_root / "teacher.pt")
         torch.save({"model": baseline.state_dict(), "auc": auc_baseline}, save_root / "baseline.pt")
+        if jet_regressor is not None:
+            torch.save({"model": jet_regressor.state_dict(), "metrics": jet_reg_metrics}, save_root / "jet_regressor.pt")
         torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor.pt")
         torch.save({"model": dual_joint.state_dict(), "auc": auc_joint}, save_root / "dual_joint.pt")
+        if kd_student is not None:
+            torch.save({"model": kd_student.state_dict(), "auc": auc_joint_kd}, save_root / "dual_joint_kd.pt")
 
     print(f"\nSaved joint results to: {save_root}")
 
