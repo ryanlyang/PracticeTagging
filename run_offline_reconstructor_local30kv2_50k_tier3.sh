@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=offrecoL30v2
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=02:00:00
