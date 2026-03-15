@@ -373,6 +373,7 @@ class JetLevelRegressor(nn.Module):
     def __init__(
         self,
         input_dim: int,
+        output_dim: int = 8,
         embed_dim: int = 128,
         num_heads: int = 8,
         num_layers: int = 4,
@@ -395,7 +396,7 @@ class JetLevelRegressor(nn.Module):
             nn.Linear(int(embed_dim), int(embed_dim)),
             nn.GELU(),
             nn.Dropout(float(dropout)),
-            nn.Linear(int(embed_dim), 2),  # [log_pt_offline, log_E_offline]
+            nn.Linear(int(embed_dim), int(output_dim)),
         )
 
     def forward(self, feat: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
@@ -407,12 +408,204 @@ class JetLevelRegressor(nn.Module):
         return self.head(pooled)
 
 
-def _mae_from_logpred(pred_log: torch.Tensor, tgt_log: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
-    pred = torch.exp(pred_log)
-    tgt = torch.exp(tgt_log)
-    mae_pt = (pred[:, 0] - tgt[:, 0]).abs().mean()
-    mae_e = (pred[:, 1] - tgt[:, 1]).abs().mean()
-    return mae_pt, mae_e
+def _jet_mass_np(const: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    eps = 1e-8
+    pt = const[..., 0]
+    eta = const[..., 1]
+    phi = const[..., 2]
+    energy = const[..., 3]
+    w = mask.astype(np.float32)
+    px = (pt * np.cos(phi) * w).sum(axis=1)
+    py = (pt * np.sin(phi) * w).sum(axis=1)
+    pz = (pt * np.sinh(eta) * w).sum(axis=1)
+    e = (energy * w).sum(axis=1)
+    p2 = px * px + py * py + pz * pz
+    m2 = np.maximum(e * e - p2, eps)
+    return np.sqrt(m2).astype(np.float32)
+
+
+def _tau_n(pt: np.ndarray, eta: np.ndarray, phi: np.ndarray, n_axes: int, r0: float) -> float:
+    eps = 1e-8
+    n = int(pt.shape[0])
+    if n == 0:
+        return 0.0
+    n_axes = max(1, min(int(n_axes), n))
+    # Use hardest constituents as simple deterministic axes.
+    axis_idx = np.argsort(-pt)[:n_axes]
+    a_eta = eta[axis_idx]
+    a_phi = phi[axis_idx]
+    deta = eta[:, None] - a_eta[None, :]
+    dphi = np.arctan2(np.sin(phi[:, None] - a_phi[None, :]), np.cos(phi[:, None] - a_phi[None, :]))
+    dr = np.sqrt(deta * deta + dphi * dphi)
+    min_dr = dr.min(axis=1)
+    d0 = np.sum(pt) * float(r0) + eps
+    tau = float(np.sum(pt * min_dr) / d0)
+    return tau
+
+
+def _d2_topk(pt: np.ndarray, eta: np.ndarray, phi: np.ndarray, topk: int, beta: float) -> float:
+    eps = 1e-8
+    if pt.shape[0] < 3:
+        return 0.0
+    order = np.argsort(-pt)[: min(int(topk), int(pt.shape[0]))]
+    pt_k = pt[order]
+    eta_k = eta[order]
+    phi_k = phi[order]
+    m = int(pt_k.shape[0])
+    if m < 3:
+        return 0.0
+    z = pt_k / (np.sum(pt_k) + eps)
+    deta = eta_k[:, None] - eta_k[None, :]
+    dphi = np.arctan2(np.sin(phi_k[:, None] - phi_k[None, :]), np.cos(phi_k[:, None] - phi_k[None, :]))
+    dr = np.sqrt(deta * deta + dphi * dphi) + eps
+
+    e2 = 0.0
+    for i in range(m):
+        zi = z[i]
+        for j in range(i + 1, m):
+            e2 += zi * z[j] * (dr[i, j] ** beta)
+
+    e3 = 0.0
+    for i in range(m):
+        zi = z[i]
+        for j in range(i + 1, m):
+            zij = zi * z[j]
+            dij = dr[i, j] ** beta
+            for k in range(j + 1, m):
+                e3 += zij * z[k] * dij * (dr[i, k] ** beta) * (dr[j, k] ** beta)
+    d2 = float(e3 / ((e2 ** 3) + eps))
+    return d2
+
+
+def _compute_substructure_np(
+    const: np.ndarray,
+    mask: np.ndarray,
+    tau_r0: float = 0.8,
+    tau_topk: int = 24,
+    d2_topk: int = 10,
+    d2_beta: float = 1.0,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_jets = int(const.shape[0])
+    tau21 = np.zeros(n_jets, dtype=np.float32)
+    tau32 = np.zeros(n_jets, dtype=np.float32)
+    d2 = np.zeros(n_jets, dtype=np.float32)
+    eps = 1e-8
+    for j in range(n_jets):
+        m = mask[j]
+        if not np.any(m):
+            continue
+        c = const[j, m]
+        order = np.argsort(-c[:, 0])[: min(int(tau_topk), c.shape[0])]
+        c = c[order]
+        pt = c[:, 0].astype(np.float64)
+        eta = c[:, 1].astype(np.float64)
+        phi = c[:, 2].astype(np.float64)
+        t1 = _tau_n(pt, eta, phi, 1, tau_r0)
+        t2 = _tau_n(pt, eta, phi, 2, tau_r0)
+        t3 = _tau_n(pt, eta, phi, 3, tau_r0)
+        tau21[j] = np.float32(t2 / (t1 + eps))
+        tau32[j] = np.float32(t3 / (t2 + eps))
+        d2[j] = np.float32(_d2_topk(pt, eta, phi, topk=int(d2_topk), beta=float(d2_beta)))
+    tau21 = np.nan_to_num(tau21, nan=0.0, posinf=0.0, neginf=0.0)
+    tau32 = np.nan_to_num(tau32, nan=0.0, posinf=0.0, neginf=0.0)
+    d2 = np.nan_to_num(d2, nan=0.0, posinf=0.0, neginf=0.0)
+    tau21 = np.clip(tau21, 0.0, 5.0)
+    tau32 = np.clip(tau32, 0.0, 5.0)
+    d2 = np.clip(d2, 0.0, 1e3)
+    return tau21, tau32, d2
+
+
+def compute_jet_regression_targets(
+    const_off: np.ndarray,
+    mask_off: np.ndarray,
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, int]]:
+    """
+    Returns transformed target vectors:
+      [log_pt, log_E, log_m, tau21, tau32, log1p_d2, log1p_n_off, log1p_n_added]
+    for offline target and HLT reference (last channel set to 0 for HLT side).
+    """
+    eps = 1e-8
+    idx = {
+        "log_pt": 0,
+        "log_e": 1,
+        "log_m": 2,
+        "tau21": 3,
+        "tau32": 4,
+        "log1p_d2": 5,
+        "log1p_n_off": 6,
+        "log1p_n_added": 7,
+    }
+    n_jets = int(const_off.shape[0])
+    off = np.zeros((n_jets, 8), dtype=np.float32)
+    hlt = np.zeros((n_jets, 8), dtype=np.float32)
+
+    pt_off = compute_jet_pt(const_off, mask_off).astype(np.float32)
+    pt_hlt = compute_jet_pt(const_hlt, mask_hlt).astype(np.float32)
+    e_off = (const_off[:, :, 3] * mask_off.astype(np.float32)).sum(axis=1).astype(np.float32)
+    e_hlt = (const_hlt[:, :, 3] * mask_hlt.astype(np.float32)).sum(axis=1).astype(np.float32)
+    m_off = _jet_mass_np(const_off, mask_off)
+    m_hlt = _jet_mass_np(const_hlt, mask_hlt)
+    tau21_off, tau32_off, d2_off = _compute_substructure_np(const_off, mask_off)
+    tau21_hlt, tau32_hlt, d2_hlt = _compute_substructure_np(const_hlt, mask_hlt)
+    n_off = mask_off.sum(axis=1).astype(np.float32)
+    n_hlt = mask_hlt.sum(axis=1).astype(np.float32)
+    n_added = np.maximum(n_off - n_hlt, 0.0).astype(np.float32)
+
+    off[:, idx["log_pt"]] = np.log(np.clip(pt_off, eps, None))
+    off[:, idx["log_e"]] = np.log(np.clip(e_off, eps, None))
+    off[:, idx["log_m"]] = np.log(np.clip(m_off, eps, None))
+    off[:, idx["tau21"]] = tau21_off
+    off[:, idx["tau32"]] = tau32_off
+    off[:, idx["log1p_d2"]] = np.log1p(np.clip(d2_off, 0.0, None))
+    off[:, idx["log1p_n_off"]] = np.log1p(np.clip(n_off, 0.0, None))
+    off[:, idx["log1p_n_added"]] = np.log1p(np.clip(n_added, 0.0, None))
+
+    hlt[:, idx["log_pt"]] = np.log(np.clip(pt_hlt, eps, None))
+    hlt[:, idx["log_e"]] = np.log(np.clip(e_hlt, eps, None))
+    hlt[:, idx["log_m"]] = np.log(np.clip(m_hlt, eps, None))
+    hlt[:, idx["tau21"]] = tau21_hlt
+    hlt[:, idx["tau32"]] = tau32_hlt
+    hlt[:, idx["log1p_d2"]] = np.log1p(np.clip(d2_hlt, 0.0, None))
+    hlt[:, idx["log1p_n_off"]] = np.log1p(np.clip(n_hlt, 0.0, None))
+    hlt[:, idx["log1p_n_added"]] = 0.0
+
+    off = np.nan_to_num(off, nan=0.0, posinf=0.0, neginf=0.0)
+    hlt = np.nan_to_num(hlt, nan=0.0, posinf=0.0, neginf=0.0)
+    return off.astype(np.float32), hlt.astype(np.float32), idx
+
+
+def _jet_reg_metric_dict(pred: np.ndarray, true: np.ndarray, idx: Dict[str, int]) -> Dict[str, float]:
+    m: Dict[str, float] = {}
+    m["mae_log_pt"] = float(np.mean(np.abs(pred[:, idx["log_pt"]] - true[:, idx["log_pt"]])))
+    m["mae_log_e"] = float(np.mean(np.abs(pred[:, idx["log_e"]] - true[:, idx["log_e"]])))
+    m["mae_log_m"] = float(np.mean(np.abs(pred[:, idx["log_m"]] - true[:, idx["log_m"]])))
+    m["mae_tau21"] = float(np.mean(np.abs(pred[:, idx["tau21"]] - true[:, idx["tau21"]])))
+    m["mae_tau32"] = float(np.mean(np.abs(pred[:, idx["tau32"]] - true[:, idx["tau32"]])))
+    m["mae_log1p_d2"] = float(np.mean(np.abs(pred[:, idx["log1p_d2"]] - true[:, idx["log1p_d2"]])))
+    m["mae_log1p_n_off"] = float(np.mean(np.abs(pred[:, idx["log1p_n_off"]] - true[:, idx["log1p_n_off"]])))
+    m["mae_log1p_n_added"] = float(np.mean(np.abs(pred[:, idx["log1p_n_added"]] - true[:, idx["log1p_n_added"]])))
+
+    m["mae_pt"] = float(
+        np.mean(np.abs(np.exp(pred[:, idx["log_pt"]]) - np.exp(true[:, idx["log_pt"]])))
+    )
+    m["mae_e"] = float(
+        np.mean(np.abs(np.exp(pred[:, idx["log_e"]]) - np.exp(true[:, idx["log_e"]])))
+    )
+    m["mae_m"] = float(
+        np.mean(np.abs(np.exp(pred[:, idx["log_m"]]) - np.exp(true[:, idx["log_m"]])))
+    )
+    m["mae_d2"] = float(
+        np.mean(np.abs(np.expm1(pred[:, idx["log1p_d2"]]) - np.expm1(true[:, idx["log1p_d2"]])))
+    )
+    m["mae_n_off"] = float(
+        np.mean(np.abs(np.expm1(pred[:, idx["log1p_n_off"]]) - np.expm1(true[:, idx["log1p_n_off"]])))
+    )
+    m["mae_n_added"] = float(
+        np.mean(np.abs(np.expm1(pred[:, idx["log1p_n_added"]]) - np.expm1(true[:, idx["log1p_n_added"]])))
+    )
+    return m
 
 
 def train_jet_regressor(
@@ -456,8 +649,8 @@ def train_jet_regressor(
         model.eval()
         va = 0.0
         n_va = 0
-        mae_pt_vals = []
-        mae_e_vals = []
+        all_pred = []
+        all_tgt = []
         with torch.no_grad():
             for batch in val_loader:
                 feat = batch["feat"].to(device)
@@ -468,12 +661,14 @@ def train_jet_regressor(
                 bs = feat.size(0)
                 va += loss.item() * bs
                 n_va += bs
-                mae_pt, mae_e = _mae_from_logpred(pred, tgt)
-                mae_pt_vals.append(float(mae_pt.item()))
-                mae_e_vals.append(float(mae_e.item()))
+                all_pred.append(pred.detach().cpu().numpy())
+                all_tgt.append(tgt.detach().cpu().numpy())
         va /= max(n_va, 1)
-        mae_pt_val = float(np.mean(mae_pt_vals)) if len(mae_pt_vals) > 0 else float("nan")
-        mae_e_val = float(np.mean(mae_e_vals)) if len(mae_e_vals) > 0 else float("nan")
+        pred_val = np.concatenate(all_pred, axis=0) if len(all_pred) > 0 else np.zeros((0, 8), dtype=np.float32)
+        tgt_val = np.concatenate(all_tgt, axis=0) if len(all_tgt) > 0 else np.zeros((0, 8), dtype=np.float32)
+        # default indices for compact reporting (log_pt/log_e are 0/1 in target layout)
+        mae_pt_val = float(np.mean(np.abs(np.exp(pred_val[:, 0]) - np.exp(tgt_val[:, 0])))) if pred_val.size else float("nan")
+        mae_e_val = float(np.mean(np.abs(np.exp(pred_val[:, 1]) - np.exp(tgt_val[:, 1])))) if pred_val.size else float("nan")
 
         if va < best_val:
             best_val = float(va)
@@ -871,23 +1066,20 @@ def main() -> None:
     feat_hlt_dual = feat_hlt_std.astype(np.float32, copy=True)
     if bool(args.enable_jet_regressor):
         print("\n" + "=" * 70)
-        print("STEP 1B: JET-LEVEL REGRESSOR (HLT -> offline log pT/log E)")
+        print("STEP 1B: JET-LEVEL REGRESSOR (HLT -> offline global jet targets)")
         print("=" * 70)
-        jet_pt_off = compute_jet_pt(const_off, masks_off).astype(np.float32)
-        jet_e_off = (const_off[:, :, 3] * masks_off.astype(np.float32)).sum(axis=1).astype(np.float32)
-        jet_pt_hlt = compute_jet_pt(hlt_const, hlt_mask).astype(np.float32)
-        jet_e_hlt = (hlt_const[:, :, 3] * hlt_mask.astype(np.float32)).sum(axis=1).astype(np.float32)
+        # Targets:
+        # [log_pt, log_e, log_m, tau21, tau32, log1p_d2, log1p_n_off, log1p_n_added]
+        target_off, target_hlt_ref, target_idx = compute_jet_regression_targets(
+            const_off=const_off,
+            mask_off=masks_off,
+            const_hlt=hlt_const,
+            mask_hlt=hlt_mask,
+        )
+        target_dim = int(target_off.shape[1])
 
-        target_log = np.stack(
-            [
-                np.log(np.clip(jet_pt_off, 1e-8, None)),
-                np.log(np.clip(jet_e_off, 1e-8, None)),
-            ],
-            axis=-1,
-        ).astype(np.float32)
-
-        jet_reg_train_ds = JetRegressionDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], target_log[train_idx])
-        jet_reg_val_ds = JetRegressionDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], target_log[val_idx])
+        jet_reg_train_ds = JetRegressionDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], target_off[train_idx])
+        jet_reg_val_ds = JetRegressionDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], target_off[val_idx])
         jet_reg_train_loader = DataLoader(
             jet_reg_train_ds,
             batch_size=int(cfg["training"]["batch_size"]),
@@ -902,6 +1094,7 @@ def main() -> None:
 
         jet_regressor = JetLevelRegressor(
             input_dim=7,
+            output_dim=target_dim,
             embed_dim=int(args.jet_reg_embed_dim),
             num_heads=int(args.jet_reg_num_heads),
             num_layers=int(args.jet_reg_num_layers),
@@ -926,37 +1119,31 @@ def main() -> None:
             device=device,
             batch_size=int(cfg["training"]["batch_size"]),
         )
-        hlt_log_pt = np.log(np.clip(jet_pt_hlt, 1e-8, None))
-        hlt_log_e = np.log(np.clip(jet_e_hlt, 1e-8, None))
-        extra_global = np.stack(
-            [
-                pred_log_all[:, 0],
-                pred_log_all[:, 1],
-                pred_log_all[:, 0] - hlt_log_pt,
-                pred_log_all[:, 1] - hlt_log_e,
-            ],
-            axis=-1,
-        ).astype(np.float32)
+        delta_vs_hlt = pred_log_all - target_hlt_ref
+        extra_global = np.concatenate([pred_log_all, delta_vs_hlt], axis=-1).astype(np.float32)
         extra_global = np.repeat(extra_global[:, None, :], feat_hlt_std.shape[1], axis=1)
         feat_hlt_dual = np.concatenate([feat_hlt_std, extra_global], axis=-1).astype(np.float32)
         feat_hlt_dual[~hlt_mask] = 0.0
 
-        # eval metrics on val/test (linear scale MAE).
+        # Eval metrics on val/test.
         jet_reg_val_pred = pred_log_all[val_idx]
         jet_reg_test_pred = pred_log_all[test_idx]
-        jet_reg_val_true = target_log[val_idx]
-        jet_reg_test_true = target_log[test_idx]
+        jet_reg_val_true = target_off[val_idx]
+        jet_reg_test_true = target_off[test_idx]
+        val_m = _jet_reg_metric_dict(jet_reg_val_pred, jet_reg_val_true, target_idx)
+        test_m = _jet_reg_metric_dict(jet_reg_test_pred, jet_reg_test_true, target_idx)
         jet_reg_metrics = {
             "enabled": True,
             "best": jet_reg_best,
-            "val_mae_pt": float(np.mean(np.abs(np.exp(jet_reg_val_pred[:, 0]) - np.exp(jet_reg_val_true[:, 0])))),
-            "val_mae_e": float(np.mean(np.abs(np.exp(jet_reg_val_pred[:, 1]) - np.exp(jet_reg_val_true[:, 1])))),
-            "test_mae_pt": float(np.mean(np.abs(np.exp(jet_reg_test_pred[:, 0]) - np.exp(jet_reg_test_true[:, 0])))),
-            "test_mae_e": float(np.mean(np.abs(np.exp(jet_reg_test_pred[:, 1]) - np.exp(jet_reg_test_true[:, 1])))),
+            "target_index": target_idx,
+            "val": val_m,
+            "test": test_m,
         }
         print(
             "Jet regressor test MAE: "
-            f"pT={jet_reg_metrics['test_mae_pt']:.3f}, E={jet_reg_metrics['test_mae_e']:.3f}"
+            f"pT={test_m['mae_pt']:.3f}, E={test_m['mae_e']:.3f}, "
+            f"mass={test_m['mae_m']:.3f}, tau21={test_m['mae_tau21']:.4f}, "
+            f"tau32={test_m['mae_tau32']:.4f}, n_added={test_m['mae_n_added']:.3f}"
         )
 
     # Stage A: reconstructor pretrain
