@@ -33,7 +33,7 @@ conda activate atlas_kd
 cd "$SLURM_SUBMIT_DIR"
 
 echo "Running stage2-save repro config:"
-echo "python offline_reconstructor_joint_dualview_stage2save.py --save_dir ${SAVE_DIR} --run_name ${RUN_NAME} --n_train_jets ${N_TRAIN_JETS} --offset_jets ${OFFSET_JETS} --max_constits ${MAX_CONSTITS} --num_workers ${NUM_WORKERS} --disable_final_kd --device cuda ${JET_REG_ARGS[*]}"
+echo "python offline_reconstructor_joint_dualview_stage2save.py --save_dir ${SAVE_DIR} --run_name ${RUN_NAME} --n_train_jets ${N_TRAIN_JETS} --offset_jets ${OFFSET_JETS} --max_constits ${MAX_CONSTITS} --num_workers ${NUM_WORKERS} --selection_metric auc --stageB_lambda_rank 0.0 --stageB_lambda_cons 0.0 --disable_final_kd --device cuda ${JET_REG_ARGS[*]}"
 
 python offline_reconstructor_joint_dualview_stage2save.py \
   --save_dir "${SAVE_DIR}" \
@@ -42,7 +42,9 @@ python offline_reconstructor_joint_dualview_stage2save.py \
   --offset_jets "${OFFSET_JETS}" \
   --max_constits "${MAX_CONSTITS}" \
   --num_workers "${NUM_WORKERS}" \
+  --selection_metric auc \
+  --stageB_lambda_rank 0.0 \
+  --stageB_lambda_cons 0.0 \
   --disable_final_kd \
   --device cuda \
   "${JET_REG_ARGS[@]}"
-

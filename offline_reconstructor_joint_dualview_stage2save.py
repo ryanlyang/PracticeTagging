@@ -759,7 +759,8 @@ def train_joint_dual(
     corrected_weight_floor: float,
     corrected_use_flags: bool,
     min_epochs: int,
-) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float]]:
+    select_metric: str = "fpr50",
+) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
     for p in reconstructor.parameters():
         p.requires_grad = not freeze_reconstructor
 
@@ -770,10 +771,18 @@ def train_joint_dual(
     opt = torch.optim.AdamW(params, lr=float(lr_dual), weight_decay=float(weight_decay))
     sch = get_scheduler(opt, int(warmup_epochs), int(epochs))
 
-    best_state_dual = None
-    best_state_reco = None
-    best_val_fpr50 = float("inf")
-    best_val_auc = float("nan")
+    best_state_dual_sel = None
+    best_state_reco_sel = None
+    best_state_dual_auc = None
+    best_state_reco_auc = None
+    best_state_dual_fpr = None
+    best_state_reco_fpr = None
+
+    best_val_fpr50 = float("inf")  # best observed across epochs
+    best_val_auc = float("-inf")   # best observed across epochs
+    best_sel_score = float("inf") if str(select_metric).lower() == "fpr50" else float("-inf")
+    sel_val_fpr50 = float("nan")
+    sel_val_auc = float("nan")
     no_improve = 0
 
     for ep in tqdm(range(int(epochs)), desc=stage_name):
@@ -873,12 +882,29 @@ def train_joint_dual(
             corrected_use_flags=corrected_use_flags,
         )
 
-        improved = np.isfinite(va_fpr50) and va_fpr50 < best_val_fpr50
-        if improved:
+        # Track best by each metric.
+        if np.isfinite(va_fpr50) and float(va_fpr50) < best_val_fpr50:
             best_val_fpr50 = float(va_fpr50)
+            best_state_dual_fpr = {k: v.detach().cpu().clone() for k, v in dual_model.state_dict().items()}
+            best_state_reco_fpr = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+        if np.isfinite(va_auc) and float(va_auc) > best_val_auc:
             best_val_auc = float(va_auc)
-            best_state_dual = {k: v.detach().cpu().clone() for k, v in dual_model.state_dict().items()}
-            best_state_reco = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+            best_state_dual_auc = {k: v.detach().cpu().clone() for k, v in dual_model.state_dict().items()}
+            best_state_reco_auc = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+
+        if str(select_metric).lower() == "auc":
+            improved = np.isfinite(va_auc) and (float(va_auc) > best_sel_score)
+            current_score = float(va_auc) if np.isfinite(va_auc) else float("-inf")
+        else:
+            improved = np.isfinite(va_fpr50) and (float(va_fpr50) < best_sel_score)
+            current_score = float(va_fpr50) if np.isfinite(va_fpr50) else float("inf")
+
+        if improved:
+            best_sel_score = current_score
+            sel_val_fpr50 = float(va_fpr50)
+            sel_val_auc = float(va_auc)
+            best_state_dual_sel = {k: v.detach().cpu().clone() for k, v in dual_model.state_dict().items()}
+            best_state_reco_sel = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
             no_improve = 0
         else:
             no_improve += 1
@@ -887,23 +913,32 @@ def train_joint_dual(
             print(
                 f"{stage_name} ep {ep+1}: train_loss={tr_loss:.4f} "
                 f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}) | "
-                f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, best_fpr50={best_val_fpr50:.6f}"
+                f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, "
+                f"select={str(select_metric).lower()}, best_sel={best_sel_score:.6f}"
             )
 
         if (ep + 1) >= int(min_epochs) and no_improve >= int(patience):
             print(f"Early stopping {stage_name} at epoch {ep+1}")
             break
 
-    if best_state_dual is not None:
-        dual_model.load_state_dict(best_state_dual)
-    if best_state_reco is not None:
-        reconstructor.load_state_dict(best_state_reco)
+    if best_state_dual_sel is not None:
+        dual_model.load_state_dict(best_state_dual_sel)
+    if best_state_reco_sel is not None:
+        reconstructor.load_state_dict(best_state_reco_sel)
 
     metrics = {
-        "best_val_fpr50": float(best_val_fpr50),
-        "best_val_auc": float(best_val_auc),
+        "selection_metric": str(select_metric).lower(),
+        "selected_val_fpr50": float(sel_val_fpr50),
+        "selected_val_auc": float(sel_val_auc),
+        "best_val_fpr50_seen": float(best_val_fpr50),
+        "best_val_auc_seen": float(best_val_auc),
     }
-    return reconstructor, dual_model, metrics
+    state_pack = {
+        "selected": {"dual": best_state_dual_sel, "reco": best_state_reco_sel},
+        "auc": {"dual": best_state_dual_auc, "reco": best_state_reco_auc},
+        "fpr50": {"dual": best_state_dual_fpr, "reco": best_state_reco_fpr},
+    }
+    return reconstructor, dual_model, metrics, state_pack
 
 
 def main() -> None:
@@ -939,6 +974,11 @@ def main() -> None:
     parser.add_argument("--stageB_patience", type=int, default=12)
     parser.add_argument("--stageB_min_epochs", type=int, default=12)
     parser.add_argument("--stageB_lr_dual", type=float, default=4e-4)
+    parser.add_argument("--stageB_lambda_rank", type=float, default=0.0)
+    parser.add_argument("--stageB_lambda_cons", type=float, default=0.0)
+
+    # Checkpoint selection policy for Stage B/C joint training.
+    parser.add_argument("--selection_metric", type=str, default="auc", choices=["auc", "fpr50"])
 
     # Stage C (joint finetune)
     parser.add_argument("--stageC_epochs", type=int, default=65)
@@ -1266,7 +1306,7 @@ def main() -> None:
     dual_input_dim_a = int(feat_hlt_dual.shape[-1])
     dual_input_dim_b = 12 if bool(args.use_corrected_flags) else 10
     dual_joint = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=dual_input_dim_b, **cfg["model"]).to(device)
-    reconstructor, dual_joint, stageB_metrics = train_joint_dual(
+    reconstructor, dual_joint, stageB_metrics, stageB_states = train_joint_dual(
         reconstructor=reconstructor,
         dual_model=dual_joint,
         train_loader=dl_train_joint,
@@ -1281,11 +1321,12 @@ def main() -> None:
         weight_decay=float(cfg["training"]["weight_decay"]),
         warmup_epochs=int(cfg["training"]["warmup_epochs"]),
         lambda_reco=0.0,
-        lambda_rank=float(args.lambda_rank),
-        lambda_cons=float(args.lambda_cons),
+        lambda_rank=float(args.stageB_lambda_rank),
+        lambda_cons=float(args.stageB_lambda_cons),
         corrected_weight_floor=float(args.corrected_weight_floor),
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageB_min_epochs),
+        select_metric=str(args.selection_metric),
     )
 
     # Stage B test evaluation + checkpoint snapshot (before Stage C joint finetune).
@@ -1301,10 +1342,30 @@ def main() -> None:
     stage2_reco_state = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
     stage2_dual_state = {k: v.detach().cpu().clone() for k, v in dual_joint.state_dict().items()}
 
+    # Also evaluate Stage-B best-val_fpr50 checkpoint on test for direct comparison.
+    auc_stage2_fprsel = float("nan")
+    preds_stage2_fprsel = None
+    if stageB_states.get("fpr50", {}).get("dual") is not None and stageB_states.get("fpr50", {}).get("reco") is not None:
+        reconstructor.load_state_dict(stageB_states["fpr50"]["reco"])
+        dual_joint.load_state_dict(stageB_states["fpr50"]["dual"])
+        auc_stage2_fprsel, preds_stage2_fprsel, labs_stage2_fprsel, _ = eval_joint_model(
+            reconstructor,
+            dual_joint,
+            dl_test_joint,
+            device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+        )
+        assert np.array_equal(labs.astype(np.float32), labs_stage2_fprsel.astype(np.float32))
+
+    # Restore Stage-B selected state before entering Stage C.
+    reconstructor.load_state_dict(stage2_reco_state)
+    dual_joint.load_state_dict(stage2_dual_state)
+
     print("\n" + "=" * 70)
     print("STEP 4: STAGE C (JOINT FINETUNE)")
     print("=" * 70)
-    reconstructor, dual_joint, stageC_metrics = train_joint_dual(
+    reconstructor, dual_joint, stageC_metrics, stageC_states = train_joint_dual(
         reconstructor=reconstructor,
         dual_model=dual_joint,
         train_loader=dl_train_joint,
@@ -1324,6 +1385,7 @@ def main() -> None:
         corrected_weight_floor=float(args.corrected_weight_floor),
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageC_min_epochs),
+        select_metric=str(args.selection_metric),
     )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
@@ -1335,6 +1397,28 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
     )
     assert np.array_equal(labs.astype(np.float32), labs_joint.astype(np.float32))
+
+    # Evaluate Stage-C best-val_fpr50 checkpoint on test too.
+    auc_joint_fprsel = float("nan")
+    preds_joint_fprsel = None
+    if stageC_states.get("fpr50", {}).get("dual") is not None and stageC_states.get("fpr50", {}).get("reco") is not None:
+        reconstructor.load_state_dict(stageC_states["fpr50"]["reco"])
+        dual_joint.load_state_dict(stageC_states["fpr50"]["dual"])
+        auc_joint_fprsel, preds_joint_fprsel, labs_joint_fprsel, _ = eval_joint_model(
+            reconstructor,
+            dual_joint,
+            dl_test_joint,
+            device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+        )
+        assert np.array_equal(labs.astype(np.float32), labs_joint_fprsel.astype(np.float32))
+
+    # Restore Stage-C selected state for downstream diagnostics/KD.
+    if stageC_states.get("selected", {}).get("reco") is not None:
+        reconstructor.load_state_dict(stageC_states["selected"]["reco"])
+    if stageC_states.get("selected", {}).get("dual") is not None:
+        dual_joint.load_state_dict(stageC_states["selected"]["dual"])
 
     # Build hard reconstructed view for diagnostics.
     print("\n" + "=" * 70)
@@ -1517,15 +1601,27 @@ def main() -> None:
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
     fpr_s2, tpr_s2, _ = roc_curve(labs, preds_stage2)
     fpr_j, tpr_j, _ = roc_curve(labs, preds_joint)
+    if preds_stage2_fprsel is not None:
+        fpr_s2_fprsel, tpr_s2_fprsel, _ = roc_curve(labs, preds_stage2_fprsel)
+    else:
+        fpr_s2_fprsel, tpr_s2_fprsel = np.array([], dtype=np.float64), np.array([], dtype=np.float64)
+    if preds_joint_fprsel is not None:
+        fpr_j_fprsel, tpr_j_fprsel, _ = roc_curve(labs, preds_joint_fprsel)
+    else:
+        fpr_j_fprsel, tpr_j_fprsel = np.array([], dtype=np.float64), np.array([], dtype=np.float64)
 
     fpr30_teacher = fpr_at_target_tpr(fpr_t, tpr_t, 0.30)
     fpr30_baseline = fpr_at_target_tpr(fpr_b, tpr_b, 0.30)
     fpr30_stage2 = fpr_at_target_tpr(fpr_s2, tpr_s2, 0.30)
     fpr30_joint = fpr_at_target_tpr(fpr_j, tpr_j, 0.30)
+    fpr30_stage2_fprsel = fpr_at_target_tpr(fpr_s2_fprsel, tpr_s2_fprsel, 0.30) if preds_stage2_fprsel is not None else float("nan")
+    fpr30_joint_fprsel = fpr_at_target_tpr(fpr_j_fprsel, tpr_j_fprsel, 0.30) if preds_joint_fprsel is not None else float("nan")
     fpr50_teacher = fpr_at_target_tpr(fpr_t, tpr_t, 0.50)
     fpr50_baseline = fpr_at_target_tpr(fpr_b, tpr_b, 0.50)
     fpr50_stage2 = fpr_at_target_tpr(fpr_s2, tpr_s2, 0.50)
     fpr50_joint = fpr_at_target_tpr(fpr_j, tpr_j, 0.50)
+    fpr50_stage2_fprsel = fpr_at_target_tpr(fpr_s2_fprsel, tpr_s2_fprsel, 0.50) if preds_stage2_fprsel is not None else float("nan")
+    fpr50_joint_fprsel = fpr_at_target_tpr(fpr_j_fprsel, tpr_j_fprsel, 0.50) if preds_joint_fprsel is not None else float("nan")
 
     print("\n" + "=" * 70)
     print("FINAL TEST EVALUATION")
@@ -1533,7 +1629,11 @@ def main() -> None:
     print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
     print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
     print(f"Stage2 (PreJoint) AUC: {auc_stage2:.4f}")
+    if preds_stage2_fprsel is not None:
+        print(f"Stage2 (BestValFPR50) AUC: {auc_stage2_fprsel:.4f}")
     print(f"Joint Dual-View  AUC: {auc_joint:.4f}")
+    if preds_joint_fprsel is not None:
+        print(f"Joint Dual-View (BestValFPR50) AUC: {auc_joint_fprsel:.4f}")
     if preds_joint_kd is not None:
         print(f"Joint Dual-View+KD AUC: {auc_joint_kd:.4f}")
     print()
@@ -1541,10 +1641,20 @@ def main() -> None:
         f"FPR@30 Teacher/Baseline/Stage2/Joint: "
         f"{fpr30_teacher:.6f} / {fpr30_baseline:.6f} / {fpr30_stage2:.6f} / {fpr30_joint:.6f}"
     )
+    if preds_stage2_fprsel is not None or preds_joint_fprsel is not None:
+        print(
+            f"FPR@30 Stage2BestFPR / JointBestFPR: "
+            f"{fpr30_stage2_fprsel:.6f} / {fpr30_joint_fprsel:.6f}"
+        )
     print(
         f"FPR@50 Teacher/Baseline/Stage2/Joint: "
         f"{fpr50_teacher:.6f} / {fpr50_baseline:.6f} / {fpr50_stage2:.6f} / {fpr50_joint:.6f}"
     )
+    if preds_stage2_fprsel is not None or preds_joint_fprsel is not None:
+        print(
+            f"FPR@50 Stage2BestFPR / JointBestFPR: "
+            f"{fpr50_stage2_fprsel:.6f} / {fpr50_joint_fprsel:.6f}"
+        )
     if preds_joint_kd is not None:
         print(f"FPR@30 Joint+KD: {fpr30_joint_kd:.6f}")
         print(f"FPR@50 Joint+KD: {fpr50_joint_kd:.6f}")
@@ -1555,6 +1665,14 @@ def main() -> None:
         (tpr_s2, fpr_s2, "-.", f"Stage2 PreJoint (AUC={auc_stage2:.3f})", "darkorange"),
         (tpr_j, fpr_j, "-.", f"Joint Dual (AUC={auc_joint:.3f})", "darkslateblue"),
     ]
+    if preds_stage2_fprsel is not None:
+        plot_lines.append(
+            (tpr_s2_fprsel, fpr_s2_fprsel, ":", f"Stage2 BestValFPR (AUC={auc_stage2_fprsel:.3f})", "peru")
+        )
+    if preds_joint_fprsel is not None:
+        plot_lines.append(
+            (tpr_j_fprsel, fpr_j_fprsel, "--", f"Joint BestValFPR (AUC={auc_joint_fprsel:.3f})", "indigo")
+        )
     if preds_joint_kd is not None:
         plot_lines.append((tpr_j_kd, fpr_j_kd, ":", f"Joint Dual+KD (AUC={auc_joint_kd:.3f})", "darkgreen"))
     plot_roc(
@@ -1571,7 +1689,9 @@ def main() -> None:
         auc_teacher=auc_teacher,
         auc_baseline=auc_baseline,
         auc_stage2=auc_stage2,
+        auc_stage2_fprsel=auc_stage2_fprsel,
         auc_joint=auc_joint,
+        auc_joint_fprsel=auc_joint_fprsel,
         auc_joint_kd=auc_joint_kd,
         fpr_teacher=fpr_t,
         tpr_teacher=tpr_t,
@@ -1579,19 +1699,27 @@ def main() -> None:
         tpr_baseline=tpr_b,
         fpr_stage2=fpr_s2,
         tpr_stage2=tpr_s2,
+        fpr_stage2_fprsel=fpr_s2_fprsel,
+        tpr_stage2_fprsel=tpr_s2_fprsel,
         fpr_joint=fpr_j,
         tpr_joint=tpr_j,
+        fpr_joint_fprsel=fpr_j_fprsel,
+        tpr_joint_fprsel=tpr_j_fprsel,
         fpr_joint_kd=fpr_j_kd,
         tpr_joint_kd=tpr_j_kd,
         fpr30_teacher=fpr30_teacher,
         fpr30_baseline=fpr30_baseline,
         fpr30_stage2=fpr30_stage2,
+        fpr30_stage2_fprsel=fpr30_stage2_fprsel,
         fpr30_joint=fpr30_joint,
+        fpr30_joint_fprsel=fpr30_joint_fprsel,
         fpr30_joint_kd=fpr30_joint_kd,
         fpr50_teacher=fpr50_teacher,
         fpr50_baseline=fpr50_baseline,
         fpr50_stage2=fpr50_stage2,
+        fpr50_stage2_fprsel=fpr50_stage2_fprsel,
         fpr50_joint=fpr50_joint,
+        fpr50_joint_fprsel=fpr50_joint_fprsel,
         fpr50_joint_kd=fpr50_joint_kd,
         jet_response_pt_low=rr_field(rr_hlt_common, "pt_low"),
         jet_response_pt_high=rr_field(rr_hlt_common, "pt_high"),
@@ -1621,24 +1749,33 @@ def main() -> None:
                 "stageD_kd": stageD_metrics,
                 "test_stage2": {
                     "auc_stage2": float(auc_stage2),
+                    "auc_stage2_fprsel": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr30_stage2": float(fpr30_stage2),
+                    "fpr30_stage2_fprsel": float(fpr30_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr50_stage2": float(fpr50_stage2),
+                    "fpr50_stage2_fprsel": float(fpr50_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                 },
                 "test": {
                     "auc_teacher": float(auc_teacher),
                     "auc_baseline": float(auc_baseline),
                     "auc_stage2": float(auc_stage2),
+                    "auc_stage2_fprsel": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "auc_joint": float(auc_joint),
+                    "auc_joint_fprsel": float(auc_joint_fprsel) if preds_joint_fprsel is not None else None,
                     "auc_joint_kd": float(auc_joint_kd) if preds_joint_kd is not None else None,
                     "fpr30_teacher": float(fpr30_teacher),
                     "fpr30_baseline": float(fpr30_baseline),
                     "fpr30_stage2": float(fpr30_stage2),
+                    "fpr30_stage2_fprsel": float(fpr30_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr30_joint": float(fpr30_joint),
+                    "fpr30_joint_fprsel": float(fpr30_joint_fprsel) if preds_joint_fprsel is not None else None,
                     "fpr30_joint_kd": float(fpr30_joint_kd) if preds_joint_kd is not None else None,
                     "fpr50_teacher": float(fpr50_teacher),
                     "fpr50_baseline": float(fpr50_baseline),
                     "fpr50_stage2": float(fpr50_stage2),
+                    "fpr50_stage2_fprsel": float(fpr50_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr50_joint": float(fpr50_joint),
+                    "fpr50_joint_fprsel": float(fpr50_joint_fprsel) if preds_joint_fprsel is not None else None,
                     "fpr50_joint_kd": float(fpr50_joint_kd) if preds_joint_kd is not None else None,
                 },
             },
@@ -1665,7 +1802,31 @@ def main() -> None:
             },
             save_root / "dual_joint_stage2.pt",
         )
+        if stageB_states.get("fpr50", {}).get("reco") is not None:
+            torch.save({"model": stageB_states["fpr50"]["reco"], "val": reco_val_metrics}, save_root / "offline_reconstructor_stage2_bestfpr50.pt")
+        if stageB_states.get("fpr50", {}).get("dual") is not None:
+            torch.save(
+                {
+                    "model": stageB_states["fpr50"]["dual"],
+                    "auc": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else float("nan"),
+                    "fpr30": float(fpr30_stage2_fprsel) if preds_stage2_fprsel is not None else float("nan"),
+                    "fpr50": float(fpr50_stage2_fprsel) if preds_stage2_fprsel is not None else float("nan"),
+                },
+                save_root / "dual_joint_stage2_bestfpr50.pt",
+            )
         torch.save({"model": dual_joint.state_dict(), "auc": auc_joint}, save_root / "dual_joint.pt")
+        if stageC_states.get("fpr50", {}).get("reco") is not None:
+            torch.save({"model": stageC_states["fpr50"]["reco"], "val": reco_val_metrics}, save_root / "offline_reconstructor_bestfpr50.pt")
+        if stageC_states.get("fpr50", {}).get("dual") is not None:
+            torch.save(
+                {
+                    "model": stageC_states["fpr50"]["dual"],
+                    "auc": float(auc_joint_fprsel) if preds_joint_fprsel is not None else float("nan"),
+                    "fpr30": float(fpr30_joint_fprsel) if preds_joint_fprsel is not None else float("nan"),
+                    "fpr50": float(fpr50_joint_fprsel) if preds_joint_fprsel is not None else float("nan"),
+                },
+                save_root / "dual_joint_bestfpr50.pt",
+            )
         if kd_student is not None:
             torch.save({"model": kd_student.state_dict(), "auc": auc_joint_kd}, save_root / "dual_joint_kd.pt")
 
