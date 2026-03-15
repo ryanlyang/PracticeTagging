@@ -2,7 +2,7 @@
 # 30k/40c repro runner for offline_reconstructor_joint_dualview_stage2save.py
 # Saves Stage-B checkpoints/metrics in addition to final joint results.
 #SBATCH --job-name=offrecoS2
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=0:30:00
