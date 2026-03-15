@@ -5,7 +5,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=8:30:00
+#SBATCH --time=1:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_joint_50k80_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_joint_50k80_%j.err
 
