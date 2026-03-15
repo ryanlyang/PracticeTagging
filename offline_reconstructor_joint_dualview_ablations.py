@@ -2747,19 +2747,28 @@ def main() -> None:
         use_budget_topk=not bool(args.reco_disable_budget_topk),
     )
 
-    reco_const_test = np.concatenate([reco_const_a[test_idx_a], reco_const_c[test_idx_c]], axis=0)
-    reco_mask_test = np.concatenate([reco_mask_a[test_idx_a], reco_mask_c[test_idx_c]], axis=0)
-    created_merge_count_test = np.concatenate(
-        [created_merge_count_a[test_idx_a], created_merge_count_c[test_idx_c]],
-        axis=0,
-    )
-    created_eff_count_test = np.concatenate(
-        [created_eff_count_a[test_idx_a], created_eff_count_c[test_idx_c]],
-        axis=0,
-    )
-    pred_budget_total_test = np.concatenate([pred_budget_total_a[test_idx_a], pred_budget_total_c[test_idx_c]], axis=0)
-    pred_budget_merge_test = np.concatenate([pred_budget_merge_a[test_idx_a], pred_budget_merge_c[test_idx_c]], axis=0)
-    pred_budget_eff_test = np.concatenate([pred_budget_eff_a[test_idx_a], pred_budget_eff_c[test_idx_c]], axis=0)
+    if use_fresh_stagec:
+        reco_const_test = np.concatenate([reco_const_a[test_idx_a], reco_const_c[test_idx_c]], axis=0)
+        reco_mask_test = np.concatenate([reco_mask_a[test_idx_a], reco_mask_c[test_idx_c]], axis=0)
+        created_merge_count_test = np.concatenate(
+            [created_merge_count_a[test_idx_a], created_merge_count_c[test_idx_c]],
+            axis=0,
+        )
+        created_eff_count_test = np.concatenate(
+            [created_eff_count_a[test_idx_a], created_eff_count_c[test_idx_c]],
+            axis=0,
+        )
+        pred_budget_total_test = np.concatenate([pred_budget_total_a[test_idx_a], pred_budget_total_c[test_idx_c]], axis=0)
+        pred_budget_merge_test = np.concatenate([pred_budget_merge_a[test_idx_a], pred_budget_merge_c[test_idx_c]], axis=0)
+        pred_budget_eff_test = np.concatenate([pred_budget_eff_a[test_idx_a], pred_budget_eff_c[test_idx_c]], axis=0)
+    else:
+        reco_const_test = reco_const_a[test_idx_a]
+        reco_mask_test = reco_mask_a[test_idx_a]
+        created_merge_count_test = created_merge_count_a[test_idx_a]
+        created_eff_count_test = created_eff_count_a[test_idx_a]
+        pred_budget_total_test = pred_budget_total_a[test_idx_a]
+        pred_budget_merge_test = pred_budget_merge_a[test_idx_a]
+        pred_budget_eff_test = pred_budget_eff_a[test_idx_a]
 
     split_diag_test = split_usage_diagnostics(
         model=reconstructor,
