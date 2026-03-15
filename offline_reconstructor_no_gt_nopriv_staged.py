@@ -1114,14 +1114,30 @@ def train_reconstructor(
     )
     sch = get_scheduler(opt, int(train_cfg["warmup_epochs"]), int(train_cfg["epochs"]))
 
-    best_state = None
-    best_val = 1e9
-    no_improve = 0
+    # Keep a global best as safety fallback.
+    best_state_global = None
+    best_val_global = 1e9
+    best_metrics_global: Dict[str, float] = {}
+    # Prefer checkpoints from fully ramped stage-3 regime.
+    best_state_stage3 = None
+    best_val_stage3 = 1e9
+    best_metrics_stage3: Dict[str, float] = {}
+    no_improve_stage3 = 0
+    prev_stage_id = None
+    s1 = int(train_cfg["stage1_epochs"])
+    s2 = int(train_cfg["stage2_epochs"])
     best_metrics: Dict[str, float] = {}
 
     for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
         model.train()
         sc, loss_cfg_ep = stage_control(ep, train_cfg, loss_cfg)
+        stage_id = 1 if ep < s1 else (2 if ep < s2 else 3)
+        if prev_stage_id is None:
+            prev_stage_id = stage_id
+        elif stage_id != prev_stage_id:
+            # Avoid carrying patience debt across stage transitions.
+            no_improve_stage3 = 0
+            prev_stage_id = stage_id
 
         tr_total = 0.0
         tr_set = 0.0
@@ -1225,11 +1241,11 @@ def train_reconstructor(
         va_sparse /= max(n_va, 1)
         va_local /= max(n_va, 1)
 
-        if va_total < best_val:
-            best_val = va_total
-            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            no_improve = 0
-            best_metrics = {
+        # Track global best for fallback.
+        if va_total < best_val_global:
+            best_val_global = va_total
+            best_state_global = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_metrics_global = {
                 "val_total": va_total,
                 "val_set": va_set,
                 "val_phys": va_phys,
@@ -1239,24 +1255,50 @@ def train_reconstructor(
                 "val_sparse": va_sparse,
                 "val_local": va_local,
             }
-        else:
-            no_improve += 1
+
+        # Stage-3 best drives checkpoint preference and early stopping.
+        if stage_id == 3:
+            if va_total < best_val_stage3:
+                best_val_stage3 = va_total
+                best_state_stage3 = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                best_metrics_stage3 = {
+                    "val_total": va_total,
+                    "val_set": va_set,
+                    "val_phys": va_phys,
+                    "val_pt_ratio": va_pt_ratio,
+                    "val_e_ratio": va_e_ratio,
+                    "val_budget": va_budget,
+                    "val_sparse": va_sparse,
+                    "val_local": va_local,
+                }
+                no_improve_stage3 = 0
+            else:
+                no_improve_stage3 += 1
 
         if (ep + 1) % 5 == 0:
+            best_stage3_txt = f"{best_val_stage3:.4f}" if best_state_stage3 is not None else "n/a"
             print(
                 f"Ep {ep+1}: "
-                f"train_total={tr_total:.4f}, val_total={va_total:.4f}, best={best_val:.4f} | "
+                f"train_total={tr_total:.4f}, val_total={va_total:.4f}, "
+                f"best_global={best_val_global:.4f}, best_stage3={best_stage3_txt} | "
                 f"set={va_set:.4f}, phys={va_phys:.4f}, pt_ratio={va_pt_ratio:.4f}, e_ratio={va_e_ratio:.4f}, budget={va_budget:.4f}, "
-                f"sparse={va_sparse:.4f}, local={va_local:.4f}, stage_scale={sc:.2f}, "
+                f"sparse={va_sparse:.4f}, local={va_local:.4f}, stage={stage_id}, stage_scale={sc:.2f}, "
                 f"hard_alpha={float(loss_cfg_ep.get('hard_select_alpha', 1.0)):.2f}"
             )
 
-        if no_improve >= int(train_cfg["patience"]):
+        # Only allow early stopping after full ramp-up (stage 3).
+        if stage_id == 3 and no_improve_stage3 >= int(train_cfg["patience"]):
             print(f"Early stopping reconstructor at epoch {ep+1}")
             break
 
-    if best_state is not None:
-        model.load_state_dict(best_state)
+    if best_state_stage3 is not None:
+        model.load_state_dict(best_state_stage3)
+        best_metrics = dict(best_metrics_stage3)
+        best_metrics["selected_checkpoint"] = "stage3"
+    elif best_state_global is not None:
+        model.load_state_dict(best_state_global)
+        best_metrics = dict(best_metrics_global)
+        best_metrics["selected_checkpoint"] = "global_fallback"
 
     return model, best_metrics
 

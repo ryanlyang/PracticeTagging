@@ -2,11 +2,16 @@
 # -*- coding: utf-8 -*-
 
 """
-Realistic HLT -> Offline reconstruction pipeline (merge + efficiency only) with strict no-privileged training.
+Realistic HLT -> Offline reconstruction pipeline with strict no-privileged training.
+
+Hybrid coarse-to-fine variant:
+1) predict a jet-level anchor (p4/counts/merge-ratio) from global context,
+2) condition constituent decoding on that anchor,
+3) enforce cross-level consistency between anchor and selected constituents.
 
 What this script does:
 1) Load offline jets from HDF5 (jet-level pairing only).
-2) Generate pseudo-HLT jets with merge + efficiency effects only (smearing/reassignment disabled by default),
+2) Generate realistic pseudo-HLT jets (merge + efficiency + smearing + local reassignment),
    but DO NOT keep direct constituent ancestry mapping.
 3) Train a heavy structured Offline Reconstructor with shared relpos transformer backbone and
    multi-head outputs (actions, split, generation, budget), without supervising merge/eff
@@ -93,20 +98,19 @@ CONFIG = {
         "eff_quality_max": 1.06,
         "eff_floor": 0.02,
         "eff_ceil": 0.995,
-        "smearing_enabled": False,
-        "smear_a": 0.0,
-        "smear_b": 0.0,
-        "smear_c": 0.0,
-        "smear_eta_scale": 0.0,
-        "smear_sigma_min": 0.0,
-        "smear_sigma_max": 0.0,
-        "eta_smear_const": 0.0,
-        "eta_smear_inv_sqrt": 0.0,
-        "phi_smear_const": 0.0,
-        "phi_smear_inv_sqrt": 0.0,
-        "tail_base": 0.0,
-        "tail_eta_coeff": 0.0,
-        "tail_density_coeff": 0.0,
+        "smear_a": 0.35,
+        "smear_b": 0.012,
+        "smear_c": 0.08,
+        "smear_eta_scale": 0.08,
+        "smear_sigma_min": 0.004,
+        "smear_sigma_max": 0.40,
+        "eta_smear_const": 0.0008,
+        "eta_smear_inv_sqrt": 0.010,
+        "phi_smear_const": 0.0008,
+        "phi_smear_inv_sqrt": 0.010,
+        "tail_base": 0.015,
+        "tail_eta_coeff": 0.010,
+        "tail_density_coeff": 0.010,
         "tail_prob_max": 0.25,
         "tail_mu": 0.98,
         "tail_sigma_scale": 2.5,
@@ -114,9 +118,9 @@ CONFIG = {
         "pt_resp_min": 0.40,
         "pt_resp_max": 1.60,
         "density_radius": 0.04,
-        "reassign_prob_base": 0.0,
-        "reassign_density_coeff": 0.0,
-        "reassign_prob_max": 0.0,
+        "reassign_prob_base": 0.01,
+        "reassign_density_coeff": 0.006,
+        "reassign_prob_max": 0.08,
         "reassign_radius": 0.08,
         "reassign_strength_min": 0.20,
         "reassign_strength_max": 0.65,
@@ -135,6 +139,9 @@ CONFIG = {
         "max_generated_tokens": 48,
         "unsmear_min_pt_frac": 0.92,
         "unsmear_min_e_frac": 0.92,
+        "anchor_gate_scale": 0.30,
+        "budget_anchor_mix_min": 0.35,
+        "budget_anchor_mix_max": 0.60,
     },
     "reconstructor_training": {
         "batch_size": 96,
@@ -153,6 +160,8 @@ CONFIG = {
         "w_e_ratio": 0.55,
         "w_pt_under": 0.80,
         "w_e_under": 0.45,
+        "w_anchor": 0.95,
+        "w_consistency": 0.75,
         "w_budget": 0.85,
         "w_branch_consistency": 0.70,
         "w_latent_prior": 0.50,
@@ -367,87 +376,86 @@ def apply_hlt_effects_realistic_nomap(
     eff_lost_per_jet = lost_eff.sum(axis=1).astype(np.float32)
     n_lost_eff = int(lost_eff.sum())
 
-    # 4) Optional smearing + tails + local reassignment
+    # 4) Smearing + tails + local reassignment
     n_reassigned = 0
-    if bool(hcfg.get("smearing_enabled", True)):
-        for j in range(n_jets):
-            valid = np.where(hlt_mask[j])[0]
-            if len(valid) == 0:
-                continue
+    for j in range(n_jets):
+        valid = np.where(hlt_mask[j])[0]
+        if len(valid) == 0:
+            continue
 
-            pt_j = np.maximum(hlt[j, valid, 0], 1e-8)
-            eta_j = hlt[j, valid, 1]
-            phi_j = hlt[j, valid, 2]
-            abs_eta_j = np.abs(eta_j)
-            dens_j = density[j, valid]
+        pt_j = np.maximum(hlt[j, valid, 0], 1e-8)
+        eta_j = hlt[j, valid, 1]
+        phi_j = hlt[j, valid, 2]
+        abs_eta_j = np.abs(eta_j)
+        dens_j = density[j, valid]
 
-            eta_scale = 1.0 + float(hcfg["smear_eta_scale"]) * abs_eta_j
-            q = float(jet_q[j])
+        eta_scale = 1.0 + float(hcfg["smear_eta_scale"]) * abs_eta_j
+        q = float(jet_q[j])
 
-            sigma_rel = np.sqrt(
-                (float(hcfg["smear_a"]) / np.sqrt(pt_j)) ** 2
-                + float(hcfg["smear_b"]) ** 2
-                + (float(hcfg["smear_c"]) / pt_j) ** 2
-            )
-            sigma_rel = sigma_rel * eta_scale * q
-            sigma_rel = np.clip(sigma_rel, float(hcfg["smear_sigma_min"]), float(hcfg["smear_sigma_max"]))
+        sigma_rel = np.sqrt(
+            (float(hcfg["smear_a"]) / np.sqrt(pt_j)) ** 2
+            + float(hcfg["smear_b"]) ** 2
+            + (float(hcfg["smear_c"]) / pt_j) ** 2
+        )
+        sigma_rel = sigma_rel * eta_scale * q
+        sigma_rel = np.clip(sigma_rel, float(hcfg["smear_sigma_min"]), float(hcfg["smear_sigma_max"]))
 
-            tail_prob = (
-                float(hcfg["tail_base"])
-                + float(hcfg["tail_eta_coeff"]) * abs_eta_j
-                + float(hcfg["tail_density_coeff"]) * dens_j
-            )
-            tail_prob = np.clip(tail_prob, 0.0, float(hcfg["tail_prob_max"]))
-            is_tail = rs.random_sample(len(valid)) < tail_prob
+        tail_prob = (
+            float(hcfg["tail_base"])
+            + float(hcfg["tail_eta_coeff"]) * abs_eta_j
+            + float(hcfg["tail_density_coeff"]) * dens_j
+        )
+        tail_prob = np.clip(tail_prob, 0.0, float(hcfg["tail_prob_max"]))
+        is_tail = rs.random_sample(len(valid)) < tail_prob
 
-            ratio = rs.normal(loc=1.0, scale=sigma_rel)
-            tail_sigma = float(hcfg["tail_sigma_scale"]) * sigma_rel + float(hcfg["tail_sigma_add"])
-            ratio_tail = rs.normal(loc=float(hcfg["tail_mu"]), scale=tail_sigma)
-            ratio[is_tail] = ratio_tail[is_tail]
-            ratio = np.clip(ratio, float(hcfg["pt_resp_min"]), float(hcfg["pt_resp_max"]))
-            pt_new = np.clip(pt_j * ratio, 1e-8, None)
+        ratio = rs.normal(loc=1.0, scale=sigma_rel)
+        tail_sigma = float(hcfg["tail_sigma_scale"]) * sigma_rel + float(hcfg["tail_sigma_add"])
+        ratio_tail = rs.normal(loc=float(hcfg["tail_mu"]), scale=tail_sigma)
+        ratio[is_tail] = ratio_tail[is_tail]
+        ratio = np.clip(ratio, float(hcfg["pt_resp_min"]), float(hcfg["pt_resp_max"]))
+        pt_new = np.clip(pt_j * ratio, 1e-8, None)
 
-            sigma_eta = (
-                float(hcfg["eta_smear_const"]) + float(hcfg["eta_smear_inv_sqrt"]) / np.sqrt(pt_j)
-            ) * eta_scale * q
-            sigma_phi = (
-                float(hcfg["phi_smear_const"]) + float(hcfg["phi_smear_inv_sqrt"]) / np.sqrt(pt_j)
-            ) * eta_scale * q
+        sigma_eta = (
+            float(hcfg["eta_smear_const"]) + float(hcfg["eta_smear_inv_sqrt"]) / np.sqrt(pt_j)
+        ) * eta_scale * q
+        sigma_phi = (
+            float(hcfg["phi_smear_const"]) + float(hcfg["phi_smear_inv_sqrt"]) / np.sqrt(pt_j)
+        ) * eta_scale * q
 
-            eta_new = eta_j + rs.normal(loc=0.0, scale=sigma_eta)
-            phi_new = wrap_phi_np(phi_j + rs.normal(loc=0.0, scale=sigma_phi))
+        eta_new = eta_j + rs.normal(loc=0.0, scale=sigma_eta)
+        phi_new = wrap_phi_np(phi_j + rs.normal(loc=0.0, scale=sigma_phi))
 
-            if float(hcfg["reassign_prob_base"]) > 0.0 and len(valid) > 1:
-                p_reassign = float(hcfg["reassign_prob_base"]) + float(hcfg["reassign_density_coeff"]) * dens_j
-                p_reassign = np.clip(p_reassign, 0.0, float(hcfg["reassign_prob_max"]))
-                do_reassign = rs.random_sample(len(valid)) < p_reassign
-                for ii in np.where(do_reassign)[0]:
-                    deta = eta_new[ii] - eta_new
-                    dphi = wrap_phi_np(phi_new[ii] - phi_new)
-                    dR = np.sqrt(deta * deta + dphi * dphi)
-                    dR[ii] = 1e9
-                    nn = int(np.argmin(dR))
-                    if dR[nn] > float(hcfg["reassign_radius"]):
-                        continue
-                    lam = rs.uniform(
-                        float(hcfg["reassign_strength_min"]),
-                        float(hcfg["reassign_strength_max"]),
-                    )
-                    eta_new[ii] = (1.0 - lam) * eta_new[ii] + lam * eta_new[nn]
-                    phi_new[ii] = np.arctan2(
-                        (1.0 - lam) * np.sin(phi_new[ii]) + lam * np.sin(phi_new[nn]),
-                        (1.0 - lam) * np.cos(phi_new[ii]) + lam * np.cos(phi_new[nn]),
-                    )
-                    n_reassigned += 1
+        if float(hcfg["reassign_prob_base"]) > 0.0 and len(valid) > 1:
+            p_reassign = float(hcfg["reassign_prob_base"]) + float(hcfg["reassign_density_coeff"]) * dens_j
+            p_reassign = np.clip(p_reassign, 0.0, float(hcfg["reassign_prob_max"]))
+            do_reassign = rs.random_sample(len(valid)) < p_reassign
+            for ii in np.where(do_reassign)[0]:
+                deta = eta_new[ii] - eta_new
+                dphi = wrap_phi_np(phi_new[ii] - phi_new)
+                dR = np.sqrt(deta * deta + dphi * dphi)
+                dR[ii] = 1e9
+                nn = int(np.argmin(dR))
+                if dR[nn] > float(hcfg["reassign_radius"]):
+                    continue
+                lam = rs.uniform(
+                    float(hcfg["reassign_strength_min"]),
+                    float(hcfg["reassign_strength_max"]),
+                )
+                eta_new[ii] = (1.0 - lam) * eta_new[ii] + lam * eta_new[nn]
+                phi_new[ii] = np.arctan2(
+                    (1.0 - lam) * np.sin(phi_new[ii]) + lam * np.sin(phi_new[nn]),
+                    (1.0 - lam) * np.cos(phi_new[ii]) + lam * np.cos(phi_new[nn]),
+                )
+                n_reassigned += 1
 
-            eta_new = np.clip(eta_new, -5.0, 5.0)
-            phi_new = wrap_phi_np(phi_new)
-            e_new = pt_new * np.cosh(eta_new)
+        eta_new = np.clip(eta_new, -5.0, 5.0)
+        phi_new = wrap_phi_np(phi_new)
+        e_new = pt_new * np.cosh(eta_new)
 
-            hlt[j, valid, 0] = pt_new
-            hlt[j, valid, 1] = eta_new
-            hlt[j, valid, 2] = phi_new
-            hlt[j, valid, 3] = e_new
+        hlt[j, valid, 0] = pt_new
+        hlt[j, valid, 1] = eta_new
+        hlt[j, valid, 2] = phi_new
+        hlt[j, valid, 3] = e_new
 
     # 5) Optional post-smear threshold
     post_thr = float(hcfg["post_smear_pt_threshold"])
@@ -543,6 +551,9 @@ class OfflineReconstructor(nn.Module):
         max_generated_tokens: int = 48,
         unsmear_min_pt_frac: float = 0.92,
         unsmear_min_e_frac: float = 0.92,
+        anchor_gate_scale: float = 0.30,
+        budget_anchor_mix_min: float = 0.35,
+        budget_anchor_mix_max: float = 0.60,
     ):
         super().__init__()
         self.max_split_children = int(max_split_children)
@@ -550,6 +561,9 @@ class OfflineReconstructor(nn.Module):
         self.num_heads = int(num_heads)
         self.unsmear_min_pt_frac = float(unsmear_min_pt_frac)
         self.unsmear_min_e_frac = float(unsmear_min_e_frac)
+        self.anchor_gate_scale = float(anchor_gate_scale)
+        self.budget_anchor_mix_min = float(budget_anchor_mix_min)
+        self.budget_anchor_mix_max = float(budget_anchor_mix_max)
 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
@@ -594,6 +608,21 @@ class OfflineReconstructor(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim, 3),
         )  # total, merge-added, eff-added
+        self.anchor_head = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, 7),
+        )  # dpx, dpy, dpz, dE, added, total, merge_ratio_logit
+        self.anchor_cond = nn.Sequential(
+            nn.Linear(embed_dim + 7, embed_dim),
+            nn.GELU(),
+            nn.Linear(embed_dim, embed_dim),
+            nn.GELU(),
+        )
+        self.split_bias_head = nn.Linear(embed_dim, self.max_split_children)
+        self.split_scale_head = nn.Linear(embed_dim, 1)
+        self.gen_bias_head = nn.Linear(embed_dim, 1)
+        self.gen_scale_head = nn.Linear(embed_dim, 1)
 
         # Generation head
         self.gen_queries = nn.Parameter(torch.randn(1, self.max_generated_tokens, embed_dim) * 0.02)
@@ -676,9 +705,54 @@ class OfflineReconstructor(nn.Module):
         tok_merge_flag = torch.zeros_like(tok_weight)
         tok_eff_flag = torch.zeros_like(tok_weight)
 
-        # Split children from each HLT token
+        # Jet context, coarse anchor, and budget heads.
+        q = self.pool_query.expand(B, -1, -1)
+        pooled, _ = self.pool_attn(q, x, x, key_padding_mask=~mask_safe, need_weights=False)
+        ctx = pooled.squeeze(1)
+        mask_f = mask_hlt.float()
+        hlt_px, hlt_py, hlt_pz, hlt_E = _weighted_fourvec_sums(const_hlt, mask_f)
+        hlt_pt = torch.sqrt(hlt_px.pow(2) + hlt_py.pow(2) + eps)
+        hlt_norm = hlt_pt + hlt_E.abs() + 1.0
+        hlt_count = mask_f.sum(dim=1)
+
+        anchor_raw = self.anchor_head(ctx)
+        anchor_px = hlt_px + hlt_norm * torch.tanh(anchor_raw[:, 0])
+        anchor_py = hlt_py + hlt_norm * torch.tanh(anchor_raw[:, 1])
+        anchor_pz = hlt_pz + hlt_norm * torch.tanh(anchor_raw[:, 2])
+        anchor_E = F.softplus(hlt_E + hlt_norm * torch.tanh(anchor_raw[:, 3])) + eps
+        anchor_added = F.softplus(anchor_raw[:, 4])
+        anchor_total = hlt_count + F.softplus(anchor_raw[:, 5])
+        anchor_merge_ratio = torch.sigmoid(anchor_raw[:, 6]).clamp(0.02, 0.98)
+        anchor_budget_merge = anchor_added * anchor_merge_ratio
+        anchor_budget_eff = anchor_added - anchor_budget_merge
+
+        anchor_feat = torch.stack(
+            [anchor_px, anchor_py, anchor_pz, anchor_E, anchor_total, anchor_added, anchor_merge_ratio],
+            dim=1,
+        )
+        cond = self.anchor_cond(torch.cat([ctx, anchor_feat], dim=1))
+
+        budget_raw = self.budget_head(ctx)
+        budget_total_raw = F.softplus(budget_raw[:, 0])
+        budget_merge_raw = F.softplus(budget_raw[:, 1])
+        budget_eff_raw = F.softplus(budget_raw[:, 2])
+        anchor_mix = self.budget_anchor_mix_max - (
+            self.budget_anchor_mix_max - self.budget_anchor_mix_min
+        ) * float(stage_scale)
+        anchor_mix = min(max(anchor_mix, 0.0), 1.0)
+        budget_total = (1.0 - anchor_mix) * budget_total_raw + anchor_mix * anchor_total
+        budget_merge = (1.0 - anchor_mix) * budget_merge_raw + anchor_mix * anchor_budget_merge
+        budget_eff = (1.0 - anchor_mix) * budget_eff_raw + anchor_mix * anchor_budget_eff
+        budget_branch_sum = budget_merge + budget_eff + eps
+        branch_renorm = (budget_total / budget_branch_sum).clamp(min=0.35, max=2.5)
+        budget_merge = budget_merge * branch_renorm
+        budget_eff = budget_eff * branch_renorm
+
+        # Split children from each HLT token, conditioned on coarse anchor context.
         K = self.max_split_children
-        split_exist = torch.sigmoid(self.split_exist_head(x))
+        split_bias = self.split_bias_head(cond).unsqueeze(1)
+        split_gate = 1.0 + self.anchor_gate_scale * torch.tanh(self.split_scale_head(cond)).unsqueeze(1)
+        split_exist = torch.sigmoid(self.split_exist_head(x) + split_bias) * split_gate
         split_exist = split_exist * (p_split.unsqueeze(-1) * stage_scale) * mask_hlt.float().unsqueeze(-1)
 
         split_delta = self.split_delta_head(x).view(B, L, K, 3)
@@ -693,21 +767,15 @@ class OfflineReconstructor(nn.Module):
         child_merge_flag = torch.ones_like(child_weight)
         child_eff_flag = torch.zeros_like(child_weight)
 
-        # Jet context and budget heads
-        q = self.pool_query.expand(B, -1, -1)
-        pooled, _ = self.pool_attn(q, x, x, key_padding_mask=~mask_safe, need_weights=False)
-        ctx = pooled.squeeze(1)
-        budget_raw = self.budget_head(ctx)
-        budget_total = F.softplus(budget_raw[:, 0])
-        budget_merge = F.softplus(budget_raw[:, 1])
-        budget_eff = F.softplus(budget_raw[:, 2])
-
         # Generation slots (efficiency-loss recovery)
         gq = self.gen_queries.expand(B, -1, -1)
         gen_dec, _ = self.gen_attn(gq, x, x, key_padding_mask=~mask_safe, need_weights=False)
         gen_dec = self.gen_norm(gen_dec)
         gen_raw = self.gen_head(gen_dec)
-        gen_exist = torch.sigmoid(self.gen_exist_head(gen_dec).squeeze(-1)) * stage_scale
+        gen_bias = self.gen_bias_head(cond).unsqueeze(1)
+        gen_gate = 1.0 + self.anchor_gate_scale * torch.tanh(self.gen_scale_head(cond)).unsqueeze(1)
+        gen_exist = torch.sigmoid(self.gen_exist_head(gen_dec) + gen_bias) * stage_scale * gen_gate
+        gen_exist = gen_exist.squeeze(-1).clamp(0.0, 1.0)
 
         gen_pt = torch.exp(torch.clamp(gen_raw[..., 0], min=-8.0, max=6.0))
         gen_eta = gen_raw[..., 1].clamp(min=-5.0, max=5.0)
@@ -742,6 +810,15 @@ class OfflineReconstructor(nn.Module):
             "budget_total": budget_total,
             "budget_merge": budget_merge,
             "budget_eff": budget_eff,
+            "anchor_px": anchor_px,
+            "anchor_py": anchor_py,
+            "anchor_pz": anchor_pz,
+            "anchor_E": anchor_E,
+            "anchor_total": anchor_total,
+            "anchor_added": anchor_added,
+            "anchor_merge_ratio": anchor_merge_ratio,
+            "anchor_budget_merge": anchor_budget_merge,
+            "anchor_budget_eff": anchor_budget_eff,
             "split_delta": split_delta,
             "gen_tokens": gen_tokens,
         }
@@ -965,10 +1042,52 @@ def compute_reconstruction_losses(
     pred_added_merge = w_child.sum(dim=1)
     pred_added_eff = w_gen.sum(dim=1)
     pred_added = pred_added_merge + pred_added_eff
+    pred_merge_ratio = pred_added_merge / (pred_added + 1.0)
 
     budget_total = out["budget_total"]
     budget_merge = out["budget_merge"]
     budget_eff = out["budget_eff"]
+    anchor_px = out["anchor_px"]
+    anchor_py = out["anchor_py"]
+    anchor_pz = out["anchor_pz"]
+    anchor_E = out["anchor_E"]
+    anchor_total = out["anchor_total"]
+    anchor_added = out["anchor_added"]
+    anchor_merge_ratio = out["anchor_merge_ratio"]
+    anchor_budget_merge = out["anchor_budget_merge"]
+    anchor_budget_eff = out["anchor_budget_eff"]
+
+    # Coarse jet-anchor supervision.
+    loss_anchor_p4 = (
+        (anchor_px - true_px).abs()
+        + (anchor_py - true_py).abs()
+        + (anchor_pz - true_pz).abs()
+        + (anchor_E - true_E).abs()
+    ) / norm
+    loss_anchor_p4 = loss_anchor_p4.mean()
+    loss_anchor_count = (
+        F.smooth_l1_loss(anchor_total, true_count)
+        + F.smooth_l1_loss(anchor_added, true_added)
+    )
+    loss_anchor = loss_anchor_p4 + 0.75 * loss_anchor_count
+
+    # Cross-level consistency: selected constituent set should agree with anchor.
+    anchor_norm = anchor_px.abs() + anchor_py.abs() + anchor_pz.abs() + anchor_E.abs() + 1.0
+    loss_cons_p4 = (
+        (pred_px - anchor_px).abs()
+        + (pred_py - anchor_py).abs()
+        + (pred_pz - anchor_pz).abs()
+        + (pred_E - anchor_E).abs()
+    ) / anchor_norm
+    loss_cons_p4 = loss_cons_p4.mean()
+    loss_consistency = (
+        loss_cons_p4
+        + F.smooth_l1_loss(pred_count, anchor_total)
+        + F.smooth_l1_loss(pred_added, anchor_added)
+        + 0.5 * F.smooth_l1_loss(pred_added_merge, anchor_budget_merge)
+        + 0.5 * F.smooth_l1_loss(pred_added_eff, anchor_budget_eff)
+        + 0.25 * F.smooth_l1_loss(pred_merge_ratio, anchor_merge_ratio)
+    )
 
     # Strict no-privileged budget supervision:
     # supervise only totals known from jet-level pairing; merge/eff split is latent.
@@ -984,17 +1103,19 @@ def compute_reconstruction_losses(
     loss_branch_consistency = (
         F.smooth_l1_loss(pred_added_merge, budget_merge)
         + F.smooth_l1_loss(pred_added_eff, budget_eff)
+        + 0.5 * F.smooth_l1_loss(budget_merge, anchor_budget_merge)
+        + 0.5 * F.smooth_l1_loss(budget_eff, anchor_budget_eff)
     )
 
     # Weak latent decomposition prior from HLT-only signals.
     merge_ratio_prior, low_frac = _estimate_merge_ratio_prior(const_hlt, mask_hlt, out["action_prob"], loss_cfg)
     budget_merge_prior = true_added * merge_ratio_prior
     budget_eff_prior = true_added - budget_merge_prior
-    pred_merge_ratio = pred_added_merge / (pred_added + 1.0)
     loss_latent_prior = (
         F.smooth_l1_loss(budget_merge, budget_merge_prior)
         + F.smooth_l1_loss(budget_eff, budget_eff_prior)
         + 0.5 * F.smooth_l1_loss(pred_merge_ratio, merge_ratio_prior)
+        + 0.35 * F.smooth_l1_loss(anchor_merge_ratio, merge_ratio_prior)
     )
 
     # If many low-pt HLT constituents remain and added budget is non-zero, encourage some generation.
@@ -1043,6 +1164,8 @@ def compute_reconstruction_losses(
         + float(loss_cfg["w_e_ratio"]) * loss_e_ratio
         + float(loss_cfg.get("w_pt_under", 0.0)) * loss_pt_under
         + float(loss_cfg.get("w_e_under", 0.0)) * loss_e_under
+        + float(loss_cfg.get("w_anchor", 0.0)) * loss_anchor
+        + float(loss_cfg.get("w_consistency", 0.0)) * loss_consistency
         + float(loss_cfg["w_budget"]) * loss_budget
         + float(loss_cfg.get("w_sparse_split", 0.0)) * loss_sparse_split
         + float(loss_cfg.get("w_sparse_gen", 0.0)) * loss_sparse_gen
@@ -1057,6 +1180,8 @@ def compute_reconstruction_losses(
         "e_ratio": loss_e_ratio,
         "pt_under": loss_pt_under,
         "e_under": loss_e_under,
+        "anchor": loss_anchor,
+        "consistency": loss_consistency,
         "budget": loss_budget,
         "sparse": loss_sparse,
         "branch": loss_branch_consistency,
@@ -1073,15 +1198,21 @@ def stage_control(epoch: int, cfg: Dict, base_loss_cfg: Dict) -> Tuple[float, Di
 
     if epoch < s1:
         sc = 0.30
-        loss_cfg["w_budget"] = float(base_loss_cfg["w_budget"]) * 0.55
-        loss_cfg["w_branch_consistency"] = float(base_loss_cfg.get("w_branch_consistency", 0.0)) * 0.45
-        loss_cfg["w_latent_prior"] = float(base_loss_cfg.get("w_latent_prior", 0.0)) * 0.35
-        loss_cfg["w_sparse_split"] = float(base_loss_cfg.get("w_sparse_split", 0.0)) * 1.8
-        loss_cfg["w_sparse_gen"] = float(base_loss_cfg.get("w_sparse_gen", 0.0)) * 1.8
-        loss_cfg["w_local"] = float(base_loss_cfg.get("w_local", 0.0)) * 1.2
-        loss_cfg["hard_select_alpha"] = 0.60
+        loss_cfg["w_set"] = float(base_loss_cfg.get("w_set", 1.0)) * 0.45
+        loss_cfg["w_anchor"] = float(base_loss_cfg.get("w_anchor", 0.0)) * 1.25
+        loss_cfg["w_consistency"] = float(base_loss_cfg.get("w_consistency", 0.0)) * 0.70
+        loss_cfg["w_budget"] = float(base_loss_cfg["w_budget"]) * 0.60
+        loss_cfg["w_branch_consistency"] = float(base_loss_cfg.get("w_branch_consistency", 0.0)) * 0.50
+        loss_cfg["w_latent_prior"] = float(base_loss_cfg.get("w_latent_prior", 0.0)) * 0.40
+        loss_cfg["w_sparse_split"] = float(base_loss_cfg.get("w_sparse_split", 0.0)) * 1.90
+        loss_cfg["w_sparse_gen"] = float(base_loss_cfg.get("w_sparse_gen", 0.0)) * 1.90
+        loss_cfg["w_local"] = float(base_loss_cfg.get("w_local", 0.0)) * 1.25
+        loss_cfg["hard_select_alpha"] = 0.55
     elif epoch < s2:
         sc = 0.72
+        loss_cfg["w_set"] = float(base_loss_cfg.get("w_set", 1.0)) * 0.80
+        loss_cfg["w_anchor"] = float(base_loss_cfg.get("w_anchor", 0.0)) * 1.00
+        loss_cfg["w_consistency"] = float(base_loss_cfg.get("w_consistency", 0.0)) * 1.00
         loss_cfg["w_budget"] = float(base_loss_cfg["w_budget"]) * 1.00
         loss_cfg["w_branch_consistency"] = float(base_loss_cfg.get("w_branch_consistency", 0.0)) * 1.00
         loss_cfg["w_latent_prior"] = float(base_loss_cfg.get("w_latent_prior", 0.0)) * 1.00
@@ -1091,7 +1222,10 @@ def stage_control(epoch: int, cfg: Dict, base_loss_cfg: Dict) -> Tuple[float, Di
         loss_cfg["hard_select_alpha"] = 0.85
     else:
         sc = 1.00
-        loss_cfg["w_budget"] = float(base_loss_cfg["w_budget"]) * 1.18
+        loss_cfg["w_set"] = float(base_loss_cfg.get("w_set", 1.0)) * 1.10
+        loss_cfg["w_anchor"] = float(base_loss_cfg.get("w_anchor", 0.0)) * 0.55
+        loss_cfg["w_consistency"] = float(base_loss_cfg.get("w_consistency", 0.0)) * 1.20
+        loss_cfg["w_budget"] = float(base_loss_cfg["w_budget"]) * 1.20
         loss_cfg["w_branch_consistency"] = float(base_loss_cfg.get("w_branch_consistency", 0.0)) * 1.25
         loss_cfg["w_latent_prior"] = float(base_loss_cfg.get("w_latent_prior", 0.0)) * 1.30
         loss_cfg["w_sparse_split"] = float(base_loss_cfg.get("w_sparse_split", 0.0)) * 0.80
@@ -1146,6 +1280,8 @@ def train_reconstructor(
         tr_phys = 0.0
         tr_pt_ratio = 0.0
         tr_e_ratio = 0.0
+        tr_anchor = 0.0
+        tr_consistency = 0.0
         tr_budget = 0.0
         tr_sparse = 0.0
         tr_local = 0.0
@@ -1178,6 +1314,8 @@ def train_reconstructor(
             tr_phys += losses["phys"].item() * bs
             tr_pt_ratio += losses["pt_ratio"].item() * bs
             tr_e_ratio += losses["e_ratio"].item() * bs
+            tr_anchor += losses["anchor"].item() * bs
+            tr_consistency += losses["consistency"].item() * bs
             tr_budget += losses["budget"].item() * bs
             tr_sparse += losses["sparse"].item() * bs
             tr_local += losses["local"].item() * bs
@@ -1189,6 +1327,8 @@ def train_reconstructor(
         va_phys = 0.0
         va_pt_ratio = 0.0
         va_e_ratio = 0.0
+        va_anchor = 0.0
+        va_consistency = 0.0
         va_budget = 0.0
         va_sparse = 0.0
         va_local = 0.0
@@ -1218,6 +1358,8 @@ def train_reconstructor(
                 va_phys += losses["phys"].item() * bs
                 va_pt_ratio += losses["pt_ratio"].item() * bs
                 va_e_ratio += losses["e_ratio"].item() * bs
+                va_anchor += losses["anchor"].item() * bs
+                va_consistency += losses["consistency"].item() * bs
                 va_budget += losses["budget"].item() * bs
                 va_sparse += losses["sparse"].item() * bs
                 va_local += losses["local"].item() * bs
@@ -1230,6 +1372,8 @@ def train_reconstructor(
         tr_phys /= max(n_tr, 1)
         tr_pt_ratio /= max(n_tr, 1)
         tr_e_ratio /= max(n_tr, 1)
+        tr_anchor /= max(n_tr, 1)
+        tr_consistency /= max(n_tr, 1)
         tr_budget /= max(n_tr, 1)
         tr_sparse /= max(n_tr, 1)
         tr_local /= max(n_tr, 1)
@@ -1239,6 +1383,8 @@ def train_reconstructor(
         va_phys /= max(n_va, 1)
         va_pt_ratio /= max(n_va, 1)
         va_e_ratio /= max(n_va, 1)
+        va_anchor /= max(n_va, 1)
+        va_consistency /= max(n_va, 1)
         va_budget /= max(n_va, 1)
         va_sparse /= max(n_va, 1)
         va_local /= max(n_va, 1)
@@ -1253,6 +1399,8 @@ def train_reconstructor(
                 "val_phys": va_phys,
                 "val_pt_ratio": va_pt_ratio,
                 "val_e_ratio": va_e_ratio,
+                "val_anchor": va_anchor,
+                "val_consistency": va_consistency,
                 "val_budget": va_budget,
                 "val_sparse": va_sparse,
                 "val_local": va_local,
@@ -1269,6 +1417,8 @@ def train_reconstructor(
                     "val_phys": va_phys,
                     "val_pt_ratio": va_pt_ratio,
                     "val_e_ratio": va_e_ratio,
+                    "val_anchor": va_anchor,
+                    "val_consistency": va_consistency,
                     "val_budget": va_budget,
                     "val_sparse": va_sparse,
                     "val_local": va_local,
@@ -1283,7 +1433,8 @@ def train_reconstructor(
                 f"Ep {ep+1}: "
                 f"train_total={tr_total:.4f}, val_total={va_total:.4f}, "
                 f"best_global={best_val_global:.4f}, best_stage3={best_stage3_txt} | "
-                f"set={va_set:.4f}, phys={va_phys:.4f}, pt_ratio={va_pt_ratio:.4f}, e_ratio={va_e_ratio:.4f}, budget={va_budget:.4f}, "
+                f"set={va_set:.4f}, phys={va_phys:.4f}, pt_ratio={va_pt_ratio:.4f}, e_ratio={va_e_ratio:.4f}, "
+                f"anchor={va_anchor:.4f}, cons={va_consistency:.4f}, budget={va_budget:.4f}, "
                 f"sparse={va_sparse:.4f}, local={va_local:.4f}, stage={stage_id}, stage_scale={sc:.2f}, "
                 f"hard_alpha={float(loss_cfg_ep.get('hard_select_alpha', 1.0)):.2f}"
             )
@@ -2308,9 +2459,9 @@ def main():
     parser.add_argument(
         "--save_dir",
         type=str,
-        default=str(Path().cwd() / "checkpoints" / "offline_reconstructor_no_gt_nopriv_merge_only"),
+        default=str(Path().cwd() / "checkpoints" / "offline_reconstructor_no_gt_nopriv"),
     )
-    parser.add_argument("--run_name", type=str, default="nopriv_staged_merge_only")
+    parser.add_argument("--run_name", type=str, default="nopriv_staged_default")
     parser.add_argument("--device", type=str, default="cpu")
     parser.add_argument("--num_workers", type=int, default=6)
     parser.add_argument("--roc_fpr_min", type=float, default=1e-4)
@@ -2324,7 +2475,6 @@ def main():
     parser.add_argument("--post_smear_pt_threshold", type=float, default=CONFIG["hlt_effects"]["post_smear_pt_threshold"])
     parser.add_argument("--eff_plateau_barrel", type=float, default=CONFIG["hlt_effects"]["eff_plateau_barrel"])
     parser.add_argument("--eff_plateau_endcap", type=float, default=CONFIG["hlt_effects"]["eff_plateau_endcap"])
-    parser.add_argument("--enable_smearing", action="store_true")
     parser.add_argument("--smear_a", type=float, default=CONFIG["hlt_effects"]["smear_a"])
     parser.add_argument("--smear_b", type=float, default=CONFIG["hlt_effects"]["smear_b"])
     parser.add_argument("--smear_c", type=float, default=CONFIG["hlt_effects"]["smear_c"])
@@ -2348,7 +2498,6 @@ def main():
     CONFIG["hlt_effects"]["post_smear_pt_threshold"] = float(args.post_smear_pt_threshold)
     CONFIG["hlt_effects"]["eff_plateau_barrel"] = float(args.eff_plateau_barrel)
     CONFIG["hlt_effects"]["eff_plateau_endcap"] = float(args.eff_plateau_endcap)
-    CONFIG["hlt_effects"]["smearing_enabled"] = bool(args.enable_smearing)
     CONFIG["hlt_effects"]["smear_a"] = float(args.smear_a)
     CONFIG["hlt_effects"]["smear_b"] = float(args.smear_b)
     CONFIG["hlt_effects"]["smear_c"] = float(args.smear_c)
@@ -2549,7 +2698,10 @@ def main():
 
     print("Best reconstructor val metrics:")
     for k, v in reco_val_metrics.items():
-        print(f"  {k}: {v:.6f}")
+        if isinstance(v, (int, float, np.floating)):
+            print(f"  {k}: {v:.6f}")
+        else:
+            print(f"  {k}: {v}")
 
     print("Building reconstructed dataset for all jets...")
     (
