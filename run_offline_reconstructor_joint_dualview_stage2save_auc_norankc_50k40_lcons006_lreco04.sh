@@ -24,9 +24,9 @@ set -euo pipefail
 mkdir -p offline_reconstructor_logs
 
 RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_lcons006_lreco04}"
-N_TRAIN_JETS="${N_TRAIN_JETS:-50000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
-MAX_CONSTITS="${MAX_CONSTITS:-40}"
+MAX_CONSTITS="${MAX_CONSTITS:-80}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 
