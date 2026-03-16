@@ -45,7 +45,7 @@ python offline_reconstructor_joint_dualview_stage2save_auc_norankc.py \
   --stageB_lambda_rank 0.0 \
   --stageB_lambda_cons 0.0 \
   --lambda_cons 0.0 \
-  --lambda_reco 0.2 \
+  --lambda_reco 0.1 \
   --stageC_lr_dual 2e-5 \
   --stageC_lr_reco 1e-5 \
   --disable_final_kd \

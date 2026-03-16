@@ -9,7 +9,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
-#SBATCH --time=1:30:00
+#SBATCH --time=0:30:00
 #SBATCH --output=offline_reconstructor_logs/stagec_from_stage2_baseline_%j.out
 #SBATCH --error=offline_reconstructor_logs/stagec_from_stage2_baseline_%j.err
 
