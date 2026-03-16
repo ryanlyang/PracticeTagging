@@ -6,6 +6,8 @@ This script re-creates data/splits deterministically, loads:
   - offline_reconstructor_stage2.pt
   - dual_joint_stage2.pt
 from a previous run folder, then runs Stage C only.
+If available, it consumes run_dir/data_setup.json and run_dir/data_splits.npz
+to reproduce the exact original data setup and split indices.
 """
 
 from __future__ import annotations
@@ -83,6 +85,31 @@ def load_cfg_from_run(run_dir: Path) -> Dict:
             if k in cfg["hlt_effects"]:
                 cfg["hlt_effects"][k] = v
     return cfg
+
+
+def load_saved_data_setup(run_dir: Path) -> Dict:
+    path = run_dir / "data_setup.json"
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            out = json.load(f)
+        return out if isinstance(out, dict) else {}
+    except Exception as e:
+        print(f"Warning: failed to read saved data setup {path}: {e}")
+        return {}
+
+
+def load_saved_splits(run_dir: Path) -> Dict[str, np.ndarray]:
+    path = run_dir / "data_splits.npz"
+    if not path.exists():
+        return {}
+    try:
+        with np.load(path, allow_pickle=False) as z:
+            return {k: z[k] for k in z.files}
+    except Exception as e:
+        print(f"Warning: failed to read saved splits {path}: {e}")
+        return {}
 
 
 def maybe_build_jetreg_features(
@@ -198,6 +225,11 @@ def main() -> None:
 
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=RANDOM_SEED)
+    p.add_argument(
+        "--ignore_saved_data_setup",
+        action="store_true",
+        help="Ignore run_dir/data_setup.json and run_dir/data_splits.npz; rebuild from CLI args.",
+    )
 
     p.add_argument("--reco_ckpt", type=str, default="")
     p.add_argument("--dual_ckpt", type=str, default="")
@@ -230,11 +262,23 @@ def main() -> None:
 
     args = p.parse_args()
 
-    set_seed(int(args.seed))
-
     run_dir = Path(args.run_dir)
     if not run_dir.exists():
         raise FileNotFoundError(f"run_dir not found: {run_dir}")
+
+    saved_setup = {}
+    saved_splits = {}
+    use_saved_data_setup = False
+    if not bool(args.ignore_saved_data_setup):
+        saved_setup = load_saved_data_setup(run_dir)
+        saved_splits = load_saved_splits(run_dir)
+        use_saved_data_setup = len(saved_setup) > 0
+
+    eff_seed = int(saved_setup.get("seed", args.seed)) if use_saved_data_setup else int(args.seed)
+    eff_n_train_jets = int(saved_setup.get("n_train_jets", args.n_train_jets)) if use_saved_data_setup else int(args.n_train_jets)
+    eff_offset_jets = int(saved_setup.get("offset_jets", args.offset_jets)) if use_saved_data_setup else int(args.offset_jets)
+    eff_max_constits = int(saved_setup.get("max_constits", args.max_constits)) if use_saved_data_setup else int(args.max_constits)
+    set_seed(eff_seed)
 
     out_root = Path(args.save_dir) if str(args.save_dir).strip() else (run_dir / "stagec_refine")
     save_root = out_root / args.run_name
@@ -258,26 +302,40 @@ def main() -> None:
     print(f"Load run dir: {run_dir}")
     print(f"Save dir: {save_root}")
 
-    train_path = Path(args.train_path)
-    if train_path.is_dir():
-        train_files = sorted(list(train_path.glob("*.h5")))
+    if use_saved_data_setup:
+        train_files = [Path(p) for p in saved_setup.get("train_files", [])]
+        train_files = [p for p in train_files if p.exists()]
+        if len(train_files) == 0:
+            print("Warning: saved train_files unavailable; falling back to --train_path")
     else:
-        train_files = [Path(x) for x in str(args.train_path).split(",") if x.strip()]
+        train_files = []
+
+    if len(train_files) == 0:
+        train_path = Path(args.train_path)
+        if train_path.is_dir():
+            train_files = sorted(list(train_path.glob("*.h5")))
+        else:
+            train_files = [Path(x) for x in str(args.train_path).split(",") if x.strip()]
     if len(train_files) == 0:
         raise FileNotFoundError(f"No .h5 files found in: {args.train_path}")
 
-    max_jets_needed = int(args.offset_jets) + int(args.n_train_jets)
+    print(
+        f"Data setup source: {'saved data_setup.json' if use_saved_data_setup else 'CLI args'} | "
+        f"seed={eff_seed}, n_train_jets={eff_n_train_jets}, offset_jets={eff_offset_jets}, max_constits={eff_max_constits}"
+    )
+
+    max_jets_needed = int(eff_offset_jets) + int(eff_n_train_jets)
     print("Loading offline constituents...")
     all_const, all_labels = load_raw_constituents_from_h5(
         train_files,
         max_jets=max_jets_needed,
-        max_constits=int(args.max_constits),
+        max_constits=int(eff_max_constits),
     )
     if all_const.shape[0] < max_jets_needed:
         raise RuntimeError(f"Requested {max_jets_needed} jets but got {all_const.shape[0]}")
 
-    const_raw = all_const[int(args.offset_jets): int(args.offset_jets) + int(args.n_train_jets)]
-    labels = all_labels[int(args.offset_jets): int(args.offset_jets) + int(args.n_train_jets)].astype(np.int64)
+    const_raw = all_const[int(eff_offset_jets): int(eff_offset_jets) + int(eff_n_train_jets)]
+    labels = all_labels[int(eff_offset_jets): int(eff_offset_jets) + int(eff_n_train_jets)].astype(np.int64)
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
@@ -289,7 +347,7 @@ def main() -> None:
         const_off,
         masks_off,
         cfg,
-        seed=int(args.seed),
+        seed=int(eff_seed),
     )
     budget_merge_true = budget_truth["merge_lost_per_jet"].astype(np.float32)
     budget_eff_true = budget_truth["eff_lost_per_jet"].astype(np.float32)
@@ -298,16 +356,45 @@ def main() -> None:
     feat_off = compute_features(const_off, masks_off)
     feat_hlt = compute_features(hlt_const, hlt_mask)
 
-    idx = np.arange(len(labels))
-    train_idx, temp_idx = train_test_split(
-        idx, test_size=0.30, random_state=int(args.seed), stratify=labels
+    splits_source = "recomputed"
+    has_saved_split_idx = (
+        isinstance(saved_splits, dict)
+        and "train_idx" in saved_splits
+        and "val_idx" in saved_splits
+        and "test_idx" in saved_splits
     )
-    val_idx, test_idx = train_test_split(
-        temp_idx, test_size=0.50, random_state=int(args.seed), stratify=labels[temp_idx]
+    if use_saved_data_setup and has_saved_split_idx:
+        train_idx = np.asarray(saved_splits["train_idx"], dtype=np.int64)
+        val_idx = np.asarray(saved_splits["val_idx"], dtype=np.int64)
+        test_idx = np.asarray(saved_splits["test_idx"], dtype=np.int64)
+        all_idx = np.concatenate([train_idx, val_idx, test_idx], axis=0)
+        max_idx = int(np.max(all_idx)) if all_idx.size > 0 else -1
+        if max_idx >= len(labels):
+            raise RuntimeError(
+                f"Saved split indices exceed available labels: max_idx={max_idx}, n_labels={len(labels)}"
+            )
+        splits_source = "saved data_splits.npz"
+    else:
+        idx = np.arange(len(labels))
+        train_idx, temp_idx = train_test_split(
+            idx, test_size=0.30, random_state=int(eff_seed), stratify=labels
+        )
+        val_idx, test_idx = train_test_split(
+            temp_idx, test_size=0.50, random_state=int(eff_seed), stratify=labels[temp_idx]
+        )
+    print(
+        f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} "
+        f"(source: {splits_source})"
     )
-    print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
-    means, stds = get_stats(feat_off, masks_off, train_idx)
+    if use_saved_data_setup and isinstance(saved_splits, dict) and "means" in saved_splits and "stds" in saved_splits:
+        means = np.asarray(saved_splits["means"], dtype=np.float32)
+        stds = np.asarray(saved_splits["stds"], dtype=np.float32)
+        if means.shape[-1] != feat_off.shape[-1] or stds.shape[-1] != feat_off.shape[-1]:
+            print("Warning: saved means/stds shape mismatch; recomputing from train split.")
+            means, stds = get_stats(feat_off, masks_off, train_idx)
+    else:
+        means, stds = get_stats(feat_off, masks_off, train_idx)
     feat_off_std = standardize(feat_off, masks_off, means, stds)
     feat_hlt_std = standardize(feat_hlt, hlt_mask, means, stds)
 
@@ -502,6 +589,16 @@ def main() -> None:
             "selection_metric": str(args.selection_metric),
             "corrected_weight_floor": float(args.corrected_weight_floor),
             "use_corrected_flags": bool(args.use_corrected_flags),
+        },
+        "data_reload": {
+            "setup_source": "saved data_setup.json" if use_saved_data_setup else "cli args",
+            "splits_source": splits_source,
+            "seed_effective": int(eff_seed),
+            "n_train_jets_effective": int(eff_n_train_jets),
+            "offset_jets_effective": int(eff_offset_jets),
+            "max_constits_effective": int(eff_max_constits),
+            "train_files_used": [str(p) for p in train_files],
+            "ignore_saved_data_setup": bool(args.ignore_saved_data_setup),
         },
         "stageC_metrics": stageC_metrics,
         "test_stage2_loaded": {

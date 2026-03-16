@@ -1164,6 +1164,28 @@ def main() -> None:
     feat_off_std = standardize(feat_off, masks_off, means, stds)
     feat_hlt_std = standardize(feat_hlt, hlt_mask, means, stds)
 
+    # Persist exact data setup/splits so Stage-C-only reruns can faithfully reload.
+    data_setup = {
+        "train_path_arg": str(args.train_path),
+        "train_files": [str(p.resolve()) for p in train_files],
+        "n_train_jets": int(args.n_train_jets),
+        "offset_jets": int(args.offset_jets),
+        "max_constits": int(args.max_constits),
+        "seed": int(RANDOM_SEED),
+        "split": {"train_frac": 0.70, "val_frac": 0.15, "test_frac": 0.15},
+        "hlt_effects": cfg["hlt_effects"],
+    }
+    with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
+        json.dump(data_setup, f, indent=2)
+    np.savez_compressed(
+        save_root / "data_splits.npz",
+        train_idx=train_idx.astype(np.int64),
+        val_idx=val_idx.astype(np.int64),
+        test_idx=test_idx.astype(np.int64),
+        means=means.astype(np.float32),
+        stds=stds.astype(np.float32),
+    )
+
     # Teacher / baseline
     print("\n" + "=" * 70)
     print("STEP 1: TEACHER + BASELINE")
