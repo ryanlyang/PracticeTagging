@@ -2,8 +2,8 @@
 # Fast Stage-C-only finetune from saved Stage2 checkpoint.
 # Baseline "normal" Stage-C settings with lambda_cons=0.06.
 #
-# Defaults target your 100k/80 lcons0 run:
-#   download_checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_lcons0
+# Defaults target your 100k/80 lcons0 run on research compute:
+#   checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_lcons0
 #
 #SBATCH --job-name=stgCbase
 #SBATCH --partition=debug
@@ -17,7 +17,7 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_DIR="${RUN_DIR:-download_checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_lcons0}"
+RUN_DIR="${RUN_DIR:-checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_lcons0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint_stagec_refine}"
 RUN_NAME="${RUN_NAME:-stagec_refine_baseline_lcons006}"
 
