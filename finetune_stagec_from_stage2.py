@@ -24,7 +24,7 @@ from torch.utils.data import DataLoader
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc as joint
 from offline_reconstructor_no_gt_local30kv2 import (
-    BASE_CONFIG,
+    CONFIG as LOCAL30K_CONFIG,
     OfflineReconstructor,
     apply_hlt_effects_realistic_nomap,
     fpr_at_target_tpr,
@@ -326,7 +326,7 @@ def main() -> None:
     print("FAST STAGE C: JOINT FINETUNE FROM SAVED STAGE2")
     print("=" * 70)
 
-    BASE_CONFIG["loss"] = cfg["loss"]
+    LOCAL30K_CONFIG["loss"] = cfg["loss"]
     reconstructor, dual_joint, stageC_metrics, stageC_states = joint.train_joint_dual(
         reconstructor=reconstructor,
         dual_model=dual_joint,

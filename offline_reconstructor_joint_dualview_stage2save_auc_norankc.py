@@ -961,7 +961,9 @@ def train_joint_dual(
         else:
             no_improve += 1
 
-        if (ep + 1) % 5 == 0:
+        # For fast Stage-C-only refinement runs, print every epoch.
+        print_every = 1 if str(stage_name).startswith("StageC-FromSavedStage2") else 5
+        if (ep + 1) % print_every == 0:
             print(
                 f"{stage_name} ep {ep+1}: train_loss={tr_loss:.4f} "
                 f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}) | "
