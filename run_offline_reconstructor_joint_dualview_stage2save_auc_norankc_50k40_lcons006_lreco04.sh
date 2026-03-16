@@ -15,7 +15,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --time=02:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_joint_auc_50k40_lc006_lr04_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_joint_auc_50k40_lc006_lr04_%j.err
