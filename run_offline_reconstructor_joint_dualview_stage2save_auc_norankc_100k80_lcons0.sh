@@ -8,7 +8,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=3:00:00
+#SBATCH --time=0:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_joint_auc100c0_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_joint_auc100c0_%j.err
 
@@ -17,9 +17,9 @@ set -euo pipefail
 mkdir -p offline_reconstructor_logs
 
 RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_lcons0}"
-N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-30000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
-MAX_CONSTITS="${MAX_CONSTITS:-80}"
+MAX_CONSTITS="${MAX_CONSTITS:-40}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 
