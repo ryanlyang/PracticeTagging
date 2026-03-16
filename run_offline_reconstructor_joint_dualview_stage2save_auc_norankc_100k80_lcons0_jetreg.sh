@@ -5,7 +5,7 @@
 # - Jet regressor ON
 # - Stage C lambda_cons forced to 0
 #SBATCH --job-name=offrecoA0J
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=3:00:00
