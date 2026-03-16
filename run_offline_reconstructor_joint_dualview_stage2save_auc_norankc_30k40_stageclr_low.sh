@@ -33,7 +33,7 @@ cd "$SLURM_SUBMIT_DIR"
 echo "Running 30k/40 low Stage-C LR run"
 echo "Seed tag: ${SEED_TAG} (script also uses fixed internal RANDOM_SEED)."
 
-echo "python offline_reconstructor_joint_dualview_stage2save_auc_norankc.py --save_dir ${SAVE_DIR} --run_name ${RUN_NAME} --n_train_jets ${N_TRAIN_JETS} --offset_jets ${OFFSET_JETS} --max_constits ${MAX_CONSTITS} --num_workers ${NUM_WORKERS} --selection_metric auc --stageB_lambda_rank 0.0 --stageB_lambda_cons 0.0 --lambda_cons 0.0 --stageC_lr_dual 1e-4 --stageC_lr_reco 5e-5 --disable_final_kd --device cuda"
+echo "python offline_reconstructor_joint_dualview_stage2save_auc_norankc.py --save_dir ${SAVE_DIR} --run_name ${RUN_NAME} --n_train_jets ${N_TRAIN_JETS} --offset_jets ${OFFSET_JETS} --max_constits ${MAX_CONSTITS} --num_workers ${NUM_WORKERS} --selection_metric auc --stageB_lambda_rank 0.0 --stageB_lambda_cons 0.0 --lambda_cons 0.0 --stageC_lr_dual 2e-5 --stageC_lr_reco 1e-5 --disable_final_kd --device cuda"
 
 python offline_reconstructor_joint_dualview_stage2save_auc_norankc.py \
   --save_dir "${SAVE_DIR}" \
@@ -46,7 +46,7 @@ python offline_reconstructor_joint_dualview_stage2save_auc_norankc.py \
   --stageB_lambda_rank 0.0 \
   --stageB_lambda_cons 0.0 \
   --lambda_cons 0.0 \
-  --stageC_lr_dual 1e-4 \
-  --stageC_lr_reco 5e-5 \
+  --stageC_lr_dual 2e-5 \
+  --stageC_lr_reco 1e-5 \
   --disable_final_kd \
   --device cuda
