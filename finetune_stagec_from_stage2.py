@@ -32,7 +32,10 @@ from offline_reconstructor_no_gt_local30kv2 import (
 from unmerge_correct_hlt import (
     RANDOM_SEED,
     DualViewCrossAttnClassifier,
+    JetDataset,
+    ParticleTransformer,
     compute_features,
+    eval_classifier,
     get_stats,
     load_raw_constituents_from_h5,
     standardize,
@@ -138,6 +141,46 @@ def maybe_build_jetreg_features(
     feat_hlt_dual = np.concatenate([feat_hlt_std, extra_global], axis=-1).astype(np.float32)
     feat_hlt_dual[~hlt_mask] = 0.0
     return feat_hlt_dual
+
+
+def maybe_eval_single_view_checkpoint(
+    ckpt_path: Path,
+    tag: str,
+    feat_test: np.ndarray,
+    mask_test: np.ndarray,
+    labels_test: np.ndarray,
+    model_cfg: Dict,
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+) -> Dict[str, float]:
+    """
+    Load a single-view classifier checkpoint (teacher/baseline), evaluate on test split,
+    and return AUC/FPR@30/FPR@50 metrics. Returns {} if ckpt is missing.
+    """
+    if not ckpt_path.exists():
+        print(f"Warning: {tag} checkpoint not found: {ckpt_path}")
+        return {}
+
+    model = ParticleTransformer(input_dim=7, **model_cfg).to(device)
+    state = _load_checkpoint_state(ckpt_path, device, tag)
+    model.load_state_dict(state)
+
+    ds = JetDataset(feat_test, mask_test, labels_test)
+    dl = DataLoader(
+        ds,
+        batch_size=int(batch_size),
+        shuffle=False,
+        num_workers=int(num_workers),
+        pin_memory=torch.cuda.is_available(),
+    )
+    auc, preds, labs = eval_classifier(model, dl, device)
+    fpr, tpr, _ = roc_curve(labs, preds)
+    return {
+        "auc": float(auc),
+        "fpr30": float(fpr_at_target_tpr(fpr, tpr, 0.30)),
+        "fpr50": float(fpr_at_target_tpr(fpr, tpr, 0.50)),
+    }
 
 
 def main() -> None:
@@ -344,6 +387,30 @@ def main() -> None:
     fpr30_stage2 = float(fpr_at_target_tpr(fpr_s2, tpr_s2, 0.30))
     fpr50_stage2 = float(fpr_at_target_tpr(fpr_s2, tpr_s2, 0.50))
 
+    # Evaluate teacher/baseline from source run on the exact same rebuilt test split.
+    teacher_metrics = maybe_eval_single_view_checkpoint(
+        ckpt_path=run_dir / "teacher.pt",
+        tag="teacher",
+        feat_test=feat_off_std[test_idx],
+        mask_test=masks_off[test_idx],
+        labels_test=labels[test_idx],
+        model_cfg=cfg["model"],
+        batch_size=bs,
+        num_workers=int(args.num_workers),
+        device=device,
+    )
+    baseline_metrics = maybe_eval_single_view_checkpoint(
+        ckpt_path=run_dir / "baseline.pt",
+        tag="baseline",
+        feat_test=feat_hlt_std[test_idx],
+        mask_test=hlt_mask[test_idx],
+        labels_test=labels[test_idx],
+        model_cfg=cfg["model"],
+        batch_size=bs,
+        num_workers=int(args.num_workers),
+        device=device,
+    )
+
     print("\n" + "=" * 70)
     print("FAST STAGE C: JOINT FINETUNE FROM SAVED STAGE2")
     print("=" * 70)
@@ -452,6 +519,8 @@ def main() -> None:
             "fpr30": float(fpr30_joint_fprsel),
             "fpr50": float(fpr50_joint_fprsel),
         },
+        "test_teacher_loaded": teacher_metrics,
+        "test_baseline_loaded": baseline_metrics,
         "baseline_teacher_from_source": base_test,
     }
 
@@ -468,6 +537,16 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("FAST STAGE C RESULTS")
     print("=" * 70)
+    if len(teacher_metrics) > 0:
+        print(
+            f"Teacher (loaded): AUC={teacher_metrics['auc']:.4f}, "
+            f"FPR30={teacher_metrics['fpr30']:.6f}, FPR50={teacher_metrics['fpr50']:.6f}"
+        )
+    if len(baseline_metrics) > 0:
+        print(
+            f"Baseline (loaded): AUC={baseline_metrics['auc']:.4f}, "
+            f"FPR30={baseline_metrics['fpr30']:.6f}, FPR50={baseline_metrics['fpr50']:.6f}"
+        )
     print(f"Loaded Stage2: AUC={auc_stage2:.4f}, FPR30={fpr30_stage2:.6f}, FPR50={fpr50_stage2:.6f}")
     print(f"StageC Selected: AUC={auc_joint:.4f}, FPR30={fpr30_joint:.6f}, FPR50={fpr50_joint:.6f}")
     if np.isfinite(auc_joint_fprsel):
