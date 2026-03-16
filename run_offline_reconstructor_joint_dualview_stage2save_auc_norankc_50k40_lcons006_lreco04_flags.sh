@@ -6,7 +6,7 @@
 #   sbatch run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_50k40_lcons006_lreco04_flags.sh
 
 #SBATCH --job-name=offAUC50kF
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=02:30:00
