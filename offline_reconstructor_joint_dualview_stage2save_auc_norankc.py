@@ -73,14 +73,18 @@ from offline_reconstructor_no_gt_local30kv2 import (
 
 
 # ----------------------------- Reproducibility ----------------------------- #
-random.seed(RANDOM_SEED)
-np.random.seed(RANDOM_SEED)
-torch.manual_seed(RANDOM_SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(RANDOM_SEED)
-    torch.cuda.manual_seed_all(RANDOM_SEED)
-torch.backends.cudnn.deterministic = True
-torch.backends.cudnn.benchmark = False
+def set_seed(seed: int) -> None:
+    random.seed(int(seed))
+    np.random.seed(int(seed))
+    torch.manual_seed(int(seed))
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(int(seed))
+        torch.cuda.manual_seed_all(int(seed))
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+set_seed(RANDOM_SEED)
 
 
 def _deepcopy_config() -> Dict:
@@ -1010,6 +1014,7 @@ def main() -> None:
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--num_workers", type=int, default=6)
     parser.add_argument("--skip_save_models", action="store_true")
+    parser.add_argument("--seed", type=int, default=RANDOM_SEED)
 
     # HLT controls
     parser.add_argument("--merge_radius", type=float, default=BASE_CONFIG["hlt_effects"]["merge_radius"])
@@ -1080,6 +1085,7 @@ def main() -> None:
     parser.add_argument("--jet_reg_dropout", type=float, default=0.1)
 
     args = parser.parse_args()
+    set_seed(int(args.seed))
 
     # This variant always selects checkpoints by validation AUC.
     selection_metric = "auc"
@@ -1142,7 +1148,7 @@ def main() -> None:
         const_off,
         masks_off,
         cfg,
-        seed=RANDOM_SEED,
+        seed=int(args.seed),
     )
     budget_merge_true = budget_truth["merge_lost_per_jet"].astype(np.float32)
     budget_eff_true = budget_truth["eff_lost_per_jet"].astype(np.float32)
@@ -1153,10 +1159,10 @@ def main() -> None:
 
     idx = np.arange(len(labels))
     train_idx, temp_idx = train_test_split(
-        idx, test_size=0.30, random_state=RANDOM_SEED, stratify=labels
+        idx, test_size=0.30, random_state=int(args.seed), stratify=labels
     )
     val_idx, test_idx = train_test_split(
-        temp_idx, test_size=0.50, random_state=RANDOM_SEED, stratify=labels[temp_idx]
+        temp_idx, test_size=0.50, random_state=int(args.seed), stratify=labels[temp_idx]
     )
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
@@ -1171,7 +1177,7 @@ def main() -> None:
         "n_train_jets": int(args.n_train_jets),
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
-        "seed": int(RANDOM_SEED),
+        "seed": int(args.seed),
         "split": {"train_frac": 0.70, "val_frac": 0.15, "test_frac": 0.15},
         "hlt_effects": cfg["hlt_effects"],
     }
