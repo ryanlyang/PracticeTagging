@@ -6,7 +6,7 @@
 #   checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_lcons0
 #
 #SBATCH --job-name=stgCbase
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=0:30:00
