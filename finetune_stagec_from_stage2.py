@@ -50,6 +50,26 @@ def set_seed(seed: int) -> None:
     torch.backends.cudnn.benchmark = False
 
 
+def _load_checkpoint_state(path: Path, device: torch.device, tag: str) -> Dict[str, torch.Tensor]:
+    """
+    Load checkpoint and return a plain state_dict.
+
+    Supports:
+    - plain state_dict files
+    - wrapped dicts like {"model": state_dict, ...}
+    """
+    ckpt = torch.load(path, map_location=device)
+    if isinstance(ckpt, dict) and "model" in ckpt and isinstance(ckpt["model"], dict):
+        return ckpt["model"]
+    if isinstance(ckpt, dict) and len(ckpt) > 0 and all(isinstance(v, torch.Tensor) for v in ckpt.values()):
+        return ckpt
+    keys = list(ckpt.keys())[:8] if isinstance(ckpt, dict) else [type(ckpt).__name__]
+    raise RuntimeError(
+        f"Unsupported checkpoint format for {tag}: {path}. "
+        f"Top-level keys/type preview: {keys}"
+    )
+
+
 def load_cfg_from_run(run_dir: Path) -> Dict:
     cfg = joint._deepcopy_config()
     hlt_stats_path = run_dir / "hlt_stats.json"
@@ -306,8 +326,10 @@ def main() -> None:
             f"Missing checkpoint(s): reco={reco_ckpt.exists()} dual={dual_ckpt.exists()}"
         )
 
-    reconstructor.load_state_dict(torch.load(reco_ckpt, map_location=device))
-    dual_joint.load_state_dict(torch.load(dual_ckpt, map_location=device))
+    reco_state = _load_checkpoint_state(reco_ckpt, device, "reconstructor")
+    dual_state = _load_checkpoint_state(dual_ckpt, device, "dual")
+    reconstructor.load_state_dict(reco_state)
+    dual_joint.load_state_dict(dual_state)
 
     # Compute Stage2 test before finetune for direct comparison.
     auc_stage2, preds_stage2, labs_stage2, _ = joint.eval_joint_model(
