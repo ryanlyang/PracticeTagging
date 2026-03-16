@@ -18,7 +18,7 @@ OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-40}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
-SEED_TAG="${SEED_TAG:-52}"
+SEED_TAG="${SEED_TAG:-0}"
 
 # Keep identical deterministic env across comparison runs.
 export PYTHONHASHSEED="${SEED_TAG}"
