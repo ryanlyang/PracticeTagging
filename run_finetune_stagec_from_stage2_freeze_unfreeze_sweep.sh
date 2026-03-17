@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH -J stgCFrzSw
-#SBATCH -p tier3
+#SBATCH -p debug
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
