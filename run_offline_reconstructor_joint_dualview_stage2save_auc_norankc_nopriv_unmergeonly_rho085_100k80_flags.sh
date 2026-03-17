@@ -25,8 +25,8 @@ N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-80}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint_070}"
-ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.70}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint_060}"
+ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.60}"
 
 set +u
 source ~/.bashrc
