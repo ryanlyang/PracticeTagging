@@ -11,8 +11,8 @@
 #SBATCH --job-name=nrivUO9
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
-#SBATCH --mem=32G
-#SBATCH --time=20:30:00
+#SBATCH --mem=64G
+#SBATCH --time=2-00:00:00
 #SBATCH --output=offline_reconstructor_logs/300k_80_offline_reco_nopriv_uo_rho090_%j.out
 #SBATCH --error=offline_reconstructor_logs/300k_80_offline_reco_nopriv_uo_rho090_%j.err
 
