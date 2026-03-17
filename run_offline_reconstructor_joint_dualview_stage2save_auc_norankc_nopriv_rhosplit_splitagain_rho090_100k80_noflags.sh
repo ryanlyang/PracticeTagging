@@ -13,8 +13,8 @@
 #SBATCH --job-name=nrivRSA
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
-#SBATCH --mem=48G
-#SBATCH --time=6:30:00
+#SBATCH --mem=32G
+#SBATCH --time=2:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_rho090_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_rho090_%j.err
 
@@ -23,14 +23,14 @@ set -euo pipefail
 mkdir -p offline_reconstructor_logs
 
 RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_rhosplit_splitagain_rho090_noflags}"
-N_TRAIN_JETS="${N_TRAIN_JETS:-300000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
-MAX_CONSTITS="${MAX_CONSTITS:-100}"
+MAX_CONSTITS="${MAX_CONSTITS:-80}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.85}"
-STAGEC_LR_DUAL="${STAGEC_LR_DUAL:-2e-6}"
-STAGEC_LR_RECO="${STAGEC_LR_RECO:-1e-6}"
+STAGEC_LR_DUAL="${STAGEC_LR_DUAL:-1e-5}"
+STAGEC_LR_RECO="${STAGEC_LR_RECO:-5e-6}"
 LAMBDA_RECO="${LAMBDA_RECO:-0.1}"
 LAMBDA_CONS="${LAMBDA_CONS:-0.1}"
 
