@@ -11,17 +11,17 @@
 #SBATCH --job-name=nrivUO9
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
-#SBATCH --mem=64G
-#SBATCH --time=2-00:00:00
-#SBATCH --output=offline_reconstructor_logs/500k_100_offline_reco_nopriv_uo_rho090_%j.out
-#SBATCH --error=offline_reconstructor_logs/500k_100_offline_reco_nopriv_uo_rho090_%j.err
+#SBATCH --mem=128G
+#SBATCH --time=3-12:00:00
+#SBATCH --output=offline_reconstructor_logs/1M_100_offline_reco_nopriv_uo_rho090_%j.out
+#SBATCH --error=offline_reconstructor_logs/1M_100_offline_reco_nopriv_uo_rho090_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_500kJ100C}"
-N_TRAIN_JETS="${N_TRAIN_JETS:-500000}"
+RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_1MJ100C}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
