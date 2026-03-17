@@ -233,11 +233,25 @@ def main() -> None:
 
     p.add_argument("--reco_ckpt", type=str, default="")
     p.add_argument("--dual_ckpt", type=str, default="")
+    p.add_argument(
+        "--fresh_dual_init",
+        action="store_true",
+        help="Initialize dual-view classifier from scratch instead of loading dual Stage2 checkpoint.",
+    )
 
     # Stage C knobs for fast iteration.
     p.add_argument("--stageC_epochs", type=int, default=35)
     p.add_argument("--stageC_patience", type=int, default=8)
     p.add_argument("--stageC_min_epochs", type=int, default=8)
+    p.add_argument(
+        "--stageC_freeze_reco_epochs",
+        type=int,
+        default=0,
+        help=(
+            "Freeze reconstructor for the first N Stage-C epochs, then unfreeze for the remaining epochs. "
+            "0 means never frozen."
+        ),
+    )
     p.add_argument("--stageC_lr_dual", type=float, default=2e-5)
     p.add_argument("--stageC_lr_reco", type=float, default=1e-5)
     p.add_argument("--lambda_reco", type=float, default=0.35)
@@ -451,25 +465,47 @@ def main() -> None:
 
     reco_ckpt = Path(args.reco_ckpt) if str(args.reco_ckpt).strip() else (run_dir / "offline_reconstructor_stage2.pt")
     dual_ckpt = Path(args.dual_ckpt) if str(args.dual_ckpt).strip() else (run_dir / "dual_joint_stage2.pt")
-    if not reco_ckpt.exists() or not dual_ckpt.exists():
+    if not reco_ckpt.exists():
+        raise FileNotFoundError(f"Missing reconstructor checkpoint: {reco_ckpt}")
+    if (not bool(args.fresh_dual_init)) and (not dual_ckpt.exists()):
+        raise FileNotFoundError(f"Missing dual checkpoint: {dual_ckpt}")
+    if bool(args.fresh_dual_init) and (not dual_ckpt.exists()):
         raise FileNotFoundError(
-            f"Missing checkpoint(s): reco={reco_ckpt.exists()} dual={dual_ckpt.exists()}"
+            f"Missing dual checkpoint for Stage2 reference metrics (fresh-dual mode): {dual_ckpt}"
         )
 
     reco_state = _load_checkpoint_state(reco_ckpt, device, "reconstructor")
-    dual_state = _load_checkpoint_state(dual_ckpt, device, "dual")
     reconstructor.load_state_dict(reco_state)
-    dual_joint.load_state_dict(dual_state)
-
-    # Compute Stage2 test before finetune for direct comparison.
-    auc_stage2, preds_stage2, labs_stage2, _ = joint.eval_joint_model(
-        reconstructor=reconstructor,
-        dual_model=dual_joint,
-        loader=dl_test_joint,
-        device=device,
-        corrected_weight_floor=float(args.corrected_weight_floor),
-        corrected_use_flags=bool(args.use_corrected_flags),
-    )
+    if bool(args.fresh_dual_init):
+        # Still evaluate loaded Stage2 model for reference metrics.
+        dual_ref = DualViewCrossAttnClassifier(
+            input_dim_a=dual_input_dim_a,
+            input_dim_b=dual_input_dim_b,
+            **cfg["model"],
+        ).to(device)
+        dual_ref.load_state_dict(_load_checkpoint_state(dual_ckpt, device, "dual"))
+        print(f"Dual init mode: FRESH (training model randomly initialized), reference Stage2 dual loaded from {dual_ckpt}")
+        auc_stage2, preds_stage2, labs_stage2, _ = joint.eval_joint_model(
+            reconstructor=reconstructor,
+            dual_model=dual_ref,
+            loader=dl_test_joint,
+            device=device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+        )
+        del dual_ref
+    else:
+        dual_state = _load_checkpoint_state(dual_ckpt, device, "dual")
+        dual_joint.load_state_dict(dual_state)
+        print(f"Dual init mode: LOADED from {dual_ckpt}")
+        auc_stage2, preds_stage2, labs_stage2, _ = joint.eval_joint_model(
+            reconstructor=reconstructor,
+            dual_model=dual_joint,
+            loader=dl_test_joint,
+            device=device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+        )
     fpr_s2, tpr_s2, _ = roc_curve(labs_stage2, preds_stage2)
     fpr30_stage2 = float(fpr_at_target_tpr(fpr_s2, tpr_s2, 0.30))
     fpr50_stage2 = float(fpr_at_target_tpr(fpr_s2, tpr_s2, 0.50))
@@ -503,28 +539,120 @@ def main() -> None:
     print("=" * 70)
 
     LOCAL30K_CONFIG["loss"] = cfg["loss"]
-    reconstructor, dual_joint, stageC_metrics, stageC_states = joint.train_joint_dual(
-        reconstructor=reconstructor,
-        dual_model=dual_joint,
-        train_loader=dl_train_joint,
-        val_loader=dl_val_joint,
-        device=device,
-        stage_name="StageC-FromSavedStage2",
-        freeze_reconstructor=False,
-        epochs=int(args.stageC_epochs),
+    total_stagec_epochs = int(args.stageC_epochs)
+    freeze_epochs = max(0, min(int(args.stageC_freeze_reco_epochs), total_stagec_epochs))
+    unfreeze_epochs = max(0, total_stagec_epochs - freeze_epochs)
+    if freeze_epochs > 0:
+        print(
+            f"Stage-C schedule: freeze reconstructor for {freeze_epochs} epoch(s), "
+            f"then unfreeze for {unfreeze_epochs} epoch(s)."
+        )
+    else:
+        print("Stage-C schedule: reconstructor unfrozen from epoch 1.")
+
+    def _is_auc_mode() -> bool:
+        return str(args.selection_metric).lower() == "auc"
+
+    def _better_selected(new_m: Dict[str, float], cur_m: Dict[str, float] | None) -> bool:
+        if cur_m is None:
+            return True
+        if _is_auc_mode():
+            return float(new_m.get("selected_val_auc", float("-inf"))) > float(cur_m.get("selected_val_auc", float("-inf")))
+        return float(new_m.get("selected_val_fpr50", float("inf"))) < float(cur_m.get("selected_val_fpr50", float("inf")))
+
+    def _better_auc(new_m: Dict[str, float], cur_m: Dict[str, float] | None) -> bool:
+        if cur_m is None:
+            return True
+        return float(new_m.get("best_val_auc_seen", float("-inf"))) > float(cur_m.get("best_val_auc_seen", float("-inf")))
+
+    def _better_fpr(new_m: Dict[str, float], cur_m: Dict[str, float] | None) -> bool:
+        if cur_m is None:
+            return True
+        return float(new_m.get("best_val_fpr50_seen", float("inf"))) < float(cur_m.get("best_val_fpr50_seen", float("inf")))
+
+    selected_metrics = None
+    auc_metrics = None
+    fpr_metrics = None
+    selected_states = None
+    auc_states = None
+    fpr_states = None
+    phase_reports = []
+
+    def _run_phase(phase_name: str, freeze_reco: bool, epochs: int, patience: int, min_epochs: int) -> None:
+        nonlocal reconstructor, dual_joint
+        nonlocal selected_metrics, auc_metrics, fpr_metrics
+        nonlocal selected_states, auc_states, fpr_states
+        if int(epochs) <= 0:
+            return
+        reconstructor, dual_joint, ph_metrics, ph_states = joint.train_joint_dual(
+            reconstructor=reconstructor,
+            dual_model=dual_joint,
+            train_loader=dl_train_joint,
+            val_loader=dl_val_joint,
+            device=device,
+            stage_name=phase_name,
+            freeze_reconstructor=bool(freeze_reco),
+            epochs=int(epochs),
+            patience=int(patience),
+            lr_dual=float(args.stageC_lr_dual),
+            lr_reco=float(args.stageC_lr_reco),
+            weight_decay=float(cfg["training"]["weight_decay"]),
+            warmup_epochs=int(cfg["training"]["warmup_epochs"]),
+            lambda_reco=float(args.lambda_reco),
+            lambda_rank=0.0,
+            lambda_cons=float(args.lambda_cons),
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+            min_epochs=int(min_epochs),
+            select_metric=str(args.selection_metric),
+        )
+        phase_reports.append(
+            {
+                "phase_name": phase_name,
+                "freeze_reconstructor": bool(freeze_reco),
+                "epochs": int(epochs),
+                "metrics": ph_metrics,
+            }
+        )
+        if _better_selected(ph_metrics, selected_metrics):
+            selected_metrics = ph_metrics
+            selected_states = ph_states.get("selected", {})
+        if _better_auc(ph_metrics, auc_metrics):
+            auc_metrics = ph_metrics
+            auc_states = ph_states.get("auc", {})
+        if _better_fpr(ph_metrics, fpr_metrics):
+            fpr_metrics = ph_metrics
+            fpr_states = ph_states.get("fpr50", {})
+
+    if freeze_epochs > 0:
+        _run_phase(
+            phase_name="StageC-FromSavedStage2-FrozenReco",
+            freeze_reco=True,
+            epochs=int(freeze_epochs),
+            patience=max(int(freeze_epochs) + 1, int(args.stageC_patience)),
+            min_epochs=int(freeze_epochs),
+        )
+    _run_phase(
+        phase_name="StageC-FromSavedStage2",
+        freeze_reco=False,
+        epochs=int(unfreeze_epochs if freeze_epochs > 0 else total_stagec_epochs),
         patience=int(args.stageC_patience),
-        lr_dual=float(args.stageC_lr_dual),
-        lr_reco=float(args.stageC_lr_reco),
-        weight_decay=float(cfg["training"]["weight_decay"]),
-        warmup_epochs=int(cfg["training"]["warmup_epochs"]),
-        lambda_reco=float(args.lambda_reco),
-        lambda_rank=0.0,
-        lambda_cons=float(args.lambda_cons),
-        corrected_weight_floor=float(args.corrected_weight_floor),
-        corrected_use_flags=bool(args.use_corrected_flags),
-        min_epochs=int(args.stageC_min_epochs),
-        select_metric=str(args.selection_metric),
+        min_epochs=min(int(args.stageC_min_epochs), int(unfreeze_epochs if freeze_epochs > 0 else total_stagec_epochs)),
     )
+
+    stageC_metrics = {
+        "selection_metric": str(args.selection_metric).lower(),
+        "selected_val_fpr50": float(selected_metrics.get("selected_val_fpr50", float("nan"))) if selected_metrics else float("nan"),
+        "selected_val_auc": float(selected_metrics.get("selected_val_auc", float("nan"))) if selected_metrics else float("nan"),
+        "best_val_fpr50_seen": float(fpr_metrics.get("best_val_fpr50_seen", float("nan"))) if fpr_metrics else float("nan"),
+        "best_val_auc_seen": float(auc_metrics.get("best_val_auc_seen", float("nan"))) if auc_metrics else float("nan"),
+    }
+    stageC_states = {
+        "selected": {"dual": (selected_states or {}).get("dual"), "reco": (selected_states or {}).get("reco")},
+        "auc": {"dual": (auc_states or {}).get("dual"), "reco": (auc_states or {}).get("reco")},
+        "fpr50": {"dual": (fpr_states or {}).get("dual"), "reco": (fpr_states or {}).get("reco")},
+        "phase_reports": phase_reports,
+    }
 
     auc_joint, preds_joint, labs_joint, _ = joint.eval_joint_model(
         reconstructor=reconstructor,
@@ -582,6 +710,7 @@ def main() -> None:
             "stageC_epochs": int(args.stageC_epochs),
             "stageC_patience": int(args.stageC_patience),
             "stageC_min_epochs": int(args.stageC_min_epochs),
+            "stageC_freeze_reco_epochs": int(args.stageC_freeze_reco_epochs),
             "stageC_lr_dual": float(args.stageC_lr_dual),
             "stageC_lr_reco": float(args.stageC_lr_reco),
             "lambda_reco": float(args.lambda_reco),
@@ -589,6 +718,7 @@ def main() -> None:
             "selection_metric": str(args.selection_metric),
             "corrected_weight_floor": float(args.corrected_weight_floor),
             "use_corrected_flags": bool(args.use_corrected_flags),
+            "fresh_dual_init": bool(args.fresh_dual_init),
         },
         "data_reload": {
             "setup_source": "saved data_setup.json" if use_saved_data_setup else "cli args",
@@ -601,6 +731,7 @@ def main() -> None:
             "ignore_saved_data_setup": bool(args.ignore_saved_data_setup),
         },
         "stageC_metrics": stageC_metrics,
+        "stageC_phase_reports": phase_reports,
         "test_stage2_loaded": {
             "auc": float(auc_stage2),
             "fpr30": float(fpr30_stage2),
