@@ -27,7 +27,7 @@ OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-80}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
-ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.90}"
+ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.85}"
 
 set +u
 source ~/.bashrc
