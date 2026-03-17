@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=32G
-#SBATCH -t 20:00:00
+#SBATCH -t 8:00:00
 #SBATCH -o offline_reconstructor_logs/stagec_sweep_small_%j.out
 #SBATCH -e offline_reconstructor_logs/stagec_sweep_small_%j.err
 
