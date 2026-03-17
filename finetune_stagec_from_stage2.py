@@ -254,6 +254,7 @@ def main() -> None:
     )
     p.add_argument("--stageC_lr_dual", type=float, default=2e-5)
     p.add_argument("--stageC_lr_reco", type=float, default=1e-5)
+    p.add_argument("--stageC_lambda_rank", type=float, default=0.0)
     p.add_argument("--lambda_reco", type=float, default=0.35)
     p.add_argument("--lambda_cons", type=float, default=0.0)
     p.add_argument("--selection_metric", type=str, default="auc", choices=["auc", "fpr50"])
@@ -599,7 +600,7 @@ def main() -> None:
             weight_decay=float(cfg["training"]["weight_decay"]),
             warmup_epochs=int(cfg["training"]["warmup_epochs"]),
             lambda_reco=float(args.lambda_reco),
-            lambda_rank=0.0,
+            lambda_rank=float(args.stageC_lambda_rank),
             lambda_cons=float(args.lambda_cons),
             corrected_weight_floor=float(args.corrected_weight_floor),
             corrected_use_flags=bool(args.use_corrected_flags),
@@ -713,6 +714,7 @@ def main() -> None:
             "stageC_freeze_reco_epochs": int(args.stageC_freeze_reco_epochs),
             "stageC_lr_dual": float(args.stageC_lr_dual),
             "stageC_lr_reco": float(args.stageC_lr_reco),
+            "stageC_lambda_rank": float(args.stageC_lambda_rank),
             "lambda_reco": float(args.lambda_reco),
             "lambda_cons": float(args.lambda_cons),
             "selection_metric": str(args.selection_metric),
