@@ -20,7 +20,7 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_noflags_noconf_new}"
+RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_noflags_noconf_less_cons}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-80}"
@@ -54,8 +54,8 @@ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmerg
   --stageB_lambda_cons 0.0 \
   --stageC_lr_dual 1e-5 \
   --stageC_lr_reco 5e-6 \
-  --lambda_reco 0.6 \
-  --lambda_cons 0.06 \
+  --lambda_reco 0.4 \
+  --lambda_cons 0.02 \
   --added_target_scale "${ADDED_TARGET_SCALE}" \
   --disable_final_kd \
   --device cuda
