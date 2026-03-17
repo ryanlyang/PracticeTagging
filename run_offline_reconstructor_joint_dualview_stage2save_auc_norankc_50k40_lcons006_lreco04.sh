@@ -12,7 +12,7 @@
 #   RUN_NAME=... N_TRAIN_JETS=... MAX_CONSTITS=... SAVE_DIR=...
 #
 #SBATCH --job-name=offAUC50k
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=02:30:00

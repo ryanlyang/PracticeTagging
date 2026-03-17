@@ -9,7 +9,7 @@
 #   sbatch run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_trueadd_100k80_flags.sh
 
 #SBATCH --job-name=nrivUO1
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=02:333333330:00
