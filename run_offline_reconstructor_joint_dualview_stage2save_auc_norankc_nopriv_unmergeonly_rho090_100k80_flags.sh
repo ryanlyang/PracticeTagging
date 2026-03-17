@@ -54,7 +54,7 @@ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmerg
   --stageB_lambda_cons 0.0 \
   --stageC_lr_dual 1e-5 \
   --stageC_lr_reco 5e-6 \
-  --lambda_reco 0.4 \
+  --lambda_reco 0.6 \
   --lambda_cons 0.06 \
   --added_target_scale "${ADDED_TARGET_SCALE}" \
   --disable_final_kd \
