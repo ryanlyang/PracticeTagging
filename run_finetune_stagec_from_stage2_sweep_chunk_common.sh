@@ -179,19 +179,23 @@ PY
     metrics_row=$'fail\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan\tnan'
   fi
 
-  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
-    "${cfg_idx}" "${run_name}" "${metrics_row}" \
-    "${lambda_reco}" "${lambda_cons}" "${stagec_lr_dual}" "${stagec_lr_reco}" "" \
-    | awk -F'\t' 'BEGIN{OFS="\t"}{
-        # Reorder so hyperparams stay near the front.
-        # Input columns:
-        # 1 cfg_idx, 2 run_name, 3 status, 4 stage2_auc, 5 stage2_fpr30, 6 stage2_fpr50,
-        # 7 stagec_auc, 8 stagec_fpr30, 9 stagec_fpr50, 10 stagec_best_auc, 11 stagec_best_fpr30,
-        # 12 stagec_best_fpr50, 13 baseline_auc, 14 baseline_fpr30, 15 baseline_fpr50,
-        # 16 teacher_auc, 17 teacher_fpr30, 18 teacher_fpr50, 19 lambda_reco, 20 lambda_cons,
-        # 21 stageC_lr_dual, 22 stageC_lr_reco
-        print $1,$2,$3,$19,$20,$21,$22,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18
-    }' >> "${summary_file}"
+  IFS=$'\t' read -r status \
+    stage2_auc stage2_fpr30 stage2_fpr50 \
+    stagec_auc stagec_fpr30 stagec_fpr50 \
+    stagec_bestfpr50_auc stagec_bestfpr50_fpr30 stagec_bestfpr50_fpr50 \
+    baseline_auc baseline_fpr30 baseline_fpr50 \
+    teacher_auc teacher_fpr30 teacher_fpr50 \
+    <<< "${metrics_row}"
+
+  printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n" \
+    "${cfg_idx}" "${run_name}" "${status}" \
+    "${lambda_reco}" "${lambda_cons}" "${stagec_lr_dual}" "${stagec_lr_reco}" \
+    "${stage2_auc}" "${stage2_fpr30}" "${stage2_fpr50}" \
+    "${stagec_auc}" "${stagec_fpr30}" "${stagec_fpr50}" \
+    "${stagec_bestfpr50_auc}" "${stagec_bestfpr50_fpr30}" "${stagec_bestfpr50_fpr50}" \
+    "${baseline_auc}" "${baseline_fpr30}" "${baseline_fpr50}" \
+    "${teacher_auc}" "${teacher_fpr30}" "${teacher_fpr50}" \
+    >> "${summary_file}"
 done
 
 echo

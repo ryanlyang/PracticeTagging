@@ -141,6 +141,8 @@ CONFIG = {
         "patience": 20,
         "stage1_epochs": 20,
         "stage2_epochs": 55,
+        # Do not allow early stopping until this many epochs after stage_scale reaches 1.0.
+        "min_full_scale_epochs": 5,
     },
     "loss": {
         "w_set": 1.0,
@@ -906,6 +908,7 @@ def train_reconstructor(
     best_val = 1e9
     no_improve = 0
     best_metrics: Dict[str, float] = {}
+    min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
 
     for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
         model.train()
@@ -1046,7 +1049,7 @@ def train_reconstructor(
                 f"sparse={va_sparse:.4f}, local={va_local:.4f}, stage_scale={sc:.2f}"
             )
 
-        if no_improve >= int(train_cfg["patience"]):
+        if (ep + 1) >= min_stop_epoch and no_improve >= int(train_cfg["patience"]):
             print(f"Early stopping reconstructor at epoch {ep+1}")
             break
 

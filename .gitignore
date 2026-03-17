@@ -11,3 +11,5 @@ offline_reconstructor_no_gt_nopriv/
 joint_50k_80c/
 
 download_checkpoints/
+
+offline_reconstructor_logs/
