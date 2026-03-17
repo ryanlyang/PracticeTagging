@@ -12,7 +12,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=02:333333330:00
+#SBATCH --time=02:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_nopriv_uo_trueadd_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_nopriv_uo_trueadd_%j.err
 
