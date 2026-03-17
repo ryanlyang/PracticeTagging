@@ -20,7 +20,7 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_noflags_noconf}"
+RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_noflags_noconf_new}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-80}"
