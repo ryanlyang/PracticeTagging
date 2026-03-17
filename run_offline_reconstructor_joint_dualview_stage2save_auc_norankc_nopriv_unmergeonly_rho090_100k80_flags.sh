@@ -12,7 +12,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=02:30:00
+#SBATCH --time=20:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_nopriv_uo_rho090_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_nopriv_uo_rho090_%j.err
 
@@ -21,9 +21,9 @@ set -euo pipefail
 mkdir -p offline_reconstructor_logs
 
 RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_noflags_noconf_lambda_cons_in_stageb}"
-N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-300000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
-MAX_CONSTITS="${MAX_CONSTITS:-80}"
+MAX_CONSTITS="${MAX_CONSTITS:-100}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.90}"
@@ -51,7 +51,7 @@ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmerg
   --num_workers "${NUM_WORKERS}" \
   --selection_metric auc \
   --stageB_lambda_rank 0.0 \
-  --stageB_lambda_cons 0.06 \
+  --stageB_lambda_cons 0.00 \
   --stageC_lr_dual 1e-5 \
   --stageC_lr_reco 5e-6 \
   --lambda_reco 0.4 \
