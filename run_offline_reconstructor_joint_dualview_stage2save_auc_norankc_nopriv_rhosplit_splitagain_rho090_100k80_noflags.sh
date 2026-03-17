@@ -13,8 +13,8 @@
 #SBATCH --job-name=nrivRSA
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
-#SBATCH --mem=64G
-#SBATCH --time=10:00:00
+#SBATCH --mem=32G
+#SBATCH --time=2:30:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_rho090_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_rho090_%j.err
 
@@ -54,8 +54,8 @@ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhospl
   --selection_metric auc \
   --stageB_lambda_rank 0.0 \
   --stageB_lambda_cons 0.0 \
-  --stageC_lr_dual 2e-6 \
-  --stageC_lr_reco 1e-6 \
+  --stageC_lr_dual 1e-5 \
+  --stageC_lr_reco 5e-6 \
   --lambda_reco 0.1 \
   --lambda_cons 0.1 \
   --added_target_scale "${ADDED_TARGET_SCALE}" \
