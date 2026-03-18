@@ -45,6 +45,13 @@ SELECTION_METRIC="${SELECTION_METRIC:-auc}"
 
 # Fixed discrepancy target definition for this sweep.
 DISC_TARGET_TPR="${DISC_TARGET_TPR:-0.50}"
+DISC_TEACHER_CONF_MIN="${DISC_TEACHER_CONF_MIN:-0.60}"
+DISC_CORRECTNESS_TAU="${DISC_CORRECTNESS_TAU:-0.05}"
+DISC_DISABLE_TEACHER_HARD_CORRECT_GATE="${DISC_DISABLE_TEACHER_HARD_CORRECT_GATE:-0}"
+DISC_DISABLE_TEACHER_CONF_GATE="${DISC_DISABLE_TEACHER_CONF_GATE:-0}"
+DISC_DISABLE_TEACHER_BETTER_GATE="${DISC_DISABLE_TEACHER_BETTER_GATE:-0}"
+DISC_INCLUDE_POS="${DISC_INCLUDE_POS:-0}"
+DISC_POS_SCALE="${DISC_POS_SCALE:-0.25}"
 
 # 10 favorite strength presets (weak -> strong).
 # cfg00 is control (no discrepancy weighting).
@@ -87,6 +94,9 @@ echo "Stage-C discrepancy strength sweep"
 echo "Run dir: ${RUN_DIR}"
 echo "Save dir: ${SAVE_DIR}"
 echo "Configs: ${N_CFG}"
+echo "Teacher gates: hard=$((1-DISC_DISABLE_TEACHER_HARD_CORRECT_GATE)) conf=$((1-DISC_DISABLE_TEACHER_CONF_GATE)) better=$((1-DISC_DISABLE_TEACHER_BETTER_GATE))"
+echo "Teacher conf min/tau: ${DISC_TEACHER_CONF_MIN} / ${DISC_CORRECTNESS_TAU}"
+echo "Include pos branch: ${DISC_INCLUDE_POS} (pos_scale=${DISC_POS_SCALE})"
 echo "Summary: ${SUMMARY_FILE}"
 echo "============================================================"
 
@@ -130,6 +140,8 @@ for ((i=0; i<N_CFG; i++)); do
     --disc_lambda "${dl}"
     --disc_max_mult "${dm}"
     --disc_tau "${dt}"
+    --disc_teacher_conf_min "${DISC_TEACHER_CONF_MIN}"
+    --disc_correctness_tau "${DISC_CORRECTNESS_TAU}"
   )
 
   if [[ "${de}" -eq 1 ]]; then
@@ -137,6 +149,18 @@ for ((i=0; i<N_CFG; i++)); do
   fi
   if [[ "${dnn}" -eq 1 ]]; then
     cmd+=(--disc_no_mean_normalize)
+  fi
+  if [[ "${DISC_DISABLE_TEACHER_HARD_CORRECT_GATE}" -eq 1 ]]; then
+    cmd+=(--disc_disable_teacher_hard_correct_gate)
+  fi
+  if [[ "${DISC_DISABLE_TEACHER_CONF_GATE}" -eq 1 ]]; then
+    cmd+=(--disc_disable_teacher_conf_gate)
+  fi
+  if [[ "${DISC_DISABLE_TEACHER_BETTER_GATE}" -eq 1 ]]; then
+    cmd+=(--disc_disable_teacher_better_gate)
+  fi
+  if [[ "${DISC_INCLUDE_POS}" -eq 1 ]]; then
+    cmd+=(--disc_include_pos --disc_pos_scale "${DISC_POS_SCALE}")
   fi
 
   set +e
@@ -222,4 +246,3 @@ else
   cat "${SUMMARY_FILE}"
 fi
 echo "Summary written to: ${SUMMARY_FILE}"
-

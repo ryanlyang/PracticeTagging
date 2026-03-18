@@ -259,20 +259,40 @@ def build_discrepancy_weights(
     include_pos: bool,
     pos_scale: float,
     normalize_mean_one: bool,
+    teacher_conf_min: float,
+    correctness_tau: float,
+    use_teacher_hard_correct_gate: bool,
+    use_teacher_conf_gate: bool,
+    use_teacher_better_gate: bool,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     tau = max(float(tau), 1e-6)
+    correctness_tau = max(float(correctness_tau), 1e-6)
     target_tpr = float(np.clip(target_tpr, 0.0, 1.0))
     max_mult = max(float(max_mult), 1.0)
     lambda_disc = max(float(lambda_disc), 0.0)
+    teacher_conf_min = float(np.clip(teacher_conf_min, 0.0, 1.0))
 
     t_off = prob_threshold_at_target_tpr(p_teacher_val[y_val == 1], target_tpr)
     t_hlt = prob_threshold_at_target_tpr(p_baseline_val[y_val == 1], target_tpr)
 
     y_train = y_train.astype(np.int64)
+    p_teacher_true = np.where(y_train == 1, p_teacher_train, 1.0 - p_teacher_train).astype(np.float32)
+    p_hlt_true = np.where(y_train == 1, p_baseline_train, 1.0 - p_baseline_train).astype(np.float32)
+
+    teacher_hard_correct = ((p_teacher_train >= 0.5).astype(np.int64) == y_train).astype(np.float32)
+    gate = np.ones_like(p_teacher_true, dtype=np.float32)
+    if bool(use_teacher_hard_correct_gate):
+        gate *= teacher_hard_correct
+    if bool(use_teacher_conf_gate):
+        gate *= _sigmoid_np((p_teacher_true - teacher_conf_min) / correctness_tau).astype(np.float32)
+    if bool(use_teacher_better_gate):
+        gate *= _sigmoid_np((p_teacher_true - p_hlt_true) / correctness_tau).astype(np.float32)
+
     r_neg = (
         _sigmoid_np((p_baseline_train - t_hlt) / tau)
         * _sigmoid_np((t_off - p_teacher_train) / tau)
         * (y_train == 0).astype(np.float32)
+        * gate
     ).astype(np.float32)
     r = r_neg.astype(np.float32, copy=True)
 
@@ -282,6 +302,7 @@ def build_discrepancy_weights(
             _sigmoid_np((p_teacher_train - t_off) / tau)
             * _sigmoid_np((t_hlt - p_baseline_train) / tau)
             * (y_train == 1).astype(np.float32)
+            * gate
         ).astype(np.float32)
         r += float(pos_scale) * r_pos
 
@@ -300,8 +321,14 @@ def build_discrepancy_weights(
         "include_pos": bool(include_pos),
         "pos_scale": float(pos_scale),
         "normalize_mean_one": bool(normalize_mean_one),
+        "teacher_conf_min": float(teacher_conf_min),
+        "correctness_tau": float(correctness_tau),
+        "use_teacher_hard_correct_gate": bool(use_teacher_hard_correct_gate),
+        "use_teacher_conf_gate": bool(use_teacher_conf_gate),
+        "use_teacher_better_gate": bool(use_teacher_better_gate),
         "t_off_val": float(t_off),
         "t_hlt_val": float(t_hlt),
+        "teacher_hard_correct_rate": float(np.mean(teacher_hard_correct)),
         "mean_r_neg": float(np.mean(r_neg)),
         "mean_r_pos": float(np.mean(r_pos)),
         "mean_weight": float(np.mean(w)),
@@ -631,6 +658,11 @@ def main() -> None:
     p.add_argument("--disc_include_pos", action="store_true")
     p.add_argument("--disc_pos_scale", type=float, default=0.25)
     p.add_argument("--disc_no_mean_normalize", action="store_true")
+    p.add_argument("--disc_teacher_conf_min", type=float, default=0.60)
+    p.add_argument("--disc_correctness_tau", type=float, default=0.05)
+    p.add_argument("--disc_disable_teacher_hard_correct_gate", action="store_true")
+    p.add_argument("--disc_disable_teacher_conf_gate", action="store_true")
+    p.add_argument("--disc_disable_teacher_better_gate", action="store_true")
 
     # Optional overrides for reconstruction loss weights during Stage C.
     p.add_argument("--loss_w_pt_ratio", type=float, default=-1.0)
@@ -847,6 +879,11 @@ def main() -> None:
             include_pos=bool(args.disc_include_pos),
             pos_scale=float(args.disc_pos_scale),
             normalize_mean_one=(not bool(args.disc_no_mean_normalize)),
+            teacher_conf_min=float(args.disc_teacher_conf_min),
+            correctness_tau=float(args.disc_correctness_tau),
+            use_teacher_hard_correct_gate=(not bool(args.disc_disable_teacher_hard_correct_gate)),
+            use_teacher_conf_gate=(not bool(args.disc_disable_teacher_conf_gate)),
+            use_teacher_better_gate=(not bool(args.disc_disable_teacher_better_gate)),
         )
         discrepancy_summary["enabled"] = True
         print(
@@ -1169,6 +1206,11 @@ def main() -> None:
             "disc_include_pos": bool(args.disc_include_pos),
             "disc_pos_scale": float(args.disc_pos_scale),
             "disc_no_mean_normalize": bool(args.disc_no_mean_normalize),
+            "disc_teacher_conf_min": float(args.disc_teacher_conf_min),
+            "disc_correctness_tau": float(args.disc_correctness_tau),
+            "disc_disable_teacher_hard_correct_gate": bool(args.disc_disable_teacher_hard_correct_gate),
+            "disc_disable_teacher_conf_gate": bool(args.disc_disable_teacher_conf_gate),
+            "disc_disable_teacher_better_gate": bool(args.disc_disable_teacher_better_gate),
         },
         "data_reload": {
             "setup_source": "saved data_setup.json" if use_saved_data_setup else "cli args",
