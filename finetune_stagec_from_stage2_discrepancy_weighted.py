@@ -264,6 +264,7 @@ def build_discrepancy_weights(
     use_teacher_hard_correct_gate: bool,
     use_teacher_conf_gate: bool,
     use_teacher_better_gate: bool,
+    weight_mode: str,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     tau = max(float(tau), 1e-6)
     correctness_tau = max(float(correctness_tau), 1e-6)
@@ -288,23 +289,47 @@ def build_discrepancy_weights(
     if bool(use_teacher_better_gate):
         gate *= _sigmoid_np((p_teacher_true - p_hlt_true) / correctness_tau).astype(np.float32)
 
-    r_neg = (
-        _sigmoid_np((p_baseline_train - t_hlt) / tau)
-        * _sigmoid_np((t_off - p_teacher_train) / tau)
-        * (y_train == 0).astype(np.float32)
-        * gate
-    ).astype(np.float32)
-    r = r_neg.astype(np.float32, copy=True)
+    mode = str(weight_mode).strip().lower()
+    if mode not in ("tail_disagreement", "smooth_delta"):
+        raise ValueError(f"Unsupported --disc_weight_mode: {weight_mode}")
 
-    r_pos = np.zeros_like(r, dtype=np.float32)
-    if bool(include_pos):
-        r_pos = (
-            _sigmoid_np((p_teacher_train - t_off) / tau)
-            * _sigmoid_np((t_hlt - p_baseline_train) / tau)
-            * (y_train == 1).astype(np.float32)
+    if mode == "smooth_delta":
+        # Smooth discrepancy: emphasize jets where HLT is more top-like than teacher (for y=0),
+        # gated by teacher-right confidence checks to avoid noisy disagreements.
+        r_neg = (
+            np.maximum(p_baseline_train - p_teacher_train, 0.0).astype(np.float32)
+            * (y_train == 0).astype(np.float32)
             * gate
         ).astype(np.float32)
-        r += float(pos_scale) * r_pos
+        r = r_neg.astype(np.float32, copy=True)
+
+        r_pos = np.zeros_like(r, dtype=np.float32)
+        if bool(include_pos):
+            r_pos = (
+                np.maximum(p_teacher_train - p_baseline_train, 0.0).astype(np.float32)
+                * (y_train == 1).astype(np.float32)
+                * gate
+            ).astype(np.float32)
+            r += float(pos_scale) * r_pos
+    else:
+        # Original tail-focused discrepancy weighting.
+        r_neg = (
+            _sigmoid_np((p_baseline_train - t_hlt) / tau)
+            * _sigmoid_np((t_off - p_teacher_train) / tau)
+            * (y_train == 0).astype(np.float32)
+            * gate
+        ).astype(np.float32)
+        r = r_neg.astype(np.float32, copy=True)
+
+        r_pos = np.zeros_like(r, dtype=np.float32)
+        if bool(include_pos):
+            r_pos = (
+                _sigmoid_np((p_teacher_train - t_off) / tau)
+                * _sigmoid_np((t_hlt - p_baseline_train) / tau)
+                * (y_train == 1).astype(np.float32)
+                * gate
+            ).astype(np.float32)
+            r += float(pos_scale) * r_pos
 
     w = (1.0 + float(lambda_disc) * r).astype(np.float32)
     w = np.clip(w, 1.0, float(max_mult)).astype(np.float32)
@@ -314,6 +339,7 @@ def build_discrepancy_weights(
             w = (w / m).astype(np.float32)
 
     summary = {
+        "weight_mode": mode,
         "target_tpr": float(target_tpr),
         "tau": float(tau),
         "lambda_disc": float(lambda_disc),
@@ -651,6 +677,7 @@ def main() -> None:
     p.add_argument("--corrected_weight_floor", type=float, default=1e-4)
     p.add_argument("--use_corrected_flags", action="store_true")
     p.add_argument("--disc_weight_enable", action="store_true")
+    p.add_argument("--disc_weight_mode", type=str, default="tail_disagreement", choices=["tail_disagreement", "smooth_delta"])
     p.add_argument("--disc_target_tpr", type=float, default=0.50)
     p.add_argument("--disc_tau", type=float, default=0.05)
     p.add_argument("--disc_lambda", type=float, default=1.0)
@@ -884,6 +911,7 @@ def main() -> None:
             use_teacher_hard_correct_gate=(not bool(args.disc_disable_teacher_hard_correct_gate)),
             use_teacher_conf_gate=(not bool(args.disc_disable_teacher_conf_gate)),
             use_teacher_better_gate=(not bool(args.disc_disable_teacher_better_gate)),
+            weight_mode=str(args.disc_weight_mode),
         )
         discrepancy_summary["enabled"] = True
         print(
@@ -1199,6 +1227,7 @@ def main() -> None:
             "use_corrected_flags": bool(args.use_corrected_flags),
             "fresh_dual_init": bool(args.fresh_dual_init),
             "disc_weight_enable": bool(args.disc_weight_enable),
+            "disc_weight_mode": str(args.disc_weight_mode),
             "disc_target_tpr": float(args.disc_target_tpr),
             "disc_tau": float(args.disc_tau),
             "disc_lambda": float(args.disc_lambda),
