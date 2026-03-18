@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=stc5k03
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=64G
-#SBATCH --time=1-05:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --output=offline_reconstructor_logs/stagec_sweep_500k100_g90_chunk03_%j.out
 #SBATCH --error=offline_reconstructor_logs/stagec_sweep_500k100_g90_chunk03_%j.err
 
