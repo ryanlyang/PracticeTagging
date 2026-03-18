@@ -1082,6 +1082,18 @@ def main() -> None:
     parser.add_argument("--stageB_lr_dual", type=float, default=4e-4)
     parser.add_argument("--stageB_lambda_rank", type=float, default=0.0)
     parser.add_argument("--stageB_lambda_cons", type=float, default=0.0)
+    parser.add_argument(
+        "--stageB_train_frac",
+        type=float,
+        default=1.0,
+        help="Fraction of train split used in Stage B only (Stage A/C still use full train split).",
+    )
+    parser.add_argument(
+        "--stageB_subset_seed",
+        type=int,
+        default=-1,
+        help="Seed for Stage-B subset sampling; negative means reuse --seed.",
+    )
 
     # Kept for CLI compatibility; this script always selects by val_auc.
     parser.add_argument("--selection_metric", type=str, default="auc", choices=["auc", "fpr50"])
@@ -1232,6 +1244,22 @@ def main() -> None:
     )
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
+    stageB_train_frac = float(np.clip(args.stageB_train_frac, 0.0, 1.0))
+    if stageB_train_frac <= 0.0:
+        raise ValueError("--stageB_train_frac must be > 0.")
+    stageB_subset_seed = int(args.seed) if int(args.stageB_subset_seed) < 0 else int(args.stageB_subset_seed)
+    if stageB_train_frac < 0.999999:
+        n_stageb = max(1, int(round(float(len(train_idx)) * stageB_train_frac)))
+        rng_stageb = np.random.default_rng(stageB_subset_seed)
+        stageB_train_idx = np.asarray(rng_stageb.choice(train_idx, size=n_stageb, replace=False), dtype=np.int64)
+        stageB_train_idx.sort()
+    else:
+        stageB_train_idx = train_idx.astype(np.int64, copy=True)
+    print(
+        f"Stage-B train subset: N={len(stageB_train_idx)} / {len(train_idx)} "
+        f"(frac={len(stageB_train_idx) / max(1, len(train_idx)):.3f}, seed={stageB_subset_seed})"
+    )
+
     means, stds = get_stats(feat_off, masks_off, train_idx)
     feat_off_std = standardize(feat_off, masks_off, means, stds)
     feat_hlt_std = standardize(feat_hlt, hlt_mask, means, stds)
@@ -1250,6 +1278,9 @@ def main() -> None:
         "added_target_scale": float(added_target_scale),
         "mean_true_added_raw": float(true_added_raw.mean()),
         "mean_target_added": float(budget_merge_true.mean()),
+        "stageB_train_frac": float(stageB_train_frac),
+        "stageB_subset_seed": int(stageB_subset_seed),
+        "stageB_train_count": int(len(stageB_train_idx)),
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
         json.dump(data_setup, f, indent=2)
@@ -1258,6 +1289,7 @@ def main() -> None:
         train_idx=train_idx.astype(np.int64),
         val_idx=val_idx.astype(np.int64),
         test_idx=test_idx.astype(np.int64),
+        stageB_train_idx=stageB_train_idx.astype(np.int64),
         means=means.astype(np.float32),
         stds=stds.astype(np.float32),
     )
@@ -1430,6 +1462,12 @@ def main() -> None:
         budget_merge_true[train_idx], budget_eff_true[train_idx],
         labels[train_idx],
     )
+    ds_train_joint_stageb = JointDualDataset(
+        feat_hlt_std[stageB_train_idx], feat_hlt_dual[stageB_train_idx], hlt_mask[stageB_train_idx], hlt_const[stageB_train_idx],
+        const_off[stageB_train_idx], masks_off[stageB_train_idx],
+        budget_merge_true[stageB_train_idx], budget_eff_true[stageB_train_idx],
+        labels[stageB_train_idx],
+    )
     ds_val_joint = JointDualDataset(
         feat_hlt_std[val_idx], feat_hlt_dual[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx],
@@ -1445,6 +1483,10 @@ def main() -> None:
 
     dl_train_joint = DataLoader(
         ds_train_joint, batch_size=BS, shuffle=True, drop_last=True,
+        num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),
+    )
+    dl_train_joint_stageb = DataLoader(
+        ds_train_joint_stageb, batch_size=BS, shuffle=True, drop_last=True,
         num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),
     )
     dl_val_joint = DataLoader(
@@ -1466,7 +1508,7 @@ def main() -> None:
     reconstructor, dual_joint, stageB_metrics, stageB_states = train_joint_dual(
         reconstructor=reconstructor,
         dual_model=dual_joint,
-        train_loader=dl_train_joint,
+        train_loader=dl_train_joint_stageb,
         val_loader=dl_val_joint,
         device=device,
         stage_name="StageB-DualPretrain",
@@ -1905,6 +1947,10 @@ def main() -> None:
                     "added_target_scale": float(added_target_scale),
                     "mean_true_added_raw": float(true_added_raw.mean()),
                     "mean_target_added": float(budget_merge_true.mean()),
+                    "stageB_train_frac": float(stageB_train_frac),
+                    "stageB_subset_seed": int(stageB_subset_seed),
+                    "stageB_train_count": int(len(stageB_train_idx)),
+                    "train_count": int(len(train_idx)),
                 },
                 "jet_regressor": jet_reg_metrics,
                 "stageA_reconstructor": reco_val_metrics,
