@@ -19,7 +19,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH -t 5:00:00
+#SBATCH -t 23:00:00
 #SBATCH -o offline_reconstructor_logs/risk_head_sweeps/risk_head_sweep_%j.out
 #SBATCH -e offline_reconstructor_logs/risk_head_sweeps/risk_head_sweep_%j.err
 
@@ -32,7 +32,7 @@ SAVE_DIR="${SAVE_DIR:-checkpoints/hlt_disagreement_risk_sweep}"
 RUN_PREFIX="${RUN_PREFIX:-risk_head_500k100_sweep}"
 
 TRAIN_PATH="${TRAIN_PATH:-./data}"
-N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
