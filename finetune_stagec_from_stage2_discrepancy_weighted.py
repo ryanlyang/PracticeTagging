@@ -27,6 +27,7 @@ from sklearn.metrics import roc_curve
 from torch.utils.data import DataLoader, Dataset
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc as joint
+import offline_reconstructor_no_gt_local30kv2 as reco_base
 from offline_reconstructor_no_gt_local30kv2 import (
     CONFIG as LOCAL30K_CONFIG,
     OfflineReconstructor,
@@ -245,6 +246,145 @@ def _sigmoid_np(x: np.ndarray) -> np.ndarray:
     return 1.0 / (1.0 + np.exp(-x))
 
 
+def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) -> torch.Tensor:
+    if sample_weight is None:
+        return vec.mean()
+    denom = sample_weight.sum().clamp(min=1e-6)
+    return (vec * sample_weight).sum() / denom
+
+
+def compute_reconstruction_losses_weighted(
+    out: Dict[str, torch.Tensor],
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    const_off: torch.Tensor,
+    mask_off: torch.Tensor,
+    budget_merge_true: torch.Tensor,
+    budget_eff_true: torch.Tensor,
+    loss_cfg: Dict,
+    sample_weight: torch.Tensor | None = None,
+) -> Dict[str, torch.Tensor]:
+    """
+    Stage-C helper mirroring offline_reconstructor_no_gt_local30kv2.compute_reconstruction_losses,
+    but with optional per-jet sample weighting on the final batch reduction.
+    """
+    eps = 1e-8
+
+    if sample_weight is not None:
+        if sample_weight.dim() != 1 or sample_weight.shape[0] != const_hlt.shape[0]:
+            raise ValueError(
+                f"sample_weight shape mismatch for reconstruction weighting: "
+                f"{tuple(sample_weight.shape)} vs batch {const_hlt.shape[0]}"
+            )
+        sw = sample_weight.float().clamp(min=0.0)
+    else:
+        sw = None
+
+    pred = out["cand_tokens"]
+    w = out["cand_weights"].clamp(0.0, 1.0)
+
+    cost = reco_base._token_cost_matrix(pred, const_off)
+    valid_tgt = mask_off.unsqueeze(1)
+    cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
+
+    pred_to_tgt = cost.min(dim=2).values
+    loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
+
+    penalty = float(loss_cfg["unselected_penalty"]) * (1.0 - w).unsqueeze(2)
+    tgt_to_pred = (cost + penalty).min(dim=1).values
+    tgt_mask_f = mask_off.float()
+    loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
+    loss_set_vec = loss_pred_to_tgt + loss_tgt_to_pred
+
+    pred_px, pred_py, pred_pz, pred_E = reco_base._weighted_fourvec_sums(pred, w)
+    true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off, mask_off.float())
+
+    norm = true_px.abs() + true_py.abs() + true_pz.abs() + true_E.abs() + 1.0
+    loss_phys_vec = (
+        (pred_px - true_px).abs()
+        + (pred_py - true_py).abs()
+        + (pred_pz - true_pz).abs()
+        + (pred_E - true_E).abs()
+    ) / norm
+
+    pred_pt = torch.sqrt(pred_px.pow(2) + pred_py.pow(2) + eps)
+    true_pt = torch.sqrt(true_px.pow(2) + true_py.pow(2) + eps)
+    pt_ratio = pred_pt / (true_pt + eps)
+    loss_pt_ratio_vec = F.smooth_l1_loss(pt_ratio, torch.ones_like(pt_ratio), reduction="none")
+
+    e_ratio = pred_E / (true_E + eps)
+    loss_e_ratio_vec = F.smooth_l1_loss(e_ratio, torch.ones_like(e_ratio), reduction="none")
+
+    true_count = mask_off.float().sum(dim=1)
+    hlt_count = mask_hlt.float().sum(dim=1)
+    true_added = (true_count - hlt_count).clamp(min=0.0)
+
+    pred_count = w.sum(dim=1)
+    pred_added = out["child_weight"].sum(dim=1) + out["gen_weight"].sum(dim=1)
+    pred_added_merge = out["child_weight"].sum(dim=1)
+    pred_added_eff = out["gen_weight"].sum(dim=1)
+
+    budget_total = out["budget_total"]
+    budget_merge = out["budget_merge"]
+    budget_eff = out["budget_eff"]
+    budget_true_total = budget_merge_true + budget_eff_true
+
+    loss_budget_vec = (
+        F.smooth_l1_loss(pred_count, true_count, reduction="none")
+        + F.smooth_l1_loss(budget_total, true_count, reduction="none")
+        + F.smooth_l1_loss(pred_added, true_added, reduction="none")
+        + F.smooth_l1_loss(budget_merge + budget_eff, true_added, reduction="none")
+        + F.smooth_l1_loss(budget_merge, budget_merge_true, reduction="none")
+        + F.smooth_l1_loss(budget_eff, budget_eff_true, reduction="none")
+        + F.smooth_l1_loss(pred_added_merge, budget_merge_true, reduction="none")
+        + F.smooth_l1_loss(pred_added_eff, budget_eff_true, reduction="none")
+        + F.smooth_l1_loss(budget_merge + budget_eff, budget_true_total, reduction="none")
+    )
+
+    loss_sparse_vec = out["child_weight"].mean(dim=1) + out["gen_weight"].mean(dim=1)
+
+    split_delta = out["split_delta"]
+    split_step = torch.sqrt(split_delta[..., 1].pow(2) + split_delta[..., 2].pow(2) + eps)
+    split_w = out["child_weight"].reshape(split_step.shape)
+    loss_local_split_vec = (split_w * split_step).sum(dim=(1, 2)) / (split_w.sum(dim=(1, 2)) + eps)
+
+    gen_tokens = out["gen_tokens"]
+    gen_w = out["gen_weight"]
+    h_eta = const_hlt[:, :, 1]
+    h_phi = const_hlt[:, :, 2]
+    g_eta = gen_tokens[:, :, 1].unsqueeze(2)
+    g_phi = gen_tokens[:, :, 2].unsqueeze(2)
+    d_eta = g_eta - h_eta.unsqueeze(1)
+    d_phi = torch.atan2(torch.sin(g_phi - h_phi.unsqueeze(1)), torch.cos(g_phi - h_phi.unsqueeze(1)))
+    dR = torch.sqrt(d_eta.pow(2) + d_phi.pow(2) + eps)
+    dR = torch.where(mask_hlt.unsqueeze(1), dR, torch.full_like(dR, 1e4))
+    nearest = dR.min(dim=2).values
+    excess = F.relu(nearest - float(loss_cfg["gen_local_radius"]))
+    loss_local_gen_vec = (gen_w * excess).sum(dim=1) / (gen_w.sum(dim=1) + eps)
+    loss_local_vec = loss_local_split_vec + loss_local_gen_vec
+
+    total_vec = (
+        float(loss_cfg["w_set"]) * loss_set_vec
+        + float(loss_cfg["w_phys"]) * loss_phys_vec
+        + float(loss_cfg["w_pt_ratio"]) * loss_pt_ratio_vec
+        + float(loss_cfg["w_e_ratio"]) * loss_e_ratio_vec
+        + float(loss_cfg["w_budget"]) * loss_budget_vec
+        + float(loss_cfg["w_sparse"]) * loss_sparse_vec
+        + float(loss_cfg["w_local"]) * loss_local_vec
+    )
+
+    return {
+        "total": _weighted_batch_mean(total_vec, sw),
+        "set": _weighted_batch_mean(loss_set_vec, sw),
+        "phys": _weighted_batch_mean(loss_phys_vec, sw),
+        "pt_ratio": _weighted_batch_mean(loss_pt_ratio_vec, sw),
+        "e_ratio": _weighted_batch_mean(loss_e_ratio_vec, sw),
+        "budget": _weighted_batch_mean(loss_budget_vec, sw),
+        "sparse": _weighted_batch_mean(loss_sparse_vec, sw),
+        "local": _weighted_batch_mean(loss_local_vec, sw),
+    }
+
+
 def build_discrepancy_weights(
     y_train: np.ndarray,
     p_teacher_train: np.ndarray,
@@ -436,7 +576,8 @@ def train_joint_dual_weighted(
     corrected_use_flags: bool,
     min_epochs: int,
     select_metric: str,
-    use_discrepancy_weights: bool,
+    use_discrepancy_weights_cls: bool,
+    use_discrepancy_weights_reco: bool,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
     for p in reconstructor.parameters():
         p.requires_grad = not freeze_reconstructor
@@ -506,7 +647,7 @@ def train_joint_dual_weighted(
             )
             logits = dual_model(feat_hlt_dual, mask_hlt, feat_b, mask_b).squeeze(1)
 
-            if bool(use_discrepancy_weights) and sw is not None:
+            if bool(use_discrepancy_weights_cls) and sw is not None:
                 loss_cls_raw = F.binary_cross_entropy_with_logits(logits, y, reduction="none")
                 denom = sw.sum().clamp(min=1e-6)
                 loss_cls = (loss_cls_raw * sw).sum() / denom
@@ -517,16 +658,29 @@ def train_joint_dual_weighted(
             loss_cons = reco_out["child_weight"].mean() + reco_out["gen_weight"].mean()
 
             if float(lambda_reco) > 0.0:
-                reco_losses = joint.compute_reconstruction_losses(
-                    reco_out,
-                    const_hlt,
-                    mask_hlt,
-                    const_off,
-                    mask_off,
-                    b_merge,
-                    b_eff,
-                    LOCAL30K_CONFIG["loss"],
-                )
+                if bool(use_discrepancy_weights_reco) and sw is not None:
+                    reco_losses = compute_reconstruction_losses_weighted(
+                        reco_out,
+                        const_hlt,
+                        mask_hlt,
+                        const_off,
+                        mask_off,
+                        b_merge,
+                        b_eff,
+                        LOCAL30K_CONFIG["loss"],
+                        sample_weight=sw,
+                    )
+                else:
+                    reco_losses = joint.compute_reconstruction_losses(
+                        reco_out,
+                        const_hlt,
+                        mask_hlt,
+                        const_off,
+                        mask_off,
+                        b_merge,
+                        b_eff,
+                        LOCAL30K_CONFIG["loss"],
+                    )
                 loss_reco = reco_losses["total"]
             else:
                 loss_reco = torch.zeros((), device=device)
@@ -685,6 +839,16 @@ def main() -> None:
     p.add_argument("--disc_include_pos", action="store_true")
     p.add_argument("--disc_pos_scale", type=float, default=0.25)
     p.add_argument("--disc_no_mean_normalize", action="store_true")
+    p.add_argument(
+        "--disc_apply_to_reco",
+        action="store_true",
+        help="Apply discrepancy sample weights to reconstruction loss reduction (lambda_reco branch).",
+    )
+    p.add_argument(
+        "--disc_disable_cls_weight",
+        action="store_true",
+        help="Do not apply discrepancy sample weights to BCE classification loss.",
+    )
     p.add_argument("--disc_teacher_conf_min", type=float, default=0.60)
     p.add_argument("--disc_correctness_tau", type=float, default=0.05)
     p.add_argument("--disc_disable_teacher_hard_correct_gate", action="store_true")
@@ -922,6 +1086,11 @@ def main() -> None:
             f"t_hlt={discrepancy_summary.get('t_hlt_val', float('nan')):.6f}, "
             f"t_off={discrepancy_summary.get('t_off_val', float('nan')):.6f}"
         )
+        print(
+            "Discrepancy application: "
+            f"cls_weighted={bool(not args.disc_disable_cls_weight)}, "
+            f"reco_weighted={bool(args.disc_apply_to_reco)}"
+        )
         np.savez_compressed(
             save_root / "discrepancy_weights_train.npz",
             train_idx=train_idx.astype(np.int64),
@@ -1110,7 +1279,8 @@ def main() -> None:
             corrected_use_flags=bool(args.use_corrected_flags),
             min_epochs=int(min_epochs),
             select_metric=str(args.selection_metric),
-            use_discrepancy_weights=bool(args.disc_weight_enable),
+            use_discrepancy_weights_cls=(bool(args.disc_weight_enable) and (not bool(args.disc_disable_cls_weight))),
+            use_discrepancy_weights_reco=(bool(args.disc_weight_enable) and bool(args.disc_apply_to_reco)),
         )
         phase_reports.append(
             {
@@ -1235,6 +1405,8 @@ def main() -> None:
             "disc_include_pos": bool(args.disc_include_pos),
             "disc_pos_scale": float(args.disc_pos_scale),
             "disc_no_mean_normalize": bool(args.disc_no_mean_normalize),
+            "disc_apply_to_reco": bool(args.disc_apply_to_reco),
+            "disc_disable_cls_weight": bool(args.disc_disable_cls_weight),
             "disc_teacher_conf_min": float(args.disc_teacher_conf_min),
             "disc_correctness_tau": float(args.disc_correctness_tau),
             "disc_disable_teacher_hard_correct_gate": bool(args.disc_disable_teacher_hard_correct_gate),

@@ -52,6 +52,8 @@ DISC_DISABLE_TEACHER_CONF_GATE="${DISC_DISABLE_TEACHER_CONF_GATE:-0}"
 DISC_DISABLE_TEACHER_BETTER_GATE="${DISC_DISABLE_TEACHER_BETTER_GATE:-0}"
 DISC_INCLUDE_POS="${DISC_INCLUDE_POS:-0}"
 DISC_POS_SCALE="${DISC_POS_SCALE:-0.25}"
+DISC_APPLY_TO_RECO="${DISC_APPLY_TO_RECO:-0}"
+DISC_DISABLE_CLS_WEIGHT="${DISC_DISABLE_CLS_WEIGHT:-0}"
 
 # 10 smooth-delta strength presets (weak -> strong).
 # cfg00 is control (no discrepancy weighting).
@@ -98,6 +100,7 @@ echo "Discrepancy mode: ${DISC_WEIGHT_MODE}"
 echo "Teacher gates: hard=$((1-DISC_DISABLE_TEACHER_HARD_CORRECT_GATE)) conf=$((1-DISC_DISABLE_TEACHER_CONF_GATE)) better=$((1-DISC_DISABLE_TEACHER_BETTER_GATE))"
 echo "Teacher conf min/tau: ${DISC_TEACHER_CONF_MIN} / ${DISC_CORRECTNESS_TAU}"
 echo "Include pos branch: ${DISC_INCLUDE_POS} (pos_scale=${DISC_POS_SCALE})"
+echo "Apply weights: cls=$((1-DISC_DISABLE_CLS_WEIGHT)) reco=${DISC_APPLY_TO_RECO}"
 echo "Summary: ${SUMMARY_FILE}"
 echo "============================================================"
 
@@ -163,6 +166,12 @@ for ((i=0; i<N_CFG; i++)); do
   fi
   if [[ "${DISC_INCLUDE_POS}" -eq 1 ]]; then
     cmd+=(--disc_include_pos --disc_pos_scale "${DISC_POS_SCALE}")
+  fi
+  if [[ "${DISC_APPLY_TO_RECO}" -eq 1 ]]; then
+    cmd+=(--disc_apply_to_reco)
+  fi
+  if [[ "${DISC_DISABLE_CLS_WEIGHT}" -eq 1 ]]; then
+    cmd+=(--disc_disable_cls_weight)
   fi
 
   set +e
@@ -248,4 +257,3 @@ else
   cat "${SUMMARY_FILE}"
 fi
 echo "Summary written to: ${SUMMARY_FILE}"
-

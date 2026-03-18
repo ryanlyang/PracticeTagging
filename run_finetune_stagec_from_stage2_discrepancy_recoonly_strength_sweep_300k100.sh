@@ -1,31 +1,26 @@
 #!/usr/bin/env bash
-# Sweep 10 discrepancy-reweighting strengths for Stage-C finetune from saved Stage2.
+# Sweep 10 discrepancy strengths with RECONSTRUCTION-ONLY weighting (Stage C).
 #
 # Submit:
-#   sbatch run_finetune_stagec_from_stage2_discrepancy_strength_sweep_300k100.sh
-#
-# Optional overrides:
-#   RUN_DIR=checkpoints/offline_reconstructor_joint/<your_run> \
-#   N_TRAIN_JETS=300000 MAX_CONSTITS=100 \
-#   sbatch run_finetune_stagec_from_stage2_discrepancy_strength_sweep_300k100.sh
+#   sbatch run_finetune_stagec_from_stage2_discrepancy_recoonly_strength_sweep_300k100.sh
 
-#SBATCH -J stgCDisc
-#SBATCH -p debug
+#SBATCH -J stgCDRw
+#SBATCH -p tier3
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem=64G
-#SBATCH -t 23:00:00
-#SBATCH -o offline_reconstructor_logs/stagec_discrepancy_sweeps/stagec_disc_strength_%j.out
-#SBATCH -e offline_reconstructor_logs/stagec_discrepancy_sweeps/stagec_disc_strength_%j.err
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=48G
+#SBATCH -t 2:00:00
+#SBATCH -o offline_reconstructor_logs/stagec_discrepancy_sweeps_recoonly/stagec_disc_recoonly_%j.out
+#SBATCH -e offline_reconstructor_logs/stagec_discrepancy_sweeps_recoonly/stagec_disc_recoonly_%j.err
 
 set -euo pipefail
 
-LOG_DIR="${LOG_DIR:-offline_reconstructor_logs/stagec_discrepancy_sweeps}"
+LOG_DIR="${LOG_DIR:-offline_reconstructor_logs/stagec_discrepancy_sweeps_recoonly}"
 mkdir -p "${LOG_DIR}"
 
 RUN_DIR="${RUN_DIR:-checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_300kJ100C}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint_stagec_refine_discrepancy}"
-RUN_PREFIX="${RUN_PREFIX:-stagec_discw_300k100_strength}"
+RUN_PREFIX="${RUN_PREFIX:-stagec_discw_recoonly_300k100_strength}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-300000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
@@ -43,26 +38,24 @@ LAMBDA_RECO="${LAMBDA_RECO:-0.4}"
 LAMBDA_CONS="${LAMBDA_CONS:-0.06}"
 SELECTION_METRIC="${SELECTION_METRIC:-auc}"
 
-# Fixed discrepancy target definition for this sweep.
+DISC_WEIGHT_MODE="${DISC_WEIGHT_MODE:-smooth_delta}"
 DISC_TARGET_TPR="${DISC_TARGET_TPR:-0.50}"
-DISC_WEIGHT_MODE="${DISC_WEIGHT_MODE:-tail_disagreement}"
-DISC_TEACHER_CONF_MIN="${DISC_TEACHER_CONF_MIN:-0.60}"
+DISC_TEACHER_CONF_MIN="${DISC_TEACHER_CONF_MIN:-0.65}"
 DISC_CORRECTNESS_TAU="${DISC_CORRECTNESS_TAU:-0.05}"
 DISC_DISABLE_TEACHER_HARD_CORRECT_GATE="${DISC_DISABLE_TEACHER_HARD_CORRECT_GATE:-0}"
 DISC_DISABLE_TEACHER_CONF_GATE="${DISC_DISABLE_TEACHER_CONF_GATE:-0}"
 DISC_DISABLE_TEACHER_BETTER_GATE="${DISC_DISABLE_TEACHER_BETTER_GATE:-0}"
 DISC_INCLUDE_POS="${DISC_INCLUDE_POS:-0}"
 DISC_POS_SCALE="${DISC_POS_SCALE:-0.25}"
-DISC_APPLY_TO_RECO="${DISC_APPLY_TO_RECO:-0}"
-DISC_DISABLE_CLS_WEIGHT="${DISC_DISABLE_CLS_WEIGHT:-0}"
+DISC_APPLY_TO_RECO="${DISC_APPLY_TO_RECO:-1}"
+DISC_DISABLE_CLS_WEIGHT="${DISC_DISABLE_CLS_WEIGHT:-1}"
 
-# 10 favorite strength presets (weak -> strong).
-# cfg00 is control (no discrepancy weighting).
-DISC_ENABLE=(0 1 1 1 1 1 1 1 1 1)
-DISC_LAMBDA=(0.0 0.25 0.50 0.75 1.00 1.50 2.00 2.50 3.00 2.00)
-DISC_MAX_MULT=(1.0 2.0 2.0 2.5 3.0 3.0 4.0 5.0 6.0 5.0)
-DISC_TAU=(0.08 0.08 0.08 0.06 0.05 0.05 0.04 0.04 0.03 0.03)
-DISC_NO_MEAN_NORM=(0 0 0 0 0 0 0 0 0 1)
+# Heavy reco-only presets, ordered heaviest -> lightest, with control last.
+DISC_ENABLE=(1 1 1 1 1 1 1 1 1 0)
+DISC_LAMBDA=(15.0 12.0 10.0 8.0 6.0 4.0 3.0 2.0 1.0 0.0)
+DISC_MAX_MULT=(20.0 15.0 12.0 10.0 8.0 6.0 5.0 4.0 3.0 1.0)
+DISC_TAU=(0.05 0.05 0.05 0.05 0.05 0.05 0.05 0.05 0.05 0.05)
+DISC_NO_MEAN_NORM=(1 0 0 0 0 0 0 0 0 0)
 
 N_CFG="${#DISC_ENABLE[@]}"
 if [[ "${N_CFG}" -ne "${#DISC_LAMBDA[@]}" || "${N_CFG}" -ne "${#DISC_MAX_MULT[@]}" || "${N_CFG}" -ne "${#DISC_TAU[@]}" || "${N_CFG}" -ne "${#DISC_NO_MEAN_NORM[@]}" ]]; then
@@ -87,13 +80,13 @@ sanitize() {
   echo "$1" | sed 's/-/m/g; s/\./p/g; s/+//g'
 }
 
-SUMMARY_FILE="${LOG_DIR}/stagec_disc_strength_summary_${SLURM_JOB_ID}.tsv"
+SUMMARY_FILE="${LOG_DIR}/stagec_disc_recoonly_summary_${SLURM_JOB_ID}.tsv"
 cat > "${SUMMARY_FILE}" <<'TSV'
 cfg_idx	run_name	status	disc_enable	disc_lambda	disc_max_mult	disc_tau	disc_no_mean_norm	mean_weight	p95_weight	frac_w_gt_1p5	stage2_auc	stage2_fpr30	stage2_fpr50	stagec_auc	stagec_fpr30	stagec_fpr50	stagec_bestfpr50_auc	stagec_bestfpr50_fpr30	stagec_bestfpr50_fpr50	baseline_auc	baseline_fpr30	baseline_fpr50	teacher_auc	teacher_fpr30	teacher_fpr50
 TSV
 
 echo "============================================================"
-echo "Stage-C discrepancy strength sweep"
+echo "Stage-C discrepancy RECO-only strength sweep"
 echo "Run dir: ${RUN_DIR}"
 echo "Save dir: ${SAVE_DIR}"
 echo "Configs: ${N_CFG}"
