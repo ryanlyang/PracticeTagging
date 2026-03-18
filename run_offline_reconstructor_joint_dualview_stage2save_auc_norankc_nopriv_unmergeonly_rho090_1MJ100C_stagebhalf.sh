@@ -22,7 +22,7 @@ mkdir -p offline_reconstructor_logs
 RUN_NAME="${RUN_NAME:-joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_1MJ100C_stagebhalf}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
-MAX_CONSTITS="${MAX_CONSTITS:-100}"
+MAX_CONSTITS="${MAX_CONSTITS:-100}"s
 NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.90}"
