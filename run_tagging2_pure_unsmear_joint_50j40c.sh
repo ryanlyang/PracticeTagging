@@ -6,10 +6,10 @@
 #   sbatch run_tagging2_pure_unsmear_joint_50j40c.sh
 
 #SBATCH --job-name=unsmJ50x40
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=02:00:00
+#SBATCH --time=05:00:00
 #SBATCH --output=offline_reconstructor_logs/unsmear_joint_50j40c_%j.out
 #SBATCH --error=offline_reconstructor_logs/unsmear_joint_50j40c_%j.err
 
