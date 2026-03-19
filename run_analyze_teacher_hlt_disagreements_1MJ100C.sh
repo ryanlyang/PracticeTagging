@@ -11,7 +11,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
-#SBATCH --time=01:00:00
+#SBATCH --time=02:00:00
 #SBATCH --output=offline_reconstructor_logs/disagreement_analysis_1MJ100C_%j.out
 #SBATCH --error=offline_reconstructor_logs/disagreement_analysis_1MJ100C_%j.err
 
