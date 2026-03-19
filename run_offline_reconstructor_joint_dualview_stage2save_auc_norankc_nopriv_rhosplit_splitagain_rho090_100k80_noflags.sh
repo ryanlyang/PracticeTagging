@@ -15,7 +15,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=128G
-#SBATCH --time=1-12:00:00
+#SBATCH --time=2-12:00:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_rho090_1MJ100C_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_rho090_1MJ100C_%j.err
 
