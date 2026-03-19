@@ -8,7 +8,7 @@
 #   sbatch run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_discweighted_50k10k100k_80c.sh
 
 #SBATCH --job-name=uoDisc50
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=7:00:00
