@@ -8,7 +8,7 @@
 #   sbatch run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_discweighted_50k10k100k_80c.sh
 
 #SBATCH --job-name=uoDisc50
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=7:00:00
@@ -44,8 +44,8 @@ LAMBDA_CONS="${LAMBDA_CONS:-0.06}"
 # Discrepancy weighting knobs:
 # Strong reco weighting + light cls weighting.
 DISC_WEIGHT_MODE="${DISC_WEIGHT_MODE:-smooth_delta}"
-DISC_RECO_LAMBDA="${DISC_RECO_LAMBDA:-15.0}"
-DISC_RECO_MAX_MULT="${DISC_RECO_MAX_MULT:-20.0}"
+DISC_RECO_LAMBDA="${DISC_RECO_LAMBDA:-200.0}"
+DISC_RECO_MAX_MULT="${DISC_RECO_MAX_MULT:-300.0}"
 DISC_CLS_LAMBDA="${DISC_CLS_LAMBDA:-2.0}"
 DISC_CLS_MAX_MULT="${DISC_CLS_MAX_MULT:-3.0}"
 DISC_APPLY_CLS_STAGEC="${DISC_APPLY_CLS_STAGEC:-0}"
