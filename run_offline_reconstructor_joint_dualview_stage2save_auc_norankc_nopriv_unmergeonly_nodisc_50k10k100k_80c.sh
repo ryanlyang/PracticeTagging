@@ -9,7 +9,7 @@
 #   sbatch run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_nodisc_50k10k100k_80c.sh
 
 #SBATCH --job-name=uoNoDisc50
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=7:00:00
