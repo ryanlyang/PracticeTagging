@@ -1069,6 +1069,14 @@ def main() -> None:
     parser.add_argument("--offset_jets", type=int, default=0)
     parser.add_argument("--max_constits", type=int, default=80)
     parser.add_argument(
+        "--n_train_split",
+        type=int,
+        default=-1,
+        help="If >0 and paired with --n_val_split/--n_test_split, use exact split counts instead of 70/15/15.",
+    )
+    parser.add_argument("--n_val_split", type=int, default=-1)
+    parser.add_argument("--n_test_split", type=int, default=-1)
+    parser.add_argument(
         "--save_dir",
         type=str,
         default=str(Path().cwd() / "checkpoints" / "offline_reconstructor_joint"),
@@ -1263,14 +1271,52 @@ def main() -> None:
     feat_off = compute_features(const_off, masks_off)
     feat_hlt = compute_features(hlt_const, hlt_mask)
 
+    n_train_split = int(args.n_train_split)
+    n_val_split = int(args.n_val_split)
+    n_test_split = int(args.n_test_split)
+    custom_split = (n_train_split > 0 and n_val_split > 0 and n_test_split > 0)
+
     idx = np.arange(len(labels))
-    train_idx, temp_idx = train_test_split(
-        idx, test_size=0.30, random_state=int(args.seed), stratify=labels
+    if custom_split:
+        total_need = int(n_train_split + n_val_split + n_test_split)
+        if total_need > len(idx):
+            raise ValueError(
+                f"Requested split counts exceed available jets: "
+                f"{n_train_split}+{n_val_split}+{n_test_split} > {len(idx)}"
+            )
+        if total_need < len(idx):
+            idx_use, _ = train_test_split(
+                idx,
+                train_size=total_need,
+                random_state=int(args.seed),
+                stratify=labels[idx],
+            )
+        else:
+            idx_use = idx
+        train_idx, rem_idx = train_test_split(
+            idx_use,
+            train_size=int(n_train_split),
+            random_state=int(args.seed),
+            stratify=labels[idx_use],
+        )
+        val_idx, test_idx = train_test_split(
+            rem_idx,
+            train_size=int(n_val_split),
+            test_size=int(n_test_split),
+            random_state=int(args.seed),
+            stratify=labels[rem_idx],
+        )
+    else:
+        train_idx, temp_idx = train_test_split(
+            idx, test_size=0.30, random_state=int(args.seed), stratify=labels
+        )
+        val_idx, test_idx = train_test_split(
+            temp_idx, test_size=0.50, random_state=int(args.seed), stratify=labels[temp_idx]
+        )
+    print(
+        f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} "
+        f"(custom_counts={custom_split})"
     )
-    val_idx, test_idx = train_test_split(
-        temp_idx, test_size=0.50, random_state=int(args.seed), stratify=labels[temp_idx]
-    )
-    print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
     means, stds = get_stats(feat_off, masks_off, train_idx)
     feat_off_std = standardize(feat_off, masks_off, means, stds)
@@ -1284,7 +1330,16 @@ def main() -> None:
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
         "seed": int(args.seed),
-        "split": {"train_frac": 0.70, "val_frac": 0.15, "test_frac": 0.15},
+        "split": (
+            {
+                "mode": "custom_counts",
+                "n_train_split": int(len(train_idx)),
+                "n_val_split": int(len(val_idx)),
+                "n_test_split": int(len(test_idx)),
+            }
+            if custom_split
+            else {"mode": "fractions", "train_frac": 0.70, "val_frac": 0.15, "test_frac": 0.15}
+        ),
         "hlt_effects": cfg["hlt_effects"],
         "variant": "nopriv_rhosplit",
         "split_again": {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in SPLIT_AGAIN_CFG.items()},
