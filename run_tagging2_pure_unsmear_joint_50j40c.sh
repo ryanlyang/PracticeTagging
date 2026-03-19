@@ -6,7 +6,7 @@
 #   sbatch run_tagging2_pure_unsmear_joint_50j40c.sh
 
 #SBATCH --job-name=unsmJ50x40
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=05:00:00
