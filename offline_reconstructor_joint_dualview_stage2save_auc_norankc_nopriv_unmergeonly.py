@@ -40,6 +40,7 @@ from torch.utils.data import DataLoader, Dataset
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 
+import offline_reconstructor_no_gt_local30kv2 as reco_base
 from unmerge_correct_hlt import (
     RANDOM_SEED,
     load_raw_constituents_from_h5,
@@ -97,6 +98,281 @@ def _deepcopy_config() -> Dict:
 
 def _clamp_target_scale(x: float) -> float:
     return float(min(max(float(x), 0.0), 1.0))
+
+
+def _sigmoid_np(x: np.ndarray) -> np.ndarray:
+    x = np.clip(x, -60.0, 60.0)
+    return 1.0 / (1.0 + np.exp(-x))
+
+
+def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) -> torch.Tensor:
+    if sample_weight is None:
+        return vec.mean()
+    denom = sample_weight.sum().clamp(min=1e-6)
+    return (vec * sample_weight).sum() / denom
+
+
+def predict_single_view_scores(
+    model: nn.Module,
+    feat: np.ndarray,
+    mask: np.ndarray,
+    labels: np.ndarray,
+    batch_size: int,
+    num_workers: int,
+    device: torch.device,
+) -> Tuple[np.ndarray, np.ndarray]:
+    ds = JetDataset(feat, mask, labels)
+    dl = DataLoader(
+        ds,
+        batch_size=int(batch_size),
+        shuffle=False,
+        num_workers=int(num_workers),
+        pin_memory=torch.cuda.is_available(),
+    )
+    _, preds, labs = eval_classifier(model, dl, device)
+    return preds.astype(np.float32), labs.astype(np.float32)
+
+
+def prob_threshold_at_target_tpr(pos_probs: np.ndarray, target_tpr: float) -> float:
+    if pos_probs.size == 0:
+        return 0.5
+    q = float(np.clip(1.0 - float(target_tpr), 0.0, 1.0))
+    return float(np.quantile(pos_probs, q))
+
+
+def build_discrepancy_weights(
+    y_train: np.ndarray,
+    p_teacher_train: np.ndarray,
+    p_baseline_train: np.ndarray,
+    p_teacher_val: np.ndarray,
+    p_baseline_val: np.ndarray,
+    y_val: np.ndarray,
+    target_tpr: float,
+    tau: float,
+    lambda_disc: float,
+    max_mult: float,
+    include_pos: bool,
+    pos_scale: float,
+    normalize_mean_one: bool,
+    teacher_conf_min: float,
+    correctness_tau: float,
+    use_teacher_hard_correct_gate: bool,
+    use_teacher_conf_gate: bool,
+    use_teacher_better_gate: bool,
+    weight_mode: str,
+) -> Tuple[np.ndarray, Dict[str, float]]:
+    tau = max(float(tau), 1e-6)
+    correctness_tau = max(float(correctness_tau), 1e-6)
+    target_tpr = float(np.clip(target_tpr, 0.0, 1.0))
+    max_mult = max(float(max_mult), 1.0)
+    lambda_disc = max(float(lambda_disc), 0.0)
+    teacher_conf_min = float(np.clip(teacher_conf_min, 0.0, 1.0))
+
+    t_off = prob_threshold_at_target_tpr(p_teacher_val[y_val == 1], target_tpr)
+    t_hlt = prob_threshold_at_target_tpr(p_baseline_val[y_val == 1], target_tpr)
+
+    y_train = y_train.astype(np.int64)
+    p_teacher_true = np.where(y_train == 1, p_teacher_train, 1.0 - p_teacher_train).astype(np.float32)
+    p_hlt_true = np.where(y_train == 1, p_baseline_train, 1.0 - p_baseline_train).astype(np.float32)
+
+    teacher_hard_correct = ((p_teacher_train >= 0.5).astype(np.int64) == y_train).astype(np.float32)
+    gate = np.ones_like(p_teacher_true, dtype=np.float32)
+    if bool(use_teacher_hard_correct_gate):
+        gate *= teacher_hard_correct
+    if bool(use_teacher_conf_gate):
+        gate *= _sigmoid_np((p_teacher_true - teacher_conf_min) / correctness_tau).astype(np.float32)
+    if bool(use_teacher_better_gate):
+        gate *= _sigmoid_np((p_teacher_true - p_hlt_true) / correctness_tau).astype(np.float32)
+
+    mode = str(weight_mode).strip().lower()
+    if mode not in ("tail_disagreement", "smooth_delta"):
+        raise ValueError(f"Unsupported --disc_weight_mode: {weight_mode}")
+
+    if mode == "smooth_delta":
+        r_neg = (
+            np.maximum(p_baseline_train - p_teacher_train, 0.0).astype(np.float32)
+            * (y_train == 0).astype(np.float32)
+            * gate
+        ).astype(np.float32)
+        r = r_neg.astype(np.float32, copy=True)
+        r_pos = np.zeros_like(r, dtype=np.float32)
+        if bool(include_pos):
+            r_pos = (
+                np.maximum(p_teacher_train - p_baseline_train, 0.0).astype(np.float32)
+                * (y_train == 1).astype(np.float32)
+                * gate
+            ).astype(np.float32)
+            r += float(pos_scale) * r_pos
+    else:
+        r_neg = (
+            _sigmoid_np((p_baseline_train - t_hlt) / tau)
+            * _sigmoid_np((t_off - p_teacher_train) / tau)
+            * (y_train == 0).astype(np.float32)
+            * gate
+        ).astype(np.float32)
+        r = r_neg.astype(np.float32, copy=True)
+        r_pos = np.zeros_like(r, dtype=np.float32)
+        if bool(include_pos):
+            r_pos = (
+                _sigmoid_np((p_teacher_train - t_off) / tau)
+                * _sigmoid_np((t_hlt - p_baseline_train) / tau)
+                * (y_train == 1).astype(np.float32)
+                * gate
+            ).astype(np.float32)
+            r += float(pos_scale) * r_pos
+
+    w = (1.0 + float(lambda_disc) * r).astype(np.float32)
+    w = np.clip(w, 1.0, float(max_mult)).astype(np.float32)
+    if bool(normalize_mean_one):
+        m = float(np.mean(w))
+        if m > 0:
+            w = (w / m).astype(np.float32)
+
+    summary = {
+        "weight_mode": mode,
+        "target_tpr": float(target_tpr),
+        "tau": float(tau),
+        "lambda_disc": float(lambda_disc),
+        "max_mult": float(max_mult),
+        "include_pos": bool(include_pos),
+        "pos_scale": float(pos_scale),
+        "normalize_mean_one": bool(normalize_mean_one),
+        "teacher_conf_min": float(teacher_conf_min),
+        "correctness_tau": float(correctness_tau),
+        "use_teacher_hard_correct_gate": bool(use_teacher_hard_correct_gate),
+        "use_teacher_conf_gate": bool(use_teacher_conf_gate),
+        "use_teacher_better_gate": bool(use_teacher_better_gate),
+        "t_off_val": float(t_off),
+        "t_hlt_val": float(t_hlt),
+        "teacher_hard_correct_rate": float(np.mean(teacher_hard_correct)),
+        "mean_r_neg": float(np.mean(r_neg)),
+        "mean_r_pos": float(np.mean(r_pos)),
+        "mean_weight": float(np.mean(w)),
+        "p95_weight": float(np.percentile(w, 95.0)),
+        "max_weight": float(np.max(w)),
+        "fraction_w_gt_1p1": float(np.mean(w > 1.1)),
+        "fraction_w_gt_1p5": float(np.mean(w > 1.5)),
+    }
+    return w, summary
+
+
+def compute_reconstruction_losses_weighted(
+    out: Dict[str, torch.Tensor],
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    const_off: torch.Tensor,
+    mask_off: torch.Tensor,
+    budget_merge_true: torch.Tensor,
+    budget_eff_true: torch.Tensor,
+    loss_cfg: Dict,
+    sample_weight: torch.Tensor | None = None,
+) -> Dict[str, torch.Tensor]:
+    eps = 1e-8
+    sw = None
+    if sample_weight is not None:
+        sw = sample_weight.float().clamp(min=0.0)
+
+    pred = out["cand_tokens"]
+    w = out["cand_weights"].clamp(0.0, 1.0)
+
+    cost = reco_base._token_cost_matrix(pred, const_off)
+    valid_tgt = mask_off.unsqueeze(1)
+    cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
+
+    pred_to_tgt = cost.min(dim=2).values
+    loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
+
+    penalty = float(loss_cfg["unselected_penalty"]) * (1.0 - w).unsqueeze(2)
+    tgt_to_pred = (cost + penalty).min(dim=1).values
+    tgt_mask_f = mask_off.float()
+    loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
+    loss_set_vec = loss_pred_to_tgt + loss_tgt_to_pred
+
+    pred_px, pred_py, pred_pz, pred_E = reco_base._weighted_fourvec_sums(pred, w)
+    true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off, mask_off.float())
+
+    norm = true_px.abs() + true_py.abs() + true_pz.abs() + true_E.abs() + 1.0
+    loss_phys_vec = (
+        (pred_px - true_px).abs()
+        + (pred_py - true_py).abs()
+        + (pred_pz - true_pz).abs()
+        + (pred_E - true_E).abs()
+    ) / norm
+    pred_pt = torch.sqrt(pred_px.pow(2) + pred_py.pow(2) + eps)
+    true_pt = torch.sqrt(true_px.pow(2) + true_py.pow(2) + eps)
+    pt_ratio = pred_pt / (true_pt + eps)
+    loss_pt_ratio_vec = F.smooth_l1_loss(pt_ratio, torch.ones_like(pt_ratio), reduction="none")
+    e_ratio = pred_E / (true_E + eps)
+    loss_e_ratio_vec = F.smooth_l1_loss(e_ratio, torch.ones_like(e_ratio), reduction="none")
+
+    true_count = mask_off.float().sum(dim=1)
+    hlt_count = mask_hlt.float().sum(dim=1)
+    true_added = (true_count - hlt_count).clamp(min=0.0)
+
+    pred_count = w.sum(dim=1)
+    pred_added = out["child_weight"].sum(dim=1) + out["gen_weight"].sum(dim=1)
+    pred_added_merge = out["child_weight"].sum(dim=1)
+    pred_added_eff = out["gen_weight"].sum(dim=1)
+
+    budget_total = out["budget_total"]
+    budget_merge = out["budget_merge"]
+    budget_eff = out["budget_eff"]
+    budget_true_total = budget_merge_true + budget_eff_true
+
+    loss_budget_vec = (
+        F.smooth_l1_loss(pred_count, true_count, reduction="none")
+        + F.smooth_l1_loss(budget_total, true_count, reduction="none")
+        + F.smooth_l1_loss(pred_added, true_added, reduction="none")
+        + F.smooth_l1_loss(budget_merge + budget_eff, true_added, reduction="none")
+        + F.smooth_l1_loss(budget_merge, budget_merge_true, reduction="none")
+        + F.smooth_l1_loss(budget_eff, budget_eff_true, reduction="none")
+        + F.smooth_l1_loss(pred_added_merge, budget_merge_true, reduction="none")
+        + F.smooth_l1_loss(pred_added_eff, budget_eff_true, reduction="none")
+        + F.smooth_l1_loss(budget_merge + budget_eff, budget_true_total, reduction="none")
+    )
+
+    loss_sparse_vec = out["child_weight"].mean(dim=1) + out["gen_weight"].mean(dim=1)
+
+    split_delta = out["split_delta"]
+    split_step = torch.sqrt(split_delta[..., 1].pow(2) + split_delta[..., 2].pow(2) + eps)
+    split_w = out["child_weight"].reshape(split_step.shape)
+    loss_local_split_vec = (split_w * split_step).sum(dim=(1, 2)) / (split_w.sum(dim=(1, 2)) + eps)
+
+    gen_tokens = out["gen_tokens"]
+    gen_w = out["gen_weight"]
+    h_eta = const_hlt[:, :, 1]
+    h_phi = const_hlt[:, :, 2]
+    g_eta = gen_tokens[:, :, 1].unsqueeze(2)
+    g_phi = gen_tokens[:, :, 2].unsqueeze(2)
+    d_eta = g_eta - h_eta.unsqueeze(1)
+    d_phi = torch.atan2(torch.sin(g_phi - h_phi.unsqueeze(1)), torch.cos(g_phi - h_phi.unsqueeze(1)))
+    dR = torch.sqrt(d_eta.pow(2) + d_phi.pow(2) + eps)
+    dR = torch.where(mask_hlt.unsqueeze(1), dR, torch.full_like(dR, 1e4))
+    nearest = dR.min(dim=2).values
+    excess = F.relu(nearest - float(loss_cfg["gen_local_radius"]))
+    loss_local_gen_vec = (gen_w * excess).sum(dim=1) / (gen_w.sum(dim=1) + eps)
+    loss_local_vec = loss_local_split_vec + loss_local_gen_vec
+
+    total_vec = (
+        float(loss_cfg["w_set"]) * loss_set_vec
+        + float(loss_cfg["w_phys"]) * loss_phys_vec
+        + float(loss_cfg["w_pt_ratio"]) * loss_pt_ratio_vec
+        + float(loss_cfg["w_e_ratio"]) * loss_e_ratio_vec
+        + float(loss_cfg["w_budget"]) * loss_budget_vec
+        + float(loss_cfg["w_sparse"]) * loss_sparse_vec
+        + float(loss_cfg["w_local"]) * loss_local_vec
+    )
+
+    return {
+        "total": _weighted_batch_mean(total_vec, sw),
+        "set": _weighted_batch_mean(loss_set_vec, sw),
+        "phys": _weighted_batch_mean(loss_phys_vec, sw),
+        "pt_ratio": _weighted_batch_mean(loss_pt_ratio_vec, sw),
+        "e_ratio": _weighted_batch_mean(loss_e_ratio_vec, sw),
+        "budget": _weighted_batch_mean(loss_budget_vec, sw),
+        "sparse": _weighted_batch_mean(loss_sparse_vec, sw),
+        "local": _weighted_batch_mean(loss_local_vec, sw),
+    }
 
 
 def enforce_unmerge_only_output(reco_out: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
@@ -200,6 +476,8 @@ class JointDualDataset(Dataset):
         budget_merge_true: np.ndarray,
         budget_eff_true: np.ndarray,
         labels: np.ndarray,
+        sample_weight_cls: np.ndarray | None = None,
+        sample_weight_reco: np.ndarray | None = None,
     ):
         self.feat_hlt_reco = torch.tensor(feat_hlt_reco, dtype=torch.float32)
         self.feat_hlt_dual = torch.tensor(feat_hlt_dual, dtype=torch.float32)
@@ -210,6 +488,21 @@ class JointDualDataset(Dataset):
         self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
         self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
         self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+        n = labels.shape[0]
+        if sample_weight_cls is None:
+            sw_cls = np.ones((n,), dtype=np.float32)
+        else:
+            sw_cls = np.asarray(sample_weight_cls, dtype=np.float32)
+            if sw_cls.shape[0] != n:
+                raise ValueError(f"sample_weight_cls length mismatch: {sw_cls.shape[0]} vs {n}")
+        if sample_weight_reco is None:
+            sw_reco = np.ones((n,), dtype=np.float32)
+        else:
+            sw_reco = np.asarray(sample_weight_reco, dtype=np.float32)
+            if sw_reco.shape[0] != n:
+                raise ValueError(f"sample_weight_reco length mismatch: {sw_reco.shape[0]} vs {n}")
+        self.sample_weight_cls = torch.tensor(sw_cls, dtype=torch.float32)
+        self.sample_weight_reco = torch.tensor(sw_reco, dtype=torch.float32)
 
     def __len__(self) -> int:
         return self.feat_hlt_reco.shape[0]
@@ -225,6 +518,52 @@ class JointDualDataset(Dataset):
             "budget_merge_true": self.budget_merge_true[i],
             "budget_eff_true": self.budget_eff_true[i],
             "label": self.labels[i],
+            "sample_weight_cls": self.sample_weight_cls[i],
+            "sample_weight_reco": self.sample_weight_reco[i],
+        }
+
+
+class WeightedReconstructionDataset(Dataset):
+    def __init__(
+        self,
+        feat_hlt: np.ndarray,
+        mask_hlt: np.ndarray,
+        const_hlt: np.ndarray,
+        const_off: np.ndarray,
+        mask_off: np.ndarray,
+        budget_merge_true: np.ndarray,
+        budget_eff_true: np.ndarray,
+        sample_weight_reco: np.ndarray | None = None,
+    ):
+        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
+        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+        self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
+        self.const_off = torch.tensor(const_off, dtype=torch.float32)
+        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
+        self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
+        self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+        n = feat_hlt.shape[0]
+        if sample_weight_reco is None:
+            sw = np.ones((n,), dtype=np.float32)
+        else:
+            sw = np.asarray(sample_weight_reco, dtype=np.float32)
+            if sw.shape[0] != n:
+                raise ValueError(f"sample_weight_reco length mismatch: {sw.shape[0]} vs {n}")
+        self.sample_weight_reco = torch.tensor(sw, dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return self.feat_hlt.shape[0]
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "feat_hlt": self.feat_hlt[i],
+            "mask_hlt": self.mask_hlt[i],
+            "const_hlt": self.const_hlt[i],
+            "const_off": self.const_off[i],
+            "mask_off": self.mask_off[i],
+            "budget_merge_true": self.budget_merge_true[i],
+            "budget_eff_true": self.budget_eff_true[i],
+            "sample_weight_reco": self.sample_weight_reco[i],
         }
 
 
@@ -842,6 +1181,199 @@ def predict_jet_regressor(
     return out
 
 
+def stage_scale_local(epoch: int, cfg: Dict) -> float:
+    s1 = int(cfg.get("stage1_epochs", 0))
+    s2 = int(cfg.get("stage2_epochs", 0))
+    if epoch < s1:
+        return 0.35
+    if epoch < s2:
+        return 0.70
+    return 1.0
+
+
+def train_reconstructor_weighted(
+    model: OfflineReconstructor,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    train_cfg: Dict,
+    loss_cfg: Dict,
+    apply_reco_weight: bool,
+) -> Tuple[OfflineReconstructor, Dict[str, float]]:
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(train_cfg["lr"]),
+        weight_decay=float(train_cfg["weight_decay"]),
+    )
+    sch = get_scheduler(opt, int(train_cfg["warmup_epochs"]), int(train_cfg["epochs"]))
+
+    best_state = None
+    best_val = 1e9
+    no_improve = 0
+    best_metrics: Dict[str, float] = {}
+    min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
+
+    for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
+        model.train()
+        sc = stage_scale_local(ep, train_cfg)
+
+        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_e_ratio = tr_budget = tr_sparse = tr_local = 0.0
+        n_tr = 0
+        for batch in train_loader:
+            feat_hlt = batch["feat_hlt"].to(device)
+            mask_hlt = batch["mask_hlt"].to(device)
+            const_hlt = batch["const_hlt"].to(device)
+            const_off = batch["const_off"].to(device)
+            mask_off = batch["mask_off"].to(device)
+            budget_merge_true = batch["budget_merge_true"].to(device)
+            budget_eff_true = batch["budget_eff_true"].to(device)
+            sw_reco = batch.get("sample_weight_reco", None)
+            if sw_reco is not None:
+                sw_reco = sw_reco.to(device)
+
+            opt.zero_grad()
+            out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=sc)
+            if bool(apply_reco_weight) and sw_reco is not None:
+                losses = compute_reconstruction_losses_weighted(
+                    out,
+                    const_hlt,
+                    mask_hlt,
+                    const_off,
+                    mask_off,
+                    budget_merge_true,
+                    budget_eff_true,
+                    loss_cfg,
+                    sample_weight=sw_reco,
+                )
+            else:
+                losses = compute_reconstruction_losses(
+                    out,
+                    const_hlt,
+                    mask_hlt,
+                    const_off,
+                    mask_off,
+                    budget_merge_true,
+                    budget_eff_true,
+                    loss_cfg,
+                )
+            losses["total"].backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+
+            bs = feat_hlt.size(0)
+            tr_total += losses["total"].item() * bs
+            tr_set += losses["set"].item() * bs
+            tr_phys += losses["phys"].item() * bs
+            tr_pt_ratio += losses["pt_ratio"].item() * bs
+            tr_e_ratio += losses["e_ratio"].item() * bs
+            tr_budget += losses["budget"].item() * bs
+            tr_sparse += losses["sparse"].item() * bs
+            tr_local += losses["local"].item() * bs
+            n_tr += bs
+
+        model.eval()
+        va_total = va_set = va_phys = va_pt_ratio = va_e_ratio = va_budget = va_sparse = va_local = 0.0
+        n_va = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                feat_hlt = batch["feat_hlt"].to(device)
+                mask_hlt = batch["mask_hlt"].to(device)
+                const_hlt = batch["const_hlt"].to(device)
+                const_off = batch["const_off"].to(device)
+                mask_off = batch["mask_off"].to(device)
+                budget_merge_true = batch["budget_merge_true"].to(device)
+                budget_eff_true = batch["budget_eff_true"].to(device)
+                sw_reco = batch.get("sample_weight_reco", None)
+                if sw_reco is not None:
+                    sw_reco = sw_reco.to(device)
+
+                out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
+                if bool(apply_reco_weight) and sw_reco is not None:
+                    losses = compute_reconstruction_losses_weighted(
+                        out,
+                        const_hlt,
+                        mask_hlt,
+                        const_off,
+                        mask_off,
+                        budget_merge_true,
+                        budget_eff_true,
+                        loss_cfg,
+                        sample_weight=sw_reco,
+                    )
+                else:
+                    losses = compute_reconstruction_losses(
+                        out,
+                        const_hlt,
+                        mask_hlt,
+                        const_off,
+                        mask_off,
+                        budget_merge_true,
+                        budget_eff_true,
+                        loss_cfg,
+                    )
+
+                bs = feat_hlt.size(0)
+                va_total += losses["total"].item() * bs
+                va_set += losses["set"].item() * bs
+                va_phys += losses["phys"].item() * bs
+                va_pt_ratio += losses["pt_ratio"].item() * bs
+                va_e_ratio += losses["e_ratio"].item() * bs
+                va_budget += losses["budget"].item() * bs
+                va_sparse += losses["sparse"].item() * bs
+                va_local += losses["local"].item() * bs
+                n_va += bs
+
+        sch.step()
+        tr_total /= max(n_tr, 1)
+        tr_set /= max(n_tr, 1)
+        tr_phys /= max(n_tr, 1)
+        tr_pt_ratio /= max(n_tr, 1)
+        tr_e_ratio /= max(n_tr, 1)
+        tr_budget /= max(n_tr, 1)
+        tr_sparse /= max(n_tr, 1)
+        tr_local /= max(n_tr, 1)
+
+        va_total /= max(n_va, 1)
+        va_set /= max(n_va, 1)
+        va_phys /= max(n_va, 1)
+        va_pt_ratio /= max(n_va, 1)
+        va_e_ratio /= max(n_va, 1)
+        va_budget /= max(n_va, 1)
+        va_sparse /= max(n_va, 1)
+        va_local /= max(n_va, 1)
+
+        if va_total < best_val:
+            best_val = va_total
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+            best_metrics = {
+                "val_total": va_total,
+                "val_set": va_set,
+                "val_phys": va_phys,
+                "val_pt_ratio": va_pt_ratio,
+                "val_e_ratio": va_e_ratio,
+                "val_budget": va_budget,
+                "val_sparse": va_sparse,
+                "val_local": va_local,
+            }
+        else:
+            no_improve += 1
+
+        if (ep + 1) % 5 == 0:
+            print(
+                f"Ep {ep+1}: train_total={tr_total:.4f}, val_total={va_total:.4f}, best={best_val:.4f} | "
+                f"set={va_set:.4f}, phys={va_phys:.4f}, pt_ratio={va_pt_ratio:.4f}, e_ratio={va_e_ratio:.4f}, "
+                f"budget={va_budget:.4f}, sparse={va_sparse:.4f}, local={va_local:.4f}, stage_scale={sc:.2f}"
+            )
+        if (ep + 1) >= min_stop_epoch and no_improve >= int(train_cfg["patience"]):
+            print(f"Early stopping reconstructor at epoch {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model, best_metrics
+
+
 def train_joint_dual(
     reconstructor: OfflineReconstructor,
     dual_model: nn.Module,
@@ -863,6 +1395,8 @@ def train_joint_dual(
     corrected_use_flags: bool,
     min_epochs: int,
     select_metric: str = "auc",
+    apply_cls_weight: bool = False,
+    apply_reco_weight: bool = False,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
     for p in reconstructor.parameters():
         p.requires_grad = not freeze_reconstructor
@@ -912,6 +1446,12 @@ def train_joint_dual(
             b_merge = batch["budget_merge_true"].to(device)
             b_eff = batch["budget_eff_true"].to(device)
             y = batch["label"].to(device)
+            sw_cls = batch.get("sample_weight_cls", None)
+            sw_reco = batch.get("sample_weight_reco", None)
+            if sw_cls is not None:
+                sw_cls = sw_cls.to(device)
+            if sw_reco is not None:
+                sw_reco = sw_reco.to(device)
 
             opt.zero_grad()
 
@@ -929,21 +1469,39 @@ def train_joint_dual(
             )
             logits = dual_model(feat_hlt_dual, mask_hlt, feat_b, mask_b).squeeze(1)
 
-            loss_cls = F.binary_cross_entropy_with_logits(logits, y)
+            if bool(apply_cls_weight) and sw_cls is not None:
+                loss_cls_raw = F.binary_cross_entropy_with_logits(logits, y, reduction="none")
+                denom = sw_cls.sum().clamp(min=1e-6)
+                loss_cls = (loss_cls_raw * sw_cls).sum() / denom
+            else:
+                loss_cls = F.binary_cross_entropy_with_logits(logits, y)
             loss_rank = low_fpr_surrogate_loss(logits, y, target_tpr=0.50, tau=0.05)
             loss_cons = reco_out["child_weight"].mean() + reco_out["gen_weight"].mean()
 
             if float(lambda_reco) > 0.0:
-                reco_losses = compute_reconstruction_losses(
-                    reco_out,
-                    const_hlt,
-                    mask_hlt,
-                    const_off,
-                    mask_off,
-                    b_merge,
-                    b_eff,
-                    BASE_CONFIG["loss"],
-                )
+                if bool(apply_reco_weight) and sw_reco is not None:
+                    reco_losses = compute_reconstruction_losses_weighted(
+                        reco_out,
+                        const_hlt,
+                        mask_hlt,
+                        const_off,
+                        mask_off,
+                        b_merge,
+                        b_eff,
+                        BASE_CONFIG["loss"],
+                        sample_weight=sw_reco,
+                    )
+                else:
+                    reco_losses = compute_reconstruction_losses(
+                        reco_out,
+                        const_hlt,
+                        mask_hlt,
+                        const_off,
+                        mask_off,
+                        b_merge,
+                        b_eff,
+                        BASE_CONFIG["loss"],
+                    )
                 loss_reco = reco_losses["total"]
             else:
                 loss_reco = torch.zeros((), device=device)
@@ -1053,6 +1611,14 @@ def main() -> None:
     parser.add_argument("--offset_jets", type=int, default=0)
     parser.add_argument("--max_constits", type=int, default=80)
     parser.add_argument(
+        "--n_train_split",
+        type=int,
+        default=-1,
+        help="If >0 and paired with --n_val_split/--n_test_split, use exact split counts instead of 70/15/15.",
+    )
+    parser.add_argument("--n_val_split", type=int, default=-1)
+    parser.add_argument("--n_test_split", type=int, default=-1)
+    parser.add_argument(
         "--save_dir",
         type=str,
         default=str(Path().cwd() / "checkpoints" / "offline_reconstructor_joint"),
@@ -1121,6 +1687,23 @@ def main() -> None:
         default=1.0,
         help="Scale in [0,1] for non-privileged true_added target: target=scale*(offline_count-hlt_count).",
     )
+    parser.add_argument("--disc_weight_enable", action="store_true")
+    parser.add_argument("--disc_weight_mode", type=str, default="smooth_delta", choices=["tail_disagreement", "smooth_delta"])
+    parser.add_argument("--disc_target_tpr", type=float, default=0.50)
+    parser.add_argument("--disc_tau", type=float, default=0.05)
+    parser.add_argument("--disc_include_pos", action="store_true")
+    parser.add_argument("--disc_pos_scale", type=float, default=0.25)
+    parser.add_argument("--disc_no_mean_normalize", action="store_true")
+    parser.add_argument("--disc_teacher_conf_min", type=float, default=0.65)
+    parser.add_argument("--disc_correctness_tau", type=float, default=0.05)
+    parser.add_argument("--disc_disable_teacher_hard_correct_gate", action="store_true")
+    parser.add_argument("--disc_disable_teacher_conf_gate", action="store_true")
+    parser.add_argument("--disc_disable_teacher_better_gate", action="store_true")
+    parser.add_argument("--disc_reco_lambda", type=float, default=15.0)
+    parser.add_argument("--disc_reco_max_mult", type=float, default=20.0)
+    parser.add_argument("--disc_cls_lambda", type=float, default=2.0)
+    parser.add_argument("--disc_cls_max_mult", type=float, default=3.0)
+    parser.add_argument("--disc_apply_cls_stagec", action="store_true")
 
     # Reconstructor decode controls (used for diagnostics and KD set build).
     parser.add_argument("--reco_weight_threshold", type=float, default=0.03)
@@ -1235,14 +1818,52 @@ def main() -> None:
     feat_off = compute_features(const_off, masks_off)
     feat_hlt = compute_features(hlt_const, hlt_mask)
 
+    n_train_split = int(args.n_train_split)
+    n_val_split = int(args.n_val_split)
+    n_test_split = int(args.n_test_split)
+    custom_split = (n_train_split > 0 and n_val_split > 0 and n_test_split > 0)
+
     idx = np.arange(len(labels))
-    train_idx, temp_idx = train_test_split(
-        idx, test_size=0.30, random_state=int(args.seed), stratify=labels
+    if custom_split:
+        total_need = int(n_train_split + n_val_split + n_test_split)
+        if total_need > len(idx):
+            raise ValueError(
+                f"Requested split counts exceed available jets: "
+                f"{n_train_split}+{n_val_split}+{n_test_split} > {len(idx)}"
+            )
+        if total_need < len(idx):
+            idx_use, _ = train_test_split(
+                idx,
+                train_size=total_need,
+                random_state=int(args.seed),
+                stratify=labels[idx],
+            )
+        else:
+            idx_use = idx
+        train_idx, rem_idx = train_test_split(
+            idx_use,
+            train_size=int(n_train_split),
+            random_state=int(args.seed),
+            stratify=labels[idx_use],
+        )
+        val_idx, test_idx = train_test_split(
+            rem_idx,
+            train_size=int(n_val_split),
+            test_size=int(n_test_split),
+            random_state=int(args.seed),
+            stratify=labels[rem_idx],
+        )
+    else:
+        train_idx, temp_idx = train_test_split(
+            idx, test_size=0.30, random_state=int(args.seed), stratify=labels
+        )
+        val_idx, test_idx = train_test_split(
+            temp_idx, test_size=0.50, random_state=int(args.seed), stratify=labels[temp_idx]
+        )
+    print(
+        f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} "
+        f"(custom_counts={custom_split})"
     )
-    val_idx, test_idx = train_test_split(
-        temp_idx, test_size=0.50, random_state=int(args.seed), stratify=labels[temp_idx]
-    )
-    print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)}")
 
     stageB_train_frac = float(np.clip(args.stageB_train_frac, 0.0, 1.0))
     if stageB_train_frac <= 0.0:
@@ -1272,7 +1893,16 @@ def main() -> None:
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
         "seed": int(args.seed),
-        "split": {"train_frac": 0.70, "val_frac": 0.15, "test_frac": 0.15},
+        "split": (
+            {
+                "mode": "custom_counts",
+                "n_train_split": int(len(train_idx)),
+                "n_val_split": int(len(val_idx)),
+                "n_test_split": int(len(test_idx)),
+            }
+            if custom_split
+            else {"mode": "fractions", "train_frac": 0.70, "val_frac": 0.15, "test_frac": 0.15}
+        ),
         "hlt_effects": cfg["hlt_effects"],
         "variant": "nopriv_unmergeonly",
         "added_target_scale": float(added_target_scale),
@@ -1281,6 +1911,25 @@ def main() -> None:
         "stageB_train_frac": float(stageB_train_frac),
         "stageB_subset_seed": int(stageB_subset_seed),
         "stageB_train_count": int(len(stageB_train_idx)),
+        "discrepancy_weighting": {
+            "enabled": bool(args.disc_weight_enable),
+            "weight_mode": str(args.disc_weight_mode),
+            "target_tpr": float(args.disc_target_tpr),
+            "tau": float(args.disc_tau),
+            "include_pos": bool(args.disc_include_pos),
+            "pos_scale": float(args.disc_pos_scale),
+            "no_mean_normalize": bool(args.disc_no_mean_normalize),
+            "teacher_conf_min": float(args.disc_teacher_conf_min),
+            "correctness_tau": float(args.disc_correctness_tau),
+            "disable_teacher_hard_correct_gate": bool(args.disc_disable_teacher_hard_correct_gate),
+            "disable_teacher_conf_gate": bool(args.disc_disable_teacher_conf_gate),
+            "disable_teacher_better_gate": bool(args.disc_disable_teacher_better_gate),
+            "reco_lambda": float(args.disc_reco_lambda),
+            "reco_max_mult": float(args.disc_reco_max_mult),
+            "cls_lambda": float(args.disc_cls_lambda),
+            "cls_max_mult": float(args.disc_cls_max_mult),
+            "apply_cls_stagec": bool(args.disc_apply_cls_stagec),
+        },
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
         json.dump(data_setup, f, indent=2)
@@ -1325,6 +1974,117 @@ def main() -> None:
         baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
     )
     auc_baseline, preds_baseline, _ = eval_classifier(baseline, dl_test_hlt, device)
+
+    # Discrepancy weighting vectors (optional), derived from teacher-vs-baseline train/val predictions.
+    sample_weight_reco = np.ones((len(train_idx),), dtype=np.float32)
+    sample_weight_cls = np.ones((len(train_idx),), dtype=np.float32)
+    discrepancy_reco_summary: Dict[str, float] = {"enabled": False}
+    discrepancy_cls_summary: Dict[str, float] = {"enabled": False}
+    if bool(args.disc_weight_enable):
+        p_teacher_train, y_teacher_train = predict_single_view_scores(
+            teacher,
+            feat_off_std[train_idx],
+            masks_off[train_idx],
+            labels[train_idx],
+            batch_size=BS,
+            num_workers=int(args.num_workers),
+            device=device,
+        )
+        p_teacher_val, y_teacher_val = predict_single_view_scores(
+            teacher,
+            feat_off_std[val_idx],
+            masks_off[val_idx],
+            labels[val_idx],
+            batch_size=BS,
+            num_workers=int(args.num_workers),
+            device=device,
+        )
+        p_baseline_train, y_baseline_train = predict_single_view_scores(
+            baseline,
+            feat_hlt_std[train_idx],
+            hlt_mask[train_idx],
+            labels[train_idx],
+            batch_size=BS,
+            num_workers=int(args.num_workers),
+            device=device,
+        )
+        p_baseline_val, y_baseline_val = predict_single_view_scores(
+            baseline,
+            feat_hlt_std[val_idx],
+            hlt_mask[val_idx],
+            labels[val_idx],
+            batch_size=BS,
+            num_workers=int(args.num_workers),
+            device=device,
+        )
+        if not np.array_equal(y_teacher_train.astype(np.int64), y_baseline_train.astype(np.int64)):
+            raise RuntimeError("Teacher/baseline train label mismatch while building discrepancy weights.")
+        if not np.array_equal(y_teacher_val.astype(np.int64), y_baseline_val.astype(np.int64)):
+            raise RuntimeError("Teacher/baseline val label mismatch while building discrepancy weights.")
+
+        sample_weight_reco, discrepancy_reco_summary = build_discrepancy_weights(
+            y_train=y_teacher_train.astype(np.int64),
+            p_teacher_train=p_teacher_train,
+            p_baseline_train=p_baseline_train,
+            p_teacher_val=p_teacher_val,
+            p_baseline_val=p_baseline_val,
+            y_val=y_teacher_val.astype(np.int64),
+            target_tpr=float(args.disc_target_tpr),
+            tau=float(args.disc_tau),
+            lambda_disc=float(args.disc_reco_lambda),
+            max_mult=float(args.disc_reco_max_mult),
+            include_pos=bool(args.disc_include_pos),
+            pos_scale=float(args.disc_pos_scale),
+            normalize_mean_one=(not bool(args.disc_no_mean_normalize)),
+            teacher_conf_min=float(args.disc_teacher_conf_min),
+            correctness_tau=float(args.disc_correctness_tau),
+            use_teacher_hard_correct_gate=(not bool(args.disc_disable_teacher_hard_correct_gate)),
+            use_teacher_conf_gate=(not bool(args.disc_disable_teacher_conf_gate)),
+            use_teacher_better_gate=(not bool(args.disc_disable_teacher_better_gate)),
+            weight_mode=str(args.disc_weight_mode),
+        )
+        discrepancy_reco_summary["enabled"] = True
+
+        sample_weight_cls, discrepancy_cls_summary = build_discrepancy_weights(
+            y_train=y_teacher_train.astype(np.int64),
+            p_teacher_train=p_teacher_train,
+            p_baseline_train=p_baseline_train,
+            p_teacher_val=p_teacher_val,
+            p_baseline_val=p_baseline_val,
+            y_val=y_teacher_val.astype(np.int64),
+            target_tpr=float(args.disc_target_tpr),
+            tau=float(args.disc_tau),
+            lambda_disc=float(args.disc_cls_lambda),
+            max_mult=float(args.disc_cls_max_mult),
+            include_pos=bool(args.disc_include_pos),
+            pos_scale=float(args.disc_pos_scale),
+            normalize_mean_one=(not bool(args.disc_no_mean_normalize)),
+            teacher_conf_min=float(args.disc_teacher_conf_min),
+            correctness_tau=float(args.disc_correctness_tau),
+            use_teacher_hard_correct_gate=(not bool(args.disc_disable_teacher_hard_correct_gate)),
+            use_teacher_conf_gate=(not bool(args.disc_disable_teacher_conf_gate)),
+            use_teacher_better_gate=(not bool(args.disc_disable_teacher_better_gate)),
+            weight_mode=str(args.disc_weight_mode),
+        )
+        discrepancy_cls_summary["enabled"] = True
+        np.savez_compressed(
+            save_root / "discrepancy_weights_train.npz",
+            train_idx=train_idx.astype(np.int64),
+            sample_weight_reco=sample_weight_reco.astype(np.float32),
+            sample_weight_cls=sample_weight_cls.astype(np.float32),
+        )
+        print(
+            "Discrepancy weights (reco): "
+            f"mean={discrepancy_reco_summary.get('mean_weight', float('nan')):.4f}, "
+            f"p95={discrepancy_reco_summary.get('p95_weight', float('nan')):.4f}, "
+            f"w>1.5={discrepancy_reco_summary.get('fraction_w_gt_1p5', float('nan')):.4f}"
+        )
+        print(
+            "Discrepancy weights (cls): "
+            f"mean={discrepancy_cls_summary.get('mean_weight', float('nan')):.4f}, "
+            f"p95={discrepancy_cls_summary.get('p95_weight', float('nan')):.4f}, "
+            f"w>1.5={discrepancy_cls_summary.get('fraction_w_gt_1p5', float('nan')):.4f}"
+        )
 
     # Optional jet-level regressor to provide frozen global calibration features to dual-view tagger.
     jet_regressor = None
@@ -1416,15 +2176,17 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)")
     print("=" * 70)
-    ds_train_reco = ReconstructionDataset(
+    ds_train_reco = WeightedReconstructionDataset(
         feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
         const_off[train_idx], masks_off[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
+        sample_weight_reco=sample_weight_reco,
     )
-    ds_val_reco = ReconstructionDataset(
+    ds_val_reco = WeightedReconstructionDataset(
         feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
+        sample_weight_reco=np.ones((len(val_idx),), dtype=np.float32),
     )
     dl_train_reco = DataLoader(
         ds_train_reco,
@@ -1446,39 +2208,52 @@ def main() -> None:
     reconstructor = wrap_reconstructor_unmerge_only(reconstructor)
     # compute_reconstruction_losses reads BASE_CONFIG["loss"], so sync it to our working config.
     BASE_CONFIG["loss"] = cfg["loss"]
-    reconstructor, reco_val_metrics = train_reconstructor(
+    reconstructor, reco_val_metrics = train_reconstructor_weighted(
         reconstructor,
         dl_train_reco,
         dl_val_reco,
         device,
         cfg["reconstructor_training"],
         cfg["loss"],
+        apply_reco_weight=bool(args.disc_weight_enable),
     )
 
     # Joint datasets
+    train_pos = {int(j): i for i, j in enumerate(train_idx.tolist())}
+    stageb_w_cls = np.array([sample_weight_cls[train_pos[int(j)]] for j in stageB_train_idx], dtype=np.float32)
+    stageb_w_reco = np.array([sample_weight_reco[train_pos[int(j)]] for j in stageB_train_idx], dtype=np.float32)
+
     ds_train_joint = JointDualDataset(
         feat_hlt_std[train_idx], feat_hlt_dual[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
         const_off[train_idx], masks_off[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
         labels[train_idx],
+        sample_weight_cls=sample_weight_cls,
+        sample_weight_reco=sample_weight_reco,
     )
     ds_train_joint_stageb = JointDualDataset(
         feat_hlt_std[stageB_train_idx], feat_hlt_dual[stageB_train_idx], hlt_mask[stageB_train_idx], hlt_const[stageB_train_idx],
         const_off[stageB_train_idx], masks_off[stageB_train_idx],
         budget_merge_true[stageB_train_idx], budget_eff_true[stageB_train_idx],
         labels[stageB_train_idx],
+        sample_weight_cls=stageb_w_cls,
+        sample_weight_reco=stageb_w_reco,
     )
     ds_val_joint = JointDualDataset(
         feat_hlt_std[val_idx], feat_hlt_dual[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         labels[val_idx],
+        sample_weight_cls=np.ones((len(val_idx),), dtype=np.float32),
+        sample_weight_reco=np.ones((len(val_idx),), dtype=np.float32),
     )
     ds_test_joint = JointDualDataset(
         feat_hlt_std[test_idx], feat_hlt_dual[test_idx], hlt_mask[test_idx], hlt_const[test_idx],
         const_off[test_idx], masks_off[test_idx],
         budget_merge_true[test_idx], budget_eff_true[test_idx],
         labels[test_idx],
+        sample_weight_cls=np.ones((len(test_idx),), dtype=np.float32),
+        sample_weight_reco=np.ones((len(test_idx),), dtype=np.float32),
     )
 
     dl_train_joint = DataLoader(
@@ -1526,6 +2301,8 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageB_min_epochs),
         select_metric=selection_metric,
+        apply_cls_weight=bool(args.disc_weight_enable and float(args.disc_cls_lambda) > 0.0),
+        apply_reco_weight=False,
     )
 
     # Stage B test evaluation + checkpoint snapshot (before Stage C joint finetune).
@@ -1585,6 +2362,8 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageC_min_epochs),
         select_metric=selection_metric,
+        apply_cls_weight=bool(args.disc_weight_enable and bool(args.disc_apply_cls_stagec) and float(args.disc_cls_lambda) > 0.0),
+        apply_reco_weight=bool(args.disc_weight_enable and float(args.disc_reco_lambda) > 0.0),
     )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
@@ -1951,6 +2730,13 @@ def main() -> None:
                     "stageB_subset_seed": int(stageB_subset_seed),
                     "stageB_train_count": int(len(stageB_train_idx)),
                     "train_count": int(len(train_idx)),
+                },
+                "discrepancy_weighting": {
+                    "enabled": bool(args.disc_weight_enable),
+                    "mode": str(args.disc_weight_mode),
+                    "reco_summary": discrepancy_reco_summary,
+                    "cls_summary": discrepancy_cls_summary,
+                    "apply_cls_stagec": bool(args.disc_apply_cls_stagec),
                 },
                 "jet_regressor": jet_reg_metrics,
                 "stageA_reconstructor": reco_val_metrics,
