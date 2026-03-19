@@ -1,30 +1,30 @@
 #!/usr/bin/env bash
 # Run the Tagging2 pure-unsmear shared-encoder joint setup on SLURM.
-# Default is exactly: n_jets=50, max_particles=40.
+# Default is exactly: n_jets=50k, max_particles=40.
 #
 # Submit:
 #   sbatch run_tagging2_pure_unsmear_joint_50j40c.sh
 
-#SBATCH --job-name=unsmJ50x40
+#SBATCH --job-name=unsmJ50kx40
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
 #SBATCH --time=05:00:00
-#SBATCH --output=offline_reconstructor_logs/unsmear_joint_50j40c_%j.out
-#SBATCH --error=offline_reconstructor_logs/unsmear_joint_50j40c_%j.err
+#SBATCH --output=offline_reconstructor_logs/unsmear_joint_50k40c_%j.out
+#SBATCH --error=offline_reconstructor_logs/unsmear_joint_50k40c_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-unsmear_transformer_sharedencoder_50j_40c}"
+RUN_NAME="${RUN_NAME:-unsmear_transformer_sharedencoder_50k_40c}"
 DATA_PATH="${DATA_PATH:-$SLURM_SUBMIT_DIR/data/test.h5}"
-N_JETS="${N_JETS:-50}"
+N_JETS="${N_JETS:-50000}"
 MAX_PARTICLES="${MAX_PARTICLES:-40}"
 SEED="${SEED:-42}"
 
-# Small-sample-safe training settings.
-BATCH_SIZE="${BATCH_SIZE:-8}"
+# Training settings.
+BATCH_SIZE="${BATCH_SIZE:-256}"
 EPOCHS="${EPOCHS:-50}"
 WARMUP_EPOCHS="${WARMUP_EPOCHS:-3}"
 PATIENCE="${PATIENCE:-8}"
