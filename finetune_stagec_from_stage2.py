@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import random
+import shutil
 from pathlib import Path
 from typing import Dict
 
@@ -577,12 +578,15 @@ def main() -> None:
     selected_states = None
     auc_states = None
     fpr_states = None
+    frozen_selected_metrics = None
+    frozen_selected_states = None
     phase_reports = []
 
     def _run_phase(phase_name: str, freeze_reco: bool, epochs: int, patience: int, min_epochs: int) -> None:
         nonlocal reconstructor, dual_joint
         nonlocal selected_metrics, auc_metrics, fpr_metrics
         nonlocal selected_states, auc_states, fpr_states
+        nonlocal frozen_selected_metrics, frozen_selected_states
         if int(epochs) <= 0:
             return
         reconstructor, dual_joint, ph_metrics, ph_states = joint.train_joint_dual(
@@ -624,6 +628,9 @@ def main() -> None:
         if _better_fpr(ph_metrics, fpr_metrics):
             fpr_metrics = ph_metrics
             fpr_states = ph_states.get("fpr50", {})
+        if bool(freeze_reco):
+            frozen_selected_metrics = ph_metrics
+            frozen_selected_states = ph_states.get("selected", {})
 
     if freeze_epochs > 0:
         _run_phase(
@@ -652,6 +659,7 @@ def main() -> None:
         "selected": {"dual": (selected_states or {}).get("dual"), "reco": (selected_states or {}).get("reco")},
         "auc": {"dual": (auc_states or {}).get("dual"), "reco": (auc_states or {}).get("reco")},
         "fpr50": {"dual": (fpr_states or {}).get("dual"), "reco": (fpr_states or {}).get("reco")},
+        "frozen_selected": {"dual": (frozen_selected_states or {}).get("dual"), "reco": (frozen_selected_states or {}).get("reco")},
         "phase_reports": phase_reports,
     }
 
@@ -666,6 +674,27 @@ def main() -> None:
     fpr_j, tpr_j, _ = roc_curve(labs_joint, preds_joint)
     fpr30_joint = float(fpr_at_target_tpr(fpr_j, tpr_j, 0.30))
     fpr50_joint = float(fpr_at_target_tpr(fpr_j, tpr_j, 0.50))
+
+    # Optional frozen-phase selected checkpoint eval (if freeze phase was used).
+    auc_joint_frozen = float("nan")
+    fpr30_joint_frozen = float("nan")
+    fpr50_joint_frozen = float("nan")
+    if stageC_states.get("frozen_selected", {}).get("dual") is not None and stageC_states.get("frozen_selected", {}).get("reco") is not None:
+        torch.save({"model": stageC_states["frozen_selected"]["reco"]}, save_root / "offline_reconstructor_stagec_frozen_ckpt.pt")
+        torch.save({"model": stageC_states["frozen_selected"]["dual"]}, save_root / "dual_joint_stagec_frozen_ckpt.pt")
+        reconstructor.load_state_dict(stageC_states["frozen_selected"]["reco"])
+        dual_joint.load_state_dict(stageC_states["frozen_selected"]["dual"])
+        auc_joint_frozen, preds_joint_frozen, labs_joint_frozen, _ = joint.eval_joint_model(
+            reconstructor=reconstructor,
+            dual_model=dual_joint,
+            loader=dl_test_joint,
+            device=device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+        )
+        fpr_fr, tpr_fr, _ = roc_curve(labs_joint_frozen, preds_joint_frozen)
+        fpr30_joint_frozen = float(fpr_at_target_tpr(fpr_fr, tpr_fr, 0.30))
+        fpr50_joint_frozen = float(fpr_at_target_tpr(fpr_fr, tpr_fr, 0.50))
 
     # Also evaluate Stage-C best-val_fpr50 checkpoint for comparison.
     auc_joint_fprsel = float("nan")
@@ -692,8 +721,20 @@ def main() -> None:
     if stageC_states.get("selected", {}).get("dual") is not None:
         dual_joint.load_state_dict(stageC_states["selected"]["dual"])
 
+    # Save selected checkpoint in both legacy (plain state_dict) and analyzer-compatible formats.
+    torch.save({"model": reconstructor.state_dict()}, save_root / "offline_reconstructor_stagec_selected_ckpt.pt")
+    torch.save({"model": dual_joint.state_dict()}, save_root / "dual_joint_stagec_selected_ckpt.pt")
     torch.save(reconstructor.state_dict(), save_root / "offline_reconstructor.pt")
     torch.save(dual_joint.state_dict(), save_root / "dual_joint.pt")
+
+    # Copy source-run assets required by the disagreement analyzer into this output folder.
+    for fname in ["data_setup.json", "data_splits.npz", "teacher.pt", "baseline.pt", "hlt_stats.json"]:
+        src = run_dir / fname
+        if src.exists():
+            try:
+                shutil.copy2(src, save_root / fname)
+            except Exception as e:
+                print(f"Warning: failed to copy {src} -> {save_root / fname}: {e}")
 
     base_test = {}
     base_path = run_dir / "joint_stage_metrics.json"
@@ -744,6 +785,11 @@ def main() -> None:
             "fpr30": float(fpr30_joint),
             "fpr50": float(fpr50_joint),
         },
+        "test_stageC_frozen_selected": {
+            "auc": float(auc_joint_frozen),
+            "fpr30": float(fpr30_joint_frozen),
+            "fpr50": float(fpr50_joint_frozen),
+        },
         "test_stageC_bestfpr50": {
             "auc": float(auc_joint_fprsel),
             "fpr30": float(fpr30_joint_fprsel),
@@ -761,6 +807,7 @@ def main() -> None:
         save_root / "results.npz",
         labels=labs_joint.astype(np.float32),
         preds_stage2=preds_stage2.astype(np.float32),
+        preds_stagec_frozen=(preds_joint_frozen.astype(np.float32) if np.isfinite(auc_joint_frozen) else np.array([], dtype=np.float32)),
         preds_stagec=preds_joint.astype(np.float32),
     )
 
@@ -778,6 +825,8 @@ def main() -> None:
             f"FPR30={baseline_metrics['fpr30']:.6f}, FPR50={baseline_metrics['fpr50']:.6f}"
         )
     print(f"Loaded Stage2: AUC={auc_stage2:.4f}, FPR30={fpr30_stage2:.6f}, FPR50={fpr50_stage2:.6f}")
+    if np.isfinite(auc_joint_frozen):
+        print(f"StageC FrozenSelected: AUC={auc_joint_frozen:.4f}, FPR30={fpr30_joint_frozen:.6f}, FPR50={fpr50_joint_frozen:.6f}")
     print(f"StageC Selected: AUC={auc_joint:.4f}, FPR30={fpr30_joint:.6f}, FPR50={fpr50_joint:.6f}")
     if np.isfinite(auc_joint_fprsel):
         print(
