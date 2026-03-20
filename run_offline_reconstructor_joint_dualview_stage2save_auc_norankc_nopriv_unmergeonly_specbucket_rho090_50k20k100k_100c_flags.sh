@@ -24,7 +24,7 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-joint_stage2save_auc_norankc_nopriv_unmergeonly_specbucket_rho090_50k20k100k_100c_seed0}"
+RUN_NAME="${RUN_NAME:-joint_stage2save_auc_norankc_nopriv_unmergeonly_specbucket_c0to15_phlt0242_rho090_50k20k100k_100c_seed0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-170000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-50000}"
@@ -37,9 +37,9 @@ SEED="${SEED:-0}"
 ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.90}"
 
 # Specialist bucket rule / weights
-SPEC_COUNT_LOW="${SPEC_COUNT_LOW:-25}"
-SPEC_COUNT_HIGH="${SPEC_COUNT_HIGH:-50}"
-SPEC_PHLT_THR="${SPEC_PHLT_THR:-0.922}"
+SPEC_COUNT_LOW="${SPEC_COUNT_LOW:-0}"
+SPEC_COUNT_HIGH="${SPEC_COUNT_HIGH:-15}"
+SPEC_PHLT_THR="${SPEC_PHLT_THR:-0.242}"
 SPEC_W_NEG="${SPEC_W_NEG:-10.0}"
 SPEC_W_POS="${SPEC_W_POS:-4.0}"
 SPEC_W_OTHER="${SPEC_W_OTHER:-1.0}"
