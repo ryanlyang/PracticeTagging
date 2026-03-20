@@ -115,6 +115,21 @@ def _safe_auc_fpr50(labels: np.ndarray, preds: np.ndarray) -> Tuple[float, float
     return auc, fpr50
 
 
+def _safe_auc_fpr50_weighted(
+    labels: np.ndarray, preds: np.ndarray, sample_weight: Optional[np.ndarray]
+) -> Tuple[float, float]:
+    if sample_weight is None:
+        return _safe_auc_fpr50(labels, preds)
+    if preds.size == 0 or sample_weight.size != preds.size:
+        return float("nan"), float("nan")
+    if len(np.unique(labels)) < 2:
+        return float("nan"), float("nan")
+    auc = float(roc_auc_score(labels, preds, sample_weight=sample_weight))
+    fpr, tpr, _ = roc_curve(labels, preds, sample_weight=sample_weight)
+    fpr50 = float(fpr_at_target_tpr(fpr, tpr, 0.50))
+    return auc, fpr50
+
+
 @torch.no_grad()
 def eval_joint_model_safe(
     reconstructor: OfflineReconstructor,
@@ -153,6 +168,53 @@ def eval_joint_model_safe(
 
     auc, fpr50 = _safe_auc_fpr50(labs, preds)
     return auc, preds, labs, fpr50
+
+
+@torch.no_grad()
+def eval_joint_model_safe_with_weights(
+    reconstructor: OfflineReconstructor,
+    dual_model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    corrected_weight_floor: float,
+    corrected_use_flags: bool = False,
+) -> Tuple[float, np.ndarray, np.ndarray, float, float, float]:
+    dual_model.eval()
+    reconstructor.eval()
+
+    preds = []
+    labs = []
+    weights = []
+    has_weight = False
+    for batch in loader:
+        feat_hlt_reco = batch["feat_hlt_reco"].to(device)
+        feat_hlt_dual = batch["feat_hlt_dual"].to(device)
+        mask_hlt = batch["mask_hlt"].to(device)
+        const_hlt = batch["const_hlt"].to(device)
+        y = batch["label"].to(device)
+
+        reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+        feat_b, mask_b = base.build_soft_corrected_view(
+            reco_out,
+            weight_floor=corrected_weight_floor,
+            scale_features_by_weight=True,
+            include_flags=corrected_use_flags,
+        )
+        logits = dual_model(feat_hlt_dual, mask_hlt, feat_b, mask_b).squeeze(1)
+        p = torch.sigmoid(logits)
+        preds.append(p.detach().cpu().numpy())
+        labs.append(y.detach().cpu().numpy())
+        if "sample_weight" in batch:
+            has_weight = True
+            weights.append(batch["sample_weight"].detach().cpu().numpy())
+
+    preds = np.concatenate(preds) if preds else np.zeros(0, dtype=np.float32)
+    labs = np.concatenate(labs) if labs else np.zeros(0, dtype=np.float32)
+    sw = np.concatenate(weights).astype(np.float32) if has_weight and weights else None
+
+    auc_unw, fpr50_unw = _safe_auc_fpr50(labs, preds)
+    auc_w, fpr50_w = _safe_auc_fpr50_weighted(labs, preds, sw)
+    return auc_unw, preds, labs, fpr50_unw, auc_w, fpr50_w
 
 
 def train_joint_dual_weighted(
@@ -197,9 +259,17 @@ def train_joint_dual_weighted(
 
     best_val_fpr50 = float("inf")
     best_val_auc = float("-inf")
+    best_val_fpr50_unw = float("inf")
+    best_val_auc_unw = float("-inf")
+    best_val_fpr50_w = float("inf")
+    best_val_auc_w = float("-inf")
     best_sel_score = float("inf") if str(select_metric).lower() == "fpr50" else float("-inf")
     sel_val_fpr50 = float("nan")
     sel_val_auc = float("nan")
+    sel_val_fpr50_unw = float("nan")
+    sel_val_auc_unw = float("nan")
+    sel_val_fpr50_w = float("nan")
+    sel_val_auc_w = float("nan")
     no_improve = 0
 
     for ep in tqdm(range(int(epochs)), desc=stage_name):
@@ -297,7 +367,7 @@ def train_joint_dual_weighted(
         tr_reco /= max(n_tr, 1)
         tr_cons /= max(n_tr, 1)
 
-        va_auc, _, _, va_fpr50 = eval_joint_model_safe(
+        va_auc_unw, _, _, va_fpr50_unw, va_auc_w, va_fpr50_w = eval_joint_model_safe_with_weights(
             reconstructor=reconstructor,
             dual_model=dual_model,
             loader=val_loader,
@@ -305,6 +375,22 @@ def train_joint_dual_weighted(
             corrected_weight_floor=corrected_weight_floor,
             corrected_use_flags=corrected_use_flags,
         )
+        if not np.isfinite(va_auc_w):
+            va_auc_w = va_auc_unw
+        if not np.isfinite(va_fpr50_w):
+            va_fpr50_w = va_fpr50_unw
+
+        va_auc = va_auc_w if use_sample_weight else va_auc_unw
+        va_fpr50 = va_fpr50_w if use_sample_weight else va_fpr50_unw
+
+        if np.isfinite(va_fpr50_unw) and float(va_fpr50_unw) < best_val_fpr50_unw:
+            best_val_fpr50_unw = float(va_fpr50_unw)
+        if np.isfinite(va_auc_unw) and float(va_auc_unw) > best_val_auc_unw:
+            best_val_auc_unw = float(va_auc_unw)
+        if np.isfinite(va_fpr50_w) and float(va_fpr50_w) < best_val_fpr50_w:
+            best_val_fpr50_w = float(va_fpr50_w)
+        if np.isfinite(va_auc_w) and float(va_auc_w) > best_val_auc_w:
+            best_val_auc_w = float(va_auc_w)
 
         if np.isfinite(va_fpr50) and float(va_fpr50) < best_val_fpr50:
             best_val_fpr50 = float(va_fpr50)
@@ -326,6 +412,10 @@ def train_joint_dual_weighted(
             best_sel_score = current_score
             sel_val_fpr50 = float(va_fpr50)
             sel_val_auc = float(va_auc)
+            sel_val_fpr50_unw = float(va_fpr50_unw)
+            sel_val_auc_unw = float(va_auc_unw)
+            sel_val_fpr50_w = float(va_fpr50_w)
+            sel_val_auc_w = float(va_auc_w)
             best_state_dual_sel = {k: v.detach().cpu().clone() for k, v in dual_model.state_dict().items()}
             best_state_reco_sel = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
             no_improve = 0
@@ -334,10 +424,19 @@ def train_joint_dual_weighted(
 
         print_every = 1 if str(stage_name).startswith("StageC") else 5
         if (ep + 1) % print_every == 0:
+            val_msg = (
+                f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}"
+                if not use_sample_weight
+                else (
+                    f"val_auc_sel={va_auc:.4f}, val_fpr50_sel={va_fpr50:.6f} "
+                    f"(unw_auc={va_auc_unw:.4f}, unw_fpr50={va_fpr50_unw:.6f}, "
+                    f"w_auc={va_auc_w:.4f}, w_fpr50={va_fpr50_w:.6f})"
+                )
+            )
             print(
                 f"{stage_name} ep {ep+1}: train_loss={tr_loss:.4f} "
                 f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}) | "
-                f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, "
+                f"{val_msg}, "
                 f"select={str(select_metric).lower()}, best_sel={best_sel_score:.6f}"
             )
 
@@ -352,10 +451,19 @@ def train_joint_dual_weighted(
 
     metrics = {
         "selection_metric": str(select_metric).lower(),
+        "selection_source": "weighted" if use_sample_weight else "unweighted",
         "selected_val_fpr50": float(sel_val_fpr50),
         "selected_val_auc": float(sel_val_auc),
+        "selected_val_fpr50_unweighted": float(sel_val_fpr50_unw),
+        "selected_val_auc_unweighted": float(sel_val_auc_unw),
+        "selected_val_fpr50_weighted": float(sel_val_fpr50_w),
+        "selected_val_auc_weighted": float(sel_val_auc_w),
         "best_val_fpr50_seen": float(best_val_fpr50),
         "best_val_auc_seen": float(best_val_auc),
+        "best_val_fpr50_seen_unweighted": float(best_val_fpr50_unw),
+        "best_val_auc_seen_unweighted": float(best_val_auc_unw),
+        "best_val_fpr50_seen_weighted": float(best_val_fpr50_w),
+        "best_val_auc_seen_weighted": float(best_val_auc_w),
     }
     state_pack = {
         "selected": {"dual": best_state_dual_sel, "reco": best_state_reco_sel},
@@ -609,6 +717,11 @@ def main() -> None:
     # Hard-route MoE controls
     parser.add_argument("--route_hlt_count_thr", type=int, default=26)
     parser.add_argument("--stageB_route_weight", type=float, default=5.0)
+    parser.add_argument(
+        "--stageB_hard_route",
+        action="store_true",
+        help="If set, Stage B also trains/validates each branch on its own hard-routed subset only.",
+    )
     parser.add_argument("--route_boundary_band", type=int, default=2)
 
     # API compatibility
@@ -764,6 +877,7 @@ def main() -> None:
 
     route_thr = int(args.route_hlt_count_thr)
     route_weight = float(args.stageB_route_weight)
+    stageB_hard_route = bool(args.stageB_hard_route)
     route_low_mask = (hlt_mask.sum(axis=1).astype(np.int32) <= route_thr)
 
     train_low = int(route_low_mask[train_idx].sum())
@@ -795,6 +909,7 @@ def main() -> None:
         "rho": float(rho),
         "route_hlt_count_thr": int(route_thr),
         "stageB_route_weight": float(route_weight),
+        "stageB_hard_route": bool(stageB_hard_route),
         "split_again": {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in base.SPLIT_AGAIN_CFG.items()},
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
@@ -925,32 +1040,75 @@ def main() -> None:
     )
 
     print("\n" + "=" * 70)
-    print("STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECO, FULL TRAIN + WEIGHTED BCE)")
+    if stageB_hard_route:
+        print("STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECO, HARD ROUTED)")
+    else:
+        print("STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECO, FULL TRAIN + WEIGHTED BCE)")
     print("=" * 70)
 
-    w_low = np.where(route_low_mask[train_idx], route_weight, 1.0).astype(np.float32)
-    w_high = np.where(route_low_mask[train_idx], 1.0, route_weight).astype(np.float32)
-    print(
-        f"Stage-B route weighting: in-route weight={route_weight:.3f}, out-route weight=1.000 | "
-        f"mean(w_low)={float(w_low.mean()):.3f}, mean(w_high)={float(w_high.mean()):.3f}"
-    )
-
-    ds_train_joint_low = _subset_joint_dataset(
-        feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
-        const_off, masks_off, budget_merge_true, budget_eff_true,
-        labels, train_idx, sample_weight=w_low,
-    )
-    ds_train_joint_high = _subset_joint_dataset(
-        feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
-        const_off, masks_off, budget_merge_true, budget_eff_true,
-        labels, train_idx, sample_weight=w_high,
-    )
-    ds_val_joint_low = _subset_joint_dataset(
+    if stageB_hard_route:
+        stageb_use_weight = False
+        print(
+            f"Stage-B hard route enabled: "
+            f"low train/val={len(train_idx_low)}/{len(val_idx_low)}, "
+            f"high train/val={len(train_idx_high)}/{len(val_idx_high)}"
+        )
+        ds_train_joint_low = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, train_idx_low,
+        )
+        ds_train_joint_high = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, train_idx_high,
+        )
+        ds_val_joint_low_stageb = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, val_idx_low,
+        )
+        ds_val_joint_high_stageb = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, val_idx_high,
+        )
+    else:
+        stageb_use_weight = True
+        w_low = np.where(route_low_mask[train_idx], route_weight, 1.0).astype(np.float32)
+        w_high = np.where(route_low_mask[train_idx], 1.0, route_weight).astype(np.float32)
+        w_low_val = np.where(route_low_mask[val_idx], route_weight, 1.0).astype(np.float32)
+        w_high_val = np.where(route_low_mask[val_idx], 1.0, route_weight).astype(np.float32)
+        print(
+            f"Stage-B route weighting: in-route weight={route_weight:.3f}, out-route weight=1.000 | "
+            f"mean(w_low)={float(w_low.mean()):.3f}, mean(w_high)={float(w_high.mean()):.3f}"
+        )
+        ds_train_joint_low = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, train_idx, sample_weight=w_low,
+        )
+        ds_train_joint_high = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, train_idx, sample_weight=w_high,
+        )
+        ds_val_joint_low_stageb = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, val_idx, sample_weight=w_low_val,
+        )
+        ds_val_joint_high_stageb = _subset_joint_dataset(
+            feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
+            const_off, masks_off, budget_merge_true, budget_eff_true,
+            labels, val_idx, sample_weight=w_high_val,
+        )
+    ds_val_joint_low_stagec = _subset_joint_dataset(
         feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
         const_off, masks_off, budget_merge_true, budget_eff_true,
         labels, val_idx_low,
     )
-    ds_val_joint_high = _subset_joint_dataset(
+    ds_val_joint_high_stagec = _subset_joint_dataset(
         feat_hlt_std, feat_hlt_dual, hlt_mask, hlt_const,
         const_off, masks_off, budget_merge_true, budget_eff_true,
         labels, val_idx_high,
@@ -972,15 +1130,29 @@ def main() -> None:
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
     )
-    dl_val_joint_low = DataLoader(
-        ds_val_joint_low,
+    dl_val_joint_low_stageb = DataLoader(
+        ds_val_joint_low_stageb,
         batch_size=BS,
         shuffle=False,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
     )
-    dl_val_joint_high = DataLoader(
-        ds_val_joint_high,
+    dl_val_joint_high_stageb = DataLoader(
+        ds_val_joint_high_stageb,
+        batch_size=BS,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    dl_val_joint_low_stagec = DataLoader(
+        ds_val_joint_low_stagec,
+        batch_size=BS,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    dl_val_joint_high_stagec = DataLoader(
+        ds_val_joint_high_stagec,
         batch_size=BS,
         shuffle=False,
         num_workers=args.num_workers,
@@ -1005,7 +1177,7 @@ def main() -> None:
         reconstructor=reconstructor_low,
         dual_model=dual_low,
         train_loader=dl_train_joint_low,
-        val_loader=dl_val_joint_low,
+        val_loader=dl_val_joint_low_stageb,
         device=device,
         stage_name="StageB-DualPretrain-Low",
         freeze_reconstructor=True,
@@ -1022,14 +1194,14 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageB_min_epochs),
         select_metric=selection_metric,
-        use_sample_weight=True,
+        use_sample_weight=stageb_use_weight,
     )
 
     reconstructor_high, dual_high, stageB_high_metrics, stageB_high_states = train_joint_dual_weighted(
         reconstructor=reconstructor_high,
         dual_model=dual_high,
         train_loader=dl_train_joint_high,
-        val_loader=dl_val_joint_high,
+        val_loader=dl_val_joint_high_stageb,
         device=device,
         stage_name="StageB-DualPretrain-High",
         freeze_reconstructor=True,
@@ -1046,7 +1218,7 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageB_min_epochs),
         select_metric=selection_metric,
-        use_sample_weight=True,
+        use_sample_weight=stageb_use_weight,
     )
 
     stage2_reco_low_state = {k: v.detach().cpu().clone() for k, v in reconstructor_low.state_dict().items()}
@@ -1114,7 +1286,7 @@ def main() -> None:
         reconstructor=reconstructor_low,
         dual_model=dual_low,
         train_loader=dl_train_joint_low_c,
-        val_loader=dl_val_joint_low,
+        val_loader=dl_val_joint_low_stagec,
         device=device,
         stage_name="StageC-Joint-Low",
         freeze_reconstructor=False,
@@ -1138,7 +1310,7 @@ def main() -> None:
         reconstructor=reconstructor_high,
         dual_model=dual_high,
         train_loader=dl_train_joint_high_c,
-        val_loader=dl_val_joint_high,
+        val_loader=dl_val_joint_high_stagec,
         device=device,
         stage_name="StageC-Joint-High",
         freeze_reconstructor=False,
@@ -1278,6 +1450,7 @@ def main() -> None:
                     "rho": float(rho),
                     "route_hlt_count_thr": int(route_thr),
                     "stageB_route_weight": float(route_weight),
+                    "stageB_hard_route": bool(stageB_hard_route),
                     "split_again": {k: (float(v) if isinstance(v, (int, float)) else v) for k, v in base.SPLIT_AGAIN_CFG.items()},
                     "boundary_band": int(args.route_boundary_band),
                 },
