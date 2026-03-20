@@ -15,7 +15,6 @@
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RUN_DIR="${RUN_DIR:-checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_1MJ100C}"
 SAVE_SUBDIR="${SAVE_SUBDIR:-teacher_hlt_joint_disagreement_analysis_500k}"
@@ -41,7 +40,14 @@ set +u
 source ~/.bashrc
 set -u
 conda activate atlas_kd
-cd "$SLURM_SUBMIT_DIR"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+cd "${SUBMIT_DIR}"
+ANALYZE_SCRIPT="${ANALYZE_SCRIPT:-${SUBMIT_DIR}/analyze_teacher_hlt_joint_disagreements.py}"
+
+if [[ ! -f "${ANALYZE_SCRIPT}" ]]; then
+  echo "ERROR: analyzer script not found: ${ANALYZE_SCRIPT}" >&2
+  exit 1
+fi
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -49,7 +55,7 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 cmd=(
-  python "${SCRIPT_DIR}/analyze_teacher_hlt_joint_disagreements.py"
+  python "${ANALYZE_SCRIPT}"
   --run_dir "${RUN_DIR}"
   --save_subdir "${SAVE_SUBDIR}"
   --n_eval_jets "${N_EVAL_JETS}"
