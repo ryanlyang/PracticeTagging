@@ -6,11 +6,10 @@
 #   sbatch run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_hardroute_moe_stageBhard_rho090_50k20k100k_100c_noflags.sh
 
 #SBATCH --job-name=hrMoE50kB
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=6
-#SBATCH --mem=128G
-#SBATCH --time=2-12:00:00
+#SBATCH --mem=32G
+#SBATCH --time=5:00:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_hardroute_moe_stageBhard_rho090_50k20k100k_100c_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_nopriv_rhosplit_splitagain_hardroute_moe_stageBhard_rho090_50k20k100k_100c_%j.err
 
