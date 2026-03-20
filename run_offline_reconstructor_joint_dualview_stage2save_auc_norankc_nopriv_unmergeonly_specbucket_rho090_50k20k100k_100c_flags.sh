@@ -24,7 +24,7 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-joint_stage2save_auc_norankc_nopriv_unmergeonly_specbucket_c10to20_pt1077216_rho090_200k50k300k_100c_seed0}"
+RUN_NAME="${RUN_NAME:-joint_stage2save_auc_norankc_nopriv_unmergeonly_specbucket_c0to15_phlt0242_rho090_200k50k300k_100c_seed0_bucket2}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-550000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-200000}"
@@ -37,10 +37,10 @@ SEED="${SEED:-0}"
 ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.90}"
 
 # Specialist bucket rule / weights
-SPEC_COUNT_LOW="${SPEC_COUNT_LOW:-10}"
-SPEC_COUNT_HIGH="${SPEC_COUNT_HIGH:-20}"
-SPEC_PHLT_THR="${SPEC_PHLT_THR:-0.0}"
-SPEC_PT_HLT_MIN="${SPEC_PT_HLT_MIN:-1077216.0}"
+SPEC_COUNT_LOW="${SPEC_COUNT_LOW:-0}"
+SPEC_COUNT_HIGH="${SPEC_COUNT_HIGH:-15}"
+SPEC_PHLT_THR="${SPEC_PHLT_THR:-0.242}"
+SPEC_PT_HLT_MIN="${SPEC_PT_HLT_MIN:-0.0}"
 SPEC_W_NEG="${SPEC_W_NEG:-10.0}"
 SPEC_W_POS="${SPEC_W_POS:-4.0}"
 SPEC_W_OTHER="${SPEC_W_OTHER:-1.0}"
