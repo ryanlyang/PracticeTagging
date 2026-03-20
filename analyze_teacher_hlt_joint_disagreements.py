@@ -58,6 +58,14 @@ def _deepcopy_config() -> Dict:
     return json.loads(json.dumps(BASE_CONFIG))
 
 
+def _load_checkpoint(path: Path, map_location: torch.device) -> Dict:
+    """Load checkpoint dict with compatibility across torch versions."""
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+
 def _safe_auc(y: np.ndarray, p: np.ndarray) -> float:
     if y.size == 0:
         return float("nan")
@@ -307,7 +315,7 @@ def main() -> None:
     parser.add_argument("--threshold_source", type=str, default="test", choices=["test", "val"])
     parser.add_argument("--threshold_val_frac", type=float, default=0.20)
     parser.add_argument("--batch_size", type=int, default=-1)
-    parser.add_argument("--num_workers", type=int, default=6)
+    parser.add_argument("--num_workers", type=int, default=1)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--bucket_min_count", type=int, default=1000)
     parser.add_argument("--bucket_min_pos", type=int, default=300)
@@ -431,11 +439,15 @@ def main() -> None:
     print("Loading teacher/HLT/joint checkpoints...")
     teacher = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
     baseline = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    teacher.load_state_dict(torch.load(teacher_path, map_location=device)["model"])
-    baseline.load_state_dict(torch.load(baseline_path, map_location=device)["model"])
+    teacher_ckpt = _load_checkpoint(teacher_path, device)
+    baseline_ckpt = _load_checkpoint(baseline_path, device)
+    reco_ckpt = _load_checkpoint(reco_path, device)
+    dual_ckpt = _load_checkpoint(dual_path, device)
 
-    reco_state = torch.load(reco_path, map_location=device)["model"]
-    dual_state = torch.load(dual_path, map_location=device)["model"]
+    teacher.load_state_dict(teacher_ckpt["model"])
+    baseline.load_state_dict(baseline_ckpt["model"])
+    reco_state = reco_ckpt["model"]
+    dual_state = dual_ckpt["model"]
 
     reconstructor = OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
     reconstructor.load_state_dict(reco_state)
@@ -594,9 +606,9 @@ def main() -> None:
             "fpr50": float(fpr_at_target_tpr(fpr, tpr, 0.50)),
         }
 
-    mt = model_metrics(y_eval[idx_test], p_teacher[idx_test])
-    mh = model_metrics(y_eval[idx_test], p_hlt[idx_test])
-    mj = model_metrics(y_eval[idx_test], p_joint[idx_test])
+    m_teacher = model_metrics(y_eval[idx_test], p_teacher[idx_test])
+    m_hlt = model_metrics(y_eval[idx_test], p_hlt[idx_test])
+    m_joint = model_metrics(y_eval[idx_test], p_joint[idx_test])
 
     # -------------------- Per-jet export -------------------- #
     per_jet_cols = {
@@ -820,9 +832,9 @@ def main() -> None:
         h_lo = float(p_h_c[i])
         h_hi = float(p_h_c[i + 1])
         if i < len(p_h_c) - 2:
-            mh = (p_h >= h_lo) & (p_h < h_hi)
+            m_h_band = (p_h >= h_lo) & (p_h < h_hi)
         else:
-            mh = (p_h >= h_lo) & (p_h <= h_hi)
+            m_h_band = (p_h >= h_lo) & (p_h <= h_hi)
         for j in range(len(p_j_c) - 1):
             j_lo = float(p_j_c[j])
             j_hi = float(p_j_c[j + 1])
@@ -834,7 +846,7 @@ def main() -> None:
                 f"{h_lo:.6g}<=p_hlt<{'=' if i == len(p_h_c)-2 else ''}{h_hi:.6g} & "
                 f"{j_lo:.6g}<=p_joint<{'=' if j == len(p_j_c)-2 else ''}{j_hi:.6g}",
                 "hlt_score_x_joint_score_band",
-                mh & mjm,
+                m_h_band & mjm,
             )
 
     if len(bucket_rows) == 0:
@@ -865,19 +877,19 @@ def main() -> None:
         },
         "metrics": {
             "teacher": {
-                "auc": float(mt["auc"]),
-                "fpr30": float(mt["fpr30"]),
-                "fpr50": float(mt["fpr50"]),
+                "auc": float(m_teacher["auc"]),
+                "fpr30": float(m_teacher["fpr30"]),
+                "fpr50": float(m_teacher["fpr50"]),
             },
             "hlt": {
-                "auc": float(mh["auc"]),
-                "fpr30": float(mh["fpr30"]),
-                "fpr50": float(mh["fpr50"]),
+                "auc": float(m_hlt["auc"]),
+                "fpr30": float(m_hlt["fpr30"]),
+                "fpr50": float(m_hlt["fpr50"]),
             },
             "joint": {
-                "auc": float(mj["auc"]),
-                "fpr30": float(mj["fpr30"]),
-                "fpr50": float(mj["fpr50"]),
+                "auc": float(m_joint["auc"]),
+                "fpr30": float(m_joint["fpr30"]),
+                "fpr50": float(m_joint["fpr50"]),
                 "fpr50_direct_eval_joint_model": float(fpr50_joint_direct),
             },
         },

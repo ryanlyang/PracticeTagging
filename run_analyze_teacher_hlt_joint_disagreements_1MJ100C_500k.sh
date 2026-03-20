@@ -8,7 +8,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=15:00:00
+#SBATCH --time=5:00:00
 #SBATCH --output=offline_reconstructor_logs/disagreement_thj_1MJ100C_500k_%j.out
 #SBATCH --error=offline_reconstructor_logs/disagreement_thj_1MJ100C_500k_%j.err
 
@@ -23,7 +23,7 @@ OFFSET_EVAL_JETS="${OFFSET_EVAL_JETS:--1}"   # -1 => start after original traini
 TARGET_TPR="${TARGET_TPR:-0.50}"
 THRESHOLD_SOURCE="${THRESHOLD_SOURCE:-test}"  # test or val
 THRESHOLD_VAL_FRAC="${THRESHOLD_VAL_FRAC:-0.20}"
-NUM_WORKERS="${NUM_WORKERS:-6}"
+NUM_WORKERS="${NUM_WORKERS:-1}"
 DEVICE="${DEVICE:-cuda}"
 BATCH_SIZE="${BATCH_SIZE:--1}"
 BUCKET_MIN_COUNT="${BUCKET_MIN_COUNT:-1000}"
@@ -79,4 +79,3 @@ echo "Running extended Teacher/HLT/Joint disagreement analysis:"
 printf ' %q' "${cmd[@]}"
 echo
 "${cmd[@]}"
-
