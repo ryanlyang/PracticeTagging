@@ -588,9 +588,9 @@ def main() -> None:
     pt_hlt = compute_jet_pt(hlt_const, hlt_mask).astype(np.float32)
     pt_resp = (pt_hlt / np.maximum(pt_off, 1e-8)).astype(np.float32)
 
-    m_off = _jet_mass(const_off, masks_off)
-    m_hlt = _jet_mass(hlt_const, hlt_mask)
-    m_resp = (m_hlt / np.maximum(m_off, 1e-8)).astype(np.float32)
+    mass_off = _jet_mass(const_off, masks_off)
+    mass_hlt = _jet_mass(hlt_const, hlt_mask)
+    mass_resp = (mass_hlt / np.maximum(mass_off, 1e-8)).astype(np.float32)
 
     p_gap_t_h = (p_teacher - p_hlt).astype(np.float32)
     p_gap_t_j = (p_teacher - p_joint).astype(np.float32)
@@ -607,7 +607,7 @@ def main() -> None:
         }
 
     m_teacher = model_metrics(y_eval[idx_test], p_teacher[idx_test])
-    m_hlt = model_metrics(y_eval[idx_test], p_hlt[idx_test])
+    m_hlt_metrics = model_metrics(y_eval[idx_test], p_hlt[idx_test])
     m_joint = model_metrics(y_eval[idx_test], p_joint[idx_test])
 
     # -------------------- Per-jet export -------------------- #
@@ -641,9 +641,9 @@ def main() -> None:
         "jet_pt_offline": pt_off.astype(np.float32),
         "jet_pt_hlt": pt_hlt.astype(np.float32),
         "jet_pt_response_hlt_over_offline": pt_resp.astype(np.float32),
-        "jet_mass_offline": m_off.astype(np.float32),
-        "jet_mass_hlt": m_hlt.astype(np.float32),
-        "jet_mass_response_hlt_over_offline": m_resp.astype(np.float32),
+        "jet_mass_offline": mass_off.astype(np.float32),
+        "jet_mass_hlt": mass_hlt.astype(np.float32),
+        "jet_mass_response_hlt_over_offline": mass_resp.astype(np.float32),
         "p_gap_teacher_minus_hlt": p_gap_t_h.astype(np.float32),
         "p_gap_teacher_minus_joint": p_gap_t_j.astype(np.float32),
         "p_gap_joint_minus_hlt": p_gap_j_h.astype(np.float32),
@@ -680,8 +680,8 @@ def main() -> None:
             n_const_hlt=n_hlt[keep].astype(np.float32),
             jet_pt_offline=pt_off[keep].astype(np.float32),
             jet_pt_hlt=pt_hlt[keep].astype(np.float32),
-            jet_mass_offline=m_off[keep].astype(np.float32),
-            jet_mass_hlt=m_hlt[keep].astype(np.float32),
+            jet_mass_offline=mass_off[keep].astype(np.float32),
+            jet_mass_hlt=mass_hlt[keep].astype(np.float32),
         )
         return {"name": name, "n_selected": int(keep.size), "path": str(path)}
 
@@ -759,7 +759,7 @@ def main() -> None:
 
     for name, m in _build_quantile_band_masks(pt_hlt, np.linspace(0.0, 1.0, 21), "jet_pt_hlt"):
         maybe_add(name, "hlt_pt_quantile_band", m)
-    for name, m in _build_quantile_band_masks(m_hlt, np.linspace(0.0, 1.0, 21), "jet_mass_hlt"):
+    for name, m in _build_quantile_band_masks(mass_hlt, np.linspace(0.0, 1.0, 21), "jet_mass_hlt"):
         maybe_add(name, "hlt_mass_quantile_band", m)
 
     # HLT-score families.
@@ -882,9 +882,9 @@ def main() -> None:
                 "fpr50": float(m_teacher["fpr50"]),
             },
             "hlt": {
-                "auc": float(m_hlt["auc"]),
-                "fpr30": float(m_hlt["fpr30"]),
-                "fpr50": float(m_hlt["fpr50"]),
+                "auc": float(m_hlt_metrics["auc"]),
+                "fpr30": float(m_hlt_metrics["fpr30"]),
+                "fpr50": float(m_hlt_metrics["fpr50"]),
             },
             "joint": {
                 "auc": float(m_joint["auc"]),

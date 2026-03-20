@@ -15,6 +15,7 @@
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 RUN_DIR="${RUN_DIR:-checkpoints/offline_reconstructor_joint/joint_100k_80c_stage2save_auc_norankc_nopriv_unmergeonly_rho090_1MJ100C}"
 SAVE_SUBDIR="${SAVE_SUBDIR:-teacher_hlt_joint_disagreement_analysis_500k}"
@@ -48,7 +49,7 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 
 cmd=(
-  python analyze_teacher_hlt_joint_disagreements.py
+  python "${SCRIPT_DIR}/analyze_teacher_hlt_joint_disagreements.py"
   --run_dir "${RUN_DIR}"
   --save_subdir "${SAVE_SUBDIR}"
   --n_eval_jets "${N_EVAL_JETS}"
