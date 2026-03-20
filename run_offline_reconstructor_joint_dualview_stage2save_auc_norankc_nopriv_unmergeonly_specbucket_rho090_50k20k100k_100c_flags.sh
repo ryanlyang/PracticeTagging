@@ -16,7 +16,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=32G
-#SBATCH --time=5:00:00
+#SBATCH --time=23:00:00
 #SBATCH --output=offline_reconstructor_logs/offline_reco_uo_specbucket_200k50k300k100_%j.out
 #SBATCH --error=offline_reconstructor_logs/offline_reco_uo_specbucket_200k50k300k100_%j.err
 
