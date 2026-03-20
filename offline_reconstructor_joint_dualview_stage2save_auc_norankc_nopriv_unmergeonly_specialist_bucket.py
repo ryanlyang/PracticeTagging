@@ -3197,25 +3197,25 @@ def main() -> None:
     print(f"Stage2 (PreJoint) AUC: {auc_stage2:.4f}")
     if preds_stage2_fprsel is not None:
         print(f"Stage2 (BestValFPR50) AUC: {auc_stage2_fprsel:.4f}")
-    print(f"Joint Dual-View  AUC: {auc_joint:.4f}")
+    print(f"Base Joint Dual-View  AUC: {auc_joint:.4f}")
     if preds_joint_fprsel is not None:
         print(f"Joint Dual-View (BestValFPR50) AUC: {auc_joint_fprsel:.4f}")
     if preds_joint_kd is not None:
         print(f"Joint Dual-View+KD AUC: {auc_joint_kd:.4f}")
     print()
     print(
-        f"FPR@30 Teacher/Baseline/Stage2/Joint: "
-        f"{fpr30_teacher:.6f} / {fpr30_baseline:.6f} / {fpr30_stage2:.6f} / {fpr30_joint:.6f}"
-    )
+            f"FPR@30 Teacher/Baseline/Stage2/BaseJoint: "
+            f"{fpr30_teacher:.6f} / {fpr30_baseline:.6f} / {fpr30_stage2:.6f} / {fpr30_joint:.6f}"
+        )
     if preds_stage2_fprsel is not None or preds_joint_fprsel is not None:
         print(
             f"FPR@30 Stage2BestFPR / JointBestFPR: "
             f"{fpr30_stage2_fprsel:.6f} / {fpr30_joint_fprsel:.6f}"
         )
     print(
-        f"FPR@50 Teacher/Baseline/Stage2/Joint: "
-        f"{fpr50_teacher:.6f} / {fpr50_baseline:.6f} / {fpr50_stage2:.6f} / {fpr50_joint:.6f}"
-    )
+            f"FPR@50 Teacher/Baseline/Stage2/BaseJoint: "
+            f"{fpr50_teacher:.6f} / {fpr50_baseline:.6f} / {fpr50_stage2:.6f} / {fpr50_joint:.6f}"
+        )
     if preds_stage2_fprsel is not None or preds_joint_fprsel is not None:
         print(
             f"FPR@50 Stage2BestFPR / JointBestFPR: "
@@ -3294,6 +3294,7 @@ def main() -> None:
         auc_stage2=auc_stage2,
         auc_stage2_fprsel=auc_stage2_fprsel,
         auc_joint=auc_joint,
+        auc_joint_base=auc_joint,
         auc_joint_fprsel=auc_joint_fprsel,
         auc_joint_kd=auc_joint_kd,
         auc_stage2_specialist=auc_stage2_spec,
@@ -3323,6 +3324,7 @@ def main() -> None:
         fpr30_stage2=fpr30_stage2,
         fpr30_stage2_fprsel=fpr30_stage2_fprsel,
         fpr30_joint=fpr30_joint,
+        fpr30_joint_base=fpr30_joint,
         fpr30_joint_fprsel=fpr30_joint_fprsel,
         fpr30_joint_kd=fpr30_joint_kd,
         fpr30_routed_jointbase=fpr30_routed_jointbase,
@@ -3332,6 +3334,7 @@ def main() -> None:
         fpr50_stage2=fpr50_stage2,
         fpr50_stage2_fprsel=fpr50_stage2_fprsel,
         fpr50_joint=fpr50_joint,
+        fpr50_joint_base=fpr50_joint,
         fpr50_joint_fprsel=fpr50_joint_fprsel,
         fpr50_joint_kd=fpr50_joint_kd,
         fpr50_routed_jointbase=fpr50_routed_jointbase,
@@ -3421,6 +3424,7 @@ def main() -> None:
                     "auc_stage2": float(auc_stage2),
                     "auc_stage2_fprsel": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "auc_joint": float(auc_joint),
+                    "auc_joint_base": float(auc_joint),
                     "auc_joint_fprsel": float(auc_joint_fprsel) if preds_joint_fprsel is not None else None,
                     "auc_joint_kd": float(auc_joint_kd) if preds_joint_kd is not None else None,
                     "auc_joint_specialist": float(auc_joint_spec) if preds_joint_spec is not None else None,
@@ -3431,6 +3435,7 @@ def main() -> None:
                     "fpr30_stage2": float(fpr30_stage2),
                     "fpr30_stage2_fprsel": float(fpr30_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr30_joint": float(fpr30_joint),
+                    "fpr30_joint_base": float(fpr30_joint),
                     "fpr30_joint_fprsel": float(fpr30_joint_fprsel) if preds_joint_fprsel is not None else None,
                     "fpr30_joint_kd": float(fpr30_joint_kd) if preds_joint_kd is not None else None,
                     "fpr30_routed_jointbase": float(fpr30_routed_jointbase) if preds_joint_spec is not None else None,
@@ -3440,6 +3445,7 @@ def main() -> None:
                     "fpr50_stage2": float(fpr50_stage2),
                     "fpr50_stage2_fprsel": float(fpr50_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr50_joint": float(fpr50_joint),
+                    "fpr50_joint_base": float(fpr50_joint),
                     "fpr50_joint_fprsel": float(fpr50_joint_fprsel) if preds_joint_fprsel is not None else None,
                     "fpr50_joint_kd": float(fpr50_joint_kd) if preds_joint_kd is not None else None,
                     "fpr50_routed_jointbase": float(fpr50_routed_jointbase) if preds_joint_spec is not None else None,
