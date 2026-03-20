@@ -29,11 +29,13 @@ from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
+import torch.nn as nn
 from sklearn.metrics import roc_auc_score, roc_curve
 from torch.utils.data import DataLoader
 
 from offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly import (
     JointDualDataset,
+    build_soft_corrected_view,
     eval_joint_model,
 )
 from offline_reconstructor_no_gt_local30kv2 import (
@@ -202,6 +204,51 @@ def _safe_rate(num: int, den: int) -> float:
     return float(num / den)
 
 
+@torch.no_grad()
+def _eval_recoonly_model(
+    reconstructor: nn.Module,
+    recoonly_model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    corrected_weight_floor: float,
+    corrected_use_flags: bool,
+) -> Tuple[float, np.ndarray, np.ndarray, float]:
+    reconstructor.eval()
+    recoonly_model.eval()
+    preds: List[np.ndarray] = []
+    labs: List[np.ndarray] = []
+    for batch in loader:
+        feat_hlt_reco = batch["feat_hlt_reco"].to(device)
+        mask_hlt = batch["mask_hlt"].to(device)
+        const_hlt = batch["const_hlt"].to(device)
+        y = batch["label"].detach().cpu().numpy().astype(np.float32)
+
+        reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+        feat_b, mask_b = build_soft_corrected_view(
+            reco_out,
+            weight_floor=float(corrected_weight_floor),
+            scale_features_by_weight=True,
+            include_flags=bool(corrected_use_flags),
+        )
+        logits = recoonly_model(feat_b, mask_b).squeeze(1)
+        p = torch.sigmoid(logits).detach().cpu().numpy().astype(np.float32)
+
+        preds.append(p)
+        labs.append(y)
+
+    if len(preds) == 0:
+        return float("nan"), np.zeros(0, dtype=np.float32), np.zeros(0, dtype=np.int64), float("nan")
+    pred = np.concatenate(preds).astype(np.float32)
+    lab = np.concatenate(labs).astype(np.int64)
+    auc = _safe_auc(lab, pred)
+    if np.isfinite(auc):
+        fpr, tpr, _ = roc_curve(lab, pred)
+        fpr50 = float(fpr_at_target_tpr(fpr, tpr, 0.50))
+    else:
+        fpr50 = float("nan")
+    return float(auc), pred, lab, float(fpr50)
+
+
 def _build_bucket_row(
     name: str,
     family: str,
@@ -323,7 +370,9 @@ def main() -> None:
     parser.add_argument("--max_export_per_subset", type=int, default=100000)
     parser.add_argument("--export_all_subset_jets", action="store_true")
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
+    parser.add_argument("--joint_mode", type=str, default="dual", choices=["dual", "recoonly"])
     parser.add_argument("--dual_ckpt_name", type=str, default="dual_joint.pt")
+    parser.add_argument("--joint_recoonly_ckpt_name", type=str, default="recoonly_classifier.pt")
     parser.add_argument("--reco_ckpt_name", type=str, default="offline_reconstructor.pt")
     args = parser.parse_args()
 
@@ -336,9 +385,16 @@ def main() -> None:
     teacher_path = run_dir / "teacher.pt"
     baseline_path = run_dir / "baseline.pt"
     dual_path = run_dir / args.dual_ckpt_name
+    joint_recoonly_path = run_dir / args.joint_recoonly_ckpt_name
     reco_path = run_dir / args.reco_ckpt_name
 
-    for fp in [setup_path, splits_path, teacher_path, baseline_path, dual_path, reco_path]:
+    required = [setup_path, splits_path, teacher_path, baseline_path, reco_path]
+    if str(args.joint_mode).lower() == "dual":
+        required.append(dual_path)
+    else:
+        required.append(joint_recoonly_path)
+
+    for fp in required:
         if not fp.exists():
             raise FileNotFoundError(f"Required file not found: {fp}")
 
@@ -442,39 +498,57 @@ def main() -> None:
     teacher_ckpt = _load_checkpoint(teacher_path, device)
     baseline_ckpt = _load_checkpoint(baseline_path, device)
     reco_ckpt = _load_checkpoint(reco_path, device)
-    dual_ckpt = _load_checkpoint(dual_path, device)
 
     teacher.load_state_dict(teacher_ckpt["model"])
     baseline.load_state_dict(baseline_ckpt["model"])
     reco_state = reco_ckpt["model"]
-    dual_state = dual_ckpt["model"]
 
     reconstructor = OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
     reconstructor.load_state_dict(reco_state)
-
-    # Infer dual input dimensions from checkpoint.
-    key_a = "input_proj_a.0.weight"
-    key_b = "input_proj_b.0.weight"
-    if key_a not in dual_state or key_b not in dual_state:
-        raise RuntimeError("Could not infer dual input dims from dual checkpoint.")
-    dual_input_dim_a = int(dual_state[key_a].shape[1])
-    dual_input_dim_b = int(dual_state[key_b].shape[1])
-    corrected_use_flags = bool(dual_input_dim_b == 12)
-
+    joint_mode = str(args.joint_mode).lower()
+    corrected_use_flags = False
     feat_hlt_dual = feat_hlt_std.astype(np.float32, copy=True)
-    if feat_hlt_dual.shape[-1] != dual_input_dim_a:
-        raise RuntimeError(
-            "Dual input_dim_a mismatch. "
-            f"Checkpoint expects {dual_input_dim_a}, but analysis currently builds {feat_hlt_dual.shape[-1]}. "
-            "This usually means the original run used extra dual features (e.g., jet regressor)."
-        )
+    dual_joint = None
+    recoonly_model = None
 
-    dual_joint = DualViewCrossAttnClassifier(
-        input_dim_a=dual_input_dim_a,
-        input_dim_b=dual_input_dim_b,
-        **cfg["model"],
-    ).to(device)
-    dual_joint.load_state_dict(dual_state)
+    if joint_mode == "dual":
+        dual_ckpt = _load_checkpoint(dual_path, device)
+        dual_state = dual_ckpt["model"]
+
+        # Infer dual input dimensions from checkpoint.
+        key_a = "input_proj_a.0.weight"
+        key_b = "input_proj_b.0.weight"
+        if key_a not in dual_state or key_b not in dual_state:
+            raise RuntimeError("Could not infer dual input dims from dual checkpoint.")
+        dual_input_dim_a = int(dual_state[key_a].shape[1])
+        dual_input_dim_b = int(dual_state[key_b].shape[1])
+        corrected_use_flags = bool(dual_input_dim_b == 12)
+
+        if feat_hlt_dual.shape[-1] != dual_input_dim_a:
+            raise RuntimeError(
+                "Dual input_dim_a mismatch. "
+                f"Checkpoint expects {dual_input_dim_a}, but analysis currently builds {feat_hlt_dual.shape[-1]}. "
+                "This usually means the original run used extra dual features (e.g., jet regressor)."
+            )
+
+        dual_joint = DualViewCrossAttnClassifier(
+            input_dim_a=dual_input_dim_a,
+            input_dim_b=dual_input_dim_b,
+            **cfg["model"],
+        ).to(device)
+        dual_joint.load_state_dict(dual_state)
+    else:
+        recoonly_ckpt = _load_checkpoint(joint_recoonly_path, device)
+        recoonly_state = recoonly_ckpt["model"]
+        key_x = "input_proj.0.weight"
+        if key_x not in recoonly_state:
+            raise RuntimeError(
+                f"Could not infer reco-only input dim from checkpoint {joint_recoonly_path}; missing {key_x}."
+            )
+        recoonly_input_dim = int(recoonly_state[key_x].shape[1])
+        corrected_use_flags = bool(recoonly_input_dim == 12)
+        recoonly_model = ParticleTransformer(input_dim=recoonly_input_dim, **cfg["model"]).to(device)
+        recoonly_model.load_state_dict(recoonly_state)
 
     # -------------------- Eval probs -------------------- #
     def eval_single(feat: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
@@ -519,7 +593,10 @@ def main() -> None:
         raise RuntimeError("Label mismatch between teacher and HLT eval outputs.")
     y_eval = y_teacher.astype(np.int64)
 
-    print("Evaluating joint dual-view model...")
+    if joint_mode == "dual":
+        print("Evaluating joint dual-view model...")
+    else:
+        print("Evaluating joint reco-only corrected-view model...")
     ds_eval_joint = JointDualDataset(
         feat_hlt_reco=feat_hlt_std,
         feat_hlt_dual=feat_hlt_dual,
@@ -538,14 +615,24 @@ def main() -> None:
         num_workers=int(args.num_workers),
         pin_memory=torch.cuda.is_available(),
     )
-    auc_joint, p_joint, y_joint, fpr50_joint_direct = eval_joint_model(
-        reconstructor=reconstructor,
-        dual_model=dual_joint,
-        loader=dl_eval_joint,
-        device=device,
-        corrected_weight_floor=float(args.corrected_weight_floor),
-        corrected_use_flags=corrected_use_flags,
-    )
+    if joint_mode == "dual":
+        auc_joint, p_joint, y_joint, fpr50_joint_direct = eval_joint_model(
+            reconstructor=reconstructor,
+            dual_model=dual_joint,
+            loader=dl_eval_joint,
+            device=device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=corrected_use_flags,
+        )
+    else:
+        auc_joint, p_joint, y_joint, fpr50_joint_direct = _eval_recoonly_model(
+            reconstructor=reconstructor,
+            recoonly_model=recoonly_model,
+            loader=dl_eval_joint,
+            device=device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=corrected_use_flags,
+        )
     p_joint = p_joint.astype(np.float32)
     y_joint = y_joint.astype(np.int64)
     if not np.array_equal(y_eval, y_joint):
@@ -865,6 +952,7 @@ def main() -> None:
     summary = {
         "run_dir": str(run_dir),
         "analysis_dir": str(out_dir),
+        "joint_mode": str(joint_mode),
         "data_file_used": [str(x) for x in data_files],
         "n_eval": int(n_eval),
         "offset_eval_jets": int(offset_eval),
