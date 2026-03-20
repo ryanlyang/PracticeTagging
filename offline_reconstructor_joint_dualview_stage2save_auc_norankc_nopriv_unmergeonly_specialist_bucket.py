@@ -2971,6 +2971,10 @@ def main() -> None:
     specialist_stageA_metrics: Dict[str, object] = {"enabled": False}
     specialist_stageB_metrics: Dict[str, object] = {"enabled": False}
     specialist_stageC_metrics: Dict[str, object] = {"enabled": False}
+    specialist_stageB_states: Dict[str, Dict[str, Dict[str, torch.Tensor]]] = {}
+    specialist_stageC_states: Dict[str, Dict[str, Dict[str, torch.Tensor]]] = {}
+    specialist_stage2_reco_state = None
+    specialist_stage2_dual_state = None
     auc_stage2_spec = float("nan")
     preds_stage2_spec = None
     auc_joint_spec = float("nan")
@@ -3099,7 +3103,7 @@ def main() -> None:
         )
 
         dual_spec = DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=dual_input_dim_b, **cfg["model"]).to(device)
-        reconstructor_spec, dual_spec, specialist_stageB_metrics, _ = train_joint_dual(
+        reconstructor_spec, dual_spec, specialist_stageB_metrics, specialist_stageB_states = train_joint_dual(
             reconstructor=reconstructor_spec,
             dual_model=dual_spec,
             train_loader=dl_train_joint_spec_stageb,
@@ -3126,6 +3130,8 @@ def main() -> None:
             use_weighted_val_selection=True,
         )
         specialist_stageB_metrics["enabled"] = True
+        specialist_stage2_reco_state = {k: v.detach().cpu().clone() for k, v in reconstructor_spec.state_dict().items()}
+        specialist_stage2_dual_state = {k: v.detach().cpu().clone() for k, v in dual_spec.state_dict().items()}
 
         auc_stage2_spec, preds_stage2_spec, labs_stage2_spec, _ = eval_joint_model(
             reconstructor_spec,
@@ -3137,7 +3143,7 @@ def main() -> None:
         )
         assert np.array_equal(labs.astype(np.float32), labs_stage2_spec.astype(np.float32))
 
-        reconstructor_spec, dual_spec, specialist_stageC_metrics, _ = train_joint_dual(
+        reconstructor_spec, dual_spec, specialist_stageC_metrics, specialist_stageC_states = train_joint_dual(
             reconstructor=reconstructor_spec,
             dual_model=dual_spec,
             train_loader=dl_train_joint_spec,
@@ -3532,6 +3538,44 @@ def main() -> None:
             )
         if kd_student is not None:
             torch.save({"model": kd_student.state_dict(), "auc": auc_joint_kd}, save_root / "dual_joint_kd.pt")
+        if bool(args.spec_bucket_enable) and specialist_stage2_reco_state is not None and specialist_stage2_dual_state is not None:
+            torch.save(
+                {"model": specialist_stage2_reco_state, "val": specialist_stageA_metrics},
+                save_root / "offline_reconstructor_specialist_stage2.pt",
+            )
+            torch.save(
+                {
+                    "model": specialist_stage2_dual_state,
+                    "auc": float(auc_stage2_spec) if preds_stage2_spec is not None else float("nan"),
+                },
+                save_root / "dual_joint_specialist_stage2.pt",
+            )
+            if specialist_stageB_states.get("fpr50", {}).get("reco") is not None:
+                torch.save(
+                    {"model": specialist_stageB_states["fpr50"]["reco"], "val": specialist_stageA_metrics},
+                    save_root / "offline_reconstructor_specialist_stage2_bestfpr50.pt",
+                )
+            if specialist_stageB_states.get("fpr50", {}).get("dual") is not None:
+                torch.save(
+                    {
+                        "model": specialist_stageB_states["fpr50"]["dual"],
+                        "auc": float("nan"),
+                    },
+                    save_root / "dual_joint_specialist_stage2_bestfpr50.pt",
+                )
+            if specialist_stageC_states.get("fpr50", {}).get("reco") is not None:
+                torch.save(
+                    {"model": specialist_stageC_states["fpr50"]["reco"], "val": specialist_stageA_metrics},
+                    save_root / "offline_reconstructor_specialist_bestfpr50.pt",
+                )
+            if specialist_stageC_states.get("fpr50", {}).get("dual") is not None:
+                torch.save(
+                    {
+                        "model": specialist_stageC_states["fpr50"]["dual"],
+                        "auc": float("nan"),
+                    },
+                    save_root / "dual_joint_specialist_bestfpr50.pt",
+                )
 
     print(f"\nSaved joint results to: {save_root}")
 
