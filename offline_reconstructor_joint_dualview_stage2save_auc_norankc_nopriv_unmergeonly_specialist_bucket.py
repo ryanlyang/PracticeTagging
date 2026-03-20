@@ -260,9 +260,11 @@ def build_specialist_bucket_weights(
     labels: np.ndarray,
     hlt_count: np.ndarray,
     p_hlt: np.ndarray,
+    hlt_jet_pt: np.ndarray,
     count_low: int,
     count_high: int,
     p_hlt_threshold: float,
+    jet_pt_hlt_min: float,
     w_neg: float,
     w_pos: float,
     w_other: float,
@@ -270,10 +272,14 @@ def build_specialist_bucket_weights(
     y = labels.astype(np.int64)
     c = hlt_count.astype(np.int32)
     p = p_hlt.astype(np.float32)
+    pt = hlt_jet_pt.astype(np.float32)
+    use_pt_gate = float(jet_pt_hlt_min) > 0.0
+    pt_gate = np.ones_like(p, dtype=bool) if not use_pt_gate else (pt >= float(jet_pt_hlt_min))
     in_bucket = (
         (c > int(count_low))
         & (c <= int(count_high))
         & (p >= float(p_hlt_threshold))
+        & pt_gate
     )
     w = np.full((y.shape[0],), float(w_other), dtype=np.float32)
     w[in_bucket & (y == 0)] = float(w_neg)
@@ -282,6 +288,8 @@ def build_specialist_bucket_weights(
         "count_low": int(count_low),
         "count_high": int(count_high),
         "p_hlt_threshold": float(p_hlt_threshold),
+        "jet_pt_hlt_min": float(jet_pt_hlt_min),
+        "use_jet_pt_gate": bool(use_pt_gate),
         "w_neg": float(w_neg),
         "w_pos": float(w_pos),
         "w_other": float(w_other),
@@ -1910,6 +1918,12 @@ def main() -> None:
     parser.add_argument("--spec_bucket_count_low", type=int, default=25)
     parser.add_argument("--spec_bucket_count_high", type=int, default=50)
     parser.add_argument("--spec_bucket_p_hlt_threshold", type=float, default=0.922)
+    parser.add_argument(
+        "--spec_bucket_jet_pt_hlt_min",
+        type=float,
+        default=-1.0,
+        help="Optional HLT jet-pT gate for specialist bucket; disabled when <=0.",
+    )
     parser.add_argument("--spec_bucket_w_neg", type=float, default=10.0)
     parser.add_argument("--spec_bucket_w_pos", type=float, default=4.0)
     parser.add_argument("--spec_bucket_w_other", type=float, default=1.0)
@@ -2146,6 +2160,7 @@ def main() -> None:
             "count_low": int(args.spec_bucket_count_low),
             "count_high": int(args.spec_bucket_count_high),
             "p_hlt_threshold": float(args.spec_bucket_p_hlt_threshold),
+            "jet_pt_hlt_min": float(args.spec_bucket_jet_pt_hlt_min),
             "w_neg": float(args.spec_bucket_w_neg),
             "w_pos": float(args.spec_bucket_w_pos),
             "w_other": float(args.spec_bucket_w_other),
@@ -2392,6 +2407,9 @@ def main() -> None:
         hlt_count_train = hlt_mask[train_idx].sum(axis=1).astype(np.int32)
         hlt_count_val = hlt_mask[val_idx].sum(axis=1).astype(np.int32)
         hlt_count_test = hlt_mask[test_idx].sum(axis=1).astype(np.int32)
+        hlt_pt_train = compute_jet_pt(hlt_const[train_idx], hlt_mask[train_idx]).astype(np.float32)
+        hlt_pt_val = compute_jet_pt(hlt_const[val_idx], hlt_mask[val_idx]).astype(np.float32)
+        hlt_pt_test = compute_jet_pt(hlt_const[test_idx], hlt_mask[test_idx]).astype(np.float32)
         y_train_i64 = labels[train_idx].astype(np.int64)
         y_val_i64 = labels[val_idx].astype(np.int64)
         y_test_i64 = labels[test_idx].astype(np.int64)
@@ -2401,9 +2419,11 @@ def main() -> None:
             labels=y_train_i64,
             hlt_count=hlt_count_train,
             p_hlt=p_baseline_train,
+            hlt_jet_pt=hlt_pt_train,
             count_low=int(args.spec_bucket_count_low),
             count_high=int(args.spec_bucket_count_high),
             p_hlt_threshold=float(args.spec_bucket_p_hlt_threshold),
+            jet_pt_hlt_min=float(args.spec_bucket_jet_pt_hlt_min),
             w_neg=float(args.spec_bucket_w_neg),
             w_pos=float(args.spec_bucket_w_pos),
             w_other=float(args.spec_bucket_w_other),
@@ -2412,9 +2432,11 @@ def main() -> None:
             labels=y_val_i64,
             hlt_count=hlt_count_val,
             p_hlt=p_baseline_val,
+            hlt_jet_pt=hlt_pt_val,
             count_low=int(args.spec_bucket_count_low),
             count_high=int(args.spec_bucket_count_high),
             p_hlt_threshold=float(args.spec_bucket_p_hlt_threshold),
+            jet_pt_hlt_min=float(args.spec_bucket_jet_pt_hlt_min),
             w_neg=float(args.spec_bucket_w_neg),
             w_pos=float(args.spec_bucket_w_pos),
             w_other=float(args.spec_bucket_w_other),
@@ -2423,9 +2445,11 @@ def main() -> None:
             labels=y_test_i64,
             hlt_count=hlt_count_test,
             p_hlt=p_baseline_test,
+            hlt_jet_pt=hlt_pt_test,
             count_low=int(args.spec_bucket_count_low),
             count_high=int(args.spec_bucket_count_high),
             p_hlt_threshold=float(args.spec_bucket_p_hlt_threshold),
+            jet_pt_hlt_min=float(args.spec_bucket_jet_pt_hlt_min),
             w_neg=float(args.spec_bucket_w_neg),
             w_pos=float(args.spec_bucket_w_pos),
             w_other=float(args.spec_bucket_w_other),
@@ -2965,10 +2989,15 @@ def main() -> None:
         print("\n" + "=" * 70)
         print("STEP 7: SPECIALIST BRANCH (BUCKET-WEIGHTED A/B/C)")
         print("=" * 70)
-        print(
-            "Specialist bucket rule: "
+        spec_rule = (
             f"{int(args.spec_bucket_count_low)} < n_const_hlt <= {int(args.spec_bucket_count_high)} "
             f"and p_hlt >= {float(args.spec_bucket_p_hlt_threshold):.6f}"
+        )
+        if float(args.spec_bucket_jet_pt_hlt_min) > 0.0:
+            spec_rule += f" and jet_pt_hlt >= {float(args.spec_bucket_jet_pt_hlt_min):.1f}"
+        print(
+            "Specialist bucket rule: "
+            f"{spec_rule}"
         )
         print(
             "Specialist weights: "
@@ -3375,6 +3404,7 @@ def main() -> None:
                     "specialist_bucket_count_low": int(args.spec_bucket_count_low),
                     "specialist_bucket_count_high": int(args.spec_bucket_count_high),
                     "specialist_bucket_p_hlt_threshold": float(args.spec_bucket_p_hlt_threshold),
+                    "specialist_bucket_jet_pt_hlt_min": float(args.spec_bucket_jet_pt_hlt_min),
                     "specialist_bucket_w_neg": float(args.spec_bucket_w_neg),
                     "specialist_bucket_w_pos": float(args.spec_bucket_w_pos),
                     "specialist_bucket_w_other": float(args.spec_bucket_w_other),
