@@ -89,7 +89,6 @@ python finetune_stagec_from_stage2_discrepancy_extended_eval.py \
   --lambda_reco "${LAMBDA_RECO}" \
   --lambda_cons "${LAMBDA_CONS}" \
   --selection_metric "${SELECTION_METRIC}" \
-  --use_corrected_flags \
   --disagreement_target_tpr "${TARGET_TPR}" \
   --combo_search_enable \
   --combo_weight_step "${COMBO_WEIGHT_STEP}" \

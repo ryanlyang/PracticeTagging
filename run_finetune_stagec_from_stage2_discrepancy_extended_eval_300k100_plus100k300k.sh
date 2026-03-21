@@ -102,7 +102,6 @@ python finetune_stagec_from_stage2_discrepancy_extended_eval.py \
   --lambda_reco "${LAMBDA_RECO}" \
   --lambda_cons "${LAMBDA_CONS}" \
   --selection_metric "${SELECTION_METRIC}" \
-  --use_corrected_flags \
   --disc_weight_enable \
   --disc_weight_mode "${DISC_MODE}" \
   --disc_target_tpr "${DISC_TARGET_TPR}" \

@@ -1429,35 +1429,52 @@ def main() -> None:
     )
 
     reconstructor = OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
-    dual_input_dim_a = int(feat_hlt_dual.shape[-1])
-    dual_input_dim_b = 12 if bool(args.use_corrected_flags) else 10
+
+    reco_ckpt = Path(args.reco_ckpt) if str(args.reco_ckpt).strip() else (run_dir / "offline_reconstructor_stage2.pt")
+    dual_ckpt = Path(args.dual_ckpt) if str(args.dual_ckpt).strip() else (run_dir / "dual_joint_stage2.pt")
+    if not reco_ckpt.exists():
+        raise FileNotFoundError(f"Missing reconstructor checkpoint: {reco_ckpt}")
+    if not dual_ckpt.exists():
+        raise FileNotFoundError(f"Missing dual checkpoint: {dual_ckpt}")
+
+    dual_state = _load_checkpoint_state(dual_ckpt, device, "dual")
+    key_a = "input_proj_a.0.weight"
+    key_b = "input_proj_b.0.weight"
+    if key_a not in dual_state or key_b not in dual_state:
+        raise RuntimeError("Could not infer dual input dimensions from Stage2 checkpoint.")
+    dual_input_dim_a = int(dual_state[key_a].shape[1])
+    dual_input_dim_b = int(dual_state[key_b].shape[1])
+
+    if int(feat_hlt_dual.shape[-1]) != int(dual_input_dim_a):
+        raise RuntimeError(
+            "Dual input_dim_a mismatch between features and checkpoint: "
+            f"feat_hlt_dual={feat_hlt_dual.shape[-1]}, ckpt={dual_input_dim_a}."
+        )
+
+    corrected_use_flags_effective = bool(dual_input_dim_b == 12)
+    if bool(args.use_corrected_flags) != bool(corrected_use_flags_effective):
+        print(
+            "Warning: --use_corrected_flags does not match checkpoint input_proj_b width; "
+            f"overriding to corrected_use_flags={corrected_use_flags_effective} "
+            f"(ckpt input_dim_b={dual_input_dim_b})."
+        )
+
     dual_joint = DualViewCrossAttnClassifier(
         input_dim_a=dual_input_dim_a,
         input_dim_b=dual_input_dim_b,
         **cfg["model"],
     ).to(device)
 
-    reco_ckpt = Path(args.reco_ckpt) if str(args.reco_ckpt).strip() else (run_dir / "offline_reconstructor_stage2.pt")
-    dual_ckpt = Path(args.dual_ckpt) if str(args.dual_ckpt).strip() else (run_dir / "dual_joint_stage2.pt")
-    if not reco_ckpt.exists():
-        raise FileNotFoundError(f"Missing reconstructor checkpoint: {reco_ckpt}")
-    if (not bool(args.fresh_dual_init)) and (not dual_ckpt.exists()):
-        raise FileNotFoundError(f"Missing dual checkpoint: {dual_ckpt}")
-    if bool(args.fresh_dual_init) and (not dual_ckpt.exists()):
-        raise FileNotFoundError(
-            f"Missing dual checkpoint for Stage2 reference metrics (fresh-dual mode): {dual_ckpt}"
-        )
-
     reco_state = _load_checkpoint_state(reco_ckpt, device, "reconstructor")
     reconstructor.load_state_dict(reco_state)
     if bool(args.fresh_dual_init):
-        # Still evaluate loaded Stage2 model for reference metrics.
+        # Keep training dual randomly initialized, but evaluate loaded Stage2 for reference.
         dual_ref = DualViewCrossAttnClassifier(
             input_dim_a=dual_input_dim_a,
             input_dim_b=dual_input_dim_b,
             **cfg["model"],
         ).to(device)
-        dual_ref.load_state_dict(_load_checkpoint_state(dual_ckpt, device, "dual"))
+        dual_ref.load_state_dict(dual_state)
         print(f"Dual init mode: FRESH (training model randomly initialized), reference Stage2 dual loaded from {dual_ckpt}")
         auc_stage2, preds_stage2, labs_stage2, _ = joint.eval_joint_model(
             reconstructor=reconstructor,
@@ -1465,11 +1482,10 @@ def main() -> None:
             loader=dl_test_joint,
             device=device,
             corrected_weight_floor=float(args.corrected_weight_floor),
-            corrected_use_flags=bool(args.use_corrected_flags),
+            corrected_use_flags=bool(corrected_use_flags_effective),
         )
         del dual_ref
     else:
-        dual_state = _load_checkpoint_state(dual_ckpt, device, "dual")
         dual_joint.load_state_dict(dual_state)
         print(f"Dual init mode: LOADED from {dual_ckpt}")
         auc_stage2, preds_stage2, labs_stage2, _ = joint.eval_joint_model(
@@ -1478,7 +1494,7 @@ def main() -> None:
             loader=dl_test_joint,
             device=device,
             corrected_weight_floor=float(args.corrected_weight_floor),
-            corrected_use_flags=bool(args.use_corrected_flags),
+            corrected_use_flags=bool(corrected_use_flags_effective),
         )
     fpr_s2, tpr_s2, _ = roc_curve(labs_stage2, preds_stage2)
     fpr30_stage2 = float(fpr_at_target_tpr(fpr_s2, tpr_s2, 0.30))
@@ -1576,7 +1592,7 @@ def main() -> None:
             lambda_rank=float(args.stageC_lambda_rank),
             lambda_cons=float(args.lambda_cons),
             corrected_weight_floor=float(args.corrected_weight_floor),
-            corrected_use_flags=bool(args.use_corrected_flags),
+            corrected_use_flags=bool(corrected_use_flags_effective),
             min_epochs=int(min_epochs),
             select_metric=str(args.selection_metric),
             use_discrepancy_weights_cls=(bool(args.disc_weight_enable) and (not bool(args.disc_disable_cls_weight))),
@@ -1636,7 +1652,7 @@ def main() -> None:
         loader=dl_test_joint,
         device=device,
         corrected_weight_floor=float(args.corrected_weight_floor),
-        corrected_use_flags=bool(args.use_corrected_flags),
+        corrected_use_flags=bool(corrected_use_flags_effective),
     )
     fpr_j, tpr_j, _ = roc_curve(labs_joint, preds_joint)
     fpr30_joint = float(fpr_at_target_tpr(fpr_j, tpr_j, 0.30))
@@ -1655,7 +1671,7 @@ def main() -> None:
             loader=dl_test_joint,
             device=device,
             corrected_weight_floor=float(args.corrected_weight_floor),
-            corrected_use_flags=bool(args.use_corrected_flags),
+            corrected_use_flags=bool(corrected_use_flags_effective),
         )
         fpr_f, tpr_f, _ = roc_curve(labs_joint_fprsel, preds_joint_fprsel)
         fpr30_joint_fprsel = float(fpr_at_target_tpr(fpr_f, tpr_f, 0.30))
@@ -1896,7 +1912,8 @@ def main() -> None:
             "lambda_cons": float(args.lambda_cons),
             "selection_metric": str(args.selection_metric),
             "corrected_weight_floor": float(args.corrected_weight_floor),
-            "use_corrected_flags": bool(args.use_corrected_flags),
+            "use_corrected_flags_requested": bool(args.use_corrected_flags),
+            "use_corrected_flags_effective": bool(corrected_use_flags_effective),
             "fresh_dual_init": bool(args.fresh_dual_init),
             "disc_weight_enable": bool(args.disc_weight_enable),
             "disc_weight_mode": str(args.disc_weight_mode),
