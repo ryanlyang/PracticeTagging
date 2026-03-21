@@ -12,8 +12,8 @@
 #SBATCH -p debug
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
-#SBATCH --mem=72G
-#SBATCH -t 23:00:00
+#SBATCH --mem=64G
+#SBATCH -t 8:00:00
 #SBATCH -o offline_reconstructor_logs/stagec_discrepancy_extended/stagec_discext_%j.out
 #SBATCH -e offline_reconstructor_logs/stagec_discrepancy_extended/stagec_discext_%j.err
 
