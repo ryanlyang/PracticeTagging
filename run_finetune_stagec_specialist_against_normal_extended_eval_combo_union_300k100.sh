@@ -12,7 +12,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=6
 #SBATCH --mem=64G
-#SBATCH -t 8:00:00
+#SBATCH -t 15:00:00
 #SBATCH -o offline_reconstructor_logs/stagec_specialist_against_normal/stagec_specnorm_%j.out
 #SBATCH -e offline_reconstructor_logs/stagec_specialist_against_normal/stagec_specnorm_%j.err
 
