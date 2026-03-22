@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=uoSm200
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=1-15:00:00
+#SBATCH --time=1-00:00:00
 #SBATCH --output=offline_reconstructor_logs/unsmear_only_smear200_300k60k500k_100c_%j.out
 #SBATCH --error=offline_reconstructor_logs/unsmear_only_smear200_300k60k500k_100c_%j.err
 
