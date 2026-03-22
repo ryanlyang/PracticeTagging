@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=uoSm125
+#SBATCH --job-name=uoSm200
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=1-15:00:00
-#SBATCH --output=offline_reconstructor_logs/unsmear_only_smear125_300k60k500k_100c_%j.out
-#SBATCH --error=offline_reconstructor_logs/unsmear_only_smear125_300k60k500k_100c_%j.err
+#SBATCH --output=offline_reconstructor_logs/unsmear_only_smear200_300k60k500k_100c_%j.out
+#SBATCH --error=offline_reconstructor_logs/unsmear_only_smear200_300k60k500k_100c_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs
 
-RUN_NAME="${RUN_NAME:-joint_unsmear_only_smear125_300k60k500k_100c}"
+RUN_NAME="${RUN_NAME:-joint_unsmear_only_smear200_300k60k500k_100c}"
 N_TRAIN_JETS="${N_TRAIN_JETS:-860000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-300000}"
 N_VAL_SPLIT="${N_VAL_SPLIT:-60000}"
