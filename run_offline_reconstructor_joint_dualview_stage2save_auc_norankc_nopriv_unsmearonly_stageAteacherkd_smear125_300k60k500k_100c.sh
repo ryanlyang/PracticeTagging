@@ -22,7 +22,7 @@ NUM_WORKERS="${NUM_WORKERS:-6}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/offline_reconstructor_joint}"
 
 # Calibrated smearing knobs (normal baseline scale, not 1.25x)
-SMEAR_SCALE="${SMEAR_SCALE:-1.0}"
+SMEAR_SCALE="${SMEAR_SCALE:-1.5}"
 SMEAR_CORE_SCALE="${SMEAR_CORE_SCALE:-1.5}"
 SMEAR_ANGLE_SCALE="${SMEAR_ANGLE_SCALE:-1.5}"
 SMEAR_TAIL_BASE="${SMEAR_TAIL_BASE:-0.04}"
