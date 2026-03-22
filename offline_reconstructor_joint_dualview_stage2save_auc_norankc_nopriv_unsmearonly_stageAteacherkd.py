@@ -156,6 +156,56 @@ def _scale_smearing_widths(cfg: Dict, smear_scale: float) -> None:
         h[k] = float(h[k]) * s
 
 
+def _apply_calibrated_smearing(
+    cfg: Dict,
+    use_pt_gev: bool,
+    core_scale: float,
+    angle_scale: float,
+    tail_base: float,
+    tail_sigma_mult: float,
+    tail_prob_max: float,
+) -> None:
+    """
+    Calibrate smearing strength in a physically interpretable way.
+
+    - If use_pt_gev=True, convert pT-dependent resolution terms to GeV behavior
+      while data remains stored in MeV-like units.
+    - core_scale multiplies relative pT response width.
+    - angle_scale multiplies eta/phi smearing widths.
+    - tail knobs control non-Gaussian tail frequency/width.
+    """
+    h = cfg["hlt_effects"]
+    unit_scale = 1000.0 if bool(use_pt_gev) else 1.0
+    sqrt_unit = float(np.sqrt(unit_scale))
+
+    core = float(core_scale)
+    if core <= 0.0:
+        raise ValueError("--smear_core_scale must be > 0")
+    ang = float(angle_scale)
+    if ang <= 0.0:
+        raise ValueError("--smear_angle_scale must be > 0")
+
+    h["smear_a"] = float(h["smear_a"]) * sqrt_unit * core
+    h["smear_b"] = float(h["smear_b"]) * core
+    h["smear_c"] = float(h["smear_c"]) * unit_scale * core
+
+    h["eta_smear_const"] = float(h["eta_smear_const"]) * ang
+    h["phi_smear_const"] = float(h["phi_smear_const"]) * ang
+    h["eta_smear_inv_sqrt"] = float(h["eta_smear_inv_sqrt"]) * sqrt_unit * ang
+    h["phi_smear_inv_sqrt"] = float(h["phi_smear_inv_sqrt"]) * sqrt_unit * ang
+
+    ts = float(tail_sigma_mult)
+    if ts <= 0.0:
+        raise ValueError("--smear_tail_sigma_mult must be > 0")
+    h["tail_sigma_scale"] = float(h["tail_sigma_scale"]) * ts
+    h["tail_sigma_add"] = float(h["tail_sigma_add"]) * ts
+
+    if float(tail_base) >= 0.0:
+        h["tail_base"] = float(tail_base)
+    if float(tail_prob_max) >= 0.0:
+        h["tail_prob_max"] = float(tail_prob_max)
+
+
 def _flatten_token_residuals(
     const_off: np.ndarray,
     const_other: np.ndarray,
@@ -2212,6 +2262,12 @@ def main() -> None:
     parser.add_argument("--smear_b", type=float, default=BASE_CONFIG["hlt_effects"]["smear_b"])
     parser.add_argument("--smear_c", type=float, default=BASE_CONFIG["hlt_effects"]["smear_c"])
     parser.add_argument("--smear_scale", type=float, default=1.0, help="Global multiplier for all smearing width parameters.")
+    parser.add_argument("--smear_use_pt_gev", action="store_true", help="Interpret pT-dependent smearing formulas in GeV (internally rescales coefficients for MeV-like inputs).")
+    parser.add_argument("--smear_core_scale", type=float, default=1.0, help="Global multiplier on relative pT/E smearing width.")
+    parser.add_argument("--smear_angle_scale", type=float, default=1.0, help="Global multiplier on eta/phi smearing widths.")
+    parser.add_argument("--smear_tail_base", type=float, default=-1.0, help="Override tail-base probability; negative keeps default.")
+    parser.add_argument("--smear_tail_sigma_mult", type=float, default=1.0, help="Multiplier on non-Gaussian tail width terms.")
+    parser.add_argument("--smear_tail_prob_max", type=float, default=-1.0, help="Override tail_prob_max; negative keeps default.")
 
     # Stage A (reconstructor pretrain)
     parser.add_argument("--stageA_epochs", type=int, default=90)
@@ -2335,6 +2391,15 @@ def main() -> None:
     cfg["hlt_effects"]["smear_c"] = float(args.smear_c)
     _configure_smear_only_hlt(cfg)
     _scale_smearing_widths(cfg, float(args.smear_scale))
+    _apply_calibrated_smearing(
+        cfg,
+        use_pt_gev=bool(args.smear_use_pt_gev),
+        core_scale=float(args.smear_core_scale),
+        angle_scale=float(args.smear_angle_scale),
+        tail_base=float(args.smear_tail_base),
+        tail_sigma_mult=float(args.smear_tail_sigma_mult),
+        tail_prob_max=float(args.smear_tail_prob_max),
+    )
 
     # Strict Chamfer-only reconstruction objective.
     cfg["loss"]["w_set"] = 1.0
@@ -2353,6 +2418,16 @@ def main() -> None:
 
     print(f"Device: {device}")
     print(f"Save dir: {save_root}")
+    hdbg = cfg["hlt_effects"]
+    print(
+        "Smearing config: "
+        f"use_pt_gev={bool(args.smear_use_pt_gev)}, "
+        f"core_scale={float(args.smear_core_scale):.3f}, "
+        f"angle_scale={float(args.smear_angle_scale):.3f}, "
+        f"tail_base={float(hdbg['tail_base']):.4f}, "
+        f"tail_prob_max={float(hdbg['tail_prob_max']):.4f}, "
+        f"a={float(hdbg['smear_a']):.4f}, b={float(hdbg['smear_b']):.4f}, c={float(hdbg['smear_c']):.4f}"
+    )
 
     train_path = Path(args.train_path)
     if train_path.is_dir():
