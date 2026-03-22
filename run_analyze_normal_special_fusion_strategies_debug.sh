@@ -13,7 +13,7 @@ LOG_DIR="${LOG_DIR:-offline_reconstructor_logs/fusion_analysis_normal_special}"
 mkdir -p "${LOG_DIR}"
 
 # Defaults match your recent runs; override at submit time if needed.
-NORMAL_RUN_DIR="${NORMAL_RUN_DIR:-download_checkpoints/stagec_normal_extval100k_exttest300k_combo_seed0}"
+NORMAL_RUN_DIR="${NORMAL_RUN_DIR:-checkpoints/offline_reconstructor_joint_stagec_refine_normal_extended_combo/stagec_normal_extval100k_exttest300k_combo_seed0}"
 SPECIAL_RUN_DIR="${SPECIAL_RUN_DIR:-checkpoints/offline_reconstructor_joint_stagec_refine_specialist_against_normal/stagec_specialist_pushhard_anchorNormal_comboSel_union_seed0}"
 
 TARGET_TPR="${TARGET_TPR:-0.50}"
@@ -25,6 +25,20 @@ HARD_TARGET_TOL="${HARD_TARGET_TOL:-0.003}"
 TOP_K="${TOP_K:-100}"
 
 SAVE_DIR="${SAVE_DIR:-download_checkpoints/fusion_analysis_normal_special_target50}"
+
+# If local defaults are missing, fallback to copied download_checkpoints paths.
+if [[ ! -f "${NORMAL_RUN_DIR}/results.npz" ]]; then
+  ALT_NORMAL="download_checkpoints/stagec_normal_extval100k_exttest300k_combo_seed0"
+  if [[ -f "${ALT_NORMAL}/results.npz" ]]; then
+    NORMAL_RUN_DIR="${ALT_NORMAL}"
+  fi
+fi
+if [[ ! -f "${SPECIAL_RUN_DIR}/results.npz" ]]; then
+  ALT_SPECIAL="download_checkpoints/stagec_specialist_pushhard_anchorNormal_comboSel_union_seed0"
+  if [[ -f "${ALT_SPECIAL}/results.npz" ]]; then
+    SPECIAL_RUN_DIR="${ALT_SPECIAL}"
+  fi
+fi
 
 set +u
 source ~/.bashrc
