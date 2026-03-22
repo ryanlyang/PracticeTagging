@@ -7,7 +7,7 @@ Task-driven Offline Reconstructor + Dual-View tagger joint training.
 Pipeline:
 1) Build pseudo-HLT from offline jets (same realistic generator family).
 2) Train teacher (offline) and baseline (HLT).
-3) Stage A: pretrain reconstructor (reconstruction losses).
+3) Stage A: pretrain reconstructor with teacher-on-reco KD + phys + budget-hinge (no chamfer-driven selection).
 4) Stage B: pretrain dual-view classifier with reconstructor frozen.
 5) Stage C: joint finetune reconstructor + dual-view classifier.
 6) Select checkpoints by lowest val FPR@50% TPR.
@@ -15,7 +15,7 @@ Pipeline:
 Notes:
 - Uses soft candidate view from reconstructor outputs for differentiable joint training.
 - Includes a differentiable low-FPR surrogate targeting TPR=0.5 behavior.
-- Variant: non-privileged budgeting with unmerge-only correction.
+- Variant: non-privileged budgeting with unmerge-only correction (Stage-A teacher-KD objective).
   * Supervises added-constituent target via true_added = (offline_count - hlt_count).
   * No privileged merge/eff split supervision.
   * Efficiency-generation branch is hard-disabled in outputs.
@@ -111,17 +111,6 @@ def wrap_phi_np(x: np.ndarray) -> np.ndarray:
     return np.arctan2(np.sin(x), np.cos(x))
 
 
-def wrap_phi_torch(x: torch.Tensor) -> torch.Tensor:
-    return torch.atan2(torch.sin(x), torch.cos(x))
-
-
-def batched_index_gather(tokens: torch.Tensor, idx: torch.Tensor) -> torch.Tensor:
-    """
-    Gather token tensor [B, L2, D] with indices [B, L1] -> [B, L1, D].
-    """
-    return tokens.gather(1, idx.unsqueeze(-1).expand(-1, -1, tokens.size(-1)))
-
-
 def _configure_smear_only_hlt(cfg: Dict) -> None:
     """Force strict smear-only HLT degradation (count-preserving by construction)."""
     h = cfg["hlt_effects"]
@@ -165,56 +154,6 @@ def _scale_smearing_widths(cfg: Dict, smear_scale: float) -> None:
     ]
     for k in keys:
         h[k] = float(h[k]) * s
-
-
-def _apply_calibrated_smearing(
-    cfg: Dict,
-    use_pt_gev: bool,
-    core_scale: float,
-    angle_scale: float,
-    tail_base: float,
-    tail_sigma_mult: float,
-    tail_prob_max: float,
-) -> None:
-    """
-    Calibrate smearing strength in a physically interpretable way.
-
-    - If use_pt_gev=True, convert pT-dependent resolution terms to GeV behavior
-      while data remains stored in MeV-like units.
-    - core_scale multiplies relative pT response width.
-    - angle_scale multiplies eta/phi smearing widths.
-    - tail knobs control non-Gaussian tail frequency/width.
-    """
-    h = cfg["hlt_effects"]
-    unit_scale = 1000.0 if bool(use_pt_gev) else 1.0
-    sqrt_unit = float(np.sqrt(unit_scale))
-
-    core = float(core_scale)
-    if core <= 0.0:
-        raise ValueError("--smear_core_scale must be > 0")
-    ang = float(angle_scale)
-    if ang <= 0.0:
-        raise ValueError("--smear_angle_scale must be > 0")
-
-    h["smear_a"] = float(h["smear_a"]) * sqrt_unit * core
-    h["smear_b"] = float(h["smear_b"]) * core
-    h["smear_c"] = float(h["smear_c"]) * unit_scale * core
-
-    h["eta_smear_const"] = float(h["eta_smear_const"]) * ang
-    h["phi_smear_const"] = float(h["phi_smear_const"]) * ang
-    h["eta_smear_inv_sqrt"] = float(h["eta_smear_inv_sqrt"]) * sqrt_unit * ang
-    h["phi_smear_inv_sqrt"] = float(h["phi_smear_inv_sqrt"]) * sqrt_unit * ang
-
-    ts = float(tail_sigma_mult)
-    if ts <= 0.0:
-        raise ValueError("--smear_tail_sigma_mult must be > 0")
-    h["tail_sigma_scale"] = float(h["tail_sigma_scale"]) * ts
-    h["tail_sigma_add"] = float(h["tail_sigma_add"]) * ts
-
-    if float(tail_base) >= 0.0:
-        h["tail_base"] = float(tail_base)
-    if float(tail_prob_max) >= 0.0:
-        h["tail_prob_max"] = float(tail_prob_max)
 
 
 def _flatten_token_residuals(
@@ -675,201 +614,7 @@ def compute_reconstruction_losses_weighted(
 
 
 
-def compute_token_residual_losses_weighted(
-    out: Dict[str, torch.Tensor],
-    const_hlt: torch.Tensor,
-    mask_hlt: torch.Tensor,
-    const_off: torch.Tensor,
-    mask_off: torch.Tensor,
-    budget_merge_true: torch.Tensor,
-    budget_eff_true: torch.Tensor,
-    loss_cfg: Dict,
-    sample_weight: torch.Tensor | None = None,
-) -> Dict[str, torch.Tensor]:
-    """
-    Count-preserving unsmear loss without Chamfer.
-
-    Strategy:
-    1) Build a soft 1->1-ish token correspondence HLT->offline via nearest cost
-       in (dR + alpha*|dlogpt|), optionally requiring mutual nearest neighbors.
-    2) Apply per-token residual penalties only on confident matches.
-    3) Add a small jet-level response regularizer to prevent global pT/E drift.
-    """
-    del budget_merge_true, budget_eff_true  # intentionally unused in this mode
-    eps = 1e-8
-    sw = None
-    if sample_weight is not None:
-        sw = sample_weight.float().clamp(min=0.0)
-
-    L = int(mask_hlt.shape[1])
-    pred_tok = out["cand_tokens"][:, :L, :]
-    hlt_tok = const_hlt[:, :L, :]
-    off_tok = const_off
-
-    valid_h = mask_hlt[:, :L]
-    valid_o = mask_off
-
-    h_eta = hlt_tok[:, :, 1].unsqueeze(2)
-    h_phi = hlt_tok[:, :, 2].unsqueeze(2)
-    o_eta = off_tok[:, :, 1].unsqueeze(1)
-    o_phi = off_tok[:, :, 2].unsqueeze(1)
-    d_eta = h_eta - o_eta
-    d_phi = wrap_phi_torch(h_phi - o_phi)
-    dR = torch.sqrt(d_eta.pow(2) + d_phi.pow(2) + eps)
-
-    h_logpt = torch.log(hlt_tok[:, :, 0].clamp(min=1e-6)).unsqueeze(2)
-    o_logpt = torch.log(off_tok[:, :, 0].clamp(min=1e-6)).unsqueeze(1)
-    dlogpt = (h_logpt - o_logpt).abs()
-
-    alpha = float(loss_cfg.get("token_match_logpt_alpha", 0.15))
-    cost = dR + alpha * dlogpt
-
-    valid_pair = valid_h.unsqueeze(2) & valid_o.unsqueeze(1)
-    big = torch.full_like(cost, 1e4)
-    cost = torch.where(valid_pair, cost, big)
-
-    best_off_idx = cost.min(dim=2).indices  # [B, L]
-    min_dR = dR.gather(2, best_off_idx.unsqueeze(-1)).squeeze(-1)
-    min_dlogpt = dlogpt.gather(2, best_off_idx.unsqueeze(-1)).squeeze(-1)
-
-    rev_best_h_idx = cost.min(dim=1).indices  # [B, O]
-    h_idx = torch.arange(L, device=cost.device).unsqueeze(0).expand(cost.size(0), -1)
-    mutual = rev_best_h_idx.gather(1, best_off_idx).eq(h_idx)
-
-    dr_max = float(loss_cfg.get("token_match_dr_max", 0.03))
-    dlogpt_max = float(loss_cfg.get("token_match_dlogpt_max", 0.60))
-    require_mutual = bool(loss_cfg.get("token_match_require_mutual", True))
-
-    conf = valid_h & (min_dR <= dr_max) & (min_dlogpt <= dlogpt_max)
-    if require_mutual:
-        conf = conf & mutual
-    conf_f = conf.float()
-
-    tgt_tok = batched_index_gather(off_tok, best_off_idx)
-
-    pred_logpt = torch.log(pred_tok[:, :, 0].clamp(min=1e-6))
-    tgt_logpt = torch.log(tgt_tok[:, :, 0].clamp(min=1e-6))
-    pred_logE = torch.log(pred_tok[:, :, 3].clamp(min=1e-6))
-    tgt_logE = torch.log(tgt_tok[:, :, 3].clamp(min=1e-6))
-
-    l_pt = F.smooth_l1_loss(pred_logpt, tgt_logpt, reduction="none")
-    l_eta = F.smooth_l1_loss(pred_tok[:, :, 1], tgt_tok[:, :, 1], reduction="none")
-    l_phi = F.smooth_l1_loss(
-        wrap_phi_torch(pred_tok[:, :, 2] - tgt_tok[:, :, 2]),
-        torch.zeros_like(pred_tok[:, :, 2]),
-        reduction="none",
-    )
-    l_E = F.smooth_l1_loss(pred_logE, tgt_logE, reduction="none")
-
-    w_pt = float(loss_cfg.get("token_res_w_logpt", 1.0))
-    w_eta = float(loss_cfg.get("token_res_w_eta", 0.4))
-    w_phi = float(loss_cfg.get("token_res_w_phi", 0.4))
-    w_E = float(loss_cfg.get("token_res_w_logE", 0.7))
-    token_err = w_pt * l_pt + w_eta * l_eta + w_phi * l_phi + w_E * l_E
-
-    conf_count = conf_f.sum(dim=1)
-    token_res_vec = (token_err * conf_f).sum(dim=1) / (conf_count + eps)
-
-    fallback_to_valid = bool(loss_cfg.get("token_res_fallback_to_valid", True))
-    if fallback_to_valid:
-        valid_f = valid_h.float()
-        valid_count = valid_f.sum(dim=1)
-        fallback_vec = (token_err * valid_f).sum(dim=1) / (valid_count + eps)
-        token_res_vec = torch.where(conf_count > 0.0, token_res_vec, fallback_vec)
-
-    coverage_vec = conf_count / (valid_h.float().sum(dim=1) + eps)
-    cov_pen = float(loss_cfg.get("token_cov_penalty", 0.05))
-
-    pred_w = valid_h.float()
-    pred_px, pred_py, pred_pz, pred_E = reco_base._weighted_fourvec_sums(pred_tok, pred_w)
-    true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off, mask_off.float())
-    pred_pt = torch.sqrt(pred_px.pow(2) + pred_py.pow(2) + eps)
-    true_pt = torch.sqrt(true_px.pow(2) + true_py.pow(2) + eps)
-
-    pt_ratio = pred_pt / (true_pt + eps)
-    e_ratio = pred_E / (true_E + eps)
-    loss_pt_ratio_vec = F.smooth_l1_loss(pt_ratio, torch.ones_like(pt_ratio), reduction="none")
-    loss_e_ratio_vec = F.smooth_l1_loss(e_ratio, torch.ones_like(e_ratio), reduction="none")
-
-    jet_reg_vec = (
-        float(loss_cfg.get("token_jet_w_pt_ratio", 0.10)) * loss_pt_ratio_vec
-        + float(loss_cfg.get("token_jet_w_e_ratio", 0.10)) * loss_e_ratio_vec
-    )
-
-    total_vec = (
-        token_res_vec
-        + jet_reg_vec
-        + cov_pen * (1.0 - coverage_vec)
-    )
-
-    zero_vec = torch.zeros_like(total_vec)
-    return {
-        "total": _weighted_batch_mean(total_vec, sw),
-        "set": _weighted_batch_mean(token_res_vec, sw),
-        "phys": _weighted_batch_mean(jet_reg_vec, sw),
-        "pt_ratio": _weighted_batch_mean(loss_pt_ratio_vec, sw),
-        "e_ratio": _weighted_batch_mean(loss_e_ratio_vec, sw),
-        "budget": _weighted_batch_mean(zero_vec, sw),
-        "sparse": _weighted_batch_mean(zero_vec, sw),
-        "local": _weighted_batch_mean(1.0 - coverage_vec, sw),
-        "token_cov": _weighted_batch_mean(coverage_vec, sw),
-    }
-
-
-
-def compute_reconstruction_losses_dispatch(
-    out: Dict[str, torch.Tensor],
-    const_hlt: torch.Tensor,
-    mask_hlt: torch.Tensor,
-    const_off: torch.Tensor,
-    mask_off: torch.Tensor,
-    budget_merge_true: torch.Tensor,
-    budget_eff_true: torch.Tensor,
-    loss_cfg: Dict,
-    sample_weight: torch.Tensor | None = None,
-) -> Dict[str, torch.Tensor]:
-    mode = str(loss_cfg.get("unsmear_loss_mode", "chamfer")).lower()
-    if mode == "token_residual":
-        return compute_token_residual_losses_weighted(
-            out,
-            const_hlt,
-            mask_hlt,
-            const_off,
-            mask_off,
-            budget_merge_true,
-            budget_eff_true,
-            loss_cfg,
-            sample_weight=sample_weight,
-        )
-    if sample_weight is not None:
-        return compute_reconstruction_losses_weighted(
-            out,
-            const_hlt,
-            mask_hlt,
-            const_off,
-            mask_off,
-            budget_merge_true,
-            budget_eff_true,
-            loss_cfg,
-            sample_weight=sample_weight,
-        )
-    return compute_reconstruction_losses(
-        out,
-        const_hlt,
-        mask_hlt,
-        const_off,
-        mask_off,
-        budget_merge_true,
-        budget_eff_true,
-        loss_cfg,
-    )
-
-
-
-def enforce_unsmear_only_output(
-    reco_out: Dict[str, torch.Tensor],
-    mask_hlt: torch.Tensor | None = None,
-) -> Dict[str, torch.Tensor]:
+def enforce_unsmear_only_output(reco_out: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
     """
     Hard-disable split/generation branches and enforce token-count preservation.
 
@@ -881,10 +626,7 @@ def enforce_unsmear_only_output(
     out = dict(reco_out)
     L = int(out["action_prob"].shape[1])
 
-    if mask_hlt is not None:
-        tok_valid = mask_hlt[:, :L].float()
-    else:
-        tok_valid = (out["cand_weights"][:, :L] > 0.0).float()
+    tok_valid = (out["cand_weights"][:, :L] > 0.0).float()
 
     # Count-preserving candidate weights.
     cw = torch.zeros_like(out["cand_weights"])
@@ -912,11 +654,7 @@ def wrap_reconstructor_unsmear_only(model: OfflineReconstructor) -> OfflineRecon
     base_forward = model.forward
 
     def _wrapped_forward(*args, **kwargs):
-        out = base_forward(*args, **kwargs)
-        mask = kwargs.get("mask", None)
-        if mask is None and len(args) >= 2:
-            mask = args[1]
-        return enforce_unsmear_only_output(out, mask_hlt=mask)
+        return enforce_unsmear_only_output(base_forward(*args, **kwargs))
 
     model.forward = _wrapped_forward  # type: ignore[method-assign]
     return model
@@ -1040,6 +778,7 @@ class WeightedReconstructionDataset(Dataset):
         const_hlt: np.ndarray,
         const_off: np.ndarray,
         mask_off: np.ndarray,
+        labels: np.ndarray,
         budget_merge_true: np.ndarray,
         budget_eff_true: np.ndarray,
         sample_weight_reco: np.ndarray | None = None,
@@ -1049,6 +788,7 @@ class WeightedReconstructionDataset(Dataset):
         self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
         self.const_off = torch.tensor(const_off, dtype=torch.float32)
         self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
         self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
         self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
         n = feat_hlt.shape[0]
@@ -1070,6 +810,7 @@ class WeightedReconstructionDataset(Dataset):
             "const_hlt": self.const_hlt[i],
             "const_off": self.const_off[i],
             "mask_off": self.mask_off[i],
+            "label": self.labels[i],
             "budget_merge_true": self.budget_merge_true[i],
             "budget_eff_true": self.budget_eff_true[i],
             "sample_weight_reco": self.sample_weight_reco[i],
@@ -1781,6 +1522,71 @@ def stage_scale_local(epoch: int, cfg: Dict) -> float:
     return 1.0
 
 
+def _standardize_features_torch(
+    feat: torch.Tensor,
+    mask: torch.Tensor,
+    means_t: torch.Tensor,
+    stds_t: torch.Tensor,
+) -> torch.Tensor:
+    feat_std = (feat - means_t.view(1, 1, -1)) / stds_t.view(1, 1, -1)
+    feat_std = torch.nan_to_num(feat_std, nan=0.0, posinf=0.0, neginf=0.0)
+    feat_std = feat_std * mask.unsqueeze(-1).float()
+    return feat_std
+
+
+def _build_teacher_reco_features_from_output(
+    reco_out: Dict[str, torch.Tensor],
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    weight_floor: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    reco_out = enforce_unsmear_only_output(reco_out)
+    L = int(const_hlt.shape[1])
+    tok_tokens = reco_out["cand_tokens"][:, :L, :]
+    tok_w = reco_out["cand_weights"][:, :L].clamp(0.0, 1.0)
+
+    # Require both non-trivial token weight and HLT-valid token support.
+    mask_b = (tok_w > float(weight_floor)) & mask_hlt
+    none_valid = ~mask_b.any(dim=1)
+    if none_valid.any():
+        # Fall back to HLT mask when reco mask is empty.
+        mask_b = torch.where(mask_hlt, mask_hlt, mask_b)
+        none_valid = ~mask_b.any(dim=1)
+        if none_valid.any():
+            mask_b = mask_b.clone()
+            mask_b[none_valid, 0] = True
+
+    feat7 = compute_features_torch(tok_tokens, mask_b)
+    return feat7, mask_b
+
+
+def _sorted_edit_budget_vec(
+    reco_tokens: torch.Tensor,
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+) -> torch.Tensor:
+    # Approximate permutation-robust edit magnitude by sorting both sets by pT.
+    # This avoids direct index-aligned penalties that are unstable for set outputs.
+    very_low = -1e9
+    pt_pred = torch.where(mask_hlt, reco_tokens[..., 0], torch.full_like(reco_tokens[..., 0], very_low))
+    pt_hlt = torch.where(mask_hlt, const_hlt[..., 0], torch.full_like(const_hlt[..., 0], very_low))
+
+    idx_pred = torch.argsort(pt_pred, dim=1, descending=True)
+    idx_hlt = torch.argsort(pt_hlt, dim=1, descending=True)
+
+    gather4_pred = idx_pred.unsqueeze(-1).expand(-1, -1, reco_tokens.shape[-1])
+    gather4_hlt = idx_hlt.unsqueeze(-1).expand(-1, -1, const_hlt.shape[-1])
+
+    pred_sorted = torch.gather(reco_tokens, 1, gather4_pred)
+    hlt_sorted = torch.gather(const_hlt, 1, gather4_hlt)
+    mask_sorted = torch.gather(mask_hlt, 1, idx_hlt)
+
+    abs_diff_tok = (pred_sorted - hlt_sorted).abs().mean(dim=-1)
+    denom = mask_sorted.float().sum(dim=1).clamp(min=1.0)
+    mean_edit = (abs_diff_tok * mask_sorted.float()).sum(dim=1) / denom
+    return mean_edit
+
+
 def train_reconstructor_weighted(
     model: OfflineReconstructor,
     train_loader: DataLoader,
@@ -1789,6 +1595,16 @@ def train_reconstructor_weighted(
     train_cfg: Dict,
     loss_cfg: Dict,
     apply_reco_weight: bool,
+    teacher_model: nn.Module,
+    feat_means: np.ndarray,
+    feat_stds: np.ndarray,
+    kd_temperature: float,
+    lambda_kd: float,
+    lambda_phys: float,
+    lambda_budget_hinge: float,
+    budget_eps: float,
+    budget_weight_floor: float,
+    target_tpr_for_fpr: float,
 ) -> Tuple[OfflineReconstructor, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -1797,19 +1613,35 @@ def train_reconstructor_weighted(
     )
     sch = get_scheduler(opt, int(train_cfg["warmup_epochs"]), int(train_cfg["epochs"]))
 
+    kd_temperature = max(float(kd_temperature), 1e-3)
+    lambda_kd = float(max(lambda_kd, 0.0))
+    lambda_phys = float(max(lambda_phys, 0.0))
+    lambda_budget_hinge = float(max(lambda_budget_hinge, 0.0))
+    budget_eps = float(max(budget_eps, 0.0))
+    budget_weight_floor = float(max(budget_weight_floor, 0.0))
+
+    means_t = torch.tensor(feat_means, dtype=torch.float32, device=device)
+    stds_t = torch.tensor(np.clip(feat_stds, 1e-6, None), dtype=torch.float32, device=device)
+
+    teacher_model.eval()
+    for p_t in teacher_model.parameters():
+        p_t.requires_grad_(False)
+
     best_state = None
-    best_val = 1e9
+    best_val_auc = float("-inf")
     no_improve = 0
     best_metrics: Dict[str, float] = {}
     min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
-    val_metric_source = "weighted" if bool(apply_reco_weight) else "unweighted"
 
     for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
         model.train()
         sc = stage_scale_local(ep, train_cfg)
 
-        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_e_ratio = tr_budget = tr_sparse = tr_local = 0.0
+        tr_total = tr_kd = tr_phys = tr_budget_hinge = tr_teacher_auc = tr_teacher_fpr50 = 0.0
         n_tr = 0
+        tr_probs_all = []
+        tr_labels_all = []
+
         for batch in train_loader:
             feat_hlt = batch["feat_hlt"].to(device)
             mask_hlt = batch["mask_hlt"].to(device)
@@ -1818,14 +1650,18 @@ def train_reconstructor_weighted(
             mask_off = batch["mask_off"].to(device)
             budget_merge_true = batch["budget_merge_true"].to(device)
             budget_eff_true = batch["budget_eff_true"].to(device)
+            labels_batch = batch["label"].to(device)
             sw_reco = batch.get("sample_weight_reco", None)
             if sw_reco is not None:
                 sw_reco = sw_reco.to(device)
+            sw_for_loss = sw_reco if (bool(apply_reco_weight) and sw_reco is not None) else None
 
             opt.zero_grad()
             out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=sc)
-            if bool(apply_reco_weight) and sw_reco is not None:
-                losses = compute_reconstruction_losses_dispatch(
+
+            # Keep physics regularization from existing recon losses, but remove chamfer-driven total usage.
+            if sw_for_loss is not None:
+                aux_losses = compute_reconstruction_losses_weighted(
                     out,
                     const_hlt,
                     mask_hlt,
@@ -1834,10 +1670,10 @@ def train_reconstructor_weighted(
                     budget_merge_true,
                     budget_eff_true,
                     loss_cfg,
-                    sample_weight=sw_reco,
+                    sample_weight=sw_for_loss,
                 )
             else:
-                losses = compute_reconstruction_losses_dispatch(
+                aux_losses = compute_reconstruction_losses(
                     out,
                     const_hlt,
                     mask_hlt,
@@ -1847,25 +1683,65 @@ def train_reconstructor_weighted(
                     budget_eff_true,
                     loss_cfg,
                 )
-            losses["total"].backward()
+            loss_phys = aux_losses["phys"]
+
+            with torch.no_grad():
+                feat_off_raw = compute_features_torch(const_off, mask_off)
+                feat_off_std = _standardize_features_torch(feat_off_raw, mask_off, means_t, stds_t)
+                logits_teacher_off = teacher_model(feat_off_std, mask_off).view(-1)
+
+            feat_reco_raw, mask_reco = _build_teacher_reco_features_from_output(
+                out,
+                const_hlt,
+                mask_hlt,
+                weight_floor=budget_weight_floor,
+            )
+            feat_reco_std = _standardize_features_torch(feat_reco_raw, mask_reco, means_t, stds_t)
+            logits_teacher_reco = teacher_model(feat_reco_std, mask_reco).view(-1)
+
+            target_soft = torch.sigmoid(logits_teacher_off / kd_temperature)
+            kd_vec = (
+                F.binary_cross_entropy_with_logits(
+                    logits_teacher_reco / kd_temperature,
+                    target_soft,
+                    reduction="none",
+                )
+                * (kd_temperature * kd_temperature)
+            )
+            loss_kd = _weighted_batch_mean(kd_vec, sw_for_loss)
+
+            reco_tokens = out["cand_tokens"][:, : const_hlt.shape[1], :]
+            mean_edit_vec = _sorted_edit_budget_vec(reco_tokens, const_hlt, mask_hlt)
+            budget_hinge_vec = F.relu(mean_edit_vec - budget_eps)
+            loss_budget_hinge = _weighted_batch_mean(budget_hinge_vec, sw_for_loss)
+
+            loss_total = (
+                lambda_kd * loss_kd
+                + lambda_phys * loss_phys
+                + lambda_budget_hinge * loss_budget_hinge
+            )
+
+            loss_total.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
 
+            probs_reco = torch.sigmoid(logits_teacher_reco).detach().cpu().numpy()
+            tr_probs_all.append(probs_reco)
+            tr_labels_all.append(labels_batch.detach().cpu().numpy().astype(np.int64))
+
             bs = feat_hlt.size(0)
-            tr_total += losses["total"].item() * bs
-            tr_set += losses["set"].item() * bs
-            tr_phys += losses["phys"].item() * bs
-            tr_pt_ratio += losses["pt_ratio"].item() * bs
-            tr_e_ratio += losses["e_ratio"].item() * bs
-            tr_budget += losses["budget"].item() * bs
-            tr_sparse += losses["sparse"].item() * bs
-            tr_local += losses["local"].item() * bs
+            tr_total += loss_total.item() * bs
+            tr_kd += loss_kd.item() * bs
+            tr_phys += loss_phys.item() * bs
+            tr_budget_hinge += loss_budget_hinge.item() * bs
             n_tr += bs
 
         model.eval()
-        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_e_ratio_u = va_budget_u = va_sparse_u = va_local_u = 0.0
-        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_e_ratio_w = va_budget_w = va_sparse_w = va_local_w = 0.0
+        va_total = va_kd = va_phys = va_budget_hinge = 0.0
         n_va = 0
+        va_probs_all = []
+        va_labels_all = []
+
         with torch.no_grad():
             for batch in val_loader:
                 feat_hlt = batch["feat_hlt"].to(device)
@@ -1875,23 +1751,16 @@ def train_reconstructor_weighted(
                 mask_off = batch["mask_off"].to(device)
                 budget_merge_true = batch["budget_merge_true"].to(device)
                 budget_eff_true = batch["budget_eff_true"].to(device)
+                labels_batch = batch["label"].to(device)
                 sw_reco = batch.get("sample_weight_reco", None)
                 if sw_reco is not None:
                     sw_reco = sw_reco.to(device)
+                sw_for_loss = sw_reco if (bool(apply_reco_weight) and sw_reco is not None) else None
 
                 out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
-                losses_u = compute_reconstruction_losses_dispatch(
-                    out,
-                    const_hlt,
-                    mask_hlt,
-                    const_off,
-                    mask_off,
-                    budget_merge_true,
-                    budget_eff_true,
-                    loss_cfg,
-                )
-                if bool(apply_reco_weight) and sw_reco is not None:
-                    losses_w = compute_reconstruction_losses_dispatch(
+
+                if sw_for_loss is not None:
+                    aux_losses = compute_reconstruction_losses_weighted(
                         out,
                         const_hlt,
                         mask_hlt,
@@ -1900,96 +1769,131 @@ def train_reconstructor_weighted(
                         budget_merge_true,
                         budget_eff_true,
                         loss_cfg,
-                        sample_weight=sw_reco,
+                        sample_weight=sw_for_loss,
                     )
                 else:
-                    losses_w = losses_u
+                    aux_losses = compute_reconstruction_losses(
+                        out,
+                        const_hlt,
+                        mask_hlt,
+                        const_off,
+                        mask_off,
+                        budget_merge_true,
+                        budget_eff_true,
+                        loss_cfg,
+                    )
+                loss_phys = aux_losses["phys"]
+
+                feat_off_raw = compute_features_torch(const_off, mask_off)
+                feat_off_std = _standardize_features_torch(feat_off_raw, mask_off, means_t, stds_t)
+                logits_teacher_off = teacher_model(feat_off_std, mask_off).view(-1)
+
+                feat_reco_raw, mask_reco = _build_teacher_reco_features_from_output(
+                    out,
+                    const_hlt,
+                    mask_hlt,
+                    weight_floor=budget_weight_floor,
+                )
+                feat_reco_std = _standardize_features_torch(feat_reco_raw, mask_reco, means_t, stds_t)
+                logits_teacher_reco = teacher_model(feat_reco_std, mask_reco).view(-1)
+
+                target_soft = torch.sigmoid(logits_teacher_off / kd_temperature)
+                kd_vec = (
+                    F.binary_cross_entropy_with_logits(
+                        logits_teacher_reco / kd_temperature,
+                        target_soft,
+                        reduction="none",
+                    )
+                    * (kd_temperature * kd_temperature)
+                )
+                loss_kd = _weighted_batch_mean(kd_vec, sw_for_loss)
+
+                reco_tokens = out["cand_tokens"][:, : const_hlt.shape[1], :]
+                mean_edit_vec = _sorted_edit_budget_vec(reco_tokens, const_hlt, mask_hlt)
+                budget_hinge_vec = F.relu(mean_edit_vec - budget_eps)
+                loss_budget_hinge = _weighted_batch_mean(budget_hinge_vec, sw_for_loss)
+
+                loss_total = (
+                    lambda_kd * loss_kd
+                    + lambda_phys * loss_phys
+                    + lambda_budget_hinge * loss_budget_hinge
+                )
+
+                probs_reco = torch.sigmoid(logits_teacher_reco).detach().cpu().numpy()
+                va_probs_all.append(probs_reco)
+                va_labels_all.append(labels_batch.detach().cpu().numpy().astype(np.int64))
 
                 bs = feat_hlt.size(0)
-                va_total_u += losses_u["total"].item() * bs
-                va_set_u += losses_u["set"].item() * bs
-                va_phys_u += losses_u["phys"].item() * bs
-                va_pt_ratio_u += losses_u["pt_ratio"].item() * bs
-                va_e_ratio_u += losses_u["e_ratio"].item() * bs
-                va_budget_u += losses_u["budget"].item() * bs
-                va_sparse_u += losses_u["sparse"].item() * bs
-                va_local_u += losses_u["local"].item() * bs
-
-                va_total_w += losses_w["total"].item() * bs
-                va_set_w += losses_w["set"].item() * bs
-                va_phys_w += losses_w["phys"].item() * bs
-                va_pt_ratio_w += losses_w["pt_ratio"].item() * bs
-                va_e_ratio_w += losses_w["e_ratio"].item() * bs
-                va_budget_w += losses_w["budget"].item() * bs
-                va_sparse_w += losses_w["sparse"].item() * bs
-                va_local_w += losses_w["local"].item() * bs
+                va_total += loss_total.item() * bs
+                va_kd += loss_kd.item() * bs
+                va_phys += loss_phys.item() * bs
+                va_budget_hinge += loss_budget_hinge.item() * bs
                 n_va += bs
 
         sch.step()
+
         tr_total /= max(n_tr, 1)
-        tr_set /= max(n_tr, 1)
+        tr_kd /= max(n_tr, 1)
         tr_phys /= max(n_tr, 1)
-        tr_pt_ratio /= max(n_tr, 1)
-        tr_e_ratio /= max(n_tr, 1)
-        tr_budget /= max(n_tr, 1)
-        tr_sparse /= max(n_tr, 1)
-        tr_local /= max(n_tr, 1)
+        tr_budget_hinge /= max(n_tr, 1)
 
-        va_total_u /= max(n_va, 1)
-        va_set_u /= max(n_va, 1)
-        va_phys_u /= max(n_va, 1)
-        va_pt_ratio_u /= max(n_va, 1)
-        va_e_ratio_u /= max(n_va, 1)
-        va_budget_u /= max(n_va, 1)
-        va_sparse_u /= max(n_va, 1)
-        va_local_u /= max(n_va, 1)
+        va_total /= max(n_va, 1)
+        va_kd /= max(n_va, 1)
+        va_phys /= max(n_va, 1)
+        va_budget_hinge /= max(n_va, 1)
 
-        va_total_w /= max(n_va, 1)
-        va_set_w /= max(n_va, 1)
-        va_phys_w /= max(n_va, 1)
-        va_pt_ratio_w /= max(n_va, 1)
-        va_e_ratio_w /= max(n_va, 1)
-        va_budget_w /= max(n_va, 1)
-        va_sparse_w /= max(n_va, 1)
-        va_local_w /= max(n_va, 1)
+        tr_probs = np.concatenate(tr_probs_all, axis=0) if len(tr_probs_all) > 0 else np.zeros((0,), dtype=np.float32)
+        tr_labels = np.concatenate(tr_labels_all, axis=0) if len(tr_labels_all) > 0 else np.zeros((0,), dtype=np.int64)
+        va_probs = np.concatenate(va_probs_all, axis=0) if len(va_probs_all) > 0 else np.zeros((0,), dtype=np.float32)
+        va_labels = np.concatenate(va_labels_all, axis=0) if len(va_labels_all) > 0 else np.zeros((0,), dtype=np.int64)
 
-        val_total_sel = float(va_total_w) if bool(apply_reco_weight) else float(va_total_u)
+        if np.unique(tr_labels).size > 1 and tr_probs.size > 0:
+            tr_auc = float(roc_auc_score(tr_labels, tr_probs))
+            tr_fpr, tr_tpr, _ = roc_curve(tr_labels, tr_probs)
+            tr_fpr50 = float(fpr_at_target_tpr(tr_fpr, tr_tpr, float(target_tpr_for_fpr)))
+        else:
+            tr_auc, tr_fpr50 = float("nan"), float("nan")
 
-        if val_total_sel < best_val:
-            best_val = val_total_sel
+        if np.unique(va_labels).size > 1 and va_probs.size > 0:
+            va_auc = float(roc_auc_score(va_labels, va_probs))
+            va_fpr, va_tpr, _ = roc_curve(va_labels, va_probs)
+            va_fpr50 = float(fpr_at_target_tpr(va_fpr, va_tpr, float(target_tpr_for_fpr)))
+        else:
+            va_auc, va_fpr50 = float("nan"), float("nan")
+
+        if np.isfinite(va_auc) and (va_auc > best_val_auc):
+            best_val_auc = float(va_auc)
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             no_improve = 0
             best_metrics = {
-                "val_metric_source": str(val_metric_source),
-                "selected_val_total": float(val_total_sel),
-                "val_total": float(val_total_sel),
-                "val_total_unweighted": float(va_total_u),
-                "val_set_unweighted": float(va_set_u),
-                "val_phys_unweighted": float(va_phys_u),
-                "val_pt_ratio_unweighted": float(va_pt_ratio_u),
-                "val_e_ratio_unweighted": float(va_e_ratio_u),
-                "val_budget_unweighted": float(va_budget_u),
-                "val_sparse_unweighted": float(va_sparse_u),
-                "val_local_unweighted": float(va_local_u),
-                "val_total_weighted": float(va_total_w),
-                "val_set_weighted": float(va_set_w),
-                "val_phys_weighted": float(va_phys_w),
-                "val_pt_ratio_weighted": float(va_pt_ratio_w),
-                "val_e_ratio_weighted": float(va_e_ratio_w),
-                "val_budget_weighted": float(va_budget_w),
-                "val_sparse_weighted": float(va_sparse_w),
-                "val_local_weighted": float(va_local_w),
+                "selected_metric": "teacher_on_reco_val_auc",
+                "selected_val_auc": float(va_auc),
+                "selected_val_fpr50": float(va_fpr50),
+                "selected_val_total_loss": float(va_total),
+                "val_total": float(va_total),
+                "val_kd": float(va_kd),
+                "val_phys": float(va_phys),
+                "val_budget_hinge": float(va_budget_hinge),
+                "train_total": float(tr_total),
+                "train_kd": float(tr_kd),
+                "train_phys": float(tr_phys),
+                "train_budget_hinge": float(tr_budget_hinge),
+                "train_teacher_auc": float(tr_auc),
+                "train_teacher_fpr50": float(tr_fpr50),
+                "val_teacher_auc": float(va_auc),
+                "val_teacher_fpr50": float(va_fpr50),
             }
         else:
             no_improve += 1
 
         if (ep + 1) % 5 == 0:
             print(
-                f"Ep {ep+1}: train_total={tr_total:.4f}, "
-                f"val_total_unw={va_total_u:.4f}, val_total_w={va_total_w:.4f}, "
-                f"select={val_metric_source}, best_sel={best_val:.4f} | "
-                f"set_unw={va_set_u:.4f}, phys_unw={va_phys_u:.4f}, "
-                f"budget_unw={va_budget_u:.4f}, stage_scale={sc:.2f}"
+                f"Ep {ep+1}: train_total={tr_total:.4f}, val_total={va_total:.4f}, "
+                f"train_teacher_auc={tr_auc:.4f}, val_teacher_auc={va_auc:.4f}, "
+                f"val_teacher_fpr50={va_fpr50:.6f}, "
+                f"best_teacher_auc={best_val_auc:.4f} | "
+                f"kd={va_kd:.4f}, phys={va_phys:.4f}, budget_hinge={va_budget_hinge:.4f}, "
+                f"stage_scale={sc:.2f}"
             )
         if (ep + 1) >= min_stop_epoch and no_improve >= int(train_cfg["patience"]):
             print(f"Early stopping reconstructor at epoch {ep+1}")
@@ -2117,7 +2021,7 @@ def train_joint_dual(
 
             if float(lambda_reco) > 0.0:
                 if bool(apply_reco_weight) and sw_reco is not None:
-                    reco_losses = compute_reconstruction_losses_dispatch(
+                    reco_losses = compute_reconstruction_losses_weighted(
                         reco_out,
                         const_hlt,
                         mask_hlt,
@@ -2129,7 +2033,7 @@ def train_joint_dual(
                         sample_weight=sw_reco,
                     )
                 else:
-                    reco_losses = compute_reconstruction_losses_dispatch(
+                    reco_losses = compute_reconstruction_losses(
                         reco_out,
                         const_hlt,
                         mask_hlt,
@@ -2308,30 +2212,17 @@ def main() -> None:
     parser.add_argument("--smear_b", type=float, default=BASE_CONFIG["hlt_effects"]["smear_b"])
     parser.add_argument("--smear_c", type=float, default=BASE_CONFIG["hlt_effects"]["smear_c"])
     parser.add_argument("--smear_scale", type=float, default=1.0, help="Global multiplier for all smearing width parameters.")
-    parser.add_argument("--smear_use_pt_gev", action="store_true", help="Interpret pT-dependent smearing formulas in GeV (internally rescales coefficients for MeV-like inputs).")
-    parser.add_argument("--smear_core_scale", type=float, default=1.0, help="Global multiplier on relative pT/E smearing width.")
-    parser.add_argument("--smear_angle_scale", type=float, default=1.0, help="Global multiplier on eta/phi smearing widths.")
-    parser.add_argument("--smear_tail_base", type=float, default=-1.0, help="Override tail-base probability; negative keeps default.")
-    parser.add_argument("--smear_tail_sigma_mult", type=float, default=1.0, help="Multiplier on non-Gaussian tail width terms.")
-    parser.add_argument("--smear_tail_prob_max", type=float, default=-1.0, help="Override tail_prob_max; negative keeps default.")
-
-    # Unsmear-only reconstruction loss mode.
-    parser.add_argument("--unsmear_loss_mode", type=str, default="chamfer", choices=["chamfer", "token_residual"])
-    parser.add_argument("--token_match_dr_max", type=float, default=0.03)
-    parser.add_argument("--token_match_dlogpt_max", type=float, default=0.60)
-    parser.add_argument("--token_match_logpt_alpha", type=float, default=0.15)
-    parser.add_argument("--token_match_no_mutual", action="store_true")
-    parser.add_argument("--token_res_w_logpt", type=float, default=1.0)
-    parser.add_argument("--token_res_w_eta", type=float, default=0.4)
-    parser.add_argument("--token_res_w_phi", type=float, default=0.4)
-    parser.add_argument("--token_res_w_logE", type=float, default=0.7)
-    parser.add_argument("--token_cov_penalty", type=float, default=0.05)
-    parser.add_argument("--token_jet_w_pt_ratio", type=float, default=0.10)
-    parser.add_argument("--token_jet_w_e_ratio", type=float, default=0.10)
 
     # Stage A (reconstructor pretrain)
     parser.add_argument("--stageA_epochs", type=int, default=90)
     parser.add_argument("--stageA_patience", type=int, default=18)
+    parser.add_argument("--stageA_kd_temp", type=float, default=2.5)
+    parser.add_argument("--stageA_lambda_kd", type=float, default=5.0)
+    parser.add_argument("--stageA_lambda_phys", type=float, default=0.05)
+    parser.add_argument("--stageA_lambda_budget_hinge", type=float, default=1.0)
+    parser.add_argument("--stageA_budget_eps", type=float, default=0.015)
+    parser.add_argument("--stageA_budget_weight_floor", type=float, default=1e-4)
+    parser.add_argument("--stageA_target_tpr", type=float, default=0.50)
 
     # Stage B (tagger pretrain, reconstructor frozen)
     parser.add_argument("--stageB_epochs", type=int, default=45)
@@ -2444,51 +2335,15 @@ def main() -> None:
     cfg["hlt_effects"]["smear_c"] = float(args.smear_c)
     _configure_smear_only_hlt(cfg)
     _scale_smearing_widths(cfg, float(args.smear_scale))
-    _apply_calibrated_smearing(
-        cfg,
-        use_pt_gev=bool(args.smear_use_pt_gev),
-        core_scale=float(args.smear_core_scale),
-        angle_scale=float(args.smear_angle_scale),
-        tail_base=float(args.smear_tail_base),
-        tail_sigma_mult=float(args.smear_tail_sigma_mult),
-        tail_prob_max=float(args.smear_tail_prob_max),
-    )
 
-    # Unsmear-only reconstruction objective configuration.
-    loss_mode = str(args.unsmear_loss_mode).lower()
-    cfg["loss"]["unsmear_loss_mode"] = loss_mode
-    cfg["loss"]["token_match_dr_max"] = float(args.token_match_dr_max)
-    cfg["loss"]["token_match_dlogpt_max"] = float(args.token_match_dlogpt_max)
-    cfg["loss"]["token_match_logpt_alpha"] = float(args.token_match_logpt_alpha)
-    cfg["loss"]["token_match_require_mutual"] = not bool(args.token_match_no_mutual)
-    cfg["loss"]["token_res_w_logpt"] = float(args.token_res_w_logpt)
-    cfg["loss"]["token_res_w_eta"] = float(args.token_res_w_eta)
-    cfg["loss"]["token_res_w_phi"] = float(args.token_res_w_phi)
-    cfg["loss"]["token_res_w_logE"] = float(args.token_res_w_logE)
-    cfg["loss"]["token_cov_penalty"] = float(args.token_cov_penalty)
-    cfg["loss"]["token_jet_w_pt_ratio"] = float(args.token_jet_w_pt_ratio)
-    cfg["loss"]["token_jet_w_e_ratio"] = float(args.token_jet_w_e_ratio)
-    cfg["loss"]["token_res_fallback_to_valid"] = True
-
-    if loss_mode == "token_residual":
-        # Fully drop Chamfer and branch-budget terms for unsmear-only experiments.
-        cfg["loss"]["w_set"] = 0.0
-        cfg["loss"]["w_phys"] = 0.0
-        cfg["loss"]["w_pt_ratio"] = 0.0
-        cfg["loss"]["w_e_ratio"] = 0.0
-        cfg["loss"]["w_budget"] = 0.0
-        cfg["loss"]["w_sparse"] = 0.0
-        cfg["loss"]["w_local"] = 0.0
-    else:
-        # Legacy behavior.
-        cfg["loss"]["w_set"] = 1.0
-        cfg["loss"]["w_phys"] = 0.0
-        cfg["loss"]["w_pt_ratio"] = 0.0
-        cfg["loss"]["w_e_ratio"] = 0.0
-        cfg["loss"]["w_budget"] = 0.0
-        cfg["loss"]["w_sparse"] = 0.0
-        cfg["loss"]["w_local"] = 0.0
-
+    # Strict Chamfer-only reconstruction objective.
+    cfg["loss"]["w_set"] = 1.0
+    cfg["loss"]["w_phys"] = 0.0
+    cfg["loss"]["w_pt_ratio"] = 0.0
+    cfg["loss"]["w_e_ratio"] = 0.0
+    cfg["loss"]["w_budget"] = 0.0
+    cfg["loss"]["w_sparse"] = 0.0
+    cfg["loss"]["w_local"] = 0.0
     cfg["reconstructor_training"]["epochs"] = int(args.stageA_epochs)
     cfg["reconstructor_training"]["patience"] = int(args.stageA_patience)
 
@@ -2498,16 +2353,6 @@ def main() -> None:
 
     print(f"Device: {device}")
     print(f"Save dir: {save_root}")
-    hdbg = cfg["hlt_effects"]
-    print(
-        "Smearing config: "
-        f"use_pt_gev={bool(args.smear_use_pt_gev)}, "
-        f"core_scale={float(args.smear_core_scale):.3f}, "
-        f"angle_scale={float(args.smear_angle_scale):.3f}, "
-        f"tail_base={float(hdbg['tail_base']):.4f}, "
-        f"tail_prob_max={float(hdbg['tail_prob_max']):.4f}, "
-        f"a={float(hdbg['smear_a']):.4f}, b={float(hdbg['smear_b']):.4f}, c={float(hdbg['smear_c']):.4f}"
-    )
 
     train_path = Path(args.train_path)
     if train_path.is_dir():
@@ -2986,13 +2831,13 @@ def main() -> None:
     print("=" * 70)
     ds_train_reco = WeightedReconstructionDataset(
         feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-        const_off[train_idx], masks_off[train_idx],
+        const_off[train_idx], masks_off[train_idx], labels[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
         sample_weight_reco=sample_weight_reco,
     )
     ds_val_reco = WeightedReconstructionDataset(
         feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-        const_off[val_idx], masks_off[val_idx],
+        const_off[val_idx], masks_off[val_idx], labels[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         sample_weight_reco=sample_weight_reco_val,
     )
@@ -3024,6 +2869,16 @@ def main() -> None:
         cfg["reconstructor_training"],
         cfg["loss"],
         apply_reco_weight=bool(args.disc_weight_enable),
+        teacher_model=teacher,
+        feat_means=means,
+        feat_stds=stds,
+        kd_temperature=float(args.stageA_kd_temp),
+        lambda_kd=float(args.stageA_lambda_kd),
+        lambda_phys=float(args.stageA_lambda_phys),
+        lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
+        budget_eps=float(args.stageA_budget_eps),
+        budget_weight_floor=float(args.stageA_budget_weight_floor),
+        target_tpr_for_fpr=float(args.stageA_target_tpr),
     )
 
 
