@@ -9,7 +9,6 @@
 
 set -euo pipefail
 mkdir -p offline_reconstructor_logs/stageA_teacher_auc_sweep10
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 export RUN_NAME="joint_stageA_sweep10_s09_oldstyle_proxy_seed0"
 export SAVE_DIR="checkpoints/offline_reconstructor_joint_stageA_teacher_auc_sweep10"
@@ -34,4 +33,10 @@ export STAGEA_LAMBDA_TOK=0.0
 export STAGEA_LAMBDA_PHYS=0.05
 export STAGEA_LAMBDA_BUDGET_HINGE=1.0
 
-bash "${SCRIPT_DIR}/run_stageA_sweep_common.sh"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+COMMON_SCRIPT="${SUBMIT_DIR}/sbatch/stageA_teacher_auc_sweep10/run_stageA_sweep_common.sh"
+if [[ ! -f "${COMMON_SCRIPT}" ]]; then
+  echo "ERROR: common sweep script not found: ${COMMON_SCRIPT}" >&2
+  exit 1
+fi
+bash "${COMMON_SCRIPT}"
