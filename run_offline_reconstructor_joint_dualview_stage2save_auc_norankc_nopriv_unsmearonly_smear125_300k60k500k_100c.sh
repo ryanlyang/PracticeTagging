@@ -3,7 +3,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=1-00:00:00
+#SBATCH --time=1-00L:00:00
 #SBATCH --output=offline_reconstructor_logs/unsmear_only_smear200_300k60k500k_100c_%j.out
 #SBATCH --error=offline_reconstructor_logs/unsmear_only_smear200_300k60k500k_100c_%j.err
 
