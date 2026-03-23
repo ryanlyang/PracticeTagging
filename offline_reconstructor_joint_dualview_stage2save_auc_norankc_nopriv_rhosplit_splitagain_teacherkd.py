@@ -1216,6 +1216,68 @@ def search_best_weighted_combo_at_tpr(
     return best
 
 
+
+def select_weighted_combo_on_val_and_eval_test(
+    labels_val: np.ndarray,
+    preds_a_val: np.ndarray,
+    preds_b_val: np.ndarray,
+    labels_test: np.ndarray,
+    preds_a_test: np.ndarray,
+    preds_b_test: np.ndarray,
+    name_a: str,
+    name_b: str,
+    target_tpr: float,
+    weight_step: float,
+) -> Dict[str, object]:
+    best_val = search_best_weighted_combo_at_tpr(
+        labels=labels_val,
+        preds_a=preds_a_val,
+        preds_b=preds_b_val,
+        name_a=name_a,
+        name_b=name_b,
+        target_tpr=target_tpr,
+        weight_step=weight_step,
+    )
+    w_a = float(best_val.get("w_a", float("nan")))
+    w_b = float(best_val.get("w_b", float("nan")))
+    thr = float(best_val.get("threshold", float("nan")))
+    if not (np.isfinite(w_a) and np.isfinite(w_b) and np.isfinite(thr)):
+        return {
+            "selection": {"source": "val", "best": best_val},
+            "test_eval": {
+                "name_a": name_a,
+                "name_b": name_b,
+                "target_tpr": float(target_tpr),
+                "w_a": float("nan"),
+                "w_b": float("nan"),
+                "threshold_from_val": float("nan"),
+                "tpr": float("nan"),
+                "fpr": float("nan"),
+                "tp": 0,
+                "fp": 0,
+            },
+        }
+
+    score_test = w_a * np.asarray(preds_a_test, dtype=np.float64) + w_b * np.asarray(preds_b_test, dtype=np.float64)
+    pred_test = score_test >= thr
+    test_rates = _binary_rates_from_mask(pred_test, labels_test.astype(np.float32))
+    return {
+        "selection": {"source": "val", "best": best_val},
+        "test_eval": {
+            "name_a": name_a,
+            "name_b": name_b,
+            "target_tpr": float(target_tpr),
+            "w_a": float(w_a),
+            "w_b": float(w_b),
+            "threshold_from_val": float(thr),
+            "tpr": float(test_rates["tpr"]),
+            "fpr": float(test_rates["fpr"]),
+            "tp": int(test_rates["tp"]),
+            "fp": int(test_rates["fp"]),
+        },
+    }
+
+
 def _delta_phi_np(phi_a: np.ndarray, phi_b: np.ndarray) -> np.ndarray:
     d = phi_a - phi_b
     return (d + np.pi) % (2.0 * np.pi) - np.pi
@@ -2299,6 +2361,7 @@ def main() -> None:
         teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
     )
     auc_teacher, preds_teacher, labs = eval_classifier(teacher, dl_test_off, device)
+    auc_teacher_val, preds_teacher_val, labs_val_teacher = eval_classifier(teacher, dl_val_off, device)
 
     ds_train_hlt = JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
     ds_val_hlt = JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
@@ -2312,6 +2375,8 @@ def main() -> None:
         baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
     )
     auc_baseline, preds_baseline, _ = eval_classifier(baseline, dl_test_hlt, device)
+    auc_baseline_val, preds_baseline_val, labs_val_baseline = eval_classifier(baseline, dl_val_hlt, device)
+    assert np.array_equal(labs_val_teacher.astype(np.float32), labs_val_baseline.astype(np.float32))
 
     # Optional jet-level regressor to provide frozen global calibration features to dual-view tagger.
     jet_regressor = None
@@ -2527,7 +2592,16 @@ def main() -> None:
         corrected_weight_floor=float(args.corrected_weight_floor),
         corrected_use_flags=bool(args.use_corrected_flags),
     )
+    auc_stage2_val, preds_stage2_val, labs_stage2_val, _ = eval_joint_model(
+        reconstructor,
+        dual_joint,
+        dl_val_joint,
+        device,
+        corrected_weight_floor=float(args.corrected_weight_floor),
+        corrected_use_flags=bool(args.use_corrected_flags),
+    )
     assert np.array_equal(labs.astype(np.float32), labs_stage2.astype(np.float32))
+    assert np.array_equal(labs_val_teacher.astype(np.float32), labs_stage2_val.astype(np.float32))
     stage2_reco_state = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
     stage2_dual_state = {k: v.detach().cpu().clone() for k, v in dual_joint.state_dict().items()}
 
@@ -2622,6 +2696,16 @@ def main() -> None:
         reconstructor.load_state_dict(stageC_states["selected"]["reco"])
     if stageC_states.get("selected", {}).get("dual") is not None:
         dual_joint.load_state_dict(stageC_states["selected"]["dual"])
+
+    auc_joint_val, preds_joint_val, labs_joint_val, _ = eval_joint_model(
+        reconstructor,
+        dual_joint,
+        dl_val_joint,
+        device,
+        corrected_weight_floor=float(args.corrected_weight_floor),
+        corrected_use_flags=bool(args.use_corrected_flags),
+    )
+    assert np.array_equal(labs_val_teacher.astype(np.float32), labs_joint_val.astype(np.float32))
 
     # Build hard reconstructed view for diagnostics.
     print("\n" + "=" * 70)
@@ -2859,7 +2943,7 @@ def main() -> None:
         model_preds=overlap_models,
         target_tpr=float(args.report_target_tpr),
     )
-    best_combo_hlt_joint = search_best_weighted_combo_at_tpr(
+    best_combo_hlt_joint_test_posthoc = search_best_weighted_combo_at_tpr(
         labels=labs.astype(np.float32),
         preds_a=preds_baseline,
         preds_b=preds_joint,
@@ -2868,10 +2952,34 @@ def main() -> None:
         target_tpr=float(args.report_target_tpr),
         weight_step=float(args.combo_weight_step),
     )
-    best_combo_hlt_stage2 = search_best_weighted_combo_at_tpr(
+    best_combo_hlt_stage2_test_posthoc = search_best_weighted_combo_at_tpr(
         labels=labs.astype(np.float32),
         preds_a=preds_baseline,
         preds_b=preds_stage2,
+        name_a="hlt",
+        name_b="stage2",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+    best_combo_hlt_joint_valsel = select_weighted_combo_on_val_and_eval_test(
+        labels_val=labs_val_teacher.astype(np.float32),
+        preds_a_val=preds_baseline_val,
+        preds_b_val=preds_joint_val,
+        labels_test=labs.astype(np.float32),
+        preds_a_test=preds_baseline,
+        preds_b_test=preds_joint,
+        name_a="hlt",
+        name_b="joint",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+    best_combo_hlt_stage2_valsel = select_weighted_combo_on_val_and_eval_test(
+        labels_val=labs_val_teacher.astype(np.float32),
+        preds_a_val=preds_baseline_val,
+        preds_b_val=preds_stage2_val,
+        labels_test=labs.astype(np.float32),
+        preds_a_test=preds_baseline,
+        preds_b_test=preds_stage2,
         name_a="hlt",
         name_b="stage2",
         target_tpr=float(args.report_target_tpr),
@@ -2929,9 +3037,16 @@ def main() -> None:
         f"of Joint TP={float(pair_tj.get('overlap_tp_frac_of_b_tp', float('nan'))):.3f}"
     )
     print(
-        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+Joint): "
-        f"w_hlt={best_combo_hlt_joint['w_a']:.3f}, w_joint={best_combo_hlt_joint['w_b']:.3f}, "
-        f"FPR={best_combo_hlt_joint['fpr']:.6f}"
+        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+Joint, VAL-selected -> TEST): "
+        f"w_hlt={best_combo_hlt_joint_valsel['test_eval']['w_a']:.3f}, "
+        f"w_joint={best_combo_hlt_joint_valsel['test_eval']['w_b']:.3f}, "
+        f"FPR_test={best_combo_hlt_joint_valsel['test_eval']['fpr']:.6f}"
+    )
+    print(
+        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+Joint, TEST post-hoc): "
+        f"w_hlt={best_combo_hlt_joint_test_posthoc['w_a']:.3f}, "
+        f"w_joint={best_combo_hlt_joint_test_posthoc['w_b']:.3f}, "
+        f"FPR={best_combo_hlt_joint_test_posthoc['fpr']:.6f}"
     )
 
     plot_lines = [
@@ -3017,7 +3132,7 @@ def main() -> None:
     with open(save_root / "overlap_report_tpr50.json", "w", encoding="utf-8") as f:
         json.dump(overlap_report, f, indent=2)
     with open(save_root / "best_combo_hlt_joint_tpr50.json", "w", encoding="utf-8") as f:
-        json.dump({"hlt_joint": best_combo_hlt_joint, "hlt_stage2": best_combo_hlt_stage2}, f, indent=2)
+        json.dump({"hlt_joint_val_selected_eval_test": best_combo_hlt_joint_valsel, "hlt_stage2_val_selected_eval_test": best_combo_hlt_stage2_valsel, "hlt_joint_test_posthoc": best_combo_hlt_joint_test_posthoc, "hlt_stage2_test_posthoc": best_combo_hlt_stage2_test_posthoc}, f, indent=2)
     with open(save_root / "jet_regression_metrics.json", "w", encoding="utf-8") as f:
         json.dump(jet_reg_metrics, f, indent=2)
 
@@ -3038,8 +3153,10 @@ def main() -> None:
                 "stageC_joint": stageC_metrics,
                 "stageD_kd": stageD_metrics,
                 "overlap_report_tpr": overlap_report,
-                "best_combo_hlt_joint": best_combo_hlt_joint,
-                "best_combo_hlt_stage2": best_combo_hlt_stage2,
+                "best_combo_hlt_joint_val_selected_eval_test": best_combo_hlt_joint_valsel,
+                "best_combo_hlt_stage2_val_selected_eval_test": best_combo_hlt_stage2_valsel,
+                "best_combo_hlt_joint_test_posthoc": best_combo_hlt_joint_test_posthoc,
+                "best_combo_hlt_stage2_test_posthoc": best_combo_hlt_stage2_test_posthoc,
                 "reco_set_matching_diagnostics": reco_set_match_diag,
                 "test_stage2": {
                     "auc_stage2": float(auc_stage2),
