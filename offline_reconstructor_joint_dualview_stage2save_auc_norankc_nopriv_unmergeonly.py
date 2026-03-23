@@ -1870,6 +1870,11 @@ def main() -> None:
     # Reconstructor decode controls (used for diagnostics and KD set build).
     parser.add_argument("--reco_weight_threshold", type=float, default=0.03)
     parser.add_argument("--reco_disable_budget_topk", action="store_true")
+    parser.add_argument(
+        "--save_fusion_scores",
+        action="store_true",
+        help="Save val/test score arrays (teacher/HLT/joint) for downstream calibration/fusion analysis.",
+    )
 
     # Response/resolution diagnostics.
     parser.add_argument("--response_n_bins", type=int, default=8)
@@ -2862,6 +2867,42 @@ def main() -> None:
     if preds_joint_kd is not None:
         print(f"FPR@30 Joint+KD: {fpr30_joint_kd:.6f}")
         print(f"FPR@50 Joint+KD: {fpr50_joint_kd:.6f}")
+
+    if bool(args.save_fusion_scores):
+        print("Saving val/test score arrays for fusion analysis...")
+        auc_teacher_val, preds_teacher_val, labs_teacher_val = eval_classifier(teacher, dl_val_off, device)
+        auc_baseline_val, preds_baseline_val, labs_baseline_val = eval_classifier(baseline, dl_val_hlt, device)
+        auc_joint_val, preds_joint_val, labs_joint_val, fpr50_joint_val = eval_joint_model(
+            reconstructor,
+            dual_joint,
+            dl_val_joint,
+            device,
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+        )
+        assert np.array_equal(labs_teacher_val.astype(np.float32), labs_baseline_val.astype(np.float32))
+        assert np.array_equal(labs_teacher_val.astype(np.float32), labs_joint_val.astype(np.float32))
+        assert np.array_equal(labs.astype(np.float32), labs_joint.astype(np.float32))
+        np.savez_compressed(
+            save_root / "fusion_scores_val_test.npz",
+            labels_val=labs_teacher_val.astype(np.float32),
+            labels_test=labs.astype(np.float32),
+            preds_teacher_val=np.asarray(preds_teacher_val, dtype=np.float64),
+            preds_teacher_test=np.asarray(preds_teacher, dtype=np.float64),
+            preds_hlt_val=np.asarray(preds_baseline_val, dtype=np.float64),
+            preds_hlt_test=np.asarray(preds_baseline, dtype=np.float64),
+            preds_joint_val=np.asarray(preds_joint_val, dtype=np.float64),
+            preds_joint_test=np.asarray(preds_joint, dtype=np.float64),
+            auc_teacher_val=float(auc_teacher_val),
+            auc_teacher_test=float(auc_teacher),
+            auc_hlt_val=float(auc_baseline_val),
+            auc_hlt_test=float(auc_baseline),
+            auc_joint_val=float(auc_joint_val),
+            auc_joint_test=float(auc_joint),
+            fpr50_joint_val=float(fpr50_joint_val),
+            fpr50_joint_test=float(fpr50_joint),
+        )
+        print(f"Saved fusion score arrays to: {save_root / 'fusion_scores_val_test.npz'}")
 
     plot_lines = [
         (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
