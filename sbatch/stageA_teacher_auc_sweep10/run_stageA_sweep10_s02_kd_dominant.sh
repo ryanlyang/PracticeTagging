@@ -2,7 +2,6 @@
 #SBATCH --job-name=sA02kd
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=6
 #SBATCH --mem=96G
 #SBATCH --time=36:00:00
 #SBATCH --output=offline_reconstructor_logs/stageA_teacher_auc_sweep10/s02_kd_dom_%j.out

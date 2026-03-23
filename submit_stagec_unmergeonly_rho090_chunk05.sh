@@ -9,13 +9,17 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$SCRIPT_DIR"
+ROOT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+cd "$ROOT_DIR"
 
-RUNNER="run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_rho090_100k80_flags.sh"
+RUNNER="${ROOT_DIR}/run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_rho090_100k80_flags.sh"
 if [[ ! -f "$RUNNER" ]]; then
-  echo "Runner not found: $RUNNER" >&2
-  exit 1
+  if [[ -f "run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_rho090_100k80_flags.sh" ]]; then
+    RUNNER="run_offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_rho090_100k80_flags.sh"
+  else
+    echo "Runner not found in ROOT_DIR=$ROOT_DIR: $RUNNER" >&2
+    exit 1
+  fi
 fi
 
 set +u

@@ -30,7 +30,7 @@ printf "chunk_script\tjob_id\n" > "$manifest"
 
 echo "Queueing all 8 chunk jobs (each runs 4 configs sequentially)..."
 for c in "${chunks[@]}"; do
-  out="$(sbatch "$c")"
+  out="$(sbatch --chdir "$SCRIPT_DIR" "$c")"
   job_id="${out##* }"
   printf "%s\t%s\n" "$c" "$job_id" >> "$manifest"
   echo "$out | $c"
