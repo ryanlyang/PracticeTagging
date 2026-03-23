@@ -323,6 +323,84 @@ def _sorted_edit_budget_vec(
     return mean_edit
 
 
+def _attention_kl_loss_masked(
+    attn_pred: torch.Tensor,
+    attn_target: torch.Tensor,
+    mask_pred: torch.Tensor,
+    mask_target: torch.Tensor,
+    eps: float = 1e-8,
+) -> torch.Tensor:
+    # attn_*: [B, L], masks: [B, L]
+    joint = (mask_pred | mask_target).float()
+    denom_p = (attn_pred * joint).sum(dim=1, keepdim=True)
+    denom_t = (attn_target * joint).sum(dim=1, keepdim=True)
+    valid = (denom_p.squeeze(1) > eps) & (denom_t.squeeze(1) > eps)
+    if valid.sum().item() == 0:
+        return torch.zeros((), device=attn_pred.device)
+
+    p = (attn_pred * joint) / (denom_p + eps)
+    t = (attn_target * joint) / (denom_t + eps)
+    p = torch.clamp(p, eps, 1.0)
+    t = torch.clamp(t, eps, 1.0)
+
+    kl_t_p = (t * (torch.log(t) - torch.log(p))).sum(dim=1)
+    kl_p_t = (p * (torch.log(p) - torch.log(t))).sum(dim=1)
+    return 0.5 * (kl_t_p[valid].mean() + kl_p_t[valid].mean())
+
+
+def _compose_teacher_guided_reco_total(
+    losses_raw: Dict[str, torch.Tensor],
+    ema_state: Dict[str, float] | None,
+    normalize_terms: bool,
+    ema_decay: float,
+    norm_eps: float,
+    w_logit: float,
+    w_emb: float,
+    w_tok: float,
+    w_phys: float,
+    w_budget: float,
+    update_ema: bool,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], Dict[str, float] | None]:
+    terms = {
+        "kd": losses_raw["kd"],
+        "emb": losses_raw["emb"],
+        "tok": losses_raw["tok"],
+        "phys": losses_raw["phys"],
+        "budget": losses_raw["budget_hinge"],
+    }
+    if not bool(normalize_terms):
+        total = (
+            float(w_logit) * terms["kd"]
+            + float(w_emb) * terms["emb"]
+            + float(w_tok) * terms["tok"]
+            + float(w_phys) * terms["phys"]
+            + float(w_budget) * terms["budget"]
+        )
+        return total, terms, ema_state
+
+    if ema_state is None:
+        ema_state = {k: float(max(v.detach().item(), float(norm_eps))) for k, v in terms.items()}
+
+    norm_terms: Dict[str, torch.Tensor] = {}
+    for k, v in terms.items():
+        cur = float(v.detach().item())
+        prev = float(ema_state.get(k, max(cur, float(norm_eps))))
+        nxt = float(ema_decay) * prev + (1.0 - float(ema_decay)) * cur if bool(update_ema) else prev
+        if bool(update_ema):
+            ema_state[k] = max(nxt, float(norm_eps))
+        denom = max(float(ema_state[k]), float(norm_eps))
+        norm_terms[k] = v / denom
+
+    total = (
+        float(w_logit) * norm_terms["kd"]
+        + float(w_emb) * norm_terms["emb"]
+        + float(w_tok) * norm_terms["tok"]
+        + float(w_phys) * norm_terms["phys"]
+        + float(w_budget) * norm_terms["budget"]
+    )
+    return total, norm_terms, ema_state
+
+
 def _compute_teacher_guided_reco_losses(
     reco_out: Dict[str, torch.Tensor],
     const_hlt: torch.Tensor,
@@ -336,9 +414,6 @@ def _compute_teacher_guided_reco_losses(
     stds_t: torch.Tensor,
     loss_cfg: Dict,
     kd_temperature: float,
-    lambda_kd: float,
-    lambda_phys: float,
-    lambda_budget_hinge: float,
     budget_eps: float,
     budget_weight_floor: float,
 ) -> Dict[str, torch.Tensor]:
@@ -357,7 +432,10 @@ def _compute_teacher_guided_reco_losses(
     with torch.no_grad():
         feat_off_raw = compute_features_torch(const_off, mask_off)
         feat_off_std = _standardize_features_torch(feat_off_raw, mask_off, means_t, stds_t)
-        logits_teacher_off = teacher_model(feat_off_std, mask_off).view(-1)
+        off_pack = teacher_model(feat_off_std, mask_off, return_attention=True, return_embedding=True)
+        logits_teacher_off = off_pack[0].view(-1)
+        attn_teacher_off = off_pack[1]
+        emb_teacher_off = off_pack[2]
 
     feat_reco_raw, mask_reco = _build_teacher_reco_features_from_output(
         reco_out,
@@ -366,7 +444,10 @@ def _compute_teacher_guided_reco_losses(
         weight_floor=budget_weight_floor,
     )
     feat_reco_std = _standardize_features_torch(feat_reco_raw, mask_reco, means_t, stds_t)
-    logits_teacher_reco = teacher_model(feat_reco_std, mask_reco).view(-1)
+    reco_pack = teacher_model(feat_reco_std, mask_reco, return_attention=True, return_embedding=True)
+    logits_teacher_reco = reco_pack[0].view(-1)
+    attn_teacher_reco = reco_pack[1]
+    emb_teacher_reco = reco_pack[2]
 
     target_soft = torch.sigmoid(logits_teacher_off / kd_temperature)
     kd_vec = (
@@ -379,19 +460,28 @@ def _compute_teacher_guided_reco_losses(
     )
     loss_kd = _weighted_batch_mean(kd_vec, None)
 
+    # Embedding alignment (jet-level representation consistency).
+    emb_off_n = F.normalize(emb_teacher_off, dim=1)
+    emb_reco_n = F.normalize(emb_teacher_reco, dim=1)
+    loss_emb = (1.0 - (emb_off_n * emb_reco_n).sum(dim=1)).mean()
+
+    # Token-level teacher alignment via pooled-attention distributions.
+    loss_tok = _attention_kl_loss_masked(
+        attn_pred=attn_teacher_reco,
+        attn_target=attn_teacher_off,
+        mask_pred=mask_reco,
+        mask_target=mask_off,
+    )
+
     reco_tokens = reco_out["cand_tokens"][:, : const_hlt.shape[1], :]
     mean_edit_vec = _sorted_edit_budget_vec(reco_tokens, const_hlt, mask_hlt)
     budget_hinge_vec = F.relu(mean_edit_vec - budget_eps)
     loss_budget_hinge = _weighted_batch_mean(budget_hinge_vec, None)
 
-    loss_total = (
-        float(lambda_kd) * loss_kd
-        + float(lambda_phys) * loss_phys
-        + float(lambda_budget_hinge) * loss_budget_hinge
-    )
     return {
-        "total": loss_total,
         "kd": loss_kd,
+        "emb": loss_emb,
+        "tok": loss_tok,
         "phys": loss_phys,
         "budget_hinge": loss_budget_hinge,
         "logits_teacher_reco": logits_teacher_reco,
@@ -410,11 +500,16 @@ def train_reconstructor_teacher_guided(
     feat_stds: np.ndarray,
     kd_temperature: float,
     lambda_kd: float,
+    lambda_emb: float,
+    lambda_tok: float,
     lambda_phys: float,
     lambda_budget_hinge: float,
     budget_eps: float,
     budget_weight_floor: float,
     target_tpr_for_fpr: float,
+    normalize_loss_terms: bool,
+    loss_norm_ema_decay: float,
+    loss_norm_eps: float,
 ) -> Tuple[OfflineReconstructor, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -425,10 +520,14 @@ def train_reconstructor_teacher_guided(
 
     kd_temperature = max(float(kd_temperature), 1e-3)
     lambda_kd = float(max(lambda_kd, 0.0))
+    lambda_emb = float(max(lambda_emb, 0.0))
+    lambda_tok = float(max(lambda_tok, 0.0))
     lambda_phys = float(max(lambda_phys, 0.0))
     lambda_budget_hinge = float(max(lambda_budget_hinge, 0.0))
     budget_eps = float(max(budget_eps, 0.0))
     budget_weight_floor = float(max(budget_weight_floor, 0.0))
+    loss_norm_ema_decay = float(np.clip(loss_norm_ema_decay, 0.0, 0.9999))
+    loss_norm_eps = float(max(loss_norm_eps, 1e-12))
 
     means_t = torch.tensor(feat_means, dtype=torch.float32, device=device)
     stds_t = torch.tensor(np.clip(feat_stds, 1e-6, None), dtype=torch.float32, device=device)
@@ -443,11 +542,19 @@ def train_reconstructor_teacher_guided(
     best_metrics: Dict[str, float] = {}
     min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
 
+    reco_loss_ema_state = {
+        "kd": 1.0,
+        "emb": 1.0,
+        "tok": 1.0,
+        "phys": 1.0,
+        "budget": 1.0,
+    }
+
     for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
         model.train()
         sc = stage_scale_local(ep, train_cfg)
 
-        tr_total = tr_kd = tr_phys = tr_budget_hinge = 0.0
+        tr_total = tr_kd = tr_emb = tr_tok = tr_phys = tr_budget_hinge = 0.0
         n_tr = 0
         tr_probs_all = []
         tr_labels_all = []
@@ -478,13 +585,22 @@ def train_reconstructor_teacher_guided(
                 stds_t=stds_t,
                 loss_cfg=loss_cfg,
                 kd_temperature=kd_temperature,
-                lambda_kd=lambda_kd,
-                lambda_phys=lambda_phys,
-                lambda_budget_hinge=lambda_budget_hinge,
                 budget_eps=budget_eps,
                 budget_weight_floor=budget_weight_floor,
             )
-            loss_total = losses["total"]
+            loss_total, _, reco_loss_ema_state = _compose_teacher_guided_reco_total(
+                losses_raw=losses,
+                ema_state=reco_loss_ema_state,
+                normalize_terms=bool(normalize_loss_terms),
+                ema_decay=loss_norm_ema_decay,
+                norm_eps=loss_norm_eps,
+                w_logit=lambda_kd,
+                w_emb=lambda_emb,
+                w_tok=lambda_tok,
+                w_phys=lambda_phys,
+                w_budget=lambda_budget_hinge,
+                update_ema=True,
+            )
             loss_total.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -496,12 +612,14 @@ def train_reconstructor_teacher_guided(
             bs = feat_hlt.size(0)
             tr_total += loss_total.item() * bs
             tr_kd += losses["kd"].item() * bs
+            tr_emb += losses["emb"].item() * bs
+            tr_tok += losses["tok"].item() * bs
             tr_phys += losses["phys"].item() * bs
             tr_budget_hinge += losses["budget_hinge"].item() * bs
             n_tr += bs
 
         model.eval()
-        va_total = va_kd = va_phys = va_budget_hinge = 0.0
+        va_total = va_kd = va_emb = va_tok = va_phys = va_budget_hinge = 0.0
         n_va = 0
         va_probs_all = []
         va_labels_all = []
@@ -531,19 +649,31 @@ def train_reconstructor_teacher_guided(
                     stds_t=stds_t,
                     loss_cfg=loss_cfg,
                     kd_temperature=kd_temperature,
-                    lambda_kd=lambda_kd,
-                    lambda_phys=lambda_phys,
-                    lambda_budget_hinge=lambda_budget_hinge,
                     budget_eps=budget_eps,
                     budget_weight_floor=budget_weight_floor,
+                )
+                loss_total, _, _ = _compose_teacher_guided_reco_total(
+                    losses_raw=losses,
+                    ema_state=reco_loss_ema_state,
+                    normalize_terms=bool(normalize_loss_terms),
+                    ema_decay=loss_norm_ema_decay,
+                    norm_eps=loss_norm_eps,
+                    w_logit=lambda_kd,
+                    w_emb=lambda_emb,
+                    w_tok=lambda_tok,
+                    w_phys=lambda_phys,
+                    w_budget=lambda_budget_hinge,
+                    update_ema=False,
                 )
                 probs_reco = torch.sigmoid(losses["logits_teacher_reco"]).detach().cpu().numpy()
                 va_probs_all.append(probs_reco)
                 va_labels_all.append(labels_batch.detach().cpu().numpy().astype(np.int64))
 
                 bs = feat_hlt.size(0)
-                va_total += losses["total"].item() * bs
+                va_total += loss_total.item() * bs
                 va_kd += losses["kd"].item() * bs
+                va_emb += losses["emb"].item() * bs
+                va_tok += losses["tok"].item() * bs
                 va_phys += losses["phys"].item() * bs
                 va_budget_hinge += losses["budget_hinge"].item() * bs
                 n_va += bs
@@ -552,11 +682,15 @@ def train_reconstructor_teacher_guided(
 
         tr_total /= max(n_tr, 1)
         tr_kd /= max(n_tr, 1)
+        tr_emb /= max(n_tr, 1)
+        tr_tok /= max(n_tr, 1)
         tr_phys /= max(n_tr, 1)
         tr_budget_hinge /= max(n_tr, 1)
 
         va_total /= max(n_va, 1)
         va_kd /= max(n_va, 1)
+        va_emb /= max(n_va, 1)
+        va_tok /= max(n_va, 1)
         va_phys /= max(n_va, 1)
         va_budget_hinge /= max(n_va, 1)
 
@@ -590,16 +724,22 @@ def train_reconstructor_teacher_guided(
                 "selected_val_total_loss": float(va_total),
                 "val_total": float(va_total),
                 "val_kd": float(va_kd),
+                "val_emb": float(va_emb),
+                "val_tok": float(va_tok),
                 "val_phys": float(va_phys),
                 "val_budget_hinge": float(va_budget_hinge),
                 "train_total": float(tr_total),
                 "train_kd": float(tr_kd),
+                "train_emb": float(tr_emb),
+                "train_tok": float(tr_tok),
                 "train_phys": float(tr_phys),
                 "train_budget_hinge": float(tr_budget_hinge),
                 "train_teacher_auc": float(tr_auc),
                 "train_teacher_fpr50": float(tr_fpr50),
                 "val_teacher_auc": float(va_auc),
                 "val_teacher_fpr50": float(va_fpr50),
+                "loss_normalized": bool(normalize_loss_terms),
+                "loss_norm_ema_decay": float(loss_norm_ema_decay),
             }
         else:
             no_improve += 1
@@ -609,7 +749,8 @@ def train_reconstructor_teacher_guided(
                 f"Ep {ep+1}: train_total={tr_total:.4f}, val_total={va_total:.4f}, "
                 f"train_teacher_auc={tr_auc:.4f}, val_teacher_auc={va_auc:.4f}, "
                 f"val_teacher_fpr50={va_fpr50:.6f}, best_teacher_auc={best_val_auc:.4f} | "
-                f"kd={va_kd:.4f}, phys={va_phys:.4f}, budget_hinge={va_budget_hinge:.4f}, "
+                f"kd={va_kd:.4f}, emb={va_emb:.4f}, tok={va_tok:.4f}, "
+                f"phys={va_phys:.4f}, budget_hinge={va_budget_hinge:.4f}, "
                 f"stage_scale={sc:.2f}"
             )
         if (ep + 1) >= min_stop_epoch and no_improve >= int(train_cfg["patience"]):
@@ -905,6 +1046,294 @@ def summarize_soft_corrected_view(
         "p95_merge_flag_soft_valid": float(np.percentile(merge_flag_soft[valid], 95.0)) if has_flags else 0.0,
         "p95_eff_flag_soft_valid": float(np.percentile(eff_flag_soft[valid], 95.0)) if has_flags else 0.0,
     }
+
+
+
+def _threshold_for_target_tpr(preds: np.ndarray, labels: np.ndarray, target_tpr: float) -> float:
+    target_tpr = float(np.clip(target_tpr, 0.0, 1.0))
+    pos = preds[labels > 0.5]
+    if pos.size == 0:
+        return float("inf")
+    q = float(np.clip(1.0 - target_tpr, 0.0, 1.0))
+    return float(np.quantile(pos, q=q))
+
+
+def _binary_rates_from_mask(pred_mask: np.ndarray, labels: np.ndarray) -> Dict[str, float]:
+    labels_b = labels > 0.5
+    neg_b = ~labels_b
+    n_pos = int(labels_b.sum())
+    n_neg = int(neg_b.sum())
+    tp = int((pred_mask & labels_b).sum())
+    fp = int((pred_mask & neg_b).sum())
+    tpr = float(tp / max(n_pos, 1))
+    fpr = float(fp / max(n_neg, 1))
+    return {
+        "tp": tp,
+        "fp": fp,
+        "n_pos": n_pos,
+        "n_neg": n_neg,
+        "tpr": tpr,
+        "fpr": fpr,
+    }
+
+
+def build_overlap_report_at_tpr(
+    labels: np.ndarray,
+    model_preds: Dict[str, np.ndarray],
+    target_tpr: float,
+) -> Dict[str, object]:
+    labels = labels.astype(np.float32)
+    selections: Dict[str, Dict[str, object]] = {}
+    model_names = list(model_preds.keys())
+    for name in model_names:
+        preds = np.asarray(model_preds[name], dtype=np.float64)
+        thr = _threshold_for_target_tpr(preds, labels, target_tpr)
+        sel = preds >= thr
+        rates = _binary_rates_from_mask(sel, labels)
+        selections[name] = {
+            "threshold": float(thr),
+            "selected_count": int(sel.sum()),
+            "selected_fraction": float(sel.mean()) if sel.size > 0 else 0.0,
+            "tp_count": int(rates["tp"]),
+            "fp_count": int(rates["fp"]),
+            "tpr": float(rates["tpr"]),
+            "fpr": float(rates["fpr"]),
+            "pred_mask": sel,
+        }
+
+    pairs: Dict[str, Dict[str, float]] = {}
+    labels_pos = labels > 0.5
+    labels_neg = ~labels_pos
+    for i in range(len(model_names)):
+        for j in range(i + 1, len(model_names)):
+            a = model_names[i]
+            b = model_names[j]
+            sa = selections[a]["pred_mask"]
+            sb = selections[b]["pred_mask"]
+
+            inter = sa & sb
+            union = sa | sb
+            a_only = sa & (~sb)
+            b_only = sb & (~sa)
+
+            inter_tp = inter & labels_pos
+            union_tp = union & labels_pos
+            a_tp = sa & labels_pos
+            b_tp = sb & labels_pos
+            a_only_tp = a_only & labels_pos
+            b_only_tp = b_only & labels_pos
+
+            pair_key = f"{a}__{b}"
+            pairs[pair_key] = {
+                "overlap_selected_count": int(inter.sum()),
+                "overlap_selected_frac_of_a": float(inter.sum() / max(sa.sum(), 1)),
+                "overlap_selected_frac_of_b": float(inter.sum() / max(sb.sum(), 1)),
+                "overlap_selected_jaccard": float(inter.sum() / max(union.sum(), 1)),
+                "a_only_selected_count": int(a_only.sum()),
+                "b_only_selected_count": int(b_only.sum()),
+                "overlap_tp_count": int(inter_tp.sum()),
+                "overlap_tp_frac_of_a_tp": float(inter_tp.sum() / max(a_tp.sum(), 1)),
+                "overlap_tp_frac_of_b_tp": float(inter_tp.sum() / max(b_tp.sum(), 1)),
+                "overlap_tp_jaccard": float(inter_tp.sum() / max(union_tp.sum(), 1)),
+                "a_only_tp_count": int(a_only_tp.sum()),
+                "b_only_tp_count": int(b_only_tp.sum()),
+                "a_only_fp_count": int((a_only & labels_neg).sum()),
+                "b_only_fp_count": int((b_only & labels_neg).sum()),
+            }
+
+    clean_models: Dict[str, Dict[str, float]] = {}
+    for name, info in selections.items():
+        clean_models[name] = {k: float(v) if isinstance(v, (np.floating, float)) else int(v) for k, v in info.items() if k != "pred_mask"}
+
+    return {
+        "target_tpr": float(target_tpr),
+        "models": clean_models,
+        "pairs": pairs,
+    }
+
+
+def search_best_weighted_combo_at_tpr(
+    labels: np.ndarray,
+    preds_a: np.ndarray,
+    preds_b: np.ndarray,
+    name_a: str,
+    name_b: str,
+    target_tpr: float,
+    weight_step: float,
+) -> Dict[str, float]:
+    labels = labels.astype(np.float32)
+    preds_a = np.asarray(preds_a, dtype=np.float64)
+    preds_b = np.asarray(preds_b, dtype=np.float64)
+    step = float(max(weight_step, 1e-4))
+
+    best = {
+        "name_a": name_a,
+        "name_b": name_b,
+        "target_tpr": float(target_tpr),
+        "weight_step": float(step),
+        "w_a": float("nan"),
+        "w_b": float("nan"),
+        "threshold": float("nan"),
+        "tpr": float("nan"),
+        "fpr": float("inf"),
+        "tp": 0,
+        "fp": 0,
+    }
+
+    w_vals = np.arange(0.0, 1.0 + 0.5 * step, step, dtype=np.float64)
+    for w_a in w_vals:
+        w_b = 1.0 - w_a
+        score = w_a * preds_a + w_b * preds_b
+        thr = _threshold_for_target_tpr(score, labels, target_tpr)
+        pred_mask = score >= thr
+        rates = _binary_rates_from_mask(pred_mask, labels)
+        fpr = float(rates["fpr"])
+        tpr = float(rates["tpr"])
+
+        replace = False
+        if fpr < float(best["fpr"]):
+            replace = True
+        elif np.isfinite(fpr) and np.isclose(fpr, float(best["fpr"])):
+            # Tie-break toward closer achieved TPR to target.
+            if abs(tpr - float(target_tpr)) < abs(float(best["tpr"]) - float(target_tpr)):
+                replace = True
+
+        if replace:
+            best = {
+                "name_a": name_a,
+                "name_b": name_b,
+                "target_tpr": float(target_tpr),
+                "weight_step": float(step),
+                "w_a": float(w_a),
+                "w_b": float(w_b),
+                "threshold": float(thr),
+                "tpr": float(tpr),
+                "fpr": float(fpr),
+                "tp": int(rates["tp"]),
+                "fp": int(rates["fp"]),
+            }
+
+    return best
+
+
+def _delta_phi_np(phi_a: np.ndarray, phi_b: np.ndarray) -> np.ndarray:
+    d = phi_a - phi_b
+    return (d + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def _pairwise_token_cost(a: np.ndarray, b: np.ndarray, eps: float = 1e-8) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    # a, b have shape [N,4] and [M,4] with [pt, eta, phi, E].
+    eta_a = a[:, 1:2]
+    eta_b = b[:, 1][None, :]
+    phi_a = a[:, 2:3]
+    phi_b = b[:, 2][None, :]
+    pt_a = np.log(np.clip(a[:, 0:1], eps, None))
+    pt_b = np.log(np.clip(b[:, 0], eps, None))[None, :]
+
+    deta = eta_a - eta_b
+    dphi = _delta_phi_np(phi_a, phi_b)
+    dlogpt = pt_a - pt_b
+
+    dr2 = deta * deta + dphi * dphi
+    cost = dr2 + 0.25 * (dlogpt * dlogpt)
+    return cost, np.sqrt(np.maximum(dr2, 0.0)), np.abs(dlogpt)
+
+
+def compute_reco_set_matching_diagnostics(
+    const_off: np.ndarray,
+    mask_off: np.ndarray,
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    const_reco: np.ndarray,
+    mask_reco: np.ndarray,
+    max_jets: int,
+    seed: int,
+) -> Dict[str, float]:
+    n = int(const_off.shape[0])
+    rng = np.random.default_rng(int(seed))
+    if max_jets > 0 and max_jets < n:
+        idx = rng.choice(n, size=max_jets, replace=False)
+        idx = np.sort(idx)
+    else:
+        idx = np.arange(n, dtype=np.int64)
+
+    ch_hlt = []
+    ch_reco = []
+    dr_hlt_to_off = []
+    dr_reco_to_off = []
+    dr_reco_to_hlt = []
+    dlogpt_hlt_to_off = []
+    dlogpt_reco_to_off = []
+
+    n_off_vec = mask_off[idx].sum(axis=1).astype(np.float64)
+    n_hlt_vec = mask_hlt[idx].sum(axis=1).astype(np.float64)
+    n_reco_vec = mask_reco[idx].sum(axis=1).astype(np.float64)
+
+    for i in idx:
+        off = const_off[i][mask_off[i]]
+        hlt = const_hlt[i][mask_hlt[i]]
+        reco = const_reco[i][mask_reco[i]]
+
+        if off.shape[0] > 0 and hlt.shape[0] > 0:
+            c_ho, dr_ho, dlpt_ho = _pairwise_token_cost(hlt, off)
+            min_ho = c_ho.min(axis=1)
+            min_oh = c_ho.min(axis=0)
+            ch_hlt.append(float(0.5 * (min_ho.mean() + min_oh.mean())))
+            dr_hlt_to_off.append(float(dr_ho.min(axis=1).mean()))
+            dlogpt_hlt_to_off.append(float(dlpt_ho.min(axis=1).mean()))
+
+        if off.shape[0] > 0 and reco.shape[0] > 0:
+            c_ro, dr_ro, dlpt_ro = _pairwise_token_cost(reco, off)
+            min_ro = c_ro.min(axis=1)
+            min_or = c_ro.min(axis=0)
+            ch_reco.append(float(0.5 * (min_ro.mean() + min_or.mean())))
+            dr_reco_to_off.append(float(dr_ro.min(axis=1).mean()))
+            dlogpt_reco_to_off.append(float(dlpt_ro.min(axis=1).mean()))
+
+        if reco.shape[0] > 0 and hlt.shape[0] > 0:
+            _, dr_rh, _ = _pairwise_token_cost(reco, hlt)
+            dr_reco_to_hlt.append(float(dr_rh.min(axis=1).mean()))
+
+    ch_hlt_arr = np.asarray(ch_hlt, dtype=np.float64)
+    ch_reco_arr = np.asarray(ch_reco, dtype=np.float64)
+    dr_hlt_arr = np.asarray(dr_hlt_to_off, dtype=np.float64)
+    dr_reco_arr = np.asarray(dr_reco_to_off, dtype=np.float64)
+    dlpt_hlt_arr = np.asarray(dlogpt_hlt_to_off, dtype=np.float64)
+    dlpt_reco_arr = np.asarray(dlogpt_reco_to_off, dtype=np.float64)
+    dr_reco_hlt_arr = np.asarray(dr_reco_to_hlt, dtype=np.float64)
+
+    true_added = np.maximum(n_off_vec - n_hlt_vec, 0.0)
+    pred_added = np.maximum(n_reco_vec - n_hlt_vec, 0.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        recovery = np.where(true_added > 0.0, pred_added / np.maximum(true_added, 1e-8), np.nan)
+
+    diag = {
+        "n_jets_total": int(n),
+        "n_jets_eval": int(idx.size),
+        "mean_count_offline": float(n_off_vec.mean()) if n_off_vec.size else 0.0,
+        "mean_count_hlt": float(n_hlt_vec.mean()) if n_hlt_vec.size else 0.0,
+        "mean_count_reco": float(n_reco_vec.mean()) if n_reco_vec.size else 0.0,
+        "mae_count_hlt_vs_offline": float(np.abs(n_hlt_vec - n_off_vec).mean()) if n_off_vec.size else 0.0,
+        "mae_count_reco_vs_offline": float(np.abs(n_reco_vec - n_off_vec).mean()) if n_off_vec.size else 0.0,
+        "frac_exact_count_match_hlt": float((n_hlt_vec == n_off_vec).mean()) if n_off_vec.size else 0.0,
+        "frac_exact_count_match_reco": float((n_reco_vec == n_off_vec).mean()) if n_off_vec.size else 0.0,
+        "mean_chamfer_hlt_to_offline": float(ch_hlt_arr.mean()) if ch_hlt_arr.size else float("nan"),
+        "mean_chamfer_reco_to_offline": float(ch_reco_arr.mean()) if ch_reco_arr.size else float("nan"),
+        "median_chamfer_hlt_to_offline": float(np.median(ch_hlt_arr)) if ch_hlt_arr.size else float("nan"),
+        "median_chamfer_reco_to_offline": float(np.median(ch_reco_arr)) if ch_reco_arr.size else float("nan"),
+        "frac_reco_better_chamfer": float((ch_reco_arr < ch_hlt_arr).mean()) if (ch_hlt_arr.size and ch_reco_arr.size and ch_hlt_arr.size == ch_reco_arr.size) else float("nan"),
+        "mean_min_dr_hlt_to_offline": float(dr_hlt_arr.mean()) if dr_hlt_arr.size else float("nan"),
+        "mean_min_dr_reco_to_offline": float(dr_reco_arr.mean()) if dr_reco_arr.size else float("nan"),
+        "mean_min_dlogpt_hlt_to_offline": float(dlpt_hlt_arr.mean()) if dlpt_hlt_arr.size else float("nan"),
+        "mean_min_dlogpt_reco_to_offline": float(dlpt_reco_arr.mean()) if dlpt_reco_arr.size else float("nan"),
+        "mean_min_dr_reco_to_hlt": float(dr_reco_hlt_arr.mean()) if dr_reco_hlt_arr.size else float("nan"),
+        "n_added_jets": int(np.isfinite(recovery).sum()),
+        "mean_added_recovery_ratio": float(np.nanmean(recovery)) if np.isfinite(recovery).any() else float("nan"),
+        "median_added_recovery_ratio": float(np.nanmedian(recovery)) if np.isfinite(recovery).any() else float("nan"),
+        "frac_added_overrecover_gt1p25": float(np.nanmean(recovery > 1.25)) if np.isfinite(recovery).any() else float("nan"),
+        "frac_added_underrecover_lt0p50": float(np.nanmean(recovery < 0.50)) if np.isfinite(recovery).any() else float("nan"),
+    }
+    return diag
 
 
 class JetRegressionDataset(Dataset):
@@ -1296,11 +1725,16 @@ def train_joint_dual(
     feat_means: np.ndarray | None = None,
     feat_stds: np.ndarray | None = None,
     reco_kd_temperature: float = 2.5,
-    reco_lambda_kd: float = 5.0,
-    reco_lambda_phys: float = 0.05,
-    reco_lambda_budget_hinge: float = 1.0,
+    reco_lambda_kd: float = 1.0,
+    reco_lambda_emb: float = 1.2,
+    reco_lambda_tok: float = 0.6,
+    reco_lambda_phys: float = 0.2,
+    reco_lambda_budget_hinge: float = 0.03,
     reco_budget_eps: float = 0.015,
     reco_budget_weight_floor: float = 1e-4,
+    reco_normalize_loss_terms: bool = True,
+    reco_loss_norm_ema_decay: float = 0.98,
+    reco_loss_norm_eps: float = 1e-6,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
     for p in reconstructor.parameters():
         p.requires_grad = not freeze_reconstructor
@@ -1314,12 +1748,20 @@ def train_joint_dual(
 
     means_t = None
     stds_t = None
+    reco_loss_ema_state = None
     if teacher_model is not None and feat_means is not None and feat_stds is not None:
         teacher_model.eval()
         for p_t in teacher_model.parameters():
             p_t.requires_grad_(False)
         means_t = torch.tensor(feat_means, dtype=torch.float32, device=device)
         stds_t = torch.tensor(np.clip(feat_stds, 1e-6, None), dtype=torch.float32, device=device)
+        reco_loss_ema_state = {
+            "kd": 1.0,
+            "emb": 1.0,
+            "tok": 1.0,
+            "phys": 1.0,
+            "budget": 1.0,
+        }
 
     best_state_dual_sel = None
     best_state_reco_sel = None
@@ -1395,13 +1837,22 @@ def train_joint_dual(
                         stds_t=stds_t,
                         loss_cfg=BASE_CONFIG["loss"],
                         kd_temperature=float(max(reco_kd_temperature, 1e-3)),
-                        lambda_kd=float(max(reco_lambda_kd, 0.0)),
-                        lambda_phys=float(max(reco_lambda_phys, 0.0)),
-                        lambda_budget_hinge=float(max(reco_lambda_budget_hinge, 0.0)),
                         budget_eps=float(max(reco_budget_eps, 0.0)),
                         budget_weight_floor=float(max(reco_budget_weight_floor, 0.0)),
                     )
-                    loss_reco = reco_losses["total"]
+                    loss_reco, _, reco_loss_ema_state = _compose_teacher_guided_reco_total(
+                        losses_raw=reco_losses,
+                        ema_state=reco_loss_ema_state,
+                        normalize_terms=bool(reco_normalize_loss_terms),
+                        ema_decay=float(np.clip(reco_loss_norm_ema_decay, 0.0, 0.9999)),
+                        norm_eps=float(max(reco_loss_norm_eps, 1e-12)),
+                        w_logit=float(max(reco_lambda_kd, 0.0)),
+                        w_emb=float(max(reco_lambda_emb, 0.0)),
+                        w_tok=float(max(reco_lambda_tok, 0.0)),
+                        w_phys=float(max(reco_lambda_phys, 0.0)),
+                        w_budget=float(max(reco_lambda_budget_hinge, 0.0)),
+                        update_ema=True,
+                    )
                 else:
                     reco_losses = compute_reconstruction_losses(
                         reco_out,
@@ -1552,12 +2003,17 @@ def main() -> None:
     parser.add_argument("--stageA_epochs", type=int, default=90)
     parser.add_argument("--stageA_patience", type=int, default=18)
     parser.add_argument("--stageA_kd_temp", type=float, default=2.5)
-    parser.add_argument("--stageA_lambda_kd", type=float, default=5.0)
-    parser.add_argument("--stageA_lambda_phys", type=float, default=0.05)
-    parser.add_argument("--stageA_lambda_budget_hinge", type=float, default=1.0)
+    parser.add_argument("--stageA_lambda_kd", type=float, default=1.0)
+    parser.add_argument("--stageA_lambda_emb", type=float, default=1.2)
+    parser.add_argument("--stageA_lambda_tok", type=float, default=0.6)
+    parser.add_argument("--stageA_lambda_phys", type=float, default=0.2)
+    parser.add_argument("--stageA_lambda_budget_hinge", type=float, default=0.03)
     parser.add_argument("--stageA_budget_eps", type=float, default=0.015)
     parser.add_argument("--stageA_budget_weight_floor", type=float, default=1e-4)
     parser.add_argument("--stageA_target_tpr", type=float, default=0.50)
+    parser.add_argument("--disable_stageA_loss_normalization", action="store_true")
+    parser.add_argument("--stageA_loss_norm_ema_decay", type=float, default=0.98)
+    parser.add_argument("--stageA_loss_norm_eps", type=float, default=1e-6)
 
     # Stage B (tagger pretrain, reconstructor frozen)
     parser.add_argument("--stageB_epochs", type=int, default=45)
@@ -1608,9 +2064,15 @@ def main() -> None:
     parser.add_argument("--reco_weight_threshold", type=float, default=0.03)
     parser.add_argument("--reco_disable_budget_topk", action="store_true")
 
+    # Overlap/disagreement and score-fusion reporting.
+    parser.add_argument("--report_target_tpr", type=float, default=0.50)
+    parser.add_argument("--combo_weight_step", type=float, default=0.01)
+
     # Response/resolution diagnostics.
     parser.add_argument("--response_n_bins", type=int, default=8)
     parser.add_argument("--response_min_count", type=int, default=30)
+    parser.add_argument("--diag_match_max_jets", type=int, default=20000)
+    parser.add_argument("--diag_match_seed", type=int, default=-1)
 
     # Stage D (final KD with frozen reconstructor and fixed corrected view)
     parser.add_argument("--disable_final_kd", action="store_true")
@@ -1981,11 +2443,16 @@ def main() -> None:
         feat_stds=stds.astype(np.float32),
         kd_temperature=float(args.stageA_kd_temp),
         lambda_kd=float(args.stageA_lambda_kd),
+        lambda_emb=float(args.stageA_lambda_emb),
+        lambda_tok=float(args.stageA_lambda_tok),
         lambda_phys=float(args.stageA_lambda_phys),
         lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
         budget_eps=float(args.stageA_budget_eps),
         budget_weight_floor=float(args.stageA_budget_weight_floor),
         target_tpr_for_fpr=float(args.stageA_target_tpr),
+        normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
+        loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
+        loss_norm_eps=float(args.stageA_loss_norm_eps),
     )
 
     # Joint datasets
@@ -2113,10 +2580,15 @@ def main() -> None:
         feat_stds=stds.astype(np.float32),
         reco_kd_temperature=float(args.stageA_kd_temp),
         reco_lambda_kd=float(args.stageA_lambda_kd),
+        reco_lambda_emb=float(args.stageA_lambda_emb),
+        reco_lambda_tok=float(args.stageA_lambda_tok),
         reco_lambda_phys=float(args.stageA_lambda_phys),
         reco_lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
         reco_budget_eps=float(args.stageA_budget_eps),
         reco_budget_weight_floor=float(args.stageA_budget_weight_floor),
+        reco_normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
+        reco_loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
+        reco_loss_norm_eps=float(args.stageA_loss_norm_eps),
     )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
@@ -2175,6 +2647,28 @@ def main() -> None:
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
         weight_threshold=float(args.reco_weight_threshold),
         use_budget_topk=not bool(args.reco_disable_budget_topk),
+    )
+
+    reco_set_match_diag = compute_reco_set_matching_diagnostics(
+        const_off=const_off[test_idx],
+        mask_off=masks_off[test_idx],
+        const_hlt=hlt_const[test_idx],
+        mask_hlt=hlt_mask[test_idx],
+        const_reco=reco_const[test_idx],
+        mask_reco=reco_mask[test_idx],
+        max_jets=int(args.diag_match_max_jets),
+        seed=int(args.seed if int(args.diag_match_seed) < 0 else args.diag_match_seed),
+    )
+    print("\nReco set-matching diagnostics (test split sample):")
+    print(
+        f"  mean_chamfer hlt->offline={reco_set_match_diag['mean_chamfer_hlt_to_offline']:.5f}, "
+        f"reco->offline={reco_set_match_diag['mean_chamfer_reco_to_offline']:.5f}, "
+        f"frac_reco_better={reco_set_match_diag['frac_reco_better_chamfer']:.3f}"
+    )
+    print(
+        f"  count MAE hlt={reco_set_match_diag['mae_count_hlt_vs_offline']:.3f}, "
+        f"reco={reco_set_match_diag['mae_count_reco_vs_offline']:.3f}, "
+        f"added recovery mean={reco_set_match_diag['mean_added_recovery_ratio']:.3f}"
     )
 
     # Jet pT response/resolution diagnostics (test split).
@@ -2354,6 +2848,36 @@ def main() -> None:
     fpr50_stage2_fprsel = fpr_at_target_tpr(fpr_s2_fprsel, tpr_s2_fprsel, 0.50) if preds_stage2_fprsel is not None else float("nan")
     fpr50_joint_fprsel = fpr_at_target_tpr(fpr_j_fprsel, tpr_j_fprsel, 0.50) if preds_joint_fprsel is not None else float("nan")
 
+    overlap_models = {
+        "teacher": preds_teacher,
+        "hlt": preds_baseline,
+        "stage2": preds_stage2,
+        "joint": preds_joint,
+    }
+    overlap_report = build_overlap_report_at_tpr(
+        labels=labs.astype(np.float32),
+        model_preds=overlap_models,
+        target_tpr=float(args.report_target_tpr),
+    )
+    best_combo_hlt_joint = search_best_weighted_combo_at_tpr(
+        labels=labs.astype(np.float32),
+        preds_a=preds_baseline,
+        preds_b=preds_joint,
+        name_a="hlt",
+        name_b="joint",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+    best_combo_hlt_stage2 = search_best_weighted_combo_at_tpr(
+        labels=labs.astype(np.float32),
+        preds_a=preds_baseline,
+        preds_b=preds_stage2,
+        name_a="hlt",
+        name_b="stage2",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+
     print("\n" + "=" * 70)
     print("FINAL TEST EVALUATION")
     print("=" * 70)
@@ -2389,6 +2913,26 @@ def main() -> None:
     if preds_joint_kd is not None:
         print(f"FPR@30 Joint+KD: {fpr30_joint_kd:.6f}")
         print(f"FPR@50 Joint+KD: {fpr50_joint_kd:.6f}")
+
+    pair_hj = overlap_report["pairs"].get("hlt__joint", {})
+    pair_tj = overlap_report["pairs"].get("teacher__joint", {})
+    print(
+        f"TP overlap @TPR={float(args.report_target_tpr):.2f} (HLT vs Joint): "
+        f"{int(pair_hj.get('overlap_tp_count', 0))} shared TP | "
+        f"overlap frac of HLT TP={float(pair_hj.get('overlap_tp_frac_of_a_tp', float('nan'))):.3f}, "
+        f"of Joint TP={float(pair_hj.get('overlap_tp_frac_of_b_tp', float('nan'))):.3f}"
+    )
+    print(
+        f"TP overlap @TPR={float(args.report_target_tpr):.2f} (Teacher vs Joint): "
+        f"{int(pair_tj.get('overlap_tp_count', 0))} shared TP | "
+        f"overlap frac of Teacher TP={float(pair_tj.get('overlap_tp_frac_of_a_tp', float('nan'))):.3f}, "
+        f"of Joint TP={float(pair_tj.get('overlap_tp_frac_of_b_tp', float('nan'))):.3f}"
+    )
+    print(
+        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+Joint): "
+        f"w_hlt={best_combo_hlt_joint['w_a']:.3f}, w_joint={best_combo_hlt_joint['w_b']:.3f}, "
+        f"FPR={best_combo_hlt_joint['fpr']:.6f}"
+    )
 
     plot_lines = [
         (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
@@ -2468,6 +3012,12 @@ def main() -> None:
         json.dump(budget_summary, f, indent=2)
     with open(save_root / "soft_corrected_view_summary_test.json", "w", encoding="utf-8") as f:
         json.dump(soft_view_summary_test, f, indent=2)
+    with open(save_root / "reco_set_matching_diagnostics.json", "w", encoding="utf-8") as f:
+        json.dump(reco_set_match_diag, f, indent=2)
+    with open(save_root / "overlap_report_tpr50.json", "w", encoding="utf-8") as f:
+        json.dump(overlap_report, f, indent=2)
+    with open(save_root / "best_combo_hlt_joint_tpr50.json", "w", encoding="utf-8") as f:
+        json.dump({"hlt_joint": best_combo_hlt_joint, "hlt_stage2": best_combo_hlt_stage2}, f, indent=2)
     with open(save_root / "jet_regression_metrics.json", "w", encoding="utf-8") as f:
         json.dump(jet_reg_metrics, f, indent=2)
 
@@ -2487,6 +3037,10 @@ def main() -> None:
                 "stageB_joint": stageB_metrics,
                 "stageC_joint": stageC_metrics,
                 "stageD_kd": stageD_metrics,
+                "overlap_report_tpr": overlap_report,
+                "best_combo_hlt_joint": best_combo_hlt_joint,
+                "best_combo_hlt_stage2": best_combo_hlt_stage2,
+                "reco_set_matching_diagnostics": reco_set_match_diag,
                 "test_stage2": {
                     "auc_stage2": float(auc_stage2),
                     "auc_stage2_fprsel": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else None,
