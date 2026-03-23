@@ -45,7 +45,6 @@ from unmerge_correct_hlt import (
     ParticleTransformer,
     compute_features,
     eval_classifier,
-    fpr_at_target_tpr,
     get_scheduler,
     get_stats,
     load_raw_constituents_from_h5,
@@ -63,6 +62,14 @@ def set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
+
+
+def fpr_at_target_tpr(fpr: np.ndarray, tpr: np.ndarray, target_tpr: float) -> float:
+    if fpr.size == 0 or tpr.size == 0:
+        return float("nan")
+    target = float(np.clip(target_tpr, 0.0, 1.0))
+    idx = int(np.argmin(np.abs(tpr - target)))
+    return float(fpr[idx])
 
 
 def _train_single_view_classifier_auc(
