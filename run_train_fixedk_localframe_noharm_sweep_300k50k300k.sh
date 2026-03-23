@@ -6,7 +6,7 @@
 #   sbatch run_train_fixedk_localframe_noharm_sweep_300k50k300k.sh
 
 #SBATCH --job-name=fixkLFNH
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=1-00:00:00
