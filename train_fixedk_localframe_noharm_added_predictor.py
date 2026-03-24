@@ -571,6 +571,16 @@ def pred_to_const_from_local(
     d_phi = wrap_phi_t(pred_feat[..., 2])
     log_E_rel = pred_feat[..., 3]
 
+    # Expected shapes:
+    # pred_feat: [B, K, 4]
+    # anchors: [B, 4] (or already broadcast-compatible [B, 1, 4] / [B, K, 4])
+    if anchors.dim() == pred_feat.dim() - 1:
+        anchors = anchors.unsqueeze(1)
+    elif anchors.dim() != pred_feat.dim():
+        raise ValueError(
+            f"Incompatible anchor shape {tuple(anchors.shape)} for pred shape {tuple(pred_feat.shape)}"
+        )
+
     jet_pt = anchors[..., 0].clamp(min=1e-6)
     jet_eta = anchors[..., 1]
     jet_phi = anchors[..., 2]
