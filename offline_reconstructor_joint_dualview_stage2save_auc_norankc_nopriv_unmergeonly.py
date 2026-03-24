@@ -24,6 +24,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import random
 from pathlib import Path
@@ -1280,6 +1281,7 @@ def train_reconstructor_weighted(
     train_cfg: Dict,
     loss_cfg: Dict,
     apply_reco_weight: bool,
+    reload_best_at_stage_transition: bool,
 ) -> Tuple[OfflineReconstructor, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -1295,7 +1297,49 @@ def train_reconstructor_weighted(
     min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
     val_metric_source = "weighted" if bool(apply_reco_weight) else "unweighted"
 
+    total_epochs = int(train_cfg["epochs"])
+    stage1_end = int(max(int(train_cfg.get("stage1_epochs", 0)), 0))
+    stage2_end = int(max(int(train_cfg.get("stage2_epochs", stage1_end)), stage1_end))
+    stage1_end = min(stage1_end, total_epochs)
+    stage2_end = min(max(stage2_end, stage1_end), total_epochs)
+
+    def _phase_idx(epoch: int) -> int:
+        if epoch < stage1_end:
+            return 0
+        if epoch < stage2_end:
+            return 1
+        return 2
+
+    phase_names = {
+        0: "phase_035",
+        1: "phase_070",
+        2: "phase_100",
+    }
+    current_phase = _phase_idx(0)
+    phase_best: Dict[int, Dict[str, object]] = {}
+
     for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
+        phase_idx = _phase_idx(ep)
+        if ep > 0 and phase_idx != current_phase:
+            if bool(reload_best_at_stage_transition):
+                prev_best = phase_best.get(current_phase, None)
+                if prev_best is not None:
+                    state_pack = prev_best["state"]
+                    model.load_state_dict(state_pack["model"])
+                    opt.load_state_dict(state_pack["opt"])
+                    sch.load_state_dict(state_pack["sch"])
+                    no_improve = 0
+                    print(
+                        f"Stage-A transition -> reloaded best from {phase_names[current_phase]} "
+                        f"(epoch={int(prev_best['epoch'])+1}, val_total={float(prev_best['val_total']):.4f})"
+                    )
+                else:
+                    print(
+                        f"Stage-A transition -> no stored best for {phase_names[current_phase]}, "
+                        "continuing with current weights."
+                    )
+            current_phase = phase_idx
+
         model.train()
         sc = stage_scale_local(ep, train_cfg)
 
@@ -1446,6 +1490,18 @@ def train_reconstructor_weighted(
 
         val_total_sel = float(va_total_w) if bool(apply_reco_weight) else float(va_total_u)
 
+        phase_entry = phase_best.get(phase_idx, None)
+        if (phase_entry is None) or (val_total_sel < float(phase_entry["val_total"])):
+            phase_best[phase_idx] = {
+                "val_total": float(val_total_sel),
+                "epoch": int(ep),
+                "state": {
+                    "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
+                    "opt": copy.deepcopy(opt.state_dict()),
+                    "sch": copy.deepcopy(sch.state_dict()),
+                },
+            }
+
         if val_total_sel < best_val:
             best_val = val_total_sel
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -1488,6 +1544,16 @@ def train_reconstructor_weighted(
 
     if best_state is not None:
         model.load_state_dict(best_state)
+    if len(best_metrics) == 0:
+        best_metrics = {}
+    best_metrics["stageA_stagewise_best_reload"] = bool(reload_best_at_stage_transition)
+    best_metrics["stageA_phase_best"] = {
+        phase_names[int(k)]: {
+            "epoch": int(v["epoch"]) + 1,
+            "val_total": float(v["val_total"]),
+        }
+        for k, v in sorted(phase_best.items(), key=lambda kv: int(kv[0]))
+    }
     return model, best_metrics
 
 
@@ -1856,6 +1922,11 @@ def main() -> None:
     # Stage A (reconstructor pretrain)
     parser.add_argument("--stageA_epochs", type=int, default=90)
     parser.add_argument("--stageA_patience", type=int, default=18)
+    parser.add_argument(
+        "--disable_stageA_stagewise_best_reload",
+        action="store_true",
+        help="Disable reloading the best Stage-A validation checkpoint at each stage-scale transition.",
+    )
 
     # Stage B (tagger pretrain, reconstructor frozen)
     parser.add_argument("--stageB_epochs", type=int, default=45)
@@ -2200,9 +2271,8 @@ def main() -> None:
     )
     auc_baseline, preds_baseline, _ = eval_classifier(baseline, dl_test_hlt, device)
     auc_baseline_val, preds_baseline_val, labs_baseline_val = eval_classifier(baseline, dl_val_hlt, device)
-    hlt_delta_thr_prob = _threshold_for_target_tpr(
-        np.asarray(preds_baseline_val, dtype=np.float64),
-        np.asarray(labs_baseline_val, dtype=np.float32),
+    hlt_delta_thr_prob = prob_threshold_at_target_tpr(
+        np.asarray(preds_baseline_val, dtype=np.float64)[np.asarray(labs_baseline_val, dtype=np.float32) > 0.5],
         target_tpr=0.50,
     )
     print(
@@ -2511,6 +2581,7 @@ def main() -> None:
         cfg["reconstructor_training"],
         cfg["loss"],
         apply_reco_weight=bool(args.disc_weight_enable),
+        reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
     )
 
     # Joint datasets

@@ -27,6 +27,7 @@ Notes:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import random
 from pathlib import Path
@@ -510,6 +511,7 @@ def train_reconstructor_teacher_guided(
     normalize_loss_terms: bool,
     loss_norm_ema_decay: float,
     loss_norm_eps: float,
+    reload_best_at_stage_transition: bool,
 ) -> Tuple[OfflineReconstructor, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -550,7 +552,50 @@ def train_reconstructor_teacher_guided(
         "budget": 1.0,
     }
 
+    total_epochs = int(train_cfg["epochs"])
+    stage1_end = int(max(int(train_cfg.get("stage1_epochs", 0)), 0))
+    stage2_end = int(max(int(train_cfg.get("stage2_epochs", stage1_end)), stage1_end))
+    stage1_end = min(stage1_end, total_epochs)
+    stage2_end = min(max(stage2_end, stage1_end), total_epochs)
+
+    def _phase_idx(epoch: int) -> int:
+        if epoch < stage1_end:
+            return 0
+        if epoch < stage2_end:
+            return 1
+        return 2
+
+    phase_names = {
+        0: "phase_035",
+        1: "phase_070",
+        2: "phase_100",
+    }
+    current_phase = _phase_idx(0)
+    phase_best: Dict[int, Dict[str, object]] = {}
+
     for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
+        phase_idx = _phase_idx(ep)
+        if ep > 0 and phase_idx != current_phase:
+            if bool(reload_best_at_stage_transition):
+                prev_best = phase_best.get(current_phase, None)
+                if prev_best is not None:
+                    state_pack = prev_best["state"]
+                    model.load_state_dict(state_pack["model"])
+                    opt.load_state_dict(state_pack["opt"])
+                    sch.load_state_dict(state_pack["sch"])
+                    reco_loss_ema_state = {k: float(v) for k, v in state_pack["ema"].items()}
+                    no_improve = 0
+                    print(
+                        f"Stage-A transition -> reloaded best from {phase_names[current_phase]} "
+                        f"(epoch={int(prev_best['epoch'])+1}, val_teacher_auc={float(prev_best['val_auc']):.4f})"
+                    )
+                else:
+                    print(
+                        f"Stage-A transition -> no stored best for {phase_names[current_phase]}, "
+                        "continuing with current weights."
+                    )
+            current_phase = phase_idx
+
         model.train()
         sc = stage_scale_local(ep, train_cfg)
 
@@ -713,6 +758,21 @@ def train_reconstructor_teacher_guided(
         else:
             va_auc, va_fpr50 = float("nan"), float("nan")
 
+        if np.isfinite(va_auc):
+            phase_entry = phase_best.get(phase_idx, None)
+            if (phase_entry is None) or (va_auc > float(phase_entry["val_auc"])):
+                phase_best[phase_idx] = {
+                    "val_auc": float(va_auc),
+                    "val_fpr50": float(va_fpr50),
+                    "epoch": int(ep),
+                    "state": {
+                        "model": {k: v.detach().cpu().clone() for k, v in model.state_dict().items()},
+                        "opt": copy.deepcopy(opt.state_dict()),
+                        "sch": copy.deepcopy(sch.state_dict()),
+                        "ema": {k: float(v) for k, v in reco_loss_ema_state.items()},
+                    },
+                }
+
         if np.isfinite(va_auc) and (va_auc > best_val_auc):
             best_val_auc = float(va_auc)
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
@@ -759,6 +819,17 @@ def train_reconstructor_teacher_guided(
 
     if best_state is not None:
         model.load_state_dict(best_state)
+    if len(best_metrics) == 0:
+        best_metrics = {}
+    best_metrics["stageA_stagewise_best_reload"] = bool(reload_best_at_stage_transition)
+    best_metrics["stageA_phase_best"] = {
+        phase_names[int(k)]: {
+            "epoch": int(v["epoch"]) + 1,
+            "val_teacher_auc": float(v["val_auc"]),
+            "val_teacher_fpr50": float(v["val_fpr50"]),
+        }
+        for k, v in sorted(phase_best.items(), key=lambda kv: int(kv[0]))
+    }
     return model, best_metrics
 
 
@@ -2076,6 +2147,11 @@ def main() -> None:
     parser.add_argument("--disable_stageA_loss_normalization", action="store_true")
     parser.add_argument("--stageA_loss_norm_ema_decay", type=float, default=0.98)
     parser.add_argument("--stageA_loss_norm_eps", type=float, default=1e-6)
+    parser.add_argument(
+        "--disable_stageA_stagewise_best_reload",
+        action="store_true",
+        help="Disable reloading the best Stage-A validation checkpoint at each stage-scale transition.",
+    )
 
     # Stage B (tagger pretrain, reconstructor frozen)
     parser.add_argument("--stageB_epochs", type=int, default=45)
@@ -2518,6 +2594,7 @@ def main() -> None:
         normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
         loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
         loss_norm_eps=float(args.stageA_loss_norm_eps),
+        reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
     )
 
     # Joint datasets

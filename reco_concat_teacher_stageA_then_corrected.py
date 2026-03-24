@@ -242,12 +242,24 @@ def _compute_concat_teacher_guided_reco_losses(
     emb_reco_n = F.normalize(emb_teacher_reco, dim=1)
     loss_emb = (1.0 - (emb_target_n * emb_reco_n).sum(dim=1)).mean()
 
-    loss_tok = b._attention_kl_loss_masked(
-        attn_pred=attn_teacher_reco,
-        attn_target=attn_teacher_target,
-        mask_pred=mask_reco,
-        mask_target=mask_teacher,
-    )
+    # Reco path and concat-teacher path may have different token lengths (e.g. 100 vs 200).
+    # Align to shared prefix length for stable attention-token KD.
+    l_reco = int(mask_reco.shape[1])
+    l_teacher = int(mask_teacher.shape[1])
+    l_common = int(min(l_reco, l_teacher))
+    if l_common > 0:
+        attn_pred_tok = attn_teacher_reco[..., :l_common, :l_common]
+        attn_tgt_tok = attn_teacher_target[..., :l_common, :l_common]
+        mask_pred_tok = mask_reco[:, :l_common]
+        mask_tgt_tok = mask_teacher[:, :l_common]
+        loss_tok = b._attention_kl_loss_masked(
+            attn_pred=attn_pred_tok,
+            attn_target=attn_tgt_tok,
+            mask_pred=mask_pred_tok,
+            mask_target=mask_tgt_tok,
+        )
+    else:
+        loss_tok = torch.zeros((), device=mask_reco.device)
 
     reco_tokens = reco_out["cand_tokens"][:, : const_hlt.shape[1], :]
     mean_edit_vec = b._sorted_edit_budget_vec(reco_tokens, const_hlt, mask_hlt)
