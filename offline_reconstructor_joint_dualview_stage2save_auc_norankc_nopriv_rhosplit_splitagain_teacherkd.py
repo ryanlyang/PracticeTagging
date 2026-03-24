@@ -3049,6 +3049,24 @@ def main() -> None:
         f"FPR={best_combo_hlt_joint_test_posthoc['fpr']:.6f}"
     )
 
+    # Save val/test score arrays for downstream fusion studies.
+    np.savez_compressed(
+        save_root / "fusion_scores_val_test.npz",
+        labels_val=labs_val_teacher.astype(np.float32),
+        labels_test=labs.astype(np.float32),
+        preds_teacher_val=preds_teacher_val.astype(np.float64),
+        preds_teacher_test=preds_teacher.astype(np.float64),
+        preds_hlt_val=preds_baseline_val.astype(np.float64),
+        preds_hlt_test=preds_baseline.astype(np.float64),
+        preds_stage2_val=preds_stage2_val.astype(np.float64),
+        preds_stage2_test=preds_stage2.astype(np.float64),
+        preds_joint_val=preds_joint_val.astype(np.float64),
+        preds_joint_test=preds_joint.astype(np.float64),
+        hlt_nconst_test=hlt_mask[test_idx].sum(axis=1).astype(np.float32),
+        target_tpr=float(args.report_target_tpr),
+    )
+    print(f"Saved fusion score arrays to: {save_root / 'fusion_scores_val_test.npz'}")
+
     plot_lines = [
         (tpr_t, fpr_t, "-", f"Teacher (AUC={auc_teacher:.3f})", "crimson"),
         (tpr_b, fpr_b, "--", f"HLT Baseline (AUC={auc_baseline:.3f})", "steelblue"),

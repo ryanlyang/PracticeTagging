@@ -2,13 +2,15 @@
 # -*- coding: utf-8 -*-
 
 """
-StageA-only RecoTeacher training with:
-- Teacher-guided reconstruction losses (s09-style weights supported)
-- Stage-scale curriculum (0.35 -> 0.70 -> 1.00)
-- Phase-boundary reload of best val checkpoint including model+optimizer+scheduler+EMA
-- Optional complement loss L_delta against frozen HLT baseline
+ConcatTeacher-guided Stage-A reconstructor pipeline:
+1) Train HLT baseline and ConcatTeacher (single-view on offline||HLT constituents).
+2) Freeze ConcatTeacher and train Stage-A reconstructor with teacher-guided losses.
+   - Physics/budget supervision stays anchored to offline targets.
+   - Teacher KD/embedding/token losses use ConcatTeacher as target signal.
+   - Stage-scale curriculum with phase-best reload is supported.
+3) Freeze reconstructor and train corrected-only top tagger (single-view, no dual-view).
 
-Outputs include val/test score arrays for downstream fusion analysis.
+Outputs include val/test score arrays, overlap reports, and combo metrics.
 """
 
 from __future__ import annotations
@@ -22,9 +24,10 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd as b
 
@@ -39,6 +42,79 @@ def threshold_at_target_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: 
     idx_valid = np.where(valid)[0]
     idx = int(idx_valid[np.argmin(np.abs(tpr[idx_valid] - float(target_tpr)))])
     return float(thr[idx]), float(tpr[idx]), float(fpr[idx])
+
+
+def build_concat_constituents(
+    const_off: np.ndarray,
+    mask_off: np.ndarray,
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    max_concat_constits: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    const_cat = np.concatenate([const_off, const_hlt], axis=1)
+    mask_cat = np.concatenate([mask_off, mask_hlt], axis=1)
+
+    full_l = int(const_cat.shape[1])
+    out_l = int(max_concat_constits)
+    if out_l <= 0:
+        out_l = full_l
+
+    if out_l < full_l:
+        const_cat = const_cat[:, :out_l, :]
+        mask_cat = mask_cat[:, :out_l]
+    elif out_l > full_l:
+        n = int(const_cat.shape[0])
+        pad_const = np.zeros((n, out_l - full_l, const_cat.shape[2]), dtype=const_cat.dtype)
+        pad_mask = np.zeros((n, out_l - full_l), dtype=bool)
+        const_cat = np.concatenate([const_cat, pad_const], axis=1)
+        mask_cat = np.concatenate([mask_cat, pad_mask], axis=1)
+
+    const_cat = const_cat.copy()
+    const_cat[~mask_cat] = 0.0
+    return const_cat.astype(np.float32), mask_cat.astype(bool)
+
+
+class StageAConcatTeacherDataset(Dataset):
+    def __init__(
+        self,
+        feat_hlt: np.ndarray,
+        mask_hlt: np.ndarray,
+        const_hlt: np.ndarray,
+        const_off: np.ndarray,
+        mask_off: np.ndarray,
+        const_teacher: np.ndarray,
+        mask_teacher: np.ndarray,
+        labels: np.ndarray,
+        budget_merge_true: np.ndarray,
+        budget_eff_true: np.ndarray,
+    ):
+        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
+        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+        self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
+        self.const_off = torch.tensor(const_off, dtype=torch.float32)
+        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
+        self.const_teacher = torch.tensor(const_teacher, dtype=torch.float32)
+        self.mask_teacher = torch.tensor(mask_teacher, dtype=torch.bool)
+        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+        self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
+        self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return self.feat_hlt.shape[0]
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "feat_hlt": self.feat_hlt[i],
+            "mask_hlt": self.mask_hlt[i],
+            "const_hlt": self.const_hlt[i],
+            "const_off": self.const_off[i],
+            "mask_off": self.mask_off[i],
+            "const_teacher": self.const_teacher[i],
+            "mask_teacher": self.mask_teacher[i],
+            "label": self.labels[i],
+            "budget_merge_true": self.budget_merge_true[i],
+            "budget_eff_true": self.budget_eff_true[i],
+        }
 
 
 @torch.no_grad()
@@ -97,7 +173,96 @@ def eval_teacher_on_soft_reco_split(
     return auc, preds, labs, fpr_at
 
 
-def train_reconstructor_teacher_guided_stagewise_delta(
+def _compute_concat_teacher_guided_reco_losses(
+    reco_out: Dict[str, torch.Tensor],
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    const_off: torch.Tensor,
+    mask_off: torch.Tensor,
+    const_teacher: torch.Tensor,
+    mask_teacher: torch.Tensor,
+    budget_merge_true: torch.Tensor,
+    budget_eff_true: torch.Tensor,
+    teacher_model: nn.Module,
+    means_t: torch.Tensor,
+    stds_t: torch.Tensor,
+    loss_cfg: Dict,
+    kd_temperature: float,
+    budget_eps: float,
+    budget_weight_floor: float,
+) -> Dict[str, torch.Tensor]:
+    # Keep physical supervision anchored to offline target.
+    aux_losses = b.compute_reconstruction_losses(
+        reco_out,
+        const_hlt,
+        mask_hlt,
+        const_off,
+        mask_off,
+        budget_merge_true,
+        budget_eff_true,
+        loss_cfg,
+    )
+    loss_phys = aux_losses["phys"]
+
+    # Teacher target path uses concatenated (offline||HLT) view.
+    with torch.no_grad():
+        feat_teacher_raw = b.compute_features_torch(const_teacher, mask_teacher)
+        feat_teacher_std = b._standardize_features_torch(feat_teacher_raw, mask_teacher, means_t, stds_t)
+        teacher_pack = teacher_model(feat_teacher_std, mask_teacher, return_attention=True, return_embedding=True)
+        logits_teacher_target = teacher_pack[0].view(-1)
+        attn_teacher_target = teacher_pack[1]
+        emb_teacher_target = teacher_pack[2]
+
+    feat_reco_raw, mask_reco = b._build_teacher_reco_features_from_output(
+        reco_out,
+        const_hlt,
+        mask_hlt,
+        weight_floor=budget_weight_floor,
+    )
+    feat_reco_std = b._standardize_features_torch(feat_reco_raw, mask_reco, means_t, stds_t)
+    reco_pack = teacher_model(feat_reco_std, mask_reco, return_attention=True, return_embedding=True)
+    logits_teacher_reco = reco_pack[0].view(-1)
+    attn_teacher_reco = reco_pack[1]
+    emb_teacher_reco = reco_pack[2]
+
+    target_soft = torch.sigmoid(logits_teacher_target / kd_temperature)
+    kd_vec = (
+        F.binary_cross_entropy_with_logits(
+            logits_teacher_reco / kd_temperature,
+            target_soft,
+            reduction="none",
+        )
+        * (kd_temperature * kd_temperature)
+    )
+    loss_kd = b._weighted_batch_mean(kd_vec, None)
+
+    emb_target_n = F.normalize(emb_teacher_target, dim=1)
+    emb_reco_n = F.normalize(emb_teacher_reco, dim=1)
+    loss_emb = (1.0 - (emb_target_n * emb_reco_n).sum(dim=1)).mean()
+
+    loss_tok = b._attention_kl_loss_masked(
+        attn_pred=attn_teacher_reco,
+        attn_target=attn_teacher_target,
+        mask_pred=mask_reco,
+        mask_target=mask_teacher,
+    )
+
+    reco_tokens = reco_out["cand_tokens"][:, : const_hlt.shape[1], :]
+    mean_edit_vec = b._sorted_edit_budget_vec(reco_tokens, const_hlt, mask_hlt)
+    budget_hinge_vec = F.relu(mean_edit_vec - budget_eps)
+    loss_budget_hinge = b._weighted_batch_mean(budget_hinge_vec, None)
+
+    return {
+        "kd": loss_kd,
+        "emb": loss_emb,
+        "tok": loss_tok,
+        "phys": loss_phys,
+        "budget_hinge": loss_budget_hinge,
+        "logits_teacher_reco": logits_teacher_reco,
+    }
+
+
+def train_reconstructor_concat_teacher_stagewise(
     model: b.OfflineReconstructor,
     train_loader: DataLoader,
     val_loader: DataLoader,
@@ -206,6 +371,8 @@ def train_reconstructor_teacher_guided_stagewise_delta(
                 const_hlt = batch["const_hlt"].to(device)
                 const_off = batch["const_off"].to(device)
                 mask_off = batch["mask_off"].to(device)
+                const_teacher = batch["const_teacher"].to(device)
+                mask_teacher = batch["mask_teacher"].to(device)
                 labels_batch = batch["label"].to(device)
                 budget_merge_true = batch["budget_merge_true"].to(device)
                 budget_eff_true = batch["budget_eff_true"].to(device)
@@ -213,12 +380,14 @@ def train_reconstructor_teacher_guided_stagewise_delta(
                 opt.zero_grad()
                 out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=float(sc))
 
-                losses = b._compute_teacher_guided_reco_losses(
+                losses = _compute_concat_teacher_guided_reco_losses(
                     reco_out=out,
                     const_hlt=const_hlt,
                     mask_hlt=mask_hlt,
                     const_off=const_off,
                     mask_off=mask_off,
+                    const_teacher=const_teacher,
+                    mask_teacher=mask_teacher,
                     budget_merge_true=budget_merge_true,
                     budget_eff_true=budget_eff_true,
                     teacher_model=teacher_model,
@@ -293,17 +462,21 @@ def train_reconstructor_teacher_guided_stagewise_delta(
                     const_hlt = batch["const_hlt"].to(device)
                     const_off = batch["const_off"].to(device)
                     mask_off = batch["mask_off"].to(device)
+                    const_teacher = batch["const_teacher"].to(device)
+                    mask_teacher = batch["mask_teacher"].to(device)
                     labels_batch = batch["label"].to(device)
                     budget_merge_true = batch["budget_merge_true"].to(device)
                     budget_eff_true = batch["budget_eff_true"].to(device)
 
                     out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
-                    losses = b._compute_teacher_guided_reco_losses(
+                    losses = _compute_concat_teacher_guided_reco_losses(
                         reco_out=out,
                         const_hlt=const_hlt,
                         mask_hlt=mask_hlt,
                         const_off=const_off,
                         mask_off=mask_off,
+                        const_teacher=const_teacher,
+                        mask_teacher=mask_teacher,
                         budget_merge_true=budget_merge_true,
                         budget_eff_true=budget_eff_true,
                         teacher_model=teacher_model,
@@ -504,11 +677,12 @@ def main() -> None:
     ap.add_argument("--n_train_jets", type=int, default=250000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
+    ap.add_argument("--max_concat_constits", type=int, default=-1)
     ap.add_argument("--n_train_split", type=int, default=75000)
     ap.add_argument("--n_val_split", type=int, default=25000)
     ap.add_argument("--n_test_split", type=int, default=150000)
-    ap.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "offline_reconstructor_joint_stageAonly"))
-    ap.add_argument("--run_name", type=str, default="reco_teacher_stageAonly_delta_75k25k150k_seed0")
+    ap.add_argument("--save_dir", type=str, default=str(Path().cwd() / "checkpoints" / "offline_reconstructor_joint_concat_teacher"))
+    ap.add_argument("--run_name", type=str, default="concat_teacher_stageA_then_corrected_75k25k150k_seed0")
     ap.add_argument("--device", type=str, default="cuda")
     ap.add_argument("--num_workers", type=int, default=6)
     ap.add_argument("--skip_save_models", action="store_true")
@@ -524,11 +698,11 @@ def main() -> None:
     ap.add_argument("--stageA_epochs", type=int, default=90)
     ap.add_argument("--stageA_patience", type=int, default=18)
     ap.add_argument("--stageA_kd_temp", type=float, default=2.5)
-    ap.add_argument("--stageA_lambda_kd", type=float, default=5.0)
-    ap.add_argument("--stageA_lambda_emb", type=float, default=0.0)
-    ap.add_argument("--stageA_lambda_tok", type=float, default=0.0)
-    ap.add_argument("--stageA_lambda_phys", type=float, default=0.05)
-    ap.add_argument("--stageA_lambda_budget_hinge", type=float, default=1.0)
+    ap.add_argument("--stageA_lambda_kd", type=float, default=1.0)
+    ap.add_argument("--stageA_lambda_emb", type=float, default=1.2)
+    ap.add_argument("--stageA_lambda_tok", type=float, default=0.6)
+    ap.add_argument("--stageA_lambda_phys", type=float, default=0.2)
+    ap.add_argument("--stageA_lambda_budget_hinge", type=float, default=0.03)
     ap.add_argument("--stageA_budget_eps", type=float, default=0.015)
     ap.add_argument("--stageA_budget_weight_floor", type=float, default=1e-4)
     ap.add_argument("--stageA_target_tpr", type=float, default=0.50)
@@ -537,14 +711,13 @@ def main() -> None:
     ap.add_argument("--stageA_loss_norm_eps", type=float, default=1e-6)
     ap.add_argument("--disable_stageA_stagewise_best_reload", action="store_true")
 
-    ap.add_argument("--stageA_lambda_delta", type=float, default=0.15)
+    ap.add_argument("--stageA_lambda_delta", type=float, default=0.0)
     ap.add_argument("--stageA_delta_tau", type=float, default=0.05)
     ap.add_argument("--stageA_delta_lambda_fp", type=float, default=3.0)
 
     ap.add_argument("--added_target_scale", type=float, default=0.90)
     ap.add_argument("--reco_weight_threshold", type=float, default=0.03)
     ap.add_argument("--reco_eval_batch_size", type=int, default=256)
-    ap.add_argument("--train_corrected_only_post_stageA", action="store_true")
 
     ap.add_argument("--report_target_tpr", type=float, default=0.50)
     ap.add_argument("--combo_weight_step", type=float, default=0.01)
@@ -626,6 +799,18 @@ def main() -> None:
     feat_off = b.compute_features(const_off, masks_off)
     feat_hlt = b.compute_features(hlt_const, hlt_mask)
 
+    max_concat_constits = int(args.max_concat_constits)
+    if max_concat_constits <= 0:
+        max_concat_constits = int(args.max_constits) * 2
+    const_concat, mask_concat = build_concat_constituents(
+        const_off=const_off,
+        mask_off=masks_off,
+        const_hlt=hlt_const,
+        mask_hlt=hlt_mask,
+        max_concat_constits=max_concat_constits,
+    )
+    feat_concat = b.compute_features(const_concat, mask_concat)
+
     idx = np.arange(len(labels))
     total_need = int(args.n_train_split + args.n_val_split + args.n_test_split)
     if total_need > len(idx):
@@ -656,9 +841,12 @@ def main() -> None:
     )
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} (custom_counts=True)")
 
-    means, stds = b.get_stats(feat_off, masks_off, train_idx)
-    feat_off_std = b.standardize(feat_off, masks_off, means, stds)
-    feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means, stds)
+    means_off, stds_off = b.get_stats(feat_off, masks_off, train_idx)
+    feat_off_std = b.standardize(feat_off, masks_off, means_off, stds_off)
+    feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means_off, stds_off)
+
+    means_concat, stds_concat = b.get_stats(feat_concat, mask_concat, train_idx)
+    feat_concat_std = b.standardize(feat_concat, mask_concat, means_concat, stds_concat)
 
     data_setup = {
         "train_path_arg": str(args.train_path),
@@ -666,6 +854,7 @@ def main() -> None:
         "n_train_jets": int(args.n_train_jets),
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
+        "max_concat_constits": int(max_concat_constits),
         "seed": int(args.seed),
         "split": {
             "mode": "custom_counts",
@@ -674,7 +863,7 @@ def main() -> None:
             "n_test_split": int(len(test_idx)),
         },
         "hlt_effects": cfg["hlt_effects"],
-        "variant": "stageA_only_recoteacher_delta",
+        "variant": "concat_teacher_stageA_then_corrected",
         "rho": float(rho),
         "mean_true_added_raw": float(true_added_raw.mean()),
         "mean_target_merge": float(budget_merge_true.mean()),
@@ -687,49 +876,61 @@ def main() -> None:
         train_idx=train_idx.astype(np.int64),
         val_idx=val_idx.astype(np.int64),
         test_idx=test_idx.astype(np.int64),
-        means=means.astype(np.float32),
-        stds=stds.astype(np.float32),
+        means_off=means_off.astype(np.float32),
+        stds_off=stds_off.astype(np.float32),
+        means_concat=means_concat.astype(np.float32),
+        stds_concat=stds_concat.astype(np.float32),
     )
 
     print("\n" + "=" * 70)
-    print("STEP 1: TEACHER + BASELINE")
+    print("STEP 1: HLT BASELINE + CONCAT TEACHER")
     print("=" * 70)
-    BS = int(cfg["training"]["batch_size"])
-
-    ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
-    ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
-    ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
-    dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
-    dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
-    dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
-
-    teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    teacher = b.train_single_view_classifier_auc(
-        teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
-    )
-    auc_teacher, preds_teacher, labs_test_teacher = b.eval_classifier(teacher, dl_test_off, device)
-    auc_teacher_val, preds_teacher_val, labs_val_teacher = b.eval_classifier(teacher, dl_val_off, device)
+    bs_cls = int(cfg["training"]["batch_size"])
 
     ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
     ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
     ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
-    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
-    dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
-    dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
+    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=bs_cls, shuffle=True, drop_last=True)
+    dl_val_hlt = DataLoader(ds_val_hlt, batch_size=bs_cls, shuffle=False)
+    dl_test_hlt = DataLoader(ds_test_hlt, batch_size=bs_cls, shuffle=False)
 
     baseline = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
     baseline = b.train_single_view_classifier_auc(
-        baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
+        baseline,
+        dl_train_hlt,
+        dl_val_hlt,
+        device,
+        cfg["training"],
+        name="Baseline-HLT",
     )
-    auc_baseline, preds_baseline, labs_test_hlt = b.eval_classifier(baseline, dl_test_hlt, device)
-    auc_baseline_val, preds_baseline_val, labs_val_baseline = b.eval_classifier(baseline, dl_val_hlt, device)
+    auc_hlt_test, preds_hlt_test, labs_hlt_test = b.eval_classifier(baseline, dl_test_hlt, device)
+    auc_hlt_val, preds_hlt_val, labs_hlt_val = b.eval_classifier(baseline, dl_val_hlt, device)
 
-    assert np.array_equal(labs_val_teacher.astype(np.float32), labs_val_baseline.astype(np.float32))
-    assert np.array_equal(labs_test_teacher.astype(np.float32), labs_test_hlt.astype(np.float32))
+    ds_train_concat = b.JetDataset(feat_concat_std[train_idx], mask_concat[train_idx], labels[train_idx])
+    ds_val_concat = b.JetDataset(feat_concat_std[val_idx], mask_concat[val_idx], labels[val_idx])
+    ds_test_concat = b.JetDataset(feat_concat_std[test_idx], mask_concat[test_idx], labels[test_idx])
+    dl_train_concat = DataLoader(ds_train_concat, batch_size=bs_cls, shuffle=True, drop_last=True)
+    dl_val_concat = DataLoader(ds_val_concat, batch_size=bs_cls, shuffle=False)
+    dl_test_concat = DataLoader(ds_test_concat, batch_size=bs_cls, shuffle=False)
+
+    concat_teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
+    concat_teacher = b.train_single_view_classifier_auc(
+        concat_teacher,
+        dl_train_concat,
+        dl_val_concat,
+        device,
+        cfg["training"],
+        name="ConcatTeacher",
+    )
+    auc_concat_test, preds_concat_test, labs_concat_test = b.eval_classifier(concat_teacher, dl_test_concat, device)
+    auc_concat_val, preds_concat_val, labs_concat_val = b.eval_classifier(concat_teacher, dl_val_concat, device)
+
+    assert np.array_equal(labs_hlt_val.astype(np.float32), labs_concat_val.astype(np.float32))
+    assert np.array_equal(labs_hlt_test.astype(np.float32), labs_concat_test.astype(np.float32))
 
     hlt_thr_prob, hlt_thr_tpr, hlt_thr_fpr = threshold_at_target_tpr(
-        labs_val_baseline.astype(np.float32),
-        preds_baseline_val.astype(np.float64),
+        labs_hlt_val.astype(np.float32),
+        preds_hlt_val.astype(np.float64),
         float(args.stageA_target_tpr),
     )
     print(
@@ -738,17 +939,31 @@ def main() -> None:
     )
 
     print("\n" + "=" * 70)
-    print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN, STAGEWISE BEST RELOAD)")
+    print("STEP 2: STAGE A (CONCAT-TEACHER-GUIDED RECONSTRUCTOR PRETRAIN)")
     print("=" * 70)
-    ds_train_reco = b.StageAReconstructionDataset(
-        feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-        const_off[train_idx], masks_off[train_idx], labels[train_idx],
-        budget_merge_true[train_idx], budget_eff_true[train_idx],
+    ds_train_reco = StageAConcatTeacherDataset(
+        feat_hlt=feat_hlt_std[train_idx],
+        mask_hlt=hlt_mask[train_idx],
+        const_hlt=hlt_const[train_idx],
+        const_off=const_off[train_idx],
+        mask_off=masks_off[train_idx],
+        const_teacher=const_concat[train_idx],
+        mask_teacher=mask_concat[train_idx],
+        labels=labels[train_idx],
+        budget_merge_true=budget_merge_true[train_idx],
+        budget_eff_true=budget_eff_true[train_idx],
     )
-    ds_val_reco = b.StageAReconstructionDataset(
-        feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-        const_off[val_idx], masks_off[val_idx], labels[val_idx],
-        budget_merge_true[val_idx], budget_eff_true[val_idx],
+    ds_val_reco = StageAConcatTeacherDataset(
+        feat_hlt=feat_hlt_std[val_idx],
+        mask_hlt=hlt_mask[val_idx],
+        const_hlt=hlt_const[val_idx],
+        const_off=const_off[val_idx],
+        mask_off=masks_off[val_idx],
+        const_teacher=const_concat[val_idx],
+        mask_teacher=mask_concat[val_idx],
+        labels=labels[val_idx],
+        budget_merge_true=budget_merge_true[val_idx],
+        budget_eff_true=budget_eff_true[val_idx],
     )
     dl_train_reco = DataLoader(
         ds_train_reco,
@@ -768,18 +983,18 @@ def main() -> None:
 
     reconstructor = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
     b.BASE_CONFIG["loss"] = cfg["loss"]
-    reconstructor, reco_val_metrics = train_reconstructor_teacher_guided_stagewise_delta(
+    reconstructor, reco_val_metrics = train_reconstructor_concat_teacher_stagewise(
         model=reconstructor,
         train_loader=dl_train_reco,
         val_loader=dl_val_reco,
         device=device,
         train_cfg=cfg["reconstructor_training"],
         loss_cfg=cfg["loss"],
-        teacher_model=teacher,
+        teacher_model=concat_teacher,
         hlt_model=baseline,
         hlt_threshold_prob=float(hlt_thr_prob),
-        feat_means=means.astype(np.float32),
-        feat_stds=stds.astype(np.float32),
+        feat_means=means_concat.astype(np.float32),
+        feat_stds=stds_concat.astype(np.float32),
         kd_temperature=float(args.stageA_kd_temp),
         lambda_kd=float(args.stageA_lambda_kd),
         lambda_emb=float(args.stageA_lambda_emb),
@@ -799,18 +1014,18 @@ def main() -> None:
     )
 
     print("\n" + "=" * 70)
-    print("STEP 3: STAGE A SOFT-RECO EVALUATION")
+    print("STEP 3: CONCAT-TEACHER ON SOFT RECONSTRUCTED VIEW")
     print("=" * 70)
     auc_reco_teacher_val, preds_reco_teacher_val, labs_reco_val, fpr50_reco_teacher_val = eval_teacher_on_soft_reco_split(
         reconstructor=reconstructor,
-        teacher=teacher,
+        teacher=concat_teacher,
         feat_hlt_std=feat_hlt_std,
         hlt_mask=hlt_mask,
         hlt_const=hlt_const,
         labels=labels,
         split_idx=val_idx,
-        means=means,
-        stds=stds,
+        means=means_concat,
+        stds=stds_concat,
         device=device,
         batch_size=int(args.reco_eval_batch_size),
         weight_floor=float(args.reco_weight_threshold),
@@ -818,239 +1033,186 @@ def main() -> None:
     )
     auc_reco_teacher_test, preds_reco_teacher_test, labs_reco_test, fpr50_reco_teacher_test = eval_teacher_on_soft_reco_split(
         reconstructor=reconstructor,
-        teacher=teacher,
+        teacher=concat_teacher,
         feat_hlt_std=feat_hlt_std,
         hlt_mask=hlt_mask,
         hlt_const=hlt_const,
         labels=labels,
         split_idx=test_idx,
-        means=means,
-        stds=stds,
+        means=means_concat,
+        stds=stds_concat,
         device=device,
         batch_size=int(args.reco_eval_batch_size),
         weight_floor=float(args.reco_weight_threshold),
         target_tpr=float(args.report_target_tpr),
     )
 
-    assert np.array_equal(labs_reco_val.astype(np.float32), labs_val_teacher.astype(np.float32))
-    assert np.array_equal(labs_reco_test.astype(np.float32), labs_test_teacher.astype(np.float32))
+    print("\n" + "=" * 70)
+    print("STEP 4: CORRECTED-ONLY TAGGER (FROZEN STAGE-A RECONSTRUCTOR)")
+    print("=" * 70)
+    feat_corr_all, mask_corr_all = b.build_corrected_view_numpy(
+        reconstructor=reconstructor,
+        feat_hlt=feat_hlt_std,
+        mask_hlt=hlt_mask,
+        const_hlt=hlt_const,
+        device=device,
+        batch_size=int(bs_cls),
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=False,
+    )
 
-    corrected_only = None
-    auc_corr_val = float("nan")
-    auc_corr_test = float("nan")
-    preds_corr_val = None
-    preds_corr_test = None
-    fpr50_corr_val = float("nan")
-    fpr50_corr_test = float("nan")
-    combo_hlt_corr_valsel = None
-    combo_hlt_corr_oracle = None
+    ds_train_corr = b.JetDataset(feat_corr_all[train_idx], mask_corr_all[train_idx], labels[train_idx])
+    ds_val_corr = b.JetDataset(feat_corr_all[val_idx], mask_corr_all[val_idx], labels[val_idx])
+    ds_test_corr = b.JetDataset(feat_corr_all[test_idx], mask_corr_all[test_idx], labels[test_idx])
+    dl_train_corr = DataLoader(ds_train_corr, batch_size=bs_cls, shuffle=True, drop_last=True)
+    dl_val_corr = DataLoader(ds_val_corr, batch_size=bs_cls, shuffle=False)
+    dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
 
-    if bool(args.train_corrected_only_post_stageA):
-        print("\n" + "=" * 70)
-        print("STEP 4: CORRECTED-ONLY TAGGER (FROZEN STAGE-A RECONSTRUCTOR)")
-        print("=" * 70)
-        feat_corr_all, mask_corr_all = b.build_corrected_view_numpy(
-            reconstructor=reconstructor,
-            feat_hlt=feat_hlt_std,
-            mask_hlt=hlt_mask,
-            const_hlt=hlt_const,
-            device=device,
-            batch_size=int(BS),
-            corrected_weight_floor=float(args.reco_weight_threshold),
-            corrected_use_flags=False,
-        )
+    corrected_only = b.ParticleTransformer(input_dim=int(feat_corr_all.shape[-1]), **cfg["model"]).to(device)
+    corrected_only = b.train_single_view_classifier_auc(
+        corrected_only,
+        dl_train_corr,
+        dl_val_corr,
+        device,
+        cfg["training"],
+        name="CorrectedOnly-PostStageA",
+    )
+    auc_corr_val, preds_corr_val, labs_corr_val = b.eval_classifier(corrected_only, dl_val_corr, device)
+    auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
 
-        ds_train_corr = b.JetDataset(feat_corr_all[train_idx], mask_corr_all[train_idx], labels[train_idx])
-        ds_val_corr = b.JetDataset(feat_corr_all[val_idx], mask_corr_all[val_idx], labels[val_idx])
-        ds_test_corr = b.JetDataset(feat_corr_all[test_idx], mask_corr_all[test_idx], labels[test_idx])
-        dl_train_corr = DataLoader(ds_train_corr, batch_size=BS, shuffle=True, drop_last=True)
-        dl_val_corr = DataLoader(ds_val_corr, batch_size=BS, shuffle=False)
-        dl_test_corr = DataLoader(ds_test_corr, batch_size=BS, shuffle=False)
+    assert np.array_equal(labs_reco_val.astype(np.float32), labs_hlt_val.astype(np.float32))
+    assert np.array_equal(labs_reco_test.astype(np.float32), labs_hlt_test.astype(np.float32))
+    assert np.array_equal(labs_corr_val.astype(np.float32), labs_hlt_val.astype(np.float32))
+    assert np.array_equal(labs_corr_test.astype(np.float32), labs_hlt_test.astype(np.float32))
 
-        corrected_only = b.ParticleTransformer(input_dim=int(feat_corr_all.shape[-1]), **cfg["model"]).to(device)
-        corrected_only = b.train_single_view_classifier_auc(
-            corrected_only,
-            dl_train_corr,
-            dl_val_corr,
-            device,
-            cfg["training"],
-            name="CorrectedOnly-PostStageA",
-        )
-        auc_corr_val, preds_corr_val, labs_corr_val = b.eval_classifier(corrected_only, dl_val_corr, device)
-        auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
+    fpr_concat, tpr_concat, _ = roc_curve(labs_concat_test, preds_concat_test)
+    fpr_hlt, tpr_hlt, _ = roc_curve(labs_hlt_test, preds_hlt_test)
+    fpr_reco, tpr_reco, _ = roc_curve(labs_reco_test, preds_reco_teacher_test)
+    fpr_corr, tpr_corr, _ = roc_curve(labs_corr_test, preds_corr_test)
 
-        assert np.array_equal(labs_corr_val.astype(np.float32), labs_val_teacher.astype(np.float32))
-        assert np.array_equal(labs_corr_test.astype(np.float32), labs_test_teacher.astype(np.float32))
-
-        fpr_corr_v, tpr_corr_v, _ = roc_curve(labs_corr_val, preds_corr_val)
-        fpr_corr_t, tpr_corr_t, _ = roc_curve(labs_corr_test, preds_corr_test)
-        fpr50_corr_val = float(b.fpr_at_target_tpr(fpr_corr_v, tpr_corr_v, 0.50))
-        fpr50_corr_test = float(b.fpr_at_target_tpr(fpr_corr_t, tpr_corr_t, 0.50))
-
-        combo_hlt_corr_valsel = b.select_weighted_combo_on_val_and_eval_test(
-            labels_val=labs_val_teacher.astype(np.float32),
-            preds_a_val=preds_baseline_val,
-            preds_b_val=preds_corr_val,
-            labels_test=labs_test_teacher.astype(np.float32),
-            preds_a_test=preds_baseline,
-            preds_b_test=preds_corr_test,
-            name_a="hlt",
-            name_b="corrected_only",
-            target_tpr=float(args.report_target_tpr),
-            weight_step=float(args.combo_weight_step),
-        )
-        combo_hlt_corr_oracle = b.search_best_weighted_combo_at_tpr(
-            labels=labs_test_teacher.astype(np.float32),
-            preds_a=preds_baseline,
-            preds_b=preds_corr_test,
-            name_a="hlt",
-            name_b="corrected_only",
-            target_tpr=float(args.report_target_tpr),
-            weight_step=float(args.combo_weight_step),
-        )
-
-    overlap_model_preds = {
-        "hlt": preds_baseline,
-        "reco_teacher": preds_reco_teacher_test,
-    }
-    if preds_corr_test is not None:
-        overlap_model_preds["corrected_only"] = preds_corr_test
+    fpr50_concat = float(b.fpr_at_target_tpr(fpr_concat, tpr_concat, 0.50))
+    fpr50_hlt = float(b.fpr_at_target_tpr(fpr_hlt, tpr_hlt, 0.50))
+    fpr50_reco = float(b.fpr_at_target_tpr(fpr_reco, tpr_reco, 0.50))
+    fpr50_corr = float(b.fpr_at_target_tpr(fpr_corr, tpr_corr, 0.50))
 
     overlap_report = b.build_overlap_report_at_tpr(
-        labels=labs_reco_test.astype(np.float32),
-        model_preds=overlap_model_preds,
+        labels=labs_hlt_test.astype(np.float32),
+        model_preds={
+            "hlt": preds_hlt_test,
+            "concat_teacher": preds_concat_test,
+            "reco_teacher_soft": preds_reco_teacher_test,
+            "corrected_only": preds_corr_test,
+        },
         target_tpr=float(args.report_target_tpr),
     )
-    best_combo_valsel = b.select_weighted_combo_on_val_and_eval_test(
-        labels_val=labs_val_teacher.astype(np.float32),
-        preds_a_val=preds_baseline_val,
+
+    combo_hlt_reco_valsel = b.select_weighted_combo_on_val_and_eval_test(
+        labels_val=labs_hlt_val.astype(np.float32),
+        preds_a_val=preds_hlt_val,
         preds_b_val=preds_reco_teacher_val,
-        labels_test=labs_reco_test.astype(np.float32),
-        preds_a_test=preds_baseline,
+        labels_test=labs_hlt_test.astype(np.float32),
+        preds_a_test=preds_hlt_test,
         preds_b_test=preds_reco_teacher_test,
         name_a="hlt",
-        name_b="reco_teacher",
+        name_b="reco_teacher_soft",
         target_tpr=float(args.report_target_tpr),
         weight_step=float(args.combo_weight_step),
     )
-    best_combo_test_oracle = b.search_best_weighted_combo_at_tpr(
-        labels=labs_reco_test.astype(np.float32),
-        preds_a=preds_baseline,
+    combo_hlt_reco_oracle = b.search_best_weighted_combo_at_tpr(
+        labels=labs_hlt_test.astype(np.float32),
+        preds_a=preds_hlt_test,
         preds_b=preds_reco_teacher_test,
         name_a="hlt",
-        name_b="reco_teacher",
+        name_b="reco_teacher_soft",
         target_tpr=float(args.report_target_tpr),
         weight_step=float(args.combo_weight_step),
     )
 
-    fpr_t, tpr_t, _ = roc_curve(labs_test_teacher, preds_teacher)
-    fpr_b, tpr_b, _ = roc_curve(labs_test_teacher, preds_baseline)
-    fpr_r, tpr_r, _ = roc_curve(labs_reco_test, preds_reco_teacher_test)
-    fpr50_teacher = float(b.fpr_at_target_tpr(fpr_t, tpr_t, 0.50))
-    fpr50_hlt = float(b.fpr_at_target_tpr(fpr_b, tpr_b, 0.50))
-    fpr50_reco = float(b.fpr_at_target_tpr(fpr_r, tpr_r, 0.50))
+    combo_hlt_corr_valsel = b.select_weighted_combo_on_val_and_eval_test(
+        labels_val=labs_hlt_val.astype(np.float32),
+        preds_a_val=preds_hlt_val,
+        preds_b_val=preds_corr_val,
+        labels_test=labs_hlt_test.astype(np.float32),
+        preds_a_test=preds_hlt_test,
+        preds_b_test=preds_corr_test,
+        name_a="hlt",
+        name_b="corrected_only",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+    combo_hlt_corr_oracle = b.search_best_weighted_combo_at_tpr(
+        labels=labs_hlt_test.astype(np.float32),
+        preds_a=preds_hlt_test,
+        preds_b=preds_corr_test,
+        name_a="hlt",
+        name_b="corrected_only",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
 
     print("\n" + "=" * 70)
-    print("FINAL STAGE-A ONLY EVALUATION")
+    print("FINAL EVALUATION")
     print("=" * 70)
-    print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
-    print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
-    print(f"RecoTeacher Soft AUC (val/test): {auc_reco_teacher_val:.4f} / {auc_reco_teacher_test:.4f}")
-    print(f"FPR@50 Teacher/HLT/RecoTeacherSoft: {fpr50_teacher:.6f} / {fpr50_hlt:.6f} / {fpr50_reco:.6f}")
-    if preds_corr_test is not None:
-        print(f"CorrectedOnly AUC (val/test): {auc_corr_val:.4f} / {auc_corr_test:.4f}")
-        print(f"FPR@50 CorrectedOnly (val/test): {fpr50_corr_val:.6f} / {fpr50_corr_test:.6f}")
-    pair = overlap_report["pairs"].get("hlt__reco_teacher", {})
+    print(f"HLT baseline AUC (val/test): {auc_hlt_val:.4f} / {auc_hlt_test:.4f}")
+    print(f"ConcatTeacher AUC (val/test): {auc_concat_val:.4f} / {auc_concat_test:.4f}")
+    print(f"RecoTeacherSoft AUC (val/test): {auc_reco_teacher_val:.4f} / {auc_reco_teacher_test:.4f}")
+    print(f"CorrectedOnly AUC (val/test): {auc_corr_val:.4f} / {auc_corr_test:.4f}")
+    print(f"FPR@50 HLT / ConcatTeacher / RecoTeacherSoft / CorrectedOnly: {fpr50_hlt:.6f} / {fpr50_concat:.6f} / {fpr50_reco:.6f} / {fpr50_corr:.6f}")
+    pair = overlap_report["pairs"].get("hlt__reco_teacher_soft", {})
     if not pair:
-        pair = overlap_report["pairs"].get("reco_teacher__hlt", {})
+        pair = overlap_report["pairs"].get("reco_teacher_soft__hlt", {})
     print(
-        f"TP overlap @TPR={float(args.report_target_tpr):.2f} (HLT vs RecoTeacher): "
+        f"TP overlap @TPR={float(args.report_target_tpr):.2f} (HLT vs RecoTeacherSoft): "
         f"{int(pair.get('overlap_tp_count', 0))} shared TP | "
-        f"overlap frac of HLT TP={float(pair.get('overlap_tp_frac_of_a_tp', float('nan'))):.3f}, "
-        f"of RecoTeacher TP={float(pair.get('overlap_tp_frac_of_b_tp', float('nan'))):.3f}"
-    )
-    print(
-        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (VAL-selected -> TEST): "
-        f"w_hlt={best_combo_valsel['test_eval']['w_a']:.3f}, "
-        f"w_reco={best_combo_valsel['test_eval']['w_b']:.3f}, "
-        f"FPR_test={best_combo_valsel['test_eval']['fpr']:.6f}"
-    )
-    print(
-        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (TEST post-hoc): "
-        f"w_hlt={best_combo_test_oracle['w_a']:.3f}, "
-        f"w_reco={best_combo_test_oracle['w_b']:.3f}, "
-        f"FPR={best_combo_test_oracle['fpr']:.6f}"
-    )
-    if combo_hlt_corr_valsel is not None and combo_hlt_corr_oracle is not None:
-        print(
-            f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+CorrectedOnly, VAL-selected -> TEST): "
-            f"w_hlt={combo_hlt_corr_valsel['test_eval']['w_a']:.3f}, "
-            f"w_corr={combo_hlt_corr_valsel['test_eval']['w_b']:.3f}, "
-            f"FPR_test={combo_hlt_corr_valsel['test_eval']['fpr']:.6f}"
-        )
-        print(
-            f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+CorrectedOnly, TEST post-hoc): "
-            f"w_hlt={combo_hlt_corr_oracle['w_a']:.3f}, "
-            f"w_corr={combo_hlt_corr_oracle['w_b']:.3f}, "
-            f"FPR={combo_hlt_corr_oracle['fpr']:.6f}"
-        )
-
-    preds_corr_val_out = (
-        np.asarray(preds_corr_val, dtype=np.float64)
-        if preds_corr_val is not None
-        else np.zeros(0, dtype=np.float64)
-    )
-    preds_corr_test_out = (
-        np.asarray(preds_corr_test, dtype=np.float64)
-        if preds_corr_test is not None
-        else np.zeros(0, dtype=np.float64)
+        f"overlap frac HLT={float(pair.get('overlap_tp_frac_of_a_tp', float('nan'))):.3f}, "
+        f"RecoTeacherSoft={float(pair.get('overlap_tp_frac_of_b_tp', float('nan'))):.3f}"
     )
 
     np.savez_compressed(
-        save_root / "stageA_only_scores.npz",
-        labels_val=labs_val_teacher.astype(np.float32),
-        labels_test=labs_test_teacher.astype(np.float32),
-        preds_teacher_val=preds_teacher_val.astype(np.float64),
-        preds_teacher_test=preds_teacher.astype(np.float64),
-        preds_hlt_val=preds_baseline_val.astype(np.float64),
-        preds_hlt_test=preds_baseline.astype(np.float64),
+        save_root / "concat_teacher_stageA_scores.npz",
+        labels_val=labs_hlt_val.astype(np.float32),
+        labels_test=labs_hlt_test.astype(np.float32),
+        preds_hlt_val=preds_hlt_val.astype(np.float64),
+        preds_hlt_test=preds_hlt_test.astype(np.float64),
+        preds_concat_teacher_val=preds_concat_val.astype(np.float64),
+        preds_concat_teacher_test=preds_concat_test.astype(np.float64),
         preds_reco_teacher_val=preds_reco_teacher_val.astype(np.float64),
         preds_reco_teacher_test=preds_reco_teacher_test.astype(np.float64),
-        preds_corrected_only_val=preds_corr_val_out,
-        preds_corrected_only_test=preds_corr_test_out,
-        auc_teacher_val=float(auc_teacher_val),
-        auc_teacher_test=float(auc_teacher),
-        auc_hlt_val=float(auc_baseline_val),
-        auc_hlt_test=float(auc_baseline),
+        preds_corrected_only_val=preds_corr_val.astype(np.float64),
+        preds_corrected_only_test=preds_corr_test.astype(np.float64),
+        auc_hlt_val=float(auc_hlt_val),
+        auc_hlt_test=float(auc_hlt_test),
+        auc_concat_teacher_val=float(auc_concat_val),
+        auc_concat_teacher_test=float(auc_concat_test),
         auc_reco_teacher_val=float(auc_reco_teacher_val),
         auc_reco_teacher_test=float(auc_reco_teacher_test),
         auc_corrected_only_val=float(auc_corr_val),
         auc_corrected_only_test=float(auc_corr_test),
-        fpr50_teacher=float(fpr50_teacher),
         fpr50_hlt=float(fpr50_hlt),
+        fpr50_concat_teacher=float(fpr50_concat),
         fpr50_reco_teacher=float(fpr50_reco),
-        fpr50_corrected_only_val=float(fpr50_corr_val),
-        fpr50_corrected_only_test=float(fpr50_corr_test),
-        has_corrected_only=bool(preds_corr_test is not None),
+        fpr50_corrected_only=float(fpr50_corr),
         target_tpr=float(args.report_target_tpr),
     )
 
-    with open(save_root / "stageA_only_metrics.json", "w", encoding="utf-8") as f:
+    with open(save_root / "concat_teacher_stageA_metrics.json", "w", encoding="utf-8") as f:
         json.dump(
             {
-                "variant": "stageA_only_recoteacher_delta",
+                "variant": "concat_teacher_stageA_then_corrected",
                 "rho": float(rho),
+                "max_concat_constits": int(max_concat_constits),
                 "stageA_reconstructor": reco_val_metrics,
-                "teacher": {
-                    "auc_val": float(auc_teacher_val),
-                    "auc_test": float(auc_teacher),
-                },
                 "hlt": {
-                    "auc_val": float(auc_baseline_val),
-                    "auc_test": float(auc_baseline),
+                    "auc_val": float(auc_hlt_val),
+                    "auc_test": float(auc_hlt_test),
                     "delta_ref_threshold_prob": float(hlt_thr_prob),
                     "delta_ref_val_tpr": float(hlt_thr_tpr),
                     "delta_ref_val_fpr": float(hlt_thr_fpr),
+                },
+                "concat_teacher": {
+                    "auc_val": float(auc_concat_val),
+                    "auc_test": float(auc_concat_test),
+                    "fpr50_test": float(fpr50_concat),
                 },
                 "reco_teacher_soft": {
                     "auc_val": float(auc_reco_teacher_val),
@@ -1059,15 +1221,13 @@ def main() -> None:
                     "fpr50_test": float(fpr50_reco_teacher_test),
                 },
                 "corrected_only": {
-                    "enabled": bool(preds_corr_test is not None),
                     "auc_val": float(auc_corr_val),
                     "auc_test": float(auc_corr_test),
-                    "fpr50_val": float(fpr50_corr_val),
-                    "fpr50_test": float(fpr50_corr_test),
+                    "fpr50_test": float(fpr50_corr),
                 },
                 "overlap_report_tpr": overlap_report,
-                "best_combo_hlt_reco_val_selected_eval_test": best_combo_valsel,
-                "best_combo_hlt_reco_test_posthoc": best_combo_test_oracle,
+                "best_combo_hlt_reco_val_selected_eval_test": combo_hlt_reco_valsel,
+                "best_combo_hlt_reco_test_posthoc": combo_hlt_reco_oracle,
                 "best_combo_hlt_corrected_val_selected_eval_test": combo_hlt_corr_valsel,
                 "best_combo_hlt_corrected_test_posthoc": combo_hlt_corr_oracle,
             },
@@ -1079,14 +1239,13 @@ def main() -> None:
         json.dump({"config": cfg["hlt_effects"], "stats": hlt_stats}, f, indent=2)
 
     if not args.skip_save_models:
-        torch.save({"model": teacher.state_dict(), "auc": float(auc_teacher)}, save_root / "teacher.pt")
-        torch.save({"model": baseline.state_dict(), "auc": float(auc_baseline)}, save_root / "baseline.pt")
+        torch.save({"model": baseline.state_dict(), "auc": float(auc_hlt_test)}, save_root / "baseline.pt")
+        torch.save({"model": concat_teacher.state_dict(), "auc": float(auc_concat_test)}, save_root / "concat_teacher.pt")
         torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor_stageA.pt")
         torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor.pt")
-        if corrected_only is not None:
-            torch.save({"model": corrected_only.state_dict(), "auc": float(auc_corr_test)}, save_root / "corrected_only_tagger.pt")
+        torch.save({"model": corrected_only.state_dict(), "auc": float(auc_corr_test)}, save_root / "corrected_only_tagger.pt")
 
-    print(f"\nSaved Stage-A only RecoTeacher results to: {save_root}")
+    print(f"\nSaved concat-teacher Stage-A + corrected-only results to: {save_root}")
 
 
 if __name__ == "__main__":
