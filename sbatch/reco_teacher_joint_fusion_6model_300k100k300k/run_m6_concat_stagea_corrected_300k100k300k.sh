@@ -71,11 +71,26 @@ CMD=(
   --added_target_scale 0.90
   --report_target_tpr 0.50
   --combo_weight_step 0.01
+  --joint_select_metric auc
+  --stageB_epochs 45
+  --stageB_patience 12
+  --stageB_min_epochs 12
+  --stageB_lr_dual 4e-4
+  --stageB_lambda_rank 0.0
+  --stageB_lambda_cons 0.0
+  --stageC_epochs 65
+  --stageC_patience 14
+  --stageC_min_epochs 25
+  --stageC_lr_dual 2e-4
+  --stageC_lr_reco 1e-4
+  --stageC_lambda_reco 0.4
+  --stageC_lambda_rank 0.0
+  --stageC_lambda_cons 0.06
   --device "${DEVICE}"
 )
 
 echo "============================================================"
-echo "Model-6 Concat-teacher StageA + Corrected-only"
+echo "Model-6 Concat-teacher StageA + corrected-only/dual pre+post joint"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}"
 echo "============================================================"

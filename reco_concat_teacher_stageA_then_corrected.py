@@ -9,6 +9,8 @@ ConcatTeacher-guided Stage-A reconstructor pipeline:
    - Teacher KD/embedding/token losses use ConcatTeacher as target signal.
    - Stage-scale curriculum with phase-best reload is supported.
 3) Freeze reconstructor and train corrected-only top tagger (single-view, no dual-view).
+4) Joint-finetune corrected-only path (reconstructor + corrected-only head), and report pre/post.
+5) Train dual-view tagger on frozen Stage-A reconstructor outputs, then joint-finetune, and report pre/post.
 
 Outputs include val/test score arrays, overlap reports, and combo metrics.
 """
@@ -671,6 +673,381 @@ def train_reconstructor_concat_teacher_stagewise(
     return model, best_global_metrics
 
 
+
+def _build_concat_teacher_batch_torch(
+    const_off: torch.Tensor,
+    mask_off: torch.Tensor,
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    max_concat_constits: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    const_cat = torch.cat([const_off, const_hlt], dim=1)
+    mask_cat = torch.cat([mask_off, mask_hlt], dim=1)
+
+    full_l = int(const_cat.shape[1])
+    out_l = int(max_concat_constits)
+    if out_l <= 0:
+        out_l = full_l
+
+    if out_l < full_l:
+        const_cat = const_cat[:, :out_l, :]
+        mask_cat = mask_cat[:, :out_l]
+    elif out_l > full_l:
+        n = int(const_cat.shape[0])
+        pad_const = torch.zeros((n, out_l - full_l, const_cat.shape[2]), dtype=const_cat.dtype, device=const_cat.device)
+        pad_mask = torch.zeros((n, out_l - full_l), dtype=torch.bool, device=const_cat.device)
+        const_cat = torch.cat([const_cat, pad_const], dim=1)
+        mask_cat = torch.cat([mask_cat, pad_mask], dim=1)
+
+    const_cat = const_cat * mask_cat.unsqueeze(-1).float()
+    return const_cat, mask_cat
+
+
+@torch.no_grad()
+def eval_corrected_joint_model(
+    reconstructor: b.OfflineReconstructor,
+    corrected_model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    corrected_weight_floor: float,
+    corrected_use_flags: bool = False,
+) -> Tuple[float, np.ndarray, np.ndarray, float]:
+    corrected_model.eval()
+    reconstructor.eval()
+
+    preds: List[np.ndarray] = []
+    labs: List[np.ndarray] = []
+    for batch in loader:
+        feat_hlt_reco = batch["feat_hlt_reco"].to(device)
+        mask_hlt = batch["mask_hlt"].to(device)
+        const_hlt = batch["const_hlt"].to(device)
+        y = batch["label"].to(device)
+
+        reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+        feat_corr, mask_corr = b.build_soft_corrected_view(
+            reco_out,
+            weight_floor=float(corrected_weight_floor),
+            scale_features_by_weight=True,
+            include_flags=bool(corrected_use_flags),
+        )
+        logits = corrected_model(feat_corr, mask_corr).squeeze(1)
+        p = torch.sigmoid(logits)
+        preds.append(p.detach().cpu().numpy().astype(np.float64))
+        labs.append(y.detach().cpu().numpy().astype(np.float32))
+
+    preds_np = np.concatenate(preds) if preds else np.zeros(0, dtype=np.float64)
+    labs_np = np.concatenate(labs) if labs else np.zeros(0, dtype=np.float32)
+    if preds_np.size == 0:
+        return float("nan"), preds_np, labs_np, float("nan")
+    auc = float(roc_auc_score(labs_np, preds_np)) if len(np.unique(labs_np)) > 1 else float("nan")
+    fpr, tpr, _ = roc_curve(labs_np, preds_np)
+    fpr50 = float(b.fpr_at_target_tpr(fpr, tpr, 0.50))
+    return auc, preds_np, labs_np, fpr50
+
+
+def _combo_reports(
+    labels_val: np.ndarray,
+    labels_test: np.ndarray,
+    preds_hlt_val: np.ndarray,
+    preds_hlt_test: np.ndarray,
+    preds_other_val: np.ndarray,
+    preds_other_test: np.ndarray,
+    other_name: str,
+    target_tpr: float,
+    weight_step: float,
+) -> Tuple[Dict, Dict]:
+    valsel = b.select_weighted_combo_on_val_and_eval_test(
+        labels_val=labels_val,
+        preds_a_val=preds_hlt_val,
+        preds_b_val=preds_other_val,
+        labels_test=labels_test,
+        preds_a_test=preds_hlt_test,
+        preds_b_test=preds_other_test,
+        name_a="hlt",
+        name_b=other_name,
+        target_tpr=float(target_tpr),
+        weight_step=float(weight_step),
+    )
+    oracle = b.search_best_weighted_combo_at_tpr(
+        labels=labels_test,
+        preds_a=preds_hlt_test,
+        preds_b=preds_other_test,
+        name_a="hlt",
+        name_b=other_name,
+        target_tpr=float(target_tpr),
+        weight_step=float(weight_step),
+    )
+    return valsel, oracle
+
+
+def train_corrected_only_joint_concat(
+    reconstructor: b.OfflineReconstructor,
+    corrected_model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    stage_name: str,
+    freeze_reconstructor: bool,
+    epochs: int,
+    patience: int,
+    lr_model: float,
+    lr_reco: float,
+    weight_decay: float,
+    warmup_epochs: int,
+    lambda_reco: float,
+    lambda_rank: float,
+    lambda_cons: float,
+    corrected_weight_floor: float,
+    corrected_use_flags: bool,
+    min_epochs: int,
+    select_metric: str,
+    max_concat_constits: int,
+    teacher_model: nn.Module | None = None,
+    feat_means: np.ndarray | None = None,
+    feat_stds: np.ndarray | None = None,
+    reco_kd_temperature: float = 2.5,
+    reco_lambda_kd: float = 1.0,
+    reco_lambda_emb: float = 1.2,
+    reco_lambda_tok: float = 0.6,
+    reco_lambda_phys: float = 0.2,
+    reco_lambda_budget_hinge: float = 0.03,
+    reco_budget_eps: float = 0.015,
+    reco_budget_weight_floor: float = 1e-4,
+    reco_normalize_loss_terms: bool = True,
+    reco_loss_norm_ema_decay: float = 0.98,
+    reco_loss_norm_eps: float = 1e-6,
+) -> Tuple[b.OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
+    for p in reconstructor.parameters():
+        p.requires_grad = not freeze_reconstructor
+
+    params = [{"params": corrected_model.parameters(), "lr": float(lr_model)}]
+    if not freeze_reconstructor:
+        params.append({"params": reconstructor.parameters(), "lr": float(lr_reco)})
+
+    opt = torch.optim.AdamW(params, lr=float(lr_model), weight_decay=float(weight_decay))
+    sch = b.get_scheduler(opt, int(warmup_epochs), int(epochs))
+
+    means_t = None
+    stds_t = None
+    reco_loss_ema_state = None
+    if teacher_model is not None and feat_means is not None and feat_stds is not None:
+        teacher_model.eval()
+        for p_t in teacher_model.parameters():
+            p_t.requires_grad_(False)
+        means_t = torch.tensor(feat_means, dtype=torch.float32, device=device)
+        stds_t = torch.tensor(np.clip(feat_stds, 1e-6, None), dtype=torch.float32, device=device)
+        reco_loss_ema_state = {
+            "kd": 1.0,
+            "emb": 1.0,
+            "tok": 1.0,
+            "phys": 1.0,
+            "budget": 1.0,
+        }
+
+    best_state_model_sel = None
+    best_state_reco_sel = None
+    best_state_model_auc = None
+    best_state_reco_auc = None
+    best_state_model_fpr = None
+    best_state_reco_fpr = None
+
+    best_val_fpr50 = float("inf")
+    best_val_auc = float("-inf")
+    best_sel_score = float("inf") if str(select_metric).lower() == "fpr50" else float("-inf")
+    sel_val_fpr50 = float("nan")
+    sel_val_auc = float("nan")
+    no_improve = 0
+
+    for ep in range(int(epochs)):
+        corrected_model.train()
+        if freeze_reconstructor:
+            reconstructor.eval()
+        else:
+            reconstructor.train()
+
+        tr_loss = tr_cls = tr_rank = tr_reco = tr_cons = 0.0
+        n_tr = 0
+
+        for batch in train_loader:
+            feat_hlt_reco = batch["feat_hlt_reco"].to(device)
+            mask_hlt = batch["mask_hlt"].to(device)
+            const_hlt = batch["const_hlt"].to(device)
+            const_off = batch["const_off"].to(device)
+            mask_off = batch["mask_off"].to(device)
+            b_merge = batch["budget_merge_true"].to(device)
+            b_eff = batch["budget_eff_true"].to(device)
+            y = batch["label"].to(device)
+
+            opt.zero_grad()
+
+            if freeze_reconstructor:
+                with torch.no_grad():
+                    reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+            else:
+                reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+
+            feat_corr, mask_corr = b.build_soft_corrected_view(
+                reco_out,
+                weight_floor=float(corrected_weight_floor),
+                scale_features_by_weight=True,
+                include_flags=bool(corrected_use_flags),
+            )
+            logits = corrected_model(feat_corr, mask_corr).squeeze(1)
+
+            loss_cls = F.binary_cross_entropy_with_logits(logits, y)
+            loss_rank = b.low_fpr_surrogate_loss(logits, y, target_tpr=0.50, tau=0.05)
+            loss_cons = reco_out["child_weight"].mean() + reco_out["gen_weight"].mean()
+
+            if float(lambda_reco) > 0.0 and teacher_model is not None and means_t is not None and stds_t is not None:
+                const_teacher, mask_teacher = _build_concat_teacher_batch_torch(
+                    const_off=const_off,
+                    mask_off=mask_off,
+                    const_hlt=const_hlt,
+                    mask_hlt=mask_hlt,
+                    max_concat_constits=int(max_concat_constits),
+                )
+                reco_losses = _compute_concat_teacher_guided_reco_losses(
+                    reco_out=reco_out,
+                    const_hlt=const_hlt,
+                    mask_hlt=mask_hlt,
+                    const_off=const_off,
+                    mask_off=mask_off,
+                    const_teacher=const_teacher,
+                    mask_teacher=mask_teacher,
+                    budget_merge_true=b_merge,
+                    budget_eff_true=b_eff,
+                    teacher_model=teacher_model,
+                    means_t=means_t,
+                    stds_t=stds_t,
+                    loss_cfg=b.BASE_CONFIG["loss"],
+                    kd_temperature=float(max(reco_kd_temperature, 1e-3)),
+                    budget_eps=float(max(reco_budget_eps, 0.0)),
+                    budget_weight_floor=float(max(reco_budget_weight_floor, 0.0)),
+                )
+                loss_reco, _, reco_loss_ema_state = b._compose_teacher_guided_reco_total(
+                    losses_raw=reco_losses,
+                    ema_state=reco_loss_ema_state,
+                    normalize_terms=bool(reco_normalize_loss_terms),
+                    ema_decay=float(np.clip(reco_loss_norm_ema_decay, 0.0, 0.9999)),
+                    norm_eps=float(max(reco_loss_norm_eps, 1e-12)),
+                    w_logit=float(max(reco_lambda_kd, 0.0)),
+                    w_emb=float(max(reco_lambda_emb, 0.0)),
+                    w_tok=float(max(reco_lambda_tok, 0.0)),
+                    w_phys=float(max(reco_lambda_phys, 0.0)),
+                    w_budget=float(max(reco_lambda_budget_hinge, 0.0)),
+                    update_ema=True,
+                )
+            elif float(lambda_reco) > 0.0:
+                reco_losses = b.compute_reconstruction_losses(
+                    reco_out,
+                    const_hlt,
+                    mask_hlt,
+                    const_off,
+                    mask_off,
+                    b_merge,
+                    b_eff,
+                    b.BASE_CONFIG["loss"],
+                )
+                loss_reco = reco_losses["total"]
+            else:
+                loss_reco = torch.zeros((), device=device)
+
+            loss = (
+                loss_cls
+                + float(lambda_rank) * loss_rank
+                + float(lambda_reco) * loss_reco
+                + float(lambda_cons) * loss_cons
+            )
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(corrected_model.parameters(), 1.0)
+            if not freeze_reconstructor:
+                torch.nn.utils.clip_grad_norm_(reconstructor.parameters(), 1.0)
+            opt.step()
+
+            bs = feat_hlt_reco.size(0)
+            tr_loss += float(loss.item()) * bs
+            tr_cls += float(loss_cls.item()) * bs
+            tr_rank += float(loss_rank.item()) * bs
+            tr_reco += float(loss_reco.item()) * bs
+            tr_cons += float(loss_cons.item()) * bs
+            n_tr += bs
+
+        sch.step()
+
+        tr_loss /= max(n_tr, 1)
+        tr_cls /= max(n_tr, 1)
+        tr_rank /= max(n_tr, 1)
+        tr_reco /= max(n_tr, 1)
+        tr_cons /= max(n_tr, 1)
+
+        va_auc, _, _, va_fpr50 = eval_corrected_joint_model(
+            reconstructor=reconstructor,
+            corrected_model=corrected_model,
+            loader=val_loader,
+            device=device,
+            corrected_weight_floor=float(corrected_weight_floor),
+            corrected_use_flags=bool(corrected_use_flags),
+        )
+
+        if np.isfinite(va_fpr50) and float(va_fpr50) < best_val_fpr50:
+            best_val_fpr50 = float(va_fpr50)
+            best_state_model_fpr = {k: v.detach().cpu().clone() for k, v in corrected_model.state_dict().items()}
+            best_state_reco_fpr = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+        if np.isfinite(va_auc) and float(va_auc) > best_val_auc:
+            best_val_auc = float(va_auc)
+            best_state_model_auc = {k: v.detach().cpu().clone() for k, v in corrected_model.state_dict().items()}
+            best_state_reco_auc = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+
+        if str(select_metric).lower() == "auc":
+            improved = np.isfinite(va_auc) and (float(va_auc) > best_sel_score)
+            current_score = float(va_auc) if np.isfinite(va_auc) else float("-inf")
+        else:
+            improved = np.isfinite(va_fpr50) and (float(va_fpr50) < best_sel_score)
+            current_score = float(va_fpr50) if np.isfinite(va_fpr50) else float("inf")
+
+        if improved:
+            best_sel_score = current_score
+            sel_val_fpr50 = float(va_fpr50)
+            sel_val_auc = float(va_auc)
+            best_state_model_sel = {k: v.detach().cpu().clone() for k, v in corrected_model.state_dict().items()}
+            best_state_reco_sel = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        print_every = 1 if str(stage_name).startswith("StageC") else 5
+        if (ep + 1) % print_every == 0:
+            print(
+                f"{stage_name} ep {ep+1}: train_loss={tr_loss:.4f} "
+                f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}) | "
+                f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, "
+                f"select={str(select_metric).lower()}, best_sel={best_sel_score:.6f}"
+            )
+
+        if (ep + 1) >= int(min_epochs) and no_improve >= int(patience):
+            print(f"Early stopping {stage_name} at epoch {ep+1}")
+            break
+
+    if best_state_model_sel is not None:
+        corrected_model.load_state_dict(best_state_model_sel)
+    if best_state_reco_sel is not None:
+        reconstructor.load_state_dict(best_state_reco_sel)
+
+    metrics = {
+        "selection_metric": str(select_metric).lower(),
+        "selected_val_fpr50": float(sel_val_fpr50),
+        "selected_val_auc": float(sel_val_auc),
+        "best_val_fpr50_seen": float(best_val_fpr50),
+        "best_val_auc_seen": float(best_val_auc),
+    }
+    state_pack = {
+        "selected": {"model": best_state_model_sel, "reco": best_state_reco_sel},
+        "auc": {"model": best_state_model_auc, "reco": best_state_reco_auc},
+        "fpr50": {"model": best_state_model_fpr, "reco": best_state_reco_fpr},
+    }
+    return reconstructor, corrected_model, metrics, state_pack
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_path", type=str, default="./data")
@@ -721,6 +1098,24 @@ def main() -> None:
 
     ap.add_argument("--report_target_tpr", type=float, default=0.50)
     ap.add_argument("--combo_weight_step", type=float, default=0.01)
+    ap.add_argument("--joint_select_metric", type=str, default="auc", choices=["auc", "fpr50"])
+    ap.add_argument("--stageB_epochs", type=int, default=45)
+    ap.add_argument("--stageB_patience", type=int, default=12)
+    ap.add_argument("--stageB_min_epochs", type=int, default=12)
+    ap.add_argument("--stageB_lr_dual", type=float, default=4e-4)
+    ap.add_argument("--stageB_lambda_rank", type=float, default=0.0)
+    ap.add_argument("--stageB_lambda_cons", type=float, default=0.0)
+
+    ap.add_argument("--stageC_epochs", type=int, default=65)
+    ap.add_argument("--stageC_patience", type=int, default=14)
+    ap.add_argument("--stageC_min_epochs", type=int, default=25)
+    ap.add_argument("--stageC_lr_dual", type=float, default=2e-4)
+    ap.add_argument("--stageC_lr_reco", type=float, default=1e-4)
+    ap.add_argument("--stageC_lambda_reco", type=float, default=0.4)
+    ap.add_argument("--stageC_lambda_rank", type=float, default=0.0)
+    ap.add_argument("--stageC_lambda_cons", type=float, default=0.06)
+
+    ap.add_argument("--use_corrected_flags", action="store_true")
     args = ap.parse_args()
 
     b.set_seed(int(args.seed))
@@ -1050,6 +1445,7 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("STEP 4: CORRECTED-ONLY TAGGER (FROZEN STAGE-A RECONSTRUCTOR)")
     print("=" * 70)
+    corrected_use_flags = bool(args.use_corrected_flags)
     feat_corr_all, mask_corr_all = b.build_corrected_view_numpy(
         reconstructor=reconstructor,
         feat_hlt=feat_hlt_std,
@@ -1058,7 +1454,7 @@ def main() -> None:
         device=device,
         batch_size=int(bs_cls),
         corrected_weight_floor=float(args.reco_weight_threshold),
-        corrected_use_flags=False,
+        corrected_use_flags=corrected_use_flags,
     )
 
     ds_train_corr = b.JetDataset(feat_corr_all[train_idx], mask_corr_all[train_idx], labels[train_idx])
@@ -1080,20 +1476,245 @@ def main() -> None:
     auc_corr_val, preds_corr_val, labs_corr_val = b.eval_classifier(corrected_only, dl_val_corr, device)
     auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
 
+    # Shared joint datasets (for corrected-only joint and dual-view branches).
+    ds_train_joint = b.JointDualDataset(
+        feat_hlt_std[train_idx], feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
+        const_off[train_idx], masks_off[train_idx],
+        budget_merge_true[train_idx], budget_eff_true[train_idx],
+        labels[train_idx],
+    )
+    ds_val_joint = b.JointDualDataset(
+        feat_hlt_std[val_idx], feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
+        const_off[val_idx], masks_off[val_idx],
+        budget_merge_true[val_idx], budget_eff_true[val_idx],
+        labels[val_idx],
+    )
+    ds_test_joint = b.JointDualDataset(
+        feat_hlt_std[test_idx], feat_hlt_std[test_idx], hlt_mask[test_idx], hlt_const[test_idx],
+        const_off[test_idx], masks_off[test_idx],
+        budget_merge_true[test_idx], budget_eff_true[test_idx],
+        labels[test_idx],
+    )
+
+    dl_train_joint = DataLoader(
+        ds_train_joint,
+        batch_size=bs_cls,
+        shuffle=True,
+        drop_last=True,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    dl_val_joint = DataLoader(
+        ds_val_joint,
+        batch_size=bs_cls,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+    dl_test_joint = DataLoader(
+        ds_test_joint,
+        batch_size=bs_cls,
+        shuffle=False,
+        num_workers=args.num_workers,
+        pin_memory=torch.cuda.is_available(),
+    )
+
+    stageA_reco_state = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+    corrected_only_pre_state = {k: v.detach().cpu().clone() for k, v in corrected_only.state_dict().items()}
+
+    print("\n" + "=" * 70)
+    print("STEP 5: CORRECTED-ONLY JOINT FINETUNE (PRE->POST)")
+    print("=" * 70)
+    reconstructor_corr_joint = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
+    reconstructor_corr_joint.load_state_dict(stageA_reco_state)
+    corrected_only_joint = b.ParticleTransformer(input_dim=int(feat_corr_all.shape[-1]), **cfg["model"]).to(device)
+    corrected_only_joint.load_state_dict(corrected_only_pre_state)
+
+    reconstructor_corr_joint, corrected_only_joint, corrected_joint_metrics, corrected_joint_states = train_corrected_only_joint_concat(
+        reconstructor=reconstructor_corr_joint,
+        corrected_model=corrected_only_joint,
+        train_loader=dl_train_joint,
+        val_loader=dl_val_joint,
+        device=device,
+        stage_name="StageC-CorrectedOnlyJoint",
+        freeze_reconstructor=False,
+        epochs=int(args.stageC_epochs),
+        patience=int(args.stageC_patience),
+        lr_model=float(args.stageC_lr_dual),
+        lr_reco=float(args.stageC_lr_reco),
+        weight_decay=float(cfg["training"]["weight_decay"]),
+        warmup_epochs=int(cfg["training"]["warmup_epochs"]),
+        lambda_reco=float(args.stageC_lambda_reco),
+        lambda_rank=float(args.stageC_lambda_rank),
+        lambda_cons=float(args.stageC_lambda_cons),
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+        min_epochs=int(args.stageC_min_epochs),
+        select_metric=str(args.joint_select_metric),
+        max_concat_constits=int(max_concat_constits),
+        teacher_model=concat_teacher,
+        feat_means=means_concat.astype(np.float32),
+        feat_stds=stds_concat.astype(np.float32),
+        reco_kd_temperature=float(args.stageA_kd_temp),
+        reco_lambda_kd=float(args.stageA_lambda_kd),
+        reco_lambda_emb=float(args.stageA_lambda_emb),
+        reco_lambda_tok=float(args.stageA_lambda_tok),
+        reco_lambda_phys=float(args.stageA_lambda_phys),
+        reco_lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
+        reco_budget_eps=float(args.stageA_budget_eps),
+        reco_budget_weight_floor=float(args.stageA_budget_weight_floor),
+        reco_normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
+        reco_loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
+        reco_loss_norm_eps=float(args.stageA_loss_norm_eps),
+    )
+
+    auc_corr_joint_val, preds_corr_joint_val, labs_corr_joint_val, fpr50_corr_joint_val = eval_corrected_joint_model(
+        reconstructor=reconstructor_corr_joint,
+        corrected_model=corrected_only_joint,
+        loader=dl_val_joint,
+        device=device,
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+    )
+    auc_corr_joint_test, preds_corr_joint_test, labs_corr_joint_test, fpr50_corr_joint_test = eval_corrected_joint_model(
+        reconstructor=reconstructor_corr_joint,
+        corrected_model=corrected_only_joint,
+        loader=dl_test_joint,
+        device=device,
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+    )
+
+    print("\n" + "=" * 70)
+    print("STEP 6: DUAL-VIEW PRETRAIN (FROZEN STAGE-A RECO) -> JOINT FINETUNE")
+    print("=" * 70)
+    reconstructor_dual = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
+    reconstructor_dual.load_state_dict(stageA_reco_state)
+
+    dual_input_dim_a = int(feat_hlt_std.shape[-1])
+    dual_input_dim_b = 12 if corrected_use_flags else 10
+    dual_model = b.DualViewCrossAttnClassifier(input_dim_a=dual_input_dim_a, input_dim_b=dual_input_dim_b, **cfg["model"]).to(device)
+
+    reconstructor_dual, dual_model, stageB_dual_metrics, stageB_dual_states = b.train_joint_dual(
+        reconstructor=reconstructor_dual,
+        dual_model=dual_model,
+        train_loader=dl_train_joint,
+        val_loader=dl_val_joint,
+        device=device,
+        stage_name="StageB-DualPretrain",
+        freeze_reconstructor=True,
+        epochs=int(args.stageB_epochs),
+        patience=int(args.stageB_patience),
+        lr_dual=float(args.stageB_lr_dual),
+        lr_reco=float(args.stageC_lr_reco),
+        weight_decay=float(cfg["training"]["weight_decay"]),
+        warmup_epochs=int(cfg["training"]["warmup_epochs"]),
+        lambda_reco=0.0,
+        lambda_rank=float(args.stageB_lambda_rank),
+        lambda_cons=float(args.stageB_lambda_cons),
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+        min_epochs=int(args.stageB_min_epochs),
+        select_metric=str(args.joint_select_metric),
+    )
+
+    auc_dual_pre_val, preds_dual_pre_val, labs_dual_pre_val, fpr50_dual_pre_val = b.eval_joint_model(
+        reconstructor_dual,
+        dual_model,
+        dl_val_joint,
+        device,
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+    )
+    auc_dual_pre_test, preds_dual_pre_test, labs_dual_pre_test, fpr50_dual_pre_test = b.eval_joint_model(
+        reconstructor_dual,
+        dual_model,
+        dl_test_joint,
+        device,
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+    )
+
+    reconstructor_dual, dual_model, stageC_dual_metrics, stageC_dual_states = b.train_joint_dual(
+        reconstructor=reconstructor_dual,
+        dual_model=dual_model,
+        train_loader=dl_train_joint,
+        val_loader=dl_val_joint,
+        device=device,
+        stage_name="StageC-DualJoint",
+        freeze_reconstructor=False,
+        epochs=int(args.stageC_epochs),
+        patience=int(args.stageC_patience),
+        lr_dual=float(args.stageC_lr_dual),
+        lr_reco=float(args.stageC_lr_reco),
+        weight_decay=float(cfg["training"]["weight_decay"]),
+        warmup_epochs=int(cfg["training"]["warmup_epochs"]),
+        lambda_reco=float(args.stageC_lambda_reco),
+        lambda_rank=float(args.stageC_lambda_rank),
+        lambda_cons=float(args.stageC_lambda_cons),
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+        min_epochs=int(args.stageC_min_epochs),
+        select_metric=str(args.joint_select_metric),
+        teacher_model=concat_teacher,
+        feat_means=means_concat.astype(np.float32),
+        feat_stds=stds_concat.astype(np.float32),
+        reco_kd_temperature=float(args.stageA_kd_temp),
+        reco_lambda_kd=float(args.stageA_lambda_kd),
+        reco_lambda_emb=float(args.stageA_lambda_emb),
+        reco_lambda_tok=float(args.stageA_lambda_tok),
+        reco_lambda_phys=float(args.stageA_lambda_phys),
+        reco_lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
+        reco_budget_eps=float(args.stageA_budget_eps),
+        reco_budget_weight_floor=float(args.stageA_budget_weight_floor),
+        reco_normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
+        reco_loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
+        reco_loss_norm_eps=float(args.stageA_loss_norm_eps),
+    )
+
+    auc_dual_joint_val, preds_dual_joint_val, labs_dual_joint_val, fpr50_dual_joint_val = b.eval_joint_model(
+        reconstructor_dual,
+        dual_model,
+        dl_val_joint,
+        device,
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+    )
+    auc_dual_joint_test, preds_dual_joint_test, labs_dual_joint_test, fpr50_dual_joint_test = b.eval_joint_model(
+        reconstructor_dual,
+        dual_model,
+        dl_test_joint,
+        device,
+        corrected_weight_floor=float(args.reco_weight_threshold),
+        corrected_use_flags=corrected_use_flags,
+    )
+
     assert np.array_equal(labs_reco_val.astype(np.float32), labs_hlt_val.astype(np.float32))
     assert np.array_equal(labs_reco_test.astype(np.float32), labs_hlt_test.astype(np.float32))
     assert np.array_equal(labs_corr_val.astype(np.float32), labs_hlt_val.astype(np.float32))
     assert np.array_equal(labs_corr_test.astype(np.float32), labs_hlt_test.astype(np.float32))
+    assert np.array_equal(labs_corr_joint_val.astype(np.float32), labs_hlt_val.astype(np.float32))
+    assert np.array_equal(labs_corr_joint_test.astype(np.float32), labs_hlt_test.astype(np.float32))
+    assert np.array_equal(labs_dual_pre_val.astype(np.float32), labs_hlt_val.astype(np.float32))
+    assert np.array_equal(labs_dual_pre_test.astype(np.float32), labs_hlt_test.astype(np.float32))
+    assert np.array_equal(labs_dual_joint_val.astype(np.float32), labs_hlt_val.astype(np.float32))
+    assert np.array_equal(labs_dual_joint_test.astype(np.float32), labs_hlt_test.astype(np.float32))
 
     fpr_concat, tpr_concat, _ = roc_curve(labs_concat_test, preds_concat_test)
     fpr_hlt, tpr_hlt, _ = roc_curve(labs_hlt_test, preds_hlt_test)
     fpr_reco, tpr_reco, _ = roc_curve(labs_reco_test, preds_reco_teacher_test)
     fpr_corr, tpr_corr, _ = roc_curve(labs_corr_test, preds_corr_test)
+    fpr_corr_joint, tpr_corr_joint, _ = roc_curve(labs_corr_joint_test, preds_corr_joint_test)
+    fpr_dual_pre, tpr_dual_pre, _ = roc_curve(labs_dual_pre_test, preds_dual_pre_test)
+    fpr_dual_joint, tpr_dual_joint, _ = roc_curve(labs_dual_joint_test, preds_dual_joint_test)
 
     fpr50_concat = float(b.fpr_at_target_tpr(fpr_concat, tpr_concat, 0.50))
     fpr50_hlt = float(b.fpr_at_target_tpr(fpr_hlt, tpr_hlt, 0.50))
     fpr50_reco = float(b.fpr_at_target_tpr(fpr_reco, tpr_reco, 0.50))
     fpr50_corr = float(b.fpr_at_target_tpr(fpr_corr, tpr_corr, 0.50))
+    fpr50_corr_joint = float(b.fpr_at_target_tpr(fpr_corr_joint, tpr_corr_joint, 0.50))
+    fpr50_dual_pre = float(b.fpr_at_target_tpr(fpr_dual_pre, tpr_dual_pre, 0.50))
+    fpr50_dual_joint = float(b.fpr_at_target_tpr(fpr_dual_joint, tpr_dual_joint, 0.50))
 
     overlap_report = b.build_overlap_report_at_tpr(
         labels=labs_hlt_test.astype(np.float32),
@@ -1102,50 +1723,65 @@ def main() -> None:
             "concat_teacher": preds_concat_test,
             "reco_teacher_soft": preds_reco_teacher_test,
             "corrected_only": preds_corr_test,
+            "corrected_only_joint": preds_corr_joint_test,
+            "dual_pre": preds_dual_pre_test,
+            "dual_joint": preds_dual_joint_test,
         },
         target_tpr=float(args.report_target_tpr),
     )
 
-    combo_hlt_reco_valsel = b.select_weighted_combo_on_val_and_eval_test(
+    combo_hlt_reco_valsel, combo_hlt_reco_oracle = _combo_reports(
         labels_val=labs_hlt_val.astype(np.float32),
-        preds_a_val=preds_hlt_val,
-        preds_b_val=preds_reco_teacher_val,
         labels_test=labs_hlt_test.astype(np.float32),
-        preds_a_test=preds_hlt_test,
-        preds_b_test=preds_reco_teacher_test,
-        name_a="hlt",
-        name_b="reco_teacher_soft",
+        preds_hlt_val=preds_hlt_val,
+        preds_hlt_test=preds_hlt_test,
+        preds_other_val=preds_reco_teacher_val,
+        preds_other_test=preds_reco_teacher_test,
+        other_name="reco_teacher_soft",
         target_tpr=float(args.report_target_tpr),
         weight_step=float(args.combo_weight_step),
     )
-    combo_hlt_reco_oracle = b.search_best_weighted_combo_at_tpr(
-        labels=labs_hlt_test.astype(np.float32),
-        preds_a=preds_hlt_test,
-        preds_b=preds_reco_teacher_test,
-        name_a="hlt",
-        name_b="reco_teacher_soft",
-        target_tpr=float(args.report_target_tpr),
-        weight_step=float(args.combo_weight_step),
-    )
-
-    combo_hlt_corr_valsel = b.select_weighted_combo_on_val_and_eval_test(
+    combo_hlt_corr_valsel, combo_hlt_corr_oracle = _combo_reports(
         labels_val=labs_hlt_val.astype(np.float32),
-        preds_a_val=preds_hlt_val,
-        preds_b_val=preds_corr_val,
         labels_test=labs_hlt_test.astype(np.float32),
-        preds_a_test=preds_hlt_test,
-        preds_b_test=preds_corr_test,
-        name_a="hlt",
-        name_b="corrected_only",
+        preds_hlt_val=preds_hlt_val,
+        preds_hlt_test=preds_hlt_test,
+        preds_other_val=preds_corr_val,
+        preds_other_test=preds_corr_test,
+        other_name="corrected_only",
         target_tpr=float(args.report_target_tpr),
         weight_step=float(args.combo_weight_step),
     )
-    combo_hlt_corr_oracle = b.search_best_weighted_combo_at_tpr(
-        labels=labs_hlt_test.astype(np.float32),
-        preds_a=preds_hlt_test,
-        preds_b=preds_corr_test,
-        name_a="hlt",
-        name_b="corrected_only",
+    combo_hlt_corr_joint_valsel, combo_hlt_corr_joint_oracle = _combo_reports(
+        labels_val=labs_hlt_val.astype(np.float32),
+        labels_test=labs_hlt_test.astype(np.float32),
+        preds_hlt_val=preds_hlt_val,
+        preds_hlt_test=preds_hlt_test,
+        preds_other_val=preds_corr_joint_val,
+        preds_other_test=preds_corr_joint_test,
+        other_name="corrected_only_joint",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+    combo_hlt_dual_pre_valsel, combo_hlt_dual_pre_oracle = _combo_reports(
+        labels_val=labs_hlt_val.astype(np.float32),
+        labels_test=labs_hlt_test.astype(np.float32),
+        preds_hlt_val=preds_hlt_val,
+        preds_hlt_test=preds_hlt_test,
+        preds_other_val=preds_dual_pre_val,
+        preds_other_test=preds_dual_pre_test,
+        other_name="dual_pre",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+    combo_hlt_dual_joint_valsel, combo_hlt_dual_joint_oracle = _combo_reports(
+        labels_val=labs_hlt_val.astype(np.float32),
+        labels_test=labs_hlt_test.astype(np.float32),
+        preds_hlt_val=preds_hlt_val,
+        preds_hlt_test=preds_hlt_test,
+        preds_other_val=preds_dual_joint_val,
+        preds_other_test=preds_dual_joint_test,
+        other_name="dual_joint",
         target_tpr=float(args.report_target_tpr),
         weight_step=float(args.combo_weight_step),
     )
@@ -1156,8 +1792,15 @@ def main() -> None:
     print(f"HLT baseline AUC (val/test): {auc_hlt_val:.4f} / {auc_hlt_test:.4f}")
     print(f"ConcatTeacher AUC (val/test): {auc_concat_val:.4f} / {auc_concat_test:.4f}")
     print(f"RecoTeacherSoft AUC (val/test): {auc_reco_teacher_val:.4f} / {auc_reco_teacher_test:.4f}")
-    print(f"CorrectedOnly AUC (val/test): {auc_corr_val:.4f} / {auc_corr_test:.4f}")
-    print(f"FPR@50 HLT / ConcatTeacher / RecoTeacherSoft / CorrectedOnly: {fpr50_hlt:.6f} / {fpr50_concat:.6f} / {fpr50_reco:.6f} / {fpr50_corr:.6f}")
+    print(f"CorrectedOnly pre-joint AUC (val/test): {auc_corr_val:.4f} / {auc_corr_test:.4f}")
+    print(f"CorrectedOnly post-joint AUC (val/test): {auc_corr_joint_val:.4f} / {auc_corr_joint_test:.4f}")
+    print(f"Dual pre-joint AUC (val/test): {auc_dual_pre_val:.4f} / {auc_dual_pre_test:.4f}")
+    print(f"Dual post-joint AUC (val/test): {auc_dual_joint_val:.4f} / {auc_dual_joint_test:.4f}")
+    print(
+        "FPR@50 HLT / ConcatTeacher / RecoTeacherSoft / CorrectedOnly(pre) / CorrectedOnly(post) / "
+        f"Dual(pre) / Dual(post): {fpr50_hlt:.6f} / {fpr50_concat:.6f} / {fpr50_reco:.6f} / "
+        f"{fpr50_corr:.6f} / {fpr50_corr_joint:.6f} / {fpr50_dual_pre:.6f} / {fpr50_dual_joint:.6f}"
+    )
     pair = overlap_report["pairs"].get("hlt__reco_teacher_soft", {})
     if not pair:
         pair = overlap_report["pairs"].get("reco_teacher_soft__hlt", {})
@@ -1180,6 +1823,12 @@ def main() -> None:
         preds_reco_teacher_test=preds_reco_teacher_test.astype(np.float64),
         preds_corrected_only_val=preds_corr_val.astype(np.float64),
         preds_corrected_only_test=preds_corr_test.astype(np.float64),
+        preds_corrected_only_joint_val=preds_corr_joint_val.astype(np.float64),
+        preds_corrected_only_joint_test=preds_corr_joint_test.astype(np.float64),
+        preds_dual_pre_val=preds_dual_pre_val.astype(np.float64),
+        preds_dual_pre_test=preds_dual_pre_test.astype(np.float64),
+        preds_dual_joint_val=preds_dual_joint_val.astype(np.float64),
+        preds_dual_joint_test=preds_dual_joint_test.astype(np.float64),
         auc_hlt_val=float(auc_hlt_val),
         auc_hlt_test=float(auc_hlt_test),
         auc_concat_teacher_val=float(auc_concat_val),
@@ -1188,10 +1837,19 @@ def main() -> None:
         auc_reco_teacher_test=float(auc_reco_teacher_test),
         auc_corrected_only_val=float(auc_corr_val),
         auc_corrected_only_test=float(auc_corr_test),
+        auc_corrected_only_joint_val=float(auc_corr_joint_val),
+        auc_corrected_only_joint_test=float(auc_corr_joint_test),
+        auc_dual_pre_val=float(auc_dual_pre_val),
+        auc_dual_pre_test=float(auc_dual_pre_test),
+        auc_dual_joint_val=float(auc_dual_joint_val),
+        auc_dual_joint_test=float(auc_dual_joint_test),
         fpr50_hlt=float(fpr50_hlt),
         fpr50_concat_teacher=float(fpr50_concat),
         fpr50_reco_teacher=float(fpr50_reco),
         fpr50_corrected_only=float(fpr50_corr),
+        fpr50_corrected_only_joint=float(fpr50_corr_joint),
+        fpr50_dual_pre=float(fpr50_dual_pre),
+        fpr50_dual_joint=float(fpr50_dual_joint),
         target_tpr=float(args.report_target_tpr),
     )
 
@@ -1202,6 +1860,9 @@ def main() -> None:
                 "rho": float(rho),
                 "max_concat_constits": int(max_concat_constits),
                 "stageA_reconstructor": reco_val_metrics,
+                "stageB_dual_pre": stageB_dual_metrics,
+                "stageC_dual_joint": stageC_dual_metrics,
+                "stageC_corrected_only_joint": corrected_joint_metrics,
                 "hlt": {
                     "auc_val": float(auc_hlt_val),
                     "auc_test": float(auc_hlt_test),
@@ -1225,11 +1886,35 @@ def main() -> None:
                     "auc_test": float(auc_corr_test),
                     "fpr50_test": float(fpr50_corr),
                 },
+                "corrected_only_joint": {
+                    "auc_val": float(auc_corr_joint_val),
+                    "auc_test": float(auc_corr_joint_test),
+                    "fpr50_val": float(fpr50_corr_joint_val),
+                    "fpr50_test": float(fpr50_corr_joint),
+                },
+                "dual_pre": {
+                    "auc_val": float(auc_dual_pre_val),
+                    "auc_test": float(auc_dual_pre_test),
+                    "fpr50_val": float(fpr50_dual_pre_val),
+                    "fpr50_test": float(fpr50_dual_pre),
+                },
+                "dual_joint": {
+                    "auc_val": float(auc_dual_joint_val),
+                    "auc_test": float(auc_dual_joint_test),
+                    "fpr50_val": float(fpr50_dual_joint_val),
+                    "fpr50_test": float(fpr50_dual_joint),
+                },
                 "overlap_report_tpr": overlap_report,
                 "best_combo_hlt_reco_val_selected_eval_test": combo_hlt_reco_valsel,
                 "best_combo_hlt_reco_test_posthoc": combo_hlt_reco_oracle,
                 "best_combo_hlt_corrected_val_selected_eval_test": combo_hlt_corr_valsel,
                 "best_combo_hlt_corrected_test_posthoc": combo_hlt_corr_oracle,
+                "best_combo_hlt_corrected_joint_val_selected_eval_test": combo_hlt_corr_joint_valsel,
+                "best_combo_hlt_corrected_joint_test_posthoc": combo_hlt_corr_joint_oracle,
+                "best_combo_hlt_dual_pre_val_selected_eval_test": combo_hlt_dual_pre_valsel,
+                "best_combo_hlt_dual_pre_test_posthoc": combo_hlt_dual_pre_oracle,
+                "best_combo_hlt_dual_joint_val_selected_eval_test": combo_hlt_dual_joint_valsel,
+                "best_combo_hlt_dual_joint_test_posthoc": combo_hlt_dual_joint_oracle,
             },
             f,
             indent=2,
@@ -1244,8 +1929,14 @@ def main() -> None:
         torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor_stageA.pt")
         torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor.pt")
         torch.save({"model": corrected_only.state_dict(), "auc": float(auc_corr_test)}, save_root / "corrected_only_tagger.pt")
+        torch.save({"model": corrected_only_joint.state_dict(), "auc": float(auc_corr_joint_test)}, save_root / "corrected_only_joint_tagger.pt")
+        torch.save({"model": dual_model.state_dict(), "auc": float(auc_dual_joint_test)}, save_root / "dual_joint_tagger.pt")
+        if stageB_dual_states.get("selected", {}).get("dual") is not None:
+            torch.save({"model": stageB_dual_states["selected"]["dual"], "auc": float(auc_dual_pre_test)}, save_root / "dual_pre_tagger.pt")
+        torch.save({"model": reconstructor_corr_joint.state_dict(), "val": corrected_joint_metrics}, save_root / "offline_reconstructor_corrected_joint.pt")
+        torch.save({"model": reconstructor_dual.state_dict(), "val": stageC_dual_metrics}, save_root / "offline_reconstructor_dual_joint.pt")
 
-    print(f"\nSaved concat-teacher Stage-A + corrected-only results to: {save_root}")
+    print(f"\nSaved concat-teacher Stage-A + corrected-only/joint/dual results to: {save_root}")
 
 
 if __name__ == "__main__":

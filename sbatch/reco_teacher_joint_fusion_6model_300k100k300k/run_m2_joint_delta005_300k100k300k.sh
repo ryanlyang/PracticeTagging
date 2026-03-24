@@ -62,8 +62,6 @@ CMD=(
   --stageC_delta_lambda_fp 3.0
   --stageC_delta_warmup_epochs 8
   --added_target_scale 0.90
-  --report_target_tpr 0.50
-  --combo_weight_step 0.01
   --save_fusion_scores
   --disable_final_kd
   --device "${DEVICE}"
