@@ -398,6 +398,108 @@ def train_select_meta_fuser(
     }
 
 
+
+
+def _quantile_edges(x: np.ndarray, n_bins: int) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    n_bins = int(max(1, n_bins))
+    qs = np.linspace(0.0, 1.0, n_bins + 1)
+    edges = np.quantile(x, qs)
+    edges = np.asarray(edges, dtype=np.float64)
+    edges[0] = float(np.min(x))
+    edges[-1] = float(np.max(x))
+    edges = np.unique(edges)
+    if edges.size < 2:
+        edges = np.array([float(np.min(x)), float(np.max(x)) + 1e-9], dtype=np.float64)
+    return edges
+
+
+def _rates_on_subset(labels: np.ndarray, scores: np.ndarray, threshold: float, mask: np.ndarray) -> Dict[str, float]:
+    labels = labels.astype(np.float32)
+    scores = np.asarray(scores, dtype=np.float64)
+    m = np.asarray(mask, dtype=bool)
+    y = labels[m]
+    s = scores[m]
+    if y.size == 0:
+        return {
+            "count": 0,
+            "n_pos": 0,
+            "n_neg": 0,
+            "tp": 0,
+            "fp": 0,
+            "tpr": float("nan"),
+            "fpr": float("nan"),
+        }
+    r = rates_from_threshold(y, s, float(threshold))
+    return {
+        "count": int(y.size),
+        "n_pos": int(r["n_pos"]),
+        "n_neg": int(r["n_neg"]),
+        "tp": int(r["tp"]),
+        "fp": int(r["fp"]),
+        "tpr": float(r["tpr"]),
+        "fpr": float(r["fpr"]),
+    }
+
+
+def build_bucket_delta_report(
+    labels: np.ndarray,
+    hlt_scores: np.ndarray,
+    hlt_threshold: float,
+    methods: Dict[str, Dict[str, object]],
+    bucket_values: np.ndarray,
+    edges: np.ndarray,
+    bucket_name: str,
+) -> Dict[str, object]:
+    labels = labels.astype(np.float32)
+    x = np.asarray(bucket_values, dtype=np.float64)
+    edges = np.asarray(edges, dtype=np.float64)
+    if edges.size < 2:
+        return {"bucket_name": str(bucket_name), "edges": [], "bins": []}
+
+    bins = []
+    for i in range(edges.size - 1):
+        lo = float(edges[i])
+        hi = float(edges[i + 1])
+        if i < edges.size - 2:
+            m = (x >= lo) & (x < hi)
+        else:
+            m = (x >= lo) & (x <= hi)
+
+        hlt_r = _rates_on_subset(labels, hlt_scores, hlt_threshold, m)
+        row = {
+            "bin_index": int(i),
+            "low": lo,
+            "high": hi,
+            "count": int(hlt_r["count"]),
+            "hlt": hlt_r,
+            "methods": {},
+        }
+        for name, pack in methods.items():
+            ms = np.asarray(pack["scores"], dtype=np.float64)
+            mt = float(pack["threshold"])
+            mr = _rates_on_subset(labels, ms, mt, m)
+            dtpr = float(mr["tpr"] - hlt_r["tpr"]) if np.isfinite(mr["tpr"]) and np.isfinite(hlt_r["tpr"]) else float("nan")
+            dfpr = float(mr["fpr"] - hlt_r["fpr"]) if np.isfinite(mr["fpr"]) and np.isfinite(hlt_r["fpr"]) else float("nan")
+            d_tp = int(mr["tp"] - hlt_r["tp"])
+            d_fp = int(mr["fp"] - hlt_r["fp"])
+            tp_per_fp = float(d_tp / d_fp) if d_fp != 0 else (float("inf") if d_tp > 0 else float("nan"))
+            row["methods"][str(name)] = {
+                **mr,
+                "delta_tpr_vs_hlt": dtpr,
+                "delta_fpr_vs_hlt": dfpr,
+                "delta_tp_vs_hlt": d_tp,
+                "delta_fp_vs_hlt": d_fp,
+                "delta_tp_per_delta_fp_vs_hlt": tp_per_fp,
+            }
+        bins.append(row)
+
+    return {
+        "bucket_name": str(bucket_name),
+        "edges": [float(e) for e in edges.tolist()],
+        "bins": bins,
+    }
+
 def make_gain_row(name: str, fpr_hlt: float, fpr_method: float) -> Dict[str, float]:
     gain_abs = float(fpr_hlt - fpr_method)
     gain_rel = float(100.0 * gain_abs / fpr_hlt) if np.isfinite(fpr_hlt) and fpr_hlt > 0 else float("nan")
@@ -418,6 +520,8 @@ def main() -> None:
     ap.add_argument("--weight_step_3", type=float, default=0.02)
     ap.add_argument("--meta_sel_frac", type=float, default=0.30)
     ap.add_argument("--meta_c_grid", type=str, default="0.05,0.1,0.3,1,3,10,30")
+    ap.add_argument("--bucket_deciles", type=int, default=10)
+    ap.add_argument("--bucket_pt_bins", type=int, default=8)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--output_name", type=str, default="fusion_hlt_joint_recoteacher_analysis.json")
     args = ap.parse_args()
@@ -663,6 +767,71 @@ def main() -> None:
     )
 
     fpr_hlt_test = float(indiv["hlt"]["fpr_test"])
+    # Bucket diagnostics (where gains come from)
+    thr_hlt_test = threshold_for_target_tpr(y_test, hlt_test, target_tpr)
+    thr_joint_test = threshold_for_target_tpr(y_test, joint_test, target_tpr)
+    thr_reco_test = threshold_for_target_tpr(y_test, reco_test, target_tpr)
+
+    raw3_te = raw_3_valsel["test_eval"]
+    score_raw3_test = (
+        float(raw3_te["w_a"]) * hlt_test
+        + float(raw3_te["w_b"]) * joint_test
+        + float(raw3_te["w_c"]) * reco_test
+    )
+    thr_raw3 = float(raw3_te["threshold_from_val"])
+
+    iso3_te = iso_3_valsel["test_eval"]
+    score_iso3_test = (
+        float(iso3_te["w_a"]) * hlt_iso_t
+        + float(iso3_te["w_b"]) * joint_iso_t
+        + float(iso3_te["w_c"]) * reco_iso_t
+    )
+    thr_iso3 = float(iso3_te["threshold_from_val"])
+
+    bucket_methods = {
+        "joint_single": {"scores": joint_test, "threshold": thr_joint_test},
+        "reco_teacher_single": {"scores": reco_test, "threshold": thr_reco_test},
+        "raw3_val_selected": {"scores": score_raw3_test, "threshold": thr_raw3},
+        "iso3_val_selected": {"scores": score_iso3_test, "threshold": thr_iso3},
+    }
+
+    bucket_reports = {
+        "hlt_score_deciles": build_bucket_delta_report(
+            labels=y_test,
+            hlt_scores=hlt_test,
+            hlt_threshold=thr_hlt_test,
+            methods=bucket_methods,
+            bucket_values=hlt_test,
+            edges=_quantile_edges(hlt_test, int(args.bucket_deciles)),
+            bucket_name="hlt_score_deciles",
+        ),
+    }
+
+    if "hlt_nconst_test" in jn:
+        nconst = np.asarray(jn["hlt_nconst_test"], dtype=np.float64)
+        n_edges = np.array([0, 10, 20, 30, 40, 50, 60, 80, 120], dtype=np.float64)
+        bucket_reports["hlt_nconst_bins"] = build_bucket_delta_report(
+            labels=y_test,
+            hlt_scores=hlt_test,
+            hlt_threshold=thr_hlt_test,
+            methods=bucket_methods,
+            bucket_values=nconst,
+            edges=n_edges,
+            bucket_name="hlt_nconst_bins",
+        )
+
+    if "hlt_jet_pt_test" in jn:
+        pt = np.asarray(jn["hlt_jet_pt_test"], dtype=np.float64)
+        bucket_reports["hlt_pt_quantiles"] = build_bucket_delta_report(
+            labels=y_test,
+            hlt_scores=hlt_test,
+            hlt_threshold=thr_hlt_test,
+            methods=bucket_methods,
+            bucket_values=pt,
+            edges=_quantile_edges(pt, int(args.bucket_pt_bins)),
+            bucket_name="hlt_pt_quantiles",
+        )
+
     stepwise = [
         make_gain_row("HLT single", fpr_hlt_test, fpr_hlt_test),
         make_gain_row("Joint single", fpr_hlt_test, float(indiv["joint"]["fpr_test"])),
@@ -717,6 +886,7 @@ def main() -> None:
             "isotonic_inputs": meta_iso,
         },
         "stepwise_gain_vs_hlt": stepwise,
+        "bucket_analysis": bucket_reports,
     }
 
     out_path = joint_dir / str(args.output_name)

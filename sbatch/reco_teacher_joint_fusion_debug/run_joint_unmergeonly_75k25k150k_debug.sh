@@ -57,6 +57,10 @@ CMD=(
   --stageC_lr_reco 5e-6
   --lambda_reco 0.4
   --lambda_cons 0.06
+  --stageC_lambda_delta 0.05
+  --stageC_delta_tau 0.05
+  --stageC_delta_lambda_fp 3.0
+  --stageC_delta_warmup_epochs 8
   --added_target_scale 0.90
   --save_fusion_scores
   --disable_final_kd

@@ -66,6 +66,8 @@ LOSS_W_ETA="${LOSS_W_ETA:-0.6}"
 LOSS_W_PHI="${LOSS_W_PHI:-0.6}"
 LOSS_W_LOGE="${LOSS_W_LOGE:-0.7}"
 LOSS_W_SEP="${LOSS_W_SEP:-0.02}"
+SUPERVISION_MODE="${SUPERVISION_MODE:-slotwise}"
+SLOT_RANK_GAMMA="${SLOT_RANK_GAMMA:-0.15}"
 
 ENABLE_JOINT_FINETUNE="${ENABLE_JOINT_FINETUNE:-1}"
 JOINT_EPOCHS="${JOINT_EPOCHS:-12}"
@@ -174,6 +176,8 @@ for nh in "${nh_vals[@]}"; do
     --loss_w_phi "${LOSS_W_PHI}" \
     --loss_w_loge "${LOSS_W_LOGE}" \
     --loss_w_sep "${LOSS_W_SEP}" \
+    --supervision_mode "${SUPERVISION_MODE}" \
+    --slot_rank_gamma "${SLOT_RANK_GAMMA}" \
     --joint_epochs "${JOINT_EPOCHS}" \
     --joint_patience "${JOINT_PATIENCE}" \
     --joint_lr_pred "${JOINT_LR_PRED}" \

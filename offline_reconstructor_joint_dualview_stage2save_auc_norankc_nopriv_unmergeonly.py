@@ -1516,6 +1516,12 @@ def train_joint_dual(
     apply_reco_weight: bool = False,
     val_weight_key: Optional[str] = None,
     use_weighted_val_selection: bool = False,
+    lambda_delta_cls: float = 0.0,
+    delta_tau: float = 0.05,
+    delta_lambda_fp: float = 3.0,
+    delta_hlt_model: Optional[nn.Module] = None,
+    delta_hlt_threshold_prob: float = 0.50,
+    delta_warmup_epochs: int = 0,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
     for p in reconstructor.parameters():
         p.requires_grad = not freeze_reconstructor
@@ -1550,6 +1556,15 @@ def train_joint_dual(
     val_metric_source = "weighted" if bool(use_weighted_val_selection) else "unweighted"
     no_improve = 0
 
+    delta_tau = float(max(delta_tau, 1e-6))
+    delta_lambda_fp = float(max(delta_lambda_fp, 0.0))
+    lambda_delta_cls = float(max(lambda_delta_cls, 0.0))
+    use_delta = bool(lambda_delta_cls > 0.0 and delta_hlt_model is not None)
+    if use_delta:
+        delta_hlt_model.eval()
+        for p in delta_hlt_model.parameters():
+            p.requires_grad_(False)
+
     for ep in tqdm(range(int(epochs)), desc=stage_name):
         dual_model.train()
         if freeze_reconstructor:
@@ -1562,6 +1577,9 @@ def train_joint_dual(
         tr_rank = 0.0
         tr_reco = 0.0
         tr_cons = 0.0
+        tr_delta = 0.0
+        tr_delta_gain = 0.0
+        tr_delta_cost = 0.0
         n_tr = 0
 
         for batch in train_loader:
@@ -1606,6 +1624,28 @@ def train_joint_dual(
             loss_rank = low_fpr_surrogate_loss(logits, y, target_tpr=0.50, tau=0.05)
             loss_cons = reco_out["child_weight"].mean() + reco_out["gen_weight"].mean()
 
+            loss_delta = torch.zeros((), device=device)
+            delta_gain = torch.zeros((), device=device)
+            delta_cost = torch.zeros((), device=device)
+            if use_delta:
+                with torch.no_grad():
+                    logits_hlt = delta_hlt_model(feat_hlt_reco, mask_hlt).squeeze(1)
+                    p_hlt = torch.sigmoid(logits_hlt)
+                    h_soft = torch.sigmoid((p_hlt - float(delta_hlt_threshold_prob)) / float(delta_tau))
+                y_f = y.float().view(-1)
+                p_joint = torch.sigmoid(logits).view(-1)
+                miss_hlt = (1.0 - h_soft).view(-1)
+                delta_gain = (y_f * miss_hlt * p_joint).mean()
+                delta_cost = ((1.0 - y_f) * miss_hlt * p_joint).mean()
+                loss_delta = -delta_gain + float(delta_lambda_fp) * delta_cost
+                warm = int(max(delta_warmup_epochs, 0))
+                if warm > 0:
+                    ramp = min(1.0, float(ep + 1) / float(warm))
+                else:
+                    ramp = 1.0
+            else:
+                ramp = 1.0
+
             if float(lambda_reco) > 0.0:
                 if bool(apply_reco_weight) and sw_reco is not None:
                     reco_losses = compute_reconstruction_losses_weighted(
@@ -1639,6 +1679,7 @@ def train_joint_dual(
                 + float(lambda_rank) * loss_rank
                 + float(lambda_reco) * loss_reco
                 + float(lambda_cons) * loss_cons
+                + float(lambda_delta_cls) * float(ramp) * loss_delta
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(dual_model.parameters(), 1.0)
@@ -1652,6 +1693,9 @@ def train_joint_dual(
             tr_rank += loss_rank.item() * bs
             tr_reco += loss_reco.item() * bs
             tr_cons += loss_cons.item() * bs
+            tr_delta += loss_delta.item() * bs
+            tr_delta_gain += delta_gain.item() * bs
+            tr_delta_cost += delta_cost.item() * bs
             n_tr += bs
 
         sch.step()
@@ -1661,6 +1705,9 @@ def train_joint_dual(
         tr_rank /= max(n_tr, 1)
         tr_reco /= max(n_tr, 1)
         tr_cons /= max(n_tr, 1)
+        tr_delta /= max(n_tr, 1)
+        tr_delta_gain /= max(n_tr, 1)
+        tr_delta_cost /= max(n_tr, 1)
 
         va_pack = eval_joint_model_both_metrics(
             reconstructor=reconstructor,
@@ -1726,7 +1773,8 @@ def train_joint_dual(
         if (ep + 1) % print_every == 0:
             print(
                 f"{stage_name} ep {ep+1}: train_loss={tr_loss:.4f} "
-                f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}) | "
+                f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}, "
+                f"delta={tr_delta:.4f}, d_gain={tr_delta_gain:.4f}, d_cost={tr_delta_cost:.4f}) | "
                 f"val_auc_unw={va_auc_unw:.4f}, val_fpr50_unw={va_fpr50_unw:.6f}, "
                 f"val_auc_w={va_auc_w:.4f}, val_fpr50_w={va_fpr50_w:.6f}, "
                 f"val_metric_source={metric_source_epoch}, "
@@ -1757,6 +1805,12 @@ def train_joint_dual(
         "best_val_auc_seen_unweighted": float(best_val_auc_unw),
         "best_val_fpr50_seen_weighted": float(best_val_fpr50_w),
         "best_val_auc_seen_weighted": float(best_val_auc_w),
+        "delta_enabled": bool(use_delta),
+        "delta_lambda": float(lambda_delta_cls),
+        "delta_tau": float(delta_tau),
+        "delta_lambda_fp": float(delta_lambda_fp),
+        "delta_hlt_threshold_prob": float(delta_hlt_threshold_prob),
+        "delta_warmup_epochs": int(max(delta_warmup_epochs, 0)),
     }
     state_pack = {
         "selected": {"dual": best_state_dual_sel, "reco": best_state_reco_sel},
@@ -1836,6 +1890,10 @@ def main() -> None:
     # Stage C rank term is disabled in this variant.
     parser.add_argument("--lambda_rank", type=float, default=0.0)
     parser.add_argument("--lambda_cons", type=float, default=0.06)
+    parser.add_argument("--stageC_lambda_delta", type=float, default=0.0)
+    parser.add_argument("--stageC_delta_tau", type=float, default=0.05)
+    parser.add_argument("--stageC_delta_lambda_fp", type=float, default=3.0)
+    parser.add_argument("--stageC_delta_warmup_epochs", type=int, default=5)
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
     parser.add_argument("--use_corrected_flags", action="store_true")
     parser.add_argument("--loss_w_pt_ratio", type=float, default=BASE_CONFIG["loss"]["w_pt_ratio"])
@@ -2141,6 +2199,16 @@ def main() -> None:
         baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
     )
     auc_baseline, preds_baseline, _ = eval_classifier(baseline, dl_test_hlt, device)
+    auc_baseline_val, preds_baseline_val, labs_baseline_val = eval_classifier(baseline, dl_val_hlt, device)
+    hlt_delta_thr_prob = _threshold_for_target_tpr(
+        np.asarray(preds_baseline_val, dtype=np.float64),
+        np.asarray(labs_baseline_val, dtype=np.float32),
+        target_tpr=0.50,
+    )
+    print(
+        f"StageC weak-delta HLT reference @TPR=0.50: threshold_prob={float(hlt_delta_thr_prob):.6f}, "
+        f"val_auc_hlt={float(auc_baseline_val):.4f}"
+    )
 
     # Discrepancy weighting vectors (optional), derived from teacher-vs-baseline train/val predictions.
     sample_weight_reco = np.ones((len(train_idx),), dtype=np.float32)
@@ -2532,6 +2600,12 @@ def main() -> None:
         apply_reco_weight=False,
         val_weight_key="sample_weight_cls",
         use_weighted_val_selection=bool(args.disc_weight_enable),
+        lambda_delta_cls=0.0,
+        delta_tau=float(args.stageC_delta_tau),
+        delta_lambda_fp=float(args.stageC_delta_lambda_fp),
+        delta_hlt_model=None,
+        delta_hlt_threshold_prob=float(hlt_delta_thr_prob),
+        delta_warmup_epochs=int(args.stageC_delta_warmup_epochs),
     )
 
     # Stage B test evaluation + checkpoint snapshot (before Stage C joint finetune).
@@ -2595,6 +2669,12 @@ def main() -> None:
         apply_reco_weight=bool(args.disc_weight_enable and float(args.disc_reco_lambda) > 0.0),
         val_weight_key="sample_weight_cls",
         use_weighted_val_selection=bool(args.disc_weight_enable),
+        lambda_delta_cls=float(args.stageC_lambda_delta),
+        delta_tau=float(args.stageC_delta_tau),
+        delta_lambda_fp=float(args.stageC_delta_lambda_fp),
+        delta_hlt_model=baseline,
+        delta_hlt_threshold_prob=float(hlt_delta_thr_prob),
+        delta_warmup_epochs=int(args.stageC_delta_warmup_epochs),
     )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
@@ -2901,6 +2981,12 @@ def main() -> None:
             auc_joint_test=float(auc_joint),
             fpr50_joint_val=float(fpr50_joint_val),
             fpr50_joint_test=float(fpr50_joint),
+            hlt_nconst_val=np.asarray(hlt_mask[val_idx].sum(axis=1), dtype=np.int32),
+            hlt_nconst_test=np.asarray(hlt_mask[test_idx].sum(axis=1), dtype=np.int32),
+            hlt_jet_pt_val=np.asarray(compute_jet_pt(hlt_const[val_idx], hlt_mask[val_idx]), dtype=np.float64),
+            hlt_jet_pt_test=np.asarray(compute_jet_pt(hlt_const[test_idx], hlt_mask[test_idx]), dtype=np.float64),
+            off_jet_pt_val=np.asarray(compute_jet_pt(const_off[val_idx], masks_off[val_idx]), dtype=np.float64),
+            off_jet_pt_test=np.asarray(compute_jet_pt(const_off[test_idx], masks_off[test_idx]), dtype=np.float64),
         )
         print(f"Saved fusion score arrays to: {save_root / 'fusion_scores_val_test.npz'}")
 

@@ -597,6 +597,105 @@ def pred_to_const_from_local(
     return torch.stack([pt, eta, phi, E], dim=-1)
 
 
+
+def slotwise_loss(
+    pred_feat: torch.Tensor,
+    target_feat: torch.Tensor,
+    w_logpt: float,
+    w_eta: float,
+    w_phi: float,
+    w_loge: float,
+    w_sep: float,
+    slot_rank_gamma: float = 0.0,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    """
+    Fixed-order slot supervision in local frame (no permutation matching).
+    """
+    device = pred_feat.device
+    _, k, _ = pred_feat.shape
+
+    delta_logpt = pred_feat[..., 0] - target_feat[..., 0]
+    delta_eta = pred_feat[..., 1] - target_feat[..., 1]
+    delta_phi = wrap_phi_t(pred_feat[..., 2] - target_feat[..., 2])
+    delta_loge = pred_feat[..., 3] - target_feat[..., 3]
+
+    if float(slot_rank_gamma) > 0.0:
+        slot_idx = torch.arange(k, device=device, dtype=pred_feat.dtype)
+        slot_w = torch.exp(-float(slot_rank_gamma) * slot_idx)
+        slot_w = slot_w / slot_w.sum().clamp(min=1e-8)
+        l_logpt = (F.smooth_l1_loss(delta_logpt, torch.zeros_like(delta_logpt), reduction="none") * slot_w.view(1, -1)).sum(dim=1).mean()
+        l_eta = (F.smooth_l1_loss(delta_eta, torch.zeros_like(delta_eta), reduction="none") * slot_w.view(1, -1)).sum(dim=1).mean()
+        l_phi = (F.smooth_l1_loss(delta_phi, torch.zeros_like(delta_phi), reduction="none") * slot_w.view(1, -1)).sum(dim=1).mean()
+        l_loge = (F.smooth_l1_loss(delta_loge, torch.zeros_like(delta_loge), reduction="none") * slot_w.view(1, -1)).sum(dim=1).mean()
+    else:
+        l_logpt = F.smooth_l1_loss(pred_feat[..., 0], target_feat[..., 0])
+        l_eta = F.smooth_l1_loss(pred_feat[..., 1], target_feat[..., 1])
+        l_phi = F.smooth_l1_loss(delta_phi, torch.zeros_like(delta_phi))
+        l_loge = F.smooth_l1_loss(pred_feat[..., 3], target_feat[..., 3])
+
+    pe = pred_feat[..., 1]
+    pp = pred_feat[..., 2]
+    d_eta = pe[:, :, None] - pe[:, None, :]
+    d_phi = wrap_phi_t(pp[:, :, None] - pp[:, None, :])
+    dR2 = d_eta.pow(2) + d_phi.pow(2)
+    eye = torch.eye(k, device=device).unsqueeze(0)
+    rep = torch.exp(-dR2 / 0.01) * (1.0 - eye)
+    l_sep = rep.mean()
+
+    total = (
+        float(w_logpt) * l_logpt
+        + float(w_eta) * l_eta
+        + float(w_phi) * l_phi
+        + float(w_loge) * l_loge
+        + float(w_sep) * l_sep
+    )
+    comps = {
+        "total": total.detach(),
+        "logpt": l_logpt.detach(),
+        "eta": l_eta.detach(),
+        "phi": l_phi.detach(),
+        "loge": l_loge.detach(),
+        "sep": l_sep.detach(),
+    }
+    return total, comps
+
+
+def compute_predictor_loss(
+    pred_feat: torch.Tensor,
+    target_feat: torch.Tensor,
+    supervision_mode: str,
+    w_logpt: float,
+    w_eta: float,
+    w_phi: float,
+    w_loge: float,
+    w_sep: float,
+    slot_rank_gamma: float = 0.0,
+) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+    mode = str(supervision_mode).strip().lower()
+    if mode == "slotwise":
+        return slotwise_loss(
+            pred_feat=pred_feat,
+            target_feat=target_feat,
+            w_logpt=w_logpt,
+            w_eta=w_eta,
+            w_phi=w_phi,
+            w_loge=w_loge,
+            w_sep=w_sep,
+            slot_rank_gamma=slot_rank_gamma,
+        )
+    if mode == "hungarian":
+        return hungarian_loss(
+            pred_feat=pred_feat,
+            target_feat=target_feat,
+            w_logpt=w_logpt,
+            w_eta=w_eta,
+            w_phi=w_phi,
+            w_loge=w_loge,
+            w_sep=w_sep,
+        )
+    raise ValueError(f"Unknown supervision_mode={supervision_mode}")
+
+
 def hungarian_loss(
     pred_feat: torch.Tensor,
     target_feat: torch.Tensor,
@@ -680,6 +779,8 @@ def train_predictor(
     weight_decay: float,
     warmup_epochs: int,
     loss_w: Dict[str, float],
+    supervision_mode: str = "slotwise",
+    slot_rank_gamma: float = 0.0,
 ) -> Tuple[nn.Module, List[Dict[str, float]]]:
     opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
     sch = get_scheduler(opt, int(warmup_epochs), int(epochs))
@@ -700,14 +801,16 @@ def train_predictor(
             tgt = batch["target_feat"].to(device)
 
             pred = model(feat, mask)
-            loss, comps = hungarian_loss(
+            loss, comps = compute_predictor_loss(
                 pred_feat=pred,
                 target_feat=tgt,
+                supervision_mode=supervision_mode,
                 w_logpt=float(loss_w["logpt"]),
                 w_eta=float(loss_w["eta"]),
                 w_phi=float(loss_w["phi"]),
                 w_loge=float(loss_w["loge"]),
                 w_sep=float(loss_w["sep"]),
+                slot_rank_gamma=float(slot_rank_gamma),
             )
 
             opt.zero_grad(set_to_none=True)
@@ -729,14 +832,16 @@ def train_predictor(
                 mask = batch["mask_hlt"].to(device)
                 tgt = batch["target_feat"].to(device)
                 pred = model(feat, mask)
-                loss, comps = hungarian_loss(
+                loss, comps = compute_predictor_loss(
                     pred_feat=pred,
                     target_feat=tgt,
+                    supervision_mode=supervision_mode,
                     w_logpt=float(loss_w["logpt"]),
                     w_eta=float(loss_w["eta"]),
                     w_phi=float(loss_w["phi"]),
                     w_loge=float(loss_w["loge"]),
                     w_sep=float(loss_w["sep"]),
+                    slot_rank_gamma=float(slot_rank_gamma),
                 )
                 va_losses.append(float(loss.item()))
                 for k in va_comp:
@@ -1006,6 +1111,8 @@ def joint_finetune_predictor_and_tagger_alternating(
     baseline_ref_logits: np.ndarray | None = None,
     noharm_lambda: float = 0.0,
     noharm_margin: float = 0.0,
+    supervision_mode: str = "slotwise",
+    slot_rank_gamma: float = 0.0,
 ) -> Tuple[nn.Module, nn.Module, List[Dict[str, float]]]:
     pin = torch.cuda.is_available()
 
@@ -1054,14 +1161,16 @@ def joint_finetune_predictor_and_tagger_alternating(
             tgt = batch["target_feat"].to(device)
             opt_pred.zero_grad(set_to_none=True)
             pred_feat = predictor(feat, mask)
-            loss_pred, _ = hungarian_loss(
+            loss_pred, _ = compute_predictor_loss(
                 pred_feat=pred_feat,
                 target_feat=tgt,
+                supervision_mode=supervision_mode,
                 w_logpt=float(loss_w["logpt"]),
                 w_eta=float(loss_w["eta"]),
                 w_phi=float(loss_w["phi"]),
                 w_loge=float(loss_w["loge"]),
                 w_sep=float(loss_w["sep"]),
+                slot_rank_gamma=float(slot_rank_gamma),
             )
             loss_pred.backward()
             nn.utils.clip_grad_norm_(predictor.parameters(), 1.0)
@@ -1076,14 +1185,16 @@ def joint_finetune_predictor_and_tagger_alternating(
                 mask = batch["mask_hlt"].to(device)
                 tgt = batch["target_feat"].to(device)
                 pred_feat = predictor(feat, mask)
-                loss_pred, _ = hungarian_loss(
+                loss_pred, _ = compute_predictor_loss(
                     pred_feat=pred_feat,
                     target_feat=tgt,
+                    supervision_mode=supervision_mode,
                     w_logpt=float(loss_w["logpt"]),
                     w_eta=float(loss_w["eta"]),
                     w_phi=float(loss_w["phi"]),
                     w_loge=float(loss_w["loge"]),
                     w_sep=float(loss_w["sep"]),
+                    slot_rank_gamma=float(slot_rank_gamma),
                 )
                 pred_va_losses.append(float(loss_pred.item()))
 
@@ -1193,9 +1304,9 @@ def joint_finetune_predictor_and_tagger_alternating(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Fixed-K Hungarian predictor for additive constituent recovery")
+    parser = argparse.ArgumentParser(description="Fixed-K local-frame predictor for additive constituent recovery")
     parser.add_argument("--train_path", type=str, default="./data")
-    parser.add_argument("--save_dir", type=str, default="checkpoints/fixedk_hungarian_predictor")
+    parser.add_argument("--save_dir", type=str, default="checkpoints/fixedk_localframe_noharm_predictor")
     parser.add_argument("--run_name", type=str, default="fixedk4_localframe_noharm_run")
     parser.add_argument("--seed", type=int, default=52)
     parser.add_argument("--device", type=str, default="cuda")
@@ -1239,6 +1350,8 @@ def main() -> None:
     parser.add_argument("--loss_w_phi", type=float, default=0.6)
     parser.add_argument("--loss_w_loge", type=float, default=0.7)
     parser.add_argument("--loss_w_sep", type=float, default=0.02)
+    parser.add_argument("--supervision_mode", type=str, choices=["slotwise", "hungarian"], default="slotwise")
+    parser.add_argument("--slot_rank_gamma", type=float, default=0.15)
 
     parser.add_argument("--aug_max_constits", type=int, default=-1)
 
@@ -1469,7 +1582,7 @@ def main() -> None:
 
     # ----------------- Train predictor ----------------- #
     print("\n" + "=" * 70)
-    print(f"Training Fixed-K Predictor (K={k_fixed}) with Hungarian loss")
+    print(f"Training Fixed-K Predictor (K={k_fixed}) with {args.supervision_mode} supervision")
     print("=" * 70)
 
     ds_pred_train = PredictorDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], target_feat[train_idx])
@@ -1519,6 +1632,8 @@ def main() -> None:
             "loge": float(args.loss_w_loge),
             "sep": float(args.loss_w_sep),
         },
+        supervision_mode=str(args.supervision_mode),
+        slot_rank_gamma=float(args.slot_rank_gamma),
     )
 
     # ----------------- Build predicted-added view ----------------- #
@@ -1622,6 +1737,8 @@ def main() -> None:
             baseline_ref_logits=baseline_logits_hlt,
             noharm_lambda=float(args.noharm_lambda),
             noharm_margin=float(args.noharm_margin),
+            supervision_mode=str(args.supervision_mode),
+            slot_rank_gamma=float(args.slot_rank_gamma),
         )
 
         feat_aug_post_te, mask_aug_post_te = build_augmented_view_from_predictor(
@@ -1708,9 +1825,11 @@ def main() -> None:
         "mean_added_oracle_tokens": float(k_fixed),
         "noharm_lambda": float(args.noharm_lambda),
         "noharm_margin": float(args.noharm_margin),
+        "supervision_mode": str(args.supervision_mode),
+        "slot_rank_gamma": float(args.slot_rank_gamma),
     }
 
-    with open(save_root / "fixedk_hungarian_summary.json", "w", encoding="utf-8") as f:
+    with open(save_root / "fixedk_localframe_noharm_summary.json", "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
     with open(save_root / "predictor_history.json", "w", encoding="utf-8") as f:
         json.dump(pred_hist, f, indent=2)
