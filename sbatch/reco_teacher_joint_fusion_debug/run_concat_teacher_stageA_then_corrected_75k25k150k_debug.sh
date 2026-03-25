@@ -71,6 +71,7 @@ CMD=(
   --added_target_scale 0.90
   --report_target_tpr 0.50
   --combo_weight_step 0.01
+  --stop_after_corrected_only
   --device "${DEVICE}"
 )
 

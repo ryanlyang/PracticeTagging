@@ -1538,8 +1538,7 @@ def main() -> None:
             weight_step=float(args.combo_weight_step),
         )
 
-        print("
-" + "=" * 70)
+        print("\n" + "=" * 70)
         print("FINAL EVALUATION (STOP AFTER CORRECTED-ONLY)")
         print("=" * 70)
         print(f"HLT baseline AUC (val/test): {auc_hlt_val:.4f} / {auc_hlt_test:.4f}")
@@ -1633,8 +1632,7 @@ def main() -> None:
             torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor.pt")
             torch.save({"model": corrected_only.state_dict(), "auc": float(auc_corr_test)}, save_root / "corrected_only_tagger.pt")
 
-        print(f"
-Saved concat-teacher Stage-A + corrected-only results to: {save_root}")
+        print(f"\nSaved concat-teacher Stage-A + corrected-only results to: {save_root}")
         return
 
     # Shared joint datasets (for corrected-only joint and dual-view branches).
