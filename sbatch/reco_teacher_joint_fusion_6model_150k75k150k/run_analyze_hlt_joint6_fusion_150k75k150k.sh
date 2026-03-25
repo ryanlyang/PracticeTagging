@@ -2,7 +2,7 @@
 #SBATCH --job-name=an6f300
 #SBATCH --partition=tier3
 #SBATCH --mem=32G
-#SBATCH --time=2:00:00
+#SBATCH --time=10:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze_%j.err
 
