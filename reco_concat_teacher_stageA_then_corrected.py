@@ -244,12 +244,25 @@ def _compute_concat_teacher_guided_reco_losses(
 
     # Reco path and concat-teacher path may have different token lengths (e.g. 100 vs 200).
     # Align to shared prefix length for stable attention-token KD.
+    # NOTE: b._attention_kl_loss_masked expects [B, L] attention vectors.
+    def _attn_to_token_vec(attn: torch.Tensor, l_take: int) -> torch.Tensor:
+        if attn.dim() == 2:
+            # [B, L]
+            return attn[:, :l_take]
+        if attn.dim() == 3:
+            # [B, L, L] -> pooled [B, L]
+            return attn[:, :l_take, :l_take].mean(dim=1)
+        if attn.dim() == 4:
+            # [B, H, L, L] -> pooled [B, L]
+            return attn[:, :, :l_take, :l_take].mean(dim=(1, 2))
+        raise RuntimeError(f"Unexpected attention tensor rank={attn.dim()} (shape={tuple(attn.shape)})")
+
     l_reco = int(mask_reco.shape[1])
     l_teacher = int(mask_teacher.shape[1])
     l_common = int(min(l_reco, l_teacher))
     if l_common > 0:
-        attn_pred_tok = attn_teacher_reco[..., :l_common, :l_common]
-        attn_tgt_tok = attn_teacher_target[..., :l_common, :l_common]
+        attn_pred_tok = _attn_to_token_vec(attn_teacher_reco, l_common)
+        attn_tgt_tok = _attn_to_token_vec(attn_teacher_target, l_common)
         mask_pred_tok = mask_reco[:, :l_common]
         mask_tgt_tok = mask_teacher[:, :l_common]
         loss_tok = b._attention_kl_loss_masked(
