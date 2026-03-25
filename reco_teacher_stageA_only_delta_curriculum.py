@@ -22,9 +22,10 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd as b
 
@@ -39,6 +40,200 @@ def threshold_at_target_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: 
     idx_valid = np.where(valid)[0]
     idx = int(idx_valid[np.argmin(np.abs(tpr[idx_valid] - float(target_tpr)))])
     return float(thr[idx]), float(tpr[idx]), float(fpr[idx])
+
+
+def _teacher_ablation_zero_indices(mode: str) -> List[int]:
+    m = str(mode).lower()
+    if m == "none":
+        return []
+    if m == "no_angle":
+        return [0, 1, 6]
+    if m == "no_scale":
+        return [2, 3, 4, 5]
+    if m == "core_shape":
+        return [2, 3, 5]
+    raise ValueError(f"Unknown teacher_feature_ablation: {mode}")
+
+
+def apply_teacher_feature_ablation_np(feat: np.ndarray, mask: np.ndarray, mode: str) -> np.ndarray:
+    idxs = _teacher_ablation_zero_indices(mode)
+    if len(idxs) == 0:
+        return feat
+    out = feat.copy()
+    out[:, :, idxs] = 0.0
+    out[~mask] = 0.0
+    return out.astype(np.float32)
+
+
+def apply_teacher_feature_ablation_torch(feat: torch.Tensor, mask: torch.Tensor, mode: str) -> torch.Tensor:
+    idxs = _teacher_ablation_zero_indices(mode)
+    if len(idxs) == 0:
+        return feat
+    out = feat.clone()
+    out[:, :, idxs] = 0.0
+    out = out.masked_fill(~mask.unsqueeze(-1), 0.0)
+    return out
+
+
+def apply_offline_topk_target_mask_by_pt(
+    const_off: np.ndarray,
+    mask_off: np.ndarray,
+    k: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    k = int(max(k, 0))
+    n, l, _ = const_off.shape
+    if k <= 0 or k >= l:
+        return const_off.copy().astype(np.float32), mask_off.copy().astype(bool)
+
+    pt = const_off[:, :, 0]
+    masked_pt = np.where(mask_off, pt, -np.inf)
+    topk_idx = np.argpartition(-masked_pt, kth=k - 1, axis=1)[:, :k]
+
+    new_mask = np.zeros_like(mask_off, dtype=bool)
+    row_idx = np.arange(n)[:, None]
+    valid_sel = mask_off[row_idx, topk_idx]
+    new_mask[row_idx[valid_sel], topk_idx[valid_sel]] = True
+
+    new_const = const_off.copy()
+    new_const[~new_mask] = 0.0
+    return new_const.astype(np.float32), new_mask
+
+
+class TeacherAntiOverlapDataset(Dataset):
+    def __init__(
+        self,
+        feat_off: np.ndarray,
+        mask_off: np.ndarray,
+        feat_hlt: np.ndarray,
+        mask_hlt: np.ndarray,
+        labels: np.ndarray,
+    ):
+        self.feat_off = torch.tensor(feat_off, dtype=torch.float32)
+        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
+        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
+        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return self.labels.shape[0]
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "feat_off": self.feat_off[i],
+            "mask_off": self.mask_off[i],
+            "feat_hlt": self.feat_hlt[i],
+            "mask_hlt": self.mask_hlt[i],
+            "label": self.labels[i],
+        }
+
+
+def train_single_view_teacher_anti_overlap(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader_off: DataLoader,
+    hlt_model: nn.Module,
+    hlt_threshold_prob: float,
+    device: torch.device,
+    train_cfg: Dict,
+    target_tpr: float,
+    anti_lambda: float,
+    anti_tau: float,
+    anti_beta: float,
+    anti_warmup_epochs: int,
+    name: str = "TeacherAntiOverlap",
+) -> nn.Module:
+    anti_lambda = float(max(anti_lambda, 0.0))
+    anti_tau = float(max(anti_tau, 1e-6))
+    anti_beta = float(max(anti_beta, 1e-6))
+    anti_warmup_epochs = int(max(1, anti_warmup_epochs))
+
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(train_cfg["lr"]),
+        weight_decay=float(train_cfg["weight_decay"]),
+    )
+    sch = b.get_scheduler(opt, int(train_cfg["warmup_epochs"]), int(train_cfg["epochs"]))
+
+    hlt_model.eval()
+    for p in hlt_model.parameters():
+        p.requires_grad_(False)
+
+    thr_prob = float(np.clip(hlt_threshold_prob, 1e-6, 1.0 - 1e-6))
+    thr_logit = float(np.log(thr_prob / (1.0 - thr_prob)))
+
+    best_val_auc = float("-inf")
+    best_state = None
+    no_improve = 0
+
+    for ep in range(int(train_cfg["epochs"])):
+        model.train()
+        tr_loss = tr_bce = tr_anti = 0.0
+        n_tr = 0
+
+        lam_ep = anti_lambda * min(1.0, float(ep + 1) / float(anti_warmup_epochs))
+
+        for batch in train_loader:
+            feat_off = batch["feat_off"].to(device)
+            mask_off = batch["mask_off"].to(device)
+            feat_hlt = batch["feat_hlt"].to(device)
+            mask_hlt = batch["mask_hlt"].to(device)
+            labels_batch = batch["label"].to(device).float()
+
+            opt.zero_grad()
+
+            logits_t = model(feat_off, mask_off).squeeze(1)
+            with torch.no_grad():
+                logits_h = hlt_model(feat_hlt, mask_hlt).squeeze(1)
+
+            loss_bce = F.binary_cross_entropy_with_logits(logits_t, labels_batch)
+
+            p_hlt = torch.sigmoid((logits_h - thr_logit) / anti_tau)
+            p_t = torch.sigmoid((logits_t - thr_logit) / anti_tau)
+            w_band = torch.exp(-torch.abs(logits_h - thr_logit) / anti_beta)
+            neg = (1.0 - labels_batch)
+
+            overlap_pen = (neg * w_band * p_hlt * p_t).mean()
+            loss = loss_bce + lam_ep * overlap_pen
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+
+            bs = feat_off.size(0)
+            tr_loss += float(loss.item()) * bs
+            tr_bce += float(loss_bce.item()) * bs
+            tr_anti += float(overlap_pen.item()) * bs
+            n_tr += bs
+
+        sch.step()
+
+        tr_loss /= max(n_tr, 1)
+        tr_bce /= max(n_tr, 1)
+        tr_anti /= max(n_tr, 1)
+
+        va_auc, va_preds, va_labs = b.eval_classifier(model, val_loader_off, device)
+        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+        va_fpr50 = b.fpr_at_target_tpr(va_fpr, va_tpr, float(target_tpr))
+
+        if np.isfinite(va_auc) and float(va_auc) > best_val_auc:
+            best_val_auc = float(va_auc)
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (ep + 1) % 5 == 0:
+            print(
+                f"{name} ep {ep+1}: train_loss={tr_loss:.5f} (bce={tr_bce:.5f}, anti={tr_anti:.5f}, lam={lam_ep:.5f}) | "
+                f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, best_auc={best_val_auc:.4f}"
+            )
+
+        if no_improve >= int(train_cfg["patience"]):
+            print(f"Early stopping {name} at epoch {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model
 
 
 @torch.no_grad()
@@ -56,6 +251,7 @@ def eval_teacher_on_soft_reco_split(
     batch_size: int,
     weight_floor: float,
     target_tpr: float,
+    teacher_feature_ablation: str = "none",
 ) -> Tuple[float, np.ndarray, np.ndarray, float]:
     reconstructor.eval()
     teacher.eval()
@@ -82,6 +278,7 @@ def eval_teacher_on_soft_reco_split(
             weight_floor=float(weight_floor),
         )
         feat_reco_std_t = b._standardize_features_torch(feat_reco_t, mask_reco_t, means_t, stds_t)
+        feat_reco_std_t = apply_teacher_feature_ablation_torch(feat_reco_std_t, mask_reco_t, teacher_feature_ablation)
         logits = teacher(feat_reco_std_t, mask_reco_t).squeeze(1)
         p = torch.sigmoid(logits)
 
@@ -514,6 +711,19 @@ def main() -> None:
     ap.add_argument("--skip_save_models", action="store_true")
     ap.add_argument("--seed", type=int, default=b.RANDOM_SEED)
 
+    ap.add_argument("--teacher_use_anti_overlap", action="store_true")
+    ap.add_argument("--teacher_anti_lambda", type=float, default=0.01)
+    ap.add_argument("--teacher_anti_tau", type=float, default=0.05)
+    ap.add_argument("--teacher_anti_beta", type=float, default=0.10)
+    ap.add_argument("--teacher_anti_warmup_epochs", type=int, default=12)
+    ap.add_argument("--teacher_feature_ablation", type=str, choices=["none", "no_angle", "no_scale", "core_shape"], default="none")
+    ap.add_argument(
+        "--offline_target_topk_pt",
+        type=int,
+        default=0,
+        help="If >0, keeps only top-k offline constituents by pT for teacher/StageA targets while keeping HLT inputs at full max_constits.",
+    )
+
     ap.add_argument("--merge_radius", type=float, default=b.BASE_CONFIG["hlt_effects"]["merge_radius"])
     ap.add_argument("--eff_plateau_barrel", type=float, default=b.BASE_CONFIG["hlt_effects"]["eff_plateau_barrel"])
     ap.add_argument("--eff_plateau_endcap", type=float, default=b.BASE_CONFIG["hlt_effects"]["eff_plateau_endcap"])
@@ -597,16 +807,34 @@ def main() -> None:
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
-    const_off = const_raw.copy()
-    const_off[~masks_off] = 0.0
+    const_off_full = const_raw.copy()
+    const_off_full[~masks_off] = 0.0
 
     print("Generating pseudo-HLT...")
     hlt_const, hlt_mask, hlt_stats, _budget_truth = b.apply_hlt_effects_realistic_nomap(
-        const_off,
+        const_off_full,
         masks_off,
         cfg,
         seed=int(args.seed),
     )
+
+    const_off = const_off_full
+    topk_target = int(args.offline_target_topk_pt)
+    if 0 < topk_target < int(args.max_constits):
+        const_off, masks_off = apply_offline_topk_target_mask_by_pt(
+            const_off_full,
+            masks_off,
+            topk_target,
+        )
+        print(
+            f"Applying offline top-k target mask: k={topk_target} "
+            f"(teacher/StageA targets only); HLT input max_constits stays {int(args.max_constits)}."
+        )
+    elif topk_target >= int(args.max_constits):
+        print(
+            f"offline_target_topk_pt={topk_target} >= max_constits={int(args.max_constits)}; "
+            "disabling top-k target mask."
+        )
 
     true_count = masks_off.sum(axis=1).astype(np.float32)
     hlt_count = hlt_mask.sum(axis=1).astype(np.float32)
@@ -660,12 +888,15 @@ def main() -> None:
     feat_off_std = b.standardize(feat_off, masks_off, means, stds)
     feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means, stds)
 
+    feat_off_teacher_std = apply_teacher_feature_ablation_np(feat_off_std, masks_off, args.teacher_feature_ablation)
+
     data_setup = {
         "train_path_arg": str(args.train_path),
         "train_files": [str(p.resolve()) for p in train_files],
         "n_train_jets": int(args.n_train_jets),
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
+        "offline_target_topk_pt": int(topk_target),
         "seed": int(args.seed),
         "split": {
             "mode": "custom_counts",
@@ -696,19 +927,12 @@ def main() -> None:
     print("=" * 70)
     BS = int(cfg["training"]["batch_size"])
 
-    ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
-    ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
-    ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
+    ds_train_off = b.JetDataset(feat_off_teacher_std[train_idx], masks_off[train_idx], labels[train_idx])
+    ds_val_off = b.JetDataset(feat_off_teacher_std[val_idx], masks_off[val_idx], labels[val_idx])
+    ds_test_off = b.JetDataset(feat_off_teacher_std[test_idx], masks_off[test_idx], labels[test_idx])
     dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
-
-    teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    teacher = b.train_single_view_classifier_auc(
-        teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
-    )
-    auc_teacher, preds_teacher, labs_test_teacher = b.eval_classifier(teacher, dl_test_off, device)
-    auc_teacher_val, preds_teacher_val, labs_val_teacher = b.eval_classifier(teacher, dl_val_off, device)
 
     ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
     ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
@@ -724,9 +948,6 @@ def main() -> None:
     auc_baseline, preds_baseline, labs_test_hlt = b.eval_classifier(baseline, dl_test_hlt, device)
     auc_baseline_val, preds_baseline_val, labs_val_baseline = b.eval_classifier(baseline, dl_val_hlt, device)
 
-    assert np.array_equal(labs_val_teacher.astype(np.float32), labs_val_baseline.astype(np.float32))
-    assert np.array_equal(labs_test_teacher.astype(np.float32), labs_test_hlt.astype(np.float32))
-
     hlt_thr_prob, hlt_thr_tpr, hlt_thr_fpr = threshold_at_target_tpr(
         labs_val_baseline.astype(np.float32),
         preds_baseline_val.astype(np.float64),
@@ -736,6 +957,47 @@ def main() -> None:
         f"StageA delta HLT reference @TPR={float(args.stageA_target_tpr):.2f}: "
         f"threshold_prob={hlt_thr_prob:.6f}, val_tpr={hlt_thr_tpr:.6f}, val_fpr={hlt_thr_fpr:.6f}"
     )
+
+    teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
+    if bool(args.teacher_use_anti_overlap):
+        print(
+            "Teacher mode: anti-overlap "
+            f"(lambda={float(args.teacher_anti_lambda):.4f}, tau={float(args.teacher_anti_tau):.4f}, "
+            f"beta={float(args.teacher_anti_beta):.4f}, warmup={int(args.teacher_anti_warmup_epochs)})"
+        )
+        ds_train_teacher_anti = TeacherAntiOverlapDataset(
+            feat_off=feat_off_std[train_idx],
+            mask_off=masks_off[train_idx],
+            feat_hlt=feat_hlt_std[train_idx],
+            mask_hlt=hlt_mask[train_idx],
+            labels=labels[train_idx],
+        )
+        dl_train_teacher_anti = DataLoader(ds_train_teacher_anti, batch_size=BS, shuffle=True, drop_last=True)
+        teacher = train_single_view_teacher_anti_overlap(
+            model=teacher,
+            train_loader=dl_train_teacher_anti,
+            val_loader_off=dl_val_off,
+            hlt_model=baseline,
+            hlt_threshold_prob=float(hlt_thr_prob),
+            device=device,
+            train_cfg=cfg["training"],
+            target_tpr=float(args.stageA_target_tpr),
+            anti_lambda=float(args.teacher_anti_lambda),
+            anti_tau=float(args.teacher_anti_tau),
+            anti_beta=float(args.teacher_anti_beta),
+            anti_warmup_epochs=int(args.teacher_anti_warmup_epochs),
+            name="TeacherAntiOverlap",
+        )
+    else:
+        teacher = b.train_single_view_classifier_auc(
+            teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
+        )
+
+    auc_teacher, preds_teacher, labs_test_teacher = b.eval_classifier(teacher, dl_test_off, device)
+    auc_teacher_val, preds_teacher_val, labs_val_teacher = b.eval_classifier(teacher, dl_val_off, device)
+
+    assert np.array_equal(labs_val_teacher.astype(np.float32), labs_val_baseline.astype(np.float32))
+    assert np.array_equal(labs_test_teacher.astype(np.float32), labs_test_hlt.astype(np.float32))
 
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN, STAGEWISE BEST RELOAD)")
@@ -815,6 +1077,7 @@ def main() -> None:
         batch_size=int(args.reco_eval_batch_size),
         weight_floor=float(args.reco_weight_threshold),
         target_tpr=float(args.report_target_tpr),
+        teacher_feature_ablation=str(args.teacher_feature_ablation),
     )
     auc_reco_teacher_test, preds_reco_teacher_test, labs_reco_test, fpr50_reco_teacher_test = eval_teacher_on_soft_reco_split(
         reconstructor=reconstructor,
@@ -830,6 +1093,7 @@ def main() -> None:
         batch_size=int(args.reco_eval_batch_size),
         weight_floor=float(args.reco_weight_threshold),
         target_tpr=float(args.report_target_tpr),
+        teacher_feature_ablation=str(args.teacher_feature_ablation),
     )
 
     assert np.array_equal(labs_reco_val.astype(np.float32), labs_val_teacher.astype(np.float32))
@@ -1044,6 +1308,14 @@ def main() -> None:
                 "teacher": {
                     "auc_val": float(auc_teacher_val),
                     "auc_test": float(auc_teacher),
+                    "feature_ablation": str(args.teacher_feature_ablation),
+                    "anti_overlap": {
+                        "enabled": bool(args.teacher_use_anti_overlap),
+                        "lambda": float(args.teacher_anti_lambda),
+                        "tau": float(args.teacher_anti_tau),
+                        "beta": float(args.teacher_anti_beta),
+                        "warmup_epochs": int(args.teacher_anti_warmup_epochs),
+                    },
                 },
                 "hlt": {
                     "auc_val": float(auc_baseline_val),
