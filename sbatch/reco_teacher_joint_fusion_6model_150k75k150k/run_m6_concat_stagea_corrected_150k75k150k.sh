@@ -86,6 +86,7 @@ CMD=(
   --stageC_lambda_reco 0.4
   --stageC_lambda_rank 0.0
   --stageC_lambda_cons 0.06
+  --stop_after_corrected_only
   --device "${DEVICE}"
 )
 

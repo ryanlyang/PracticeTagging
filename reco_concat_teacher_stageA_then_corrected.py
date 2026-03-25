@@ -1128,6 +1128,11 @@ def main() -> None:
     ap.add_argument("--stageC_lambda_cons", type=float, default=0.06)
 
     ap.add_argument("--use_corrected_flags", action="store_true")
+    ap.add_argument(
+        "--stop_after_corrected_only",
+        action="store_true",
+        help="Stop after Stage-4 corrected-only evaluation and skip corrected-joint/dual-joint finetuning.",
+    )
     args = ap.parse_args()
 
     b.set_seed(int(args.seed))
@@ -1487,6 +1492,150 @@ def main() -> None:
     )
     auc_corr_val, preds_corr_val, labs_corr_val = b.eval_classifier(corrected_only, dl_val_corr, device)
     auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
+
+    if bool(args.stop_after_corrected_only):
+        fpr_hlt, tpr_hlt, _ = roc_curve(labs_hlt_test, preds_hlt_test)
+        fpr_concat, tpr_concat, _ = roc_curve(labs_concat_test, preds_concat_test)
+        fpr_reco, tpr_reco, _ = roc_curve(labs_reco_test, preds_reco_teacher_test)
+        fpr_corr, tpr_corr, _ = roc_curve(labs_corr_test, preds_corr_test)
+
+        fpr50_hlt = float(b.fpr_at_target_tpr(fpr_hlt, tpr_hlt, 0.50))
+        fpr50_concat = float(b.fpr_at_target_tpr(fpr_concat, tpr_concat, 0.50))
+        fpr50_reco = float(b.fpr_at_target_tpr(fpr_reco, tpr_reco, 0.50))
+        fpr50_corr = float(b.fpr_at_target_tpr(fpr_corr, tpr_corr, 0.50))
+
+        overlap_report = b.build_overlap_report_at_tpr(
+            labels=labs_hlt_test.astype(np.float32),
+            model_preds={
+                "hlt": preds_hlt_test,
+                "concat_teacher": preds_concat_test,
+                "reco_teacher_soft": preds_reco_teacher_test,
+                "corrected_only": preds_corr_test,
+            },
+            target_tpr=float(args.report_target_tpr),
+        )
+
+        combo_hlt_reco_valsel, combo_hlt_reco_oracle = _combo_reports(
+            labels_val=labs_hlt_val.astype(np.float32),
+            labels_test=labs_hlt_test.astype(np.float32),
+            preds_hlt_val=preds_hlt_val,
+            preds_hlt_test=preds_hlt_test,
+            preds_other_val=preds_reco_teacher_val,
+            preds_other_test=preds_reco_teacher_test,
+            other_name="reco_teacher_soft",
+            target_tpr=float(args.report_target_tpr),
+            weight_step=float(args.combo_weight_step),
+        )
+        combo_hlt_corr_valsel, combo_hlt_corr_oracle = _combo_reports(
+            labels_val=labs_hlt_val.astype(np.float32),
+            labels_test=labs_hlt_test.astype(np.float32),
+            preds_hlt_val=preds_hlt_val,
+            preds_hlt_test=preds_hlt_test,
+            preds_other_val=preds_corr_val,
+            preds_other_test=preds_corr_test,
+            other_name="corrected_only",
+            target_tpr=float(args.report_target_tpr),
+            weight_step=float(args.combo_weight_step),
+        )
+
+        print("
+" + "=" * 70)
+        print("FINAL EVALUATION (STOP AFTER CORRECTED-ONLY)")
+        print("=" * 70)
+        print(f"HLT baseline AUC (val/test): {auc_hlt_val:.4f} / {auc_hlt_test:.4f}")
+        print(f"ConcatTeacher AUC (val/test): {auc_concat_val:.4f} / {auc_concat_test:.4f}")
+        print(f"RecoTeacherSoft AUC (val/test): {auc_reco_teacher_val:.4f} / {auc_reco_teacher_test:.4f}")
+        print(f"CorrectedOnly AUC (val/test): {auc_corr_val:.4f} / {auc_corr_test:.4f}")
+        print(
+            "FPR@50 HLT / ConcatTeacher / RecoTeacherSoft / CorrectedOnly: "
+            f"{fpr50_hlt:.6f} / {fpr50_concat:.6f} / {fpr50_reco:.6f} / {fpr50_corr:.6f}"
+        )
+
+        np.savez_compressed(
+            save_root / "concat_teacher_stageA_scores.npz",
+            labels_val=labs_hlt_val.astype(np.float32),
+            labels_test=labs_hlt_test.astype(np.float32),
+            preds_hlt_val=preds_hlt_val.astype(np.float64),
+            preds_hlt_test=preds_hlt_test.astype(np.float64),
+            preds_concat_teacher_val=preds_concat_val.astype(np.float64),
+            preds_concat_teacher_test=preds_concat_test.astype(np.float64),
+            preds_reco_teacher_val=preds_reco_teacher_val.astype(np.float64),
+            preds_reco_teacher_test=preds_reco_teacher_test.astype(np.float64),
+            preds_corrected_only_val=preds_corr_val.astype(np.float64),
+            preds_corrected_only_test=preds_corr_test.astype(np.float64),
+            auc_hlt_val=float(auc_hlt_val),
+            auc_hlt_test=float(auc_hlt_test),
+            auc_concat_teacher_val=float(auc_concat_val),
+            auc_concat_teacher_test=float(auc_concat_test),
+            auc_reco_teacher_val=float(auc_reco_teacher_val),
+            auc_reco_teacher_test=float(auc_reco_teacher_test),
+            auc_corrected_only_val=float(auc_corr_val),
+            auc_corrected_only_test=float(auc_corr_test),
+            fpr50_hlt=float(fpr50_hlt),
+            fpr50_concat_teacher=float(fpr50_concat),
+            fpr50_reco_teacher=float(fpr50_reco),
+            fpr50_corrected_only=float(fpr50_corr),
+            target_tpr=float(args.report_target_tpr),
+            stop_after_corrected_only=np.array([1], dtype=np.int32),
+        )
+
+        with open(save_root / "concat_teacher_stageA_metrics.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "variant": "concat_teacher_stageA_then_corrected",
+                    "rho": float(rho),
+                    "max_concat_constits": int(max_concat_constits),
+                    "stop_after_corrected_only": True,
+                    "stageA_reconstructor": reco_val_metrics,
+                    "stageB_dual_pre": None,
+                    "stageC_dual_joint": None,
+                    "stageC_corrected_only_joint": None,
+                    "hlt": {
+                        "auc_val": float(auc_hlt_val),
+                        "auc_test": float(auc_hlt_test),
+                        "delta_ref_threshold_prob": float(hlt_thr_prob),
+                        "delta_ref_val_tpr": float(hlt_thr_tpr),
+                        "delta_ref_val_fpr": float(hlt_thr_fpr),
+                    },
+                    "concat_teacher": {
+                        "auc_val": float(auc_concat_val),
+                        "auc_test": float(auc_concat_test),
+                        "fpr50_test": float(fpr50_concat),
+                    },
+                    "reco_teacher_soft": {
+                        "auc_val": float(auc_reco_teacher_val),
+                        "auc_test": float(auc_reco_teacher_test),
+                        "fpr50_val": float(fpr50_reco_teacher_val),
+                        "fpr50_test": float(fpr50_reco_teacher_test),
+                    },
+                    "corrected_only": {
+                        "auc_val": float(auc_corr_val),
+                        "auc_test": float(auc_corr_test),
+                        "fpr50_test": float(fpr50_corr),
+                    },
+                    "overlap_report_tpr": overlap_report,
+                    "best_combo_hlt_reco_val_selected_eval_test": combo_hlt_reco_valsel,
+                    "best_combo_hlt_reco_test_posthoc": combo_hlt_reco_oracle,
+                    "best_combo_hlt_corrected_val_selected_eval_test": combo_hlt_corr_valsel,
+                    "best_combo_hlt_corrected_test_posthoc": combo_hlt_corr_oracle,
+                },
+                f,
+                indent=2,
+            )
+
+        with open(save_root / "hlt_stats.json", "w", encoding="utf-8") as f:
+            json.dump({"config": cfg["hlt_effects"], "stats": hlt_stats}, f, indent=2)
+
+        if not args.skip_save_models:
+            torch.save({"model": baseline.state_dict(), "auc": float(auc_hlt_test)}, save_root / "baseline.pt")
+            torch.save({"model": concat_teacher.state_dict(), "auc": float(auc_concat_test)}, save_root / "concat_teacher.pt")
+            torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor_stageA.pt")
+            torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor.pt")
+            torch.save({"model": corrected_only.state_dict(), "auc": float(auc_corr_test)}, save_root / "corrected_only_tagger.pt")
+
+        print(f"
+Saved concat-teacher Stage-A + corrected-only results to: {save_root}")
+        return
 
     # Shared joint datasets (for corrected-only joint and dual-view branches).
     ds_train_joint = b.JointDualDataset(
