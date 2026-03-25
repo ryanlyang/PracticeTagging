@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=an5f150
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --mem=32G
 #SBATCH --time=8:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze5_%j.out
