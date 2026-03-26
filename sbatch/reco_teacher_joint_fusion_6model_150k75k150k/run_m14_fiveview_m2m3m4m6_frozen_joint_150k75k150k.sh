@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=m14_5view
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
-#SBATCH --time=10:00:00
+#SBATCH --time=7:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m14_fiveview_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m14_fiveview_%j.err
 
