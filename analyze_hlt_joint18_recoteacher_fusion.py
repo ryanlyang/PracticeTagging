@@ -371,36 +371,102 @@ def _pick_score(z: np.lib.npyio.NpzFile, key_candidates: List[str], split: str, 
 def _collect_candidates(results: Dict[str, object]) -> List[Dict[str, float | str]]:
     out: List[Dict[str, float | str]] = []
 
+    def _flt(v: object, default: float) -> float:
+        try:
+            f = float(v)
+        except Exception:
+            return float(default)
+        if not np.isfinite(f):
+            return float(default)
+        return float(f)
+
+    def _get(d: object, key: str, default: float) -> float:
+        if isinstance(d, dict):
+            return _flt(d.get(key, default), default)
+        return float(default)
+
     for name, met in results["individual"].items():
-        out.append({"name": f"indiv::{name}", "fpr": float(met["fpr_test"]), "auc": float(met["auc_test"]), "oracle": False})
+        out.append(
+            {
+                "name": f"indiv::{name}",
+                "fpr": _get(met, "fpr_test", float("inf")),
+                "auc": _get(met, "auc_test", float("nan")),
+                "oracle": False,
+            }
+        )
 
     for name, pack in results["pair_results_valsel"].items():
-        te = pack["test_eval"]
-        out.append({"name": f"pair_valsel::{name}", "fpr": float(te["fpr"]), "auc": float(te["auc"]), "oracle": False})
+        te = pack.get("test_eval", {}) if isinstance(pack, dict) else {}
+        out.append(
+            {
+                "name": f"pair_valsel::{name}",
+                "fpr": _get(te, "fpr", float("inf")),
+                "auc": _get(te, "auc", float("nan")),
+                "oracle": False,
+            }
+        )
 
     for name, pack in results["pair_results_oracle"].items():
-        out.append({"name": f"pair_oracle::{name}", "fpr": float(pack["fpr"]), "auc": float("nan"), "oracle": True})
+        out.append(
+            {
+                "name": f"pair_oracle::{name}",
+                "fpr": _get(pack, "fpr", float("inf")),
+                "auc": _get(pack, "auc", float("nan")),
+                "oracle": True,
+            }
+        )
 
     for k in [
         "all18_weighted_raw_valsel",
         "all18_weighted_platt_valsel",
         "all18_weighted_iso_valsel",
     ]:
-        te = results[k]["test_eval"]
-        out.append({"name": k, "fpr": float(te["fpr"]), "auc": float(te["auc"]), "oracle": False})
+        pack = results.get(k, {}) if isinstance(results, dict) else {}
+        te = pack.get("test_eval", {}) if isinstance(pack, dict) else {}
+        out.append(
+            {
+                "name": k,
+                "fpr": _get(te, "fpr", float("inf")),
+                "auc": _get(te, "auc", float("nan")),
+                "oracle": False,
+            }
+        )
 
     for k in [
         "all18_weighted_raw_oracle",
         "all18_weighted_platt_oracle",
         "all18_weighted_iso_oracle",
     ]:
-        out.append({"name": k, "fpr": float(results[k]["fpr"]), "auc": float("nan"), "oracle": True})
+        pack = results.get(k, {}) if isinstance(results, dict) else {}
+        out.append(
+            {
+                "name": k,
+                "fpr": _get(pack, "fpr", float("inf")),
+                "auc": _get(pack, "auc", float("nan")),
+                "oracle": True,
+            }
+        )
 
     for k in ["meta_raw", "meta_platt", "meta_iso"]:
-        te = results[k]["test_eval"]
-        orc = results[k]["oracle_test"]
-        out.append({"name": f"{k}::valsel", "fpr": float(te["fpr"]), "auc": float(te["auc"]), "oracle": False})
-        out.append({"name": f"{k}::oracle", "fpr": float(orc["fpr"]), "auc": float(orc["auc"]), "oracle": True})
+        pack = results.get(k, {}) if isinstance(results, dict) else {}
+        te = pack.get("test_eval", {}) if isinstance(pack, dict) else {}
+        orc = pack.get("oracle_test", {}) if isinstance(pack, dict) else {}
+        out.append(
+            {
+                "name": f"{k}::valsel",
+                "fpr": _get(te, "fpr", float("inf")),
+                "auc": _get(te, "auc", float("nan")),
+                "oracle": False,
+            }
+        )
+        out.append(
+            {
+                "name": f"{k}::oracle",
+                "fpr": _get(orc, "fpr", float("inf")),
+                "auc": _get(orc, "auc", float("nan")),
+                "oracle": True,
+            }
+        )
 
     return out
 
