@@ -26,6 +26,7 @@ SAVE_DIR="${SAVE_DIR:-${BASE_DIR}/model14_fiveview_m2m3m4m6}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
+SELECT_METRIC="${SELECT_METRIC:-auc}"
 
 set +u
 source ~/.bashrc
@@ -77,12 +78,13 @@ CMD=(
   --joint_warmup_epochs 3
   --joint_lambda_rank 0.2
   --joint_rank_tau 0.05
-  --select_metric fpr50
+  --select_metric "${SELECT_METRIC}"
 )
 
 echo "============================================================"
 echo "Model-14 Five-view (HLT + m2/m3/m4/m6): frozen then joint"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
+echo "Selection metric: ${SELECT_METRIC}"
 echo "m2 checkpoint (pre-joint): ${M2_RUN_DIR}/${M2_RECO_CKPT}"
 echo "m3 checkpoint: ${M3_RUN_DIR}/offline_reconstructor_stageA.pt"
 echo "m4 checkpoint: ${M4_RUN_DIR}/offline_reconstructor_stageA.pt"
