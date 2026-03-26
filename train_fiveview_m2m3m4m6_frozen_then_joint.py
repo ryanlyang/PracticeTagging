@@ -63,9 +63,39 @@ def safe_load_state(model: nn.Module, state: Dict[str, torch.Tensor], name: str)
         )
 
 
+FEAT_CLIP_ABS = 50.0
+
+
+def sanitize_numpy_features(x: np.ndarray, clip_abs: float = FEAT_CLIP_ABS) -> np.ndarray:
+    y = np.nan_to_num(x.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0)
+    if clip_abs > 0:
+        np.clip(y, -float(clip_abs), float(clip_abs), out=y)
+    return y
+
+
+def sanitize_numpy_scores(y_score: np.ndarray) -> np.ndarray:
+    return np.nan_to_num(y_score.astype(np.float64), nan=0.5, posinf=1.0, neginf=0.0)
+
+
+def sanitize_torch_features(x: torch.Tensor, clip_abs: float = FEAT_CLIP_ABS) -> torch.Tensor:
+    y = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    if clip_abs > 0:
+        y = torch.clamp(y, min=-float(clip_abs), max=float(clip_abs))
+    return y
+
+
+def sanitize_torch_logits(z: torch.Tensor) -> torch.Tensor:
+    return torch.nan_to_num(z, nan=0.0, posinf=20.0, neginf=-20.0)
+
+
 def fpr_at_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: float) -> float:
     labels = labels.astype(np.float32)
-    scores = scores.astype(np.float64)
+    scores = sanitize_numpy_scores(scores)
+    finite = np.isfinite(labels) & np.isfinite(scores)
+    if not np.any(finite):
+        return float("nan")
+    labels = labels[finite]
+    scores = scores[finite]
     if np.unique(labels).size < 2:
         return float("nan")
     fpr, tpr, _ = roc_curve(labels, scores)
@@ -74,7 +104,12 @@ def fpr_at_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: float) -> flo
 
 def auc_and_fpr50(labels: np.ndarray, scores: np.ndarray, target_tpr: float) -> Tuple[float, float]:
     labels = labels.astype(np.float32)
-    scores = scores.astype(np.float64)
+    scores = sanitize_numpy_scores(scores)
+    finite = np.isfinite(labels) & np.isfinite(scores)
+    if not np.any(finite):
+        return float("nan"), float("nan")
+    labels = labels[finite]
+    scores = scores[finite]
     auc = float(roc_auc_score(labels, scores)) if np.unique(labels).size > 1 else float("nan")
     return auc, fpr_at_tpr(labels, scores, target_tpr)
 
@@ -85,6 +120,7 @@ def low_fpr_surrogate_loss(
     target_tpr: float = 0.50,
     tau: float = 0.05,
 ) -> torch.Tensor:
+    logits = sanitize_torch_logits(logits)
     probs = torch.sigmoid(logits)
     pos = probs[labels > 0.5]
     neg = probs[labels <= 0.5]
@@ -299,6 +335,12 @@ def eval_frozen_loader(
         mask_m6 = batch["mask_m6"].to(device)
         y = batch["label"].to(device)
 
+        feat_hlt = sanitize_torch_features(feat_hlt)
+        feat_m2 = sanitize_torch_features(feat_m2)
+        feat_m3 = sanitize_torch_features(feat_m3)
+        feat_m4 = sanitize_torch_features(feat_m4)
+        feat_m6 = sanitize_torch_features(feat_m6)
+
         z, _ = tagger(
             feat_hlt, mask_hlt,
             feat_m2, mask_m2,
@@ -306,6 +348,7 @@ def eval_frozen_loader(
             feat_m4, mask_m4,
             feat_m6, mask_m6,
         )
+        z = sanitize_torch_logits(z)
         p = torch.sigmoid(z)
         preds.append(p.detach().cpu().numpy())
         labs.append(y.detach().cpu().numpy())
@@ -382,6 +425,12 @@ def build_five_views_numpy(
         corrected_use_flags=False,
     )
 
+    feat_hlt_s = sanitize_numpy_features(feat_hlt_s)
+    feat_m2 = sanitize_numpy_features(feat_m2)
+    feat_m3 = sanitize_numpy_features(feat_m3)
+    feat_m4 = sanitize_numpy_features(feat_m4)
+    feat_m6 = sanitize_numpy_features(feat_m6)
+
     return {
         "feat_hlt": feat_hlt_s.astype(np.float32),
         "mask_hlt": mask_hlt_s.astype(bool),
@@ -437,6 +486,12 @@ def train_frozen_phase(
             mask_m6 = batch["mask_m6"].to(device)
             y = batch["label"].to(device)
 
+            feat_hlt = sanitize_torch_features(feat_hlt)
+            feat_m2 = sanitize_torch_features(feat_m2)
+            feat_m3 = sanitize_torch_features(feat_m3)
+            feat_m4 = sanitize_torch_features(feat_m4)
+            feat_m6 = sanitize_torch_features(feat_m6)
+
             opt.zero_grad()
             logits, _ = tagger(
                 feat_hlt, mask_hlt,
@@ -445,9 +500,12 @@ def train_frozen_phase(
                 feat_m4, mask_m4,
                 feat_m6, mask_m6,
             )
+            logits = sanitize_torch_logits(logits)
             loss_cls = F.binary_cross_entropy_with_logits(logits, y)
             loss_rank = low_fpr_surrogate_loss(logits, y, target_tpr=float(target_tpr), tau=float(rank_tau))
             loss = loss_cls + float(lambda_rank) * loss_rank
+            if not torch.isfinite(loss):
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(tagger.parameters(), 1.0)
             opt.step()
@@ -548,6 +606,11 @@ def build_views_torch_from_batch(
         include_flags=False,
     )
 
+    feat_m2 = sanitize_torch_features(feat_m2)
+    feat_m3 = sanitize_torch_features(feat_m3)
+    feat_m4 = sanitize_torch_features(feat_m4)
+    feat_m6 = sanitize_torch_features(feat_m6)
+
     return feat_m2, mask_m2, feat_m3, mask_m3, feat_m4, mask_m4, feat_m6, mask_m6
 
 
@@ -595,6 +658,7 @@ def eval_joint_dynamic(
             feat_m4, mask_m4,
             feat_m6, mask_m6,
         )
+        z = sanitize_torch_logits(z)
         p = torch.sigmoid(z)
         preds.append(p.detach().cpu().numpy())
         labs.append(y.detach().cpu().numpy())
@@ -671,6 +735,9 @@ def train_joint_phase(
             const_hlt = batch["const_hlt"].to(device)
             y = batch["label"].to(device)
 
+            feat_hlt = sanitize_torch_features(feat_hlt)
+            const_hlt = torch.nan_to_num(const_hlt, nan=0.0, posinf=0.0, neginf=0.0)
+
             opt.zero_grad()
 
             feat_m2, mask_m2, feat_m3, mask_m3, feat_m4, mask_m4, feat_m6, mask_m6 = build_views_torch_from_batch(
@@ -692,9 +759,12 @@ def train_joint_phase(
                 feat_m6, mask_m6,
             )
 
+            logits = sanitize_torch_logits(logits)
             loss_cls = F.binary_cross_entropy_with_logits(logits, y)
             loss_rank = low_fpr_surrogate_loss(logits, y, target_tpr=float(target_tpr), tau=float(rank_tau))
             loss = loss_cls + float(lambda_rank) * loss_rank
+            if not torch.isfinite(loss):
+                continue
             loss.backward()
 
             torch.nn.utils.clip_grad_norm_(tagger.parameters(), 1.0)
