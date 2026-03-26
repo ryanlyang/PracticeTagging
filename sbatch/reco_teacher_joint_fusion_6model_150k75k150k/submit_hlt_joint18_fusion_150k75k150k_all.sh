@@ -27,6 +27,13 @@ S_M13="sbatch/reco_teacher_joint_fusion_6model_150k75k150k/run_m13_recoteacher_s
 
 S_AN="sbatch/reco_teacher_joint_fusion_6model_150k75k150k/run_analyze_hlt_joint18_fusion_150k75k150k.sh"
 
+BASE_DIR="${BASE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k}"
+M2_RUN_DIR="${M2_RUN_DIR:-${BASE_DIR}/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0}"
+M3_RUN_DIR="${M3_RUN_DIR:-${BASE_DIR}/model3_recoteacher_s09/model3_recoteacher_s09_150k75k150k_seed0}"
+
+# Default behavior: use existing m2/m3 checkpoints, do not resubmit m2/m3 jobs.
+USE_EXISTING_M2_M3="${USE_EXISTING_M2_M3:-1}"
+
 for s in \
   "$S_M2" "$S_M3" "$S_M4" "$S_M5" "$S_M6" \
   "$S_M7" "$S_M8" "$S_M9L" "$S_M9M" "$S_M9H" \
@@ -40,8 +47,17 @@ for s in \
   fi
 done
 
-j_m2=$(sbatch "$S_M2" | awk '{print $4}')
-j_m3=$(sbatch "$S_M3" | awk '{print $4}')
+if [[ "${USE_EXISTING_M2_M3}" == "1" ]]; then
+  j_m2="existing"
+  j_m3="existing"
+  echo "Using existing m2/m3 run dirs for analysis:"
+  echo "  M2_RUN_DIR=${M2_RUN_DIR}"
+  echo "  M3_RUN_DIR=${M3_RUN_DIR}"
+else
+  j_m2=$(sbatch "$S_M2" | awk '{print $4}')
+  j_m3=$(sbatch "$S_M3" | awk '{print $4}')
+fi
+
 j_m4=$(sbatch "$S_M4" | awk '{print $4}')
 j_m5=$(sbatch "$S_M5" | awk '{print $4}')
 j_m6=$(sbatch "$S_M6" | awk '{print $4}')
@@ -61,8 +77,19 @@ j_m11=$(sbatch "$S_M11" | awk '{print $4}')
 j_m12=$(sbatch "$S_M12" | awk '{print $4}')
 j_m13=$(sbatch "$S_M13" | awk '{print $4}')
 
-deps="${j_m2}:${j_m3}:${j_m4}:${j_m5}:${j_m6}:${j_m7}:${j_m8}:${j_m9l}:${j_m9m}:${j_m9h}:${j_m4k40}:${j_m4k60}:${j_m4k80}:${j_m10}:${j_m11}:${j_m12}:${j_m13}"
-j_an=$(sbatch --dependency=afterok:${deps} "$S_AN" | awk '{print $4}')
+deps_base="${j_m4}:${j_m5}:${j_m6}:${j_m7}:${j_m8}:${j_m9l}:${j_m9m}:${j_m9h}:${j_m4k40}:${j_m4k60}:${j_m4k80}:${j_m10}:${j_m11}:${j_m12}:${j_m13}"
+if [[ "${USE_EXISTING_M2_M3}" == "1" ]]; then
+  deps="${deps_base}"
+else
+  deps="${j_m2}:${j_m3}:${deps_base}"
+fi
+
+j_an=$(
+  sbatch \
+    --dependency=afterok:${deps} \
+    --export=ALL,M2_RUN_DIR="${M2_RUN_DIR}",M3_RUN_DIR="${M3_RUN_DIR}" \
+    "$S_AN" | awk '{print $4}'
+)
 
 echo "Submitted jobs:"
 echo "  m2  = ${j_m2}"
@@ -83,4 +110,6 @@ echo "  m11 = ${j_m11}"
 echo "  m12 = ${j_m12}"
 echo "  m13 = ${j_m13}"
 echo "Submitted 18-model analysis: ${j_an}"
+echo "  using M2_RUN_DIR=${M2_RUN_DIR}"
+echo "  using M3_RUN_DIR=${M3_RUN_DIR}"
 echo "  dependency=afterok:${deps}"
