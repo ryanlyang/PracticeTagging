@@ -90,7 +90,7 @@ def apply_offline_topk_target_mask_by_pt(
     topk_idx = np.argpartition(-masked_pt, kth=k - 1, axis=1)[:, :k]
 
     new_mask = np.zeros_like(mask_off, dtype=bool)
-    row_idx = np.arange(n)[:, None]
+    row_idx = np.broadcast_to(np.arange(n)[:, None], topk_idx.shape)
     valid_sel = mask_off[row_idx, topk_idx]
     new_mask[row_idx[valid_sel], topk_idx[valid_sel]] = True
 
