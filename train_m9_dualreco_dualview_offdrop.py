@@ -1123,6 +1123,12 @@ def main() -> None:
     ap.add_argument("--teacher_consistency_temp", type=float, default=2.0)
     ap.add_argument("--teacher_lambda_consistency", type=float, default=0.2)
 
+    ap.add_argument("--teacher_use_anti_overlap", action="store_true")
+    ap.add_argument("--teacher_anti_lambda", type=float, default=0.02)
+    ap.add_argument("--teacher_anti_tau", type=float, default=0.05)
+    ap.add_argument("--teacher_anti_beta", type=float, default=0.10)
+    ap.add_argument("--teacher_anti_warmup_epochs", type=int, default=12)
+
     ap.add_argument("--merge_radius", type=float, default=b.BASE_CONFIG["hlt_effects"]["merge_radius"])
     ap.add_argument("--eff_plateau_barrel", type=float, default=b.BASE_CONFIG["hlt_effects"]["eff_plateau_barrel"])
     ap.add_argument("--eff_plateau_endcap", type=float, default=b.BASE_CONFIG["hlt_effects"]["eff_plateau_endcap"])
@@ -1203,6 +1209,9 @@ def main() -> None:
     ap.add_argument("--offline_target_topk_pt", type=int, default=0)
 
     args = ap.parse_args()
+
+    if bool(args.teacher_use_anti_overlap) and bool(args.teacher_use_offline_dropout):
+        raise ValueError("Use either --teacher_use_anti_overlap or --teacher_use_offline_dropout, not both.")
 
     set_seed(int(args.seed))
     b.set_seed(int(args.seed))
@@ -1382,8 +1391,55 @@ def main() -> None:
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
+    ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
+    ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
+    ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
+    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
+    dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
+    dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
+
+    baseline = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
+    baseline = b.train_single_view_classifier_auc(baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline")
+    auc_hlt_test, preds_hlt_test, _ = b.eval_classifier(baseline, dl_test_hlt, device)
+    auc_hlt_val, preds_hlt_val, _ = b.eval_classifier(baseline, dl_val_hlt, device)
+
+    hlt_thr_prob, hlt_thr_tpr, hlt_thr_fpr = threshold_at_target_tpr(labels[val_idx], preds_hlt_val, float(args.stageA_target_tpr))
+    print(
+        f"StageA delta HLT reference @TPR={float(args.stageA_target_tpr):.2f}: "
+        f"threshold_prob={hlt_thr_prob:.6f}, val_tpr={hlt_thr_tpr:.6f}, val_fpr={hlt_thr_fpr:.6f}"
+    )
+
     teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    if bool(args.teacher_use_offline_dropout):
+    if bool(args.teacher_use_anti_overlap):
+        print(
+            "Teacher mode: anti-overlap "
+            f"(lambda={float(args.teacher_anti_lambda):.4f}, tau={float(args.teacher_anti_tau):.4f}, "
+            f"beta={float(args.teacher_anti_beta):.4f}, warmup={int(args.teacher_anti_warmup_epochs)})"
+        )
+        ds_train_teacher_anti = sA.TeacherAntiOverlapDataset(
+            feat_off=feat_off_std[train_idx],
+            mask_off=masks_off_target[train_idx],
+            feat_hlt=feat_hlt_std[train_idx],
+            mask_hlt=hlt_mask[train_idx],
+            labels=labels[train_idx],
+        )
+        dl_train_teacher_anti = DataLoader(ds_train_teacher_anti, batch_size=BS, shuffle=True, drop_last=True)
+        teacher = sA.train_single_view_teacher_anti_overlap(
+            model=teacher,
+            train_loader=dl_train_teacher_anti,
+            val_loader_off=dl_val_off,
+            hlt_model=baseline,
+            hlt_threshold_prob=float(hlt_thr_prob),
+            device=device,
+            train_cfg=cfg["training"],
+            target_tpr=float(args.stageA_target_tpr),
+            anti_lambda=float(args.teacher_anti_lambda),
+            anti_tau=float(args.teacher_anti_tau),
+            anti_beta=float(args.teacher_anti_beta),
+            anti_warmup_epochs=int(args.teacher_anti_warmup_epochs),
+            name="TeacherAntiOverlap",
+        )
+    elif bool(args.teacher_use_offline_dropout):
         print("Teacher mode: offline-dropout")
         teacher = train_single_view_teacher_with_offline_dropout(
             model=teacher,
@@ -1413,24 +1469,6 @@ def main() -> None:
 
     auc_teacher_test, preds_teacher_test, _ = b.eval_classifier(teacher, dl_test_off, device)
     auc_teacher_val, preds_teacher_val, _ = b.eval_classifier(teacher, dl_val_off, device)
-
-    ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
-    ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
-    ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
-    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
-    dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
-    dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
-
-    baseline = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    baseline = b.train_single_view_classifier_auc(baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline")
-    auc_hlt_test, preds_hlt_test, _ = b.eval_classifier(baseline, dl_test_hlt, device)
-    auc_hlt_val, preds_hlt_val, _ = b.eval_classifier(baseline, dl_val_hlt, device)
-
-    hlt_thr_prob, hlt_thr_tpr, hlt_thr_fpr = threshold_at_target_tpr(labels[val_idx], preds_hlt_val, float(args.stageA_target_tpr))
-    print(
-        f"StageA delta HLT reference @TPR={float(args.stageA_target_tpr):.2f}: "
-        f"threshold_prob={hlt_thr_prob:.6f}, val_tpr={hlt_thr_tpr:.6f}, val_fpr={hlt_thr_fpr:.6f}"
-    )
 
     print("\n" + "=" * 70)
     print("STEP 2: TRAIN RECO-A (TEACHER-GUIDED STAGE-A)")
@@ -1826,12 +1864,24 @@ def main() -> None:
             "auc_test": float(auc_dual_joint_test),
             "fpr50_test": float(fpr50_dual_joint_test),
         },
+        "teacher_mode": (
+            "anti_overlap" if bool(args.teacher_use_anti_overlap) else (
+                "offline_dropout" if bool(args.teacher_use_offline_dropout) else "standard"
+            )
+        ),
         "teacher_dropout": {
             "enabled": bool(args.teacher_use_offline_dropout),
             "drop_prob_max": float(args.teacher_drop_prob_max),
             "drop_mode": str(args.teacher_drop_mode),
             "drop_num_banks": int(args.teacher_drop_num_banks),
             "drop_bank_cycle_epochs": int(args.teacher_drop_bank_cycle_epochs),
+        },
+        "teacher_anti_overlap": {
+            "enabled": bool(args.teacher_use_anti_overlap),
+            "lambda": float(args.teacher_anti_lambda),
+            "tau": float(args.teacher_anti_tau),
+            "beta": float(args.teacher_anti_beta),
+            "warmup_epochs": int(args.teacher_anti_warmup_epochs),
         },
         "target_mask": {
             "target_mode": str(target_mode),
