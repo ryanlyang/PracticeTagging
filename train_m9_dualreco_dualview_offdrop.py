@@ -1199,6 +1199,8 @@ def main() -> None:
     ap.add_argument("--reco_eval_batch_size", type=int, default=256)
     ap.add_argument("--select_metric", type=str, choices=["auc", "fpr50"], default="auc")
     ap.add_argument("--report_target_tpr", type=float, default=0.50)
+    ap.add_argument("--target_mode", type=str, choices=["offdrop", "topk"], default="offdrop")
+    ap.add_argument("--offline_target_topk_pt", type=int, default=0)
 
     args = ap.parse_args()
 
@@ -1249,19 +1251,44 @@ def main() -> None:
     labels = all_labels_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.int64)
 
     raw_mask = const_raw[:, :, 0] > 0.0
-    masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
-    const_off = const_raw.copy()
-    const_off[~masks_off] = 0.0
+    masks_off_full = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
+    const_off_full = const_raw.copy()
+    const_off_full[~masks_off_full] = 0.0
 
     print("Generating pseudo-HLT...")
     hlt_const, hlt_mask, hlt_stats, _ = b.apply_hlt_effects_realistic_nomap(
-        const_off,
-        masks_off,
+        const_off_full,
+        masks_off_full,
         cfg,
         seed=int(args.seed),
     )
 
-    true_count = masks_off.sum(axis=1).astype(np.float32)
+    target_mode = str(args.target_mode).lower()
+    topk_target = int(args.offline_target_topk_pt)
+    if target_mode == "topk":
+        if 0 < topk_target < int(args.max_constits):
+            const_off_target, masks_off_target = sA.apply_offline_topk_target_mask_by_pt(
+                const_off_full,
+                masks_off_full,
+                topk_target,
+            )
+            print(
+                f"Target mode=topk, applying offline top-k target mask: k={topk_target} "
+                f"(HLT input max_constits stays {int(args.max_constits)})."
+            )
+        else:
+            print(
+                f"Target mode=topk but offline_target_topk_pt={topk_target} is invalid for "
+                f"max_constits={int(args.max_constits)}; falling back to full offline target."
+            )
+            target_mode = "offdrop"
+            const_off_target = const_off_full
+            masks_off_target = masks_off_full
+    else:
+        const_off_target = const_off_full
+        masks_off_target = masks_off_full
+
+    true_count = masks_off_target.sum(axis=1).astype(np.float32)
     hlt_count = hlt_mask.sum(axis=1).astype(np.float32)
     true_added_raw = np.maximum(true_count - hlt_count, 0.0).astype(np.float32)
     rho = b._clamp_target_scale(float(args.added_target_scale))
@@ -1276,7 +1303,7 @@ def main() -> None:
     )
 
     print("Computing features...")
-    feat_off = b.compute_features(const_off, masks_off)
+    feat_off = b.compute_features(const_off_target, masks_off_target)
     feat_hlt = b.compute_features(hlt_const, hlt_mask)
 
     idx = np.arange(len(labels))
@@ -1309,8 +1336,8 @@ def main() -> None:
     )
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} (custom_counts=True)")
 
-    means, stds = b.get_stats(feat_off, masks_off, train_idx)
-    feat_off_std = b.standardize(feat_off, masks_off, means, stds)
+    means, stds = b.get_stats(feat_off, masks_off_target, train_idx)
+    feat_off_std = b.standardize(feat_off, masks_off_target, means, stds)
     feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means, stds)
 
     data_setup = {
@@ -1329,6 +1356,8 @@ def main() -> None:
         "hlt_effects": cfg["hlt_effects"],
         "variant": "m9_dualreco_dualview_offdrop",
         "rho": float(rho),
+        "target_mode": str(target_mode),
+        "offline_target_topk_pt": int(topk_target),
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
         json.dump(data_setup, f, indent=2)
@@ -1346,9 +1375,9 @@ def main() -> None:
     print("=" * 70)
     BS = int(cfg["training"]["batch_size"])
 
-    ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
-    ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
-    ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
+    ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off_target[train_idx], labels[train_idx])
+    ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off_target[val_idx], labels[val_idx])
+    ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off_target[test_idx], labels[test_idx])
     dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
@@ -1359,7 +1388,7 @@ def main() -> None:
         teacher = train_single_view_teacher_with_offline_dropout(
             model=teacher,
             feat_off=feat_off_std,
-            mask_off=masks_off,
+            mask_off=masks_off_target,
             mask_hlt=hlt_mask,
             labels=labels.astype(np.float32),
             train_idx=train_idx,
@@ -1408,12 +1437,12 @@ def main() -> None:
     print("=" * 70)
     ds_train_reco_a = b.StageAReconstructionDataset(
         feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-        const_off[train_idx], masks_off[train_idx], labels[train_idx],
+        const_off_target[train_idx], masks_off_target[train_idx], labels[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
     )
     ds_val_reco_a = b.StageAReconstructionDataset(
         feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-        const_off[val_idx], masks_off[val_idx], labels[val_idx],
+        const_off_target[val_idx], masks_off_target[val_idx], labels[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
     )
     dl_train_reco_a = DataLoader(ds_train_reco_a, batch_size=int(cfg["reconstructor_training"]["batch_size"]), shuffle=True, drop_last=True, num_workers=args.num_workers, pin_memory=torch.cuda.is_available())
@@ -1455,6 +1484,8 @@ def main() -> None:
     print("STEP 3: TRAIN RECO-B (M2-STYLE MASKED TARGET + RATIO BUDGET)")
     print("=" * 70)
 
+    target_drop_prob_for_reco_b = float(args.target_drop_prob_max) if target_mode == "offdrop" else 0.0
+
     cfg_reco_b = {
         "recoB_training": {
             "epochs": int(args.recoB_epochs),
@@ -1476,15 +1507,15 @@ def main() -> None:
         feat_hlt_std=feat_hlt_std,
         hlt_mask=hlt_mask,
         hlt_const=hlt_const,
-        const_off=const_off,
-        masks_off=masks_off,
+        const_off=const_off_target,
+        masks_off=masks_off_target,
         train_idx=train_idx,
         val_idx=val_idx,
         device=device,
         num_workers=int(args.num_workers),
         cfg=cfg_reco_b,
         rho=float(rho),
-        drop_prob=float(args.target_drop_prob_max),
+        drop_prob=float(target_drop_prob_for_reco_b),
         drop_num_banks=int(args.target_drop_num_banks),
         drop_bank_cycle_epochs=int(args.target_drop_bank_cycle_epochs),
         seed=int(args.seed),
@@ -1603,31 +1634,31 @@ def main() -> None:
 
     # fixed bank-0 targets for branch-B anchor during joint
     c_tr_b0, m_tr_b0, bm_tr_b0, be_tr_b0 = build_masked_targets_for_indices(
-        const_off=const_off,
-        masks_off=masks_off,
+        const_off=const_off_target,
+        masks_off=masks_off_target,
         hlt_mask=hlt_mask,
         indices=train_idx,
-        drop_prob=float(args.target_drop_prob_max),
+        drop_prob=float(target_drop_prob_for_reco_b),
         seed=int(args.seed),
         bank=0,
         rho=float(rho),
     )
     c_val_b0, m_val_b0, bm_val_b0, be_val_b0 = build_masked_targets_for_indices(
-        const_off=const_off,
-        masks_off=masks_off,
+        const_off=const_off_target,
+        masks_off=masks_off_target,
         hlt_mask=hlt_mask,
         indices=val_idx,
-        drop_prob=float(args.target_drop_prob_max),
+        drop_prob=float(target_drop_prob_for_reco_b),
         seed=int(args.seed),
         bank=0,
         rho=float(rho),
     )
     c_test_b0, m_test_b0, bm_test_b0, be_test_b0 = build_masked_targets_for_indices(
-        const_off=const_off,
-        masks_off=masks_off,
+        const_off=const_off_target,
+        masks_off=masks_off_target,
         hlt_mask=hlt_mask,
         indices=test_idx,
-        drop_prob=float(args.target_drop_prob_max),
+        drop_prob=float(target_drop_prob_for_reco_b),
         seed=int(args.seed),
         bank=0,
         rho=float(rho),
@@ -1638,8 +1669,8 @@ def main() -> None:
         mask_hlt=hlt_mask[train_idx],
         const_hlt=hlt_const[train_idx],
         labels=labels[train_idx],
-        const_off_full=const_off[train_idx],
-        mask_off_full=masks_off[train_idx],
+        const_off_full=const_off_target[train_idx],
+        mask_off_full=masks_off_target[train_idx],
         budget_merge_full=budget_merge_true[train_idx],
         budget_eff_full=budget_eff_true[train_idx],
         const_off_b=c_tr_b0,
@@ -1652,8 +1683,8 @@ def main() -> None:
         mask_hlt=hlt_mask[val_idx],
         const_hlt=hlt_const[val_idx],
         labels=labels[val_idx],
-        const_off_full=const_off[val_idx],
-        mask_off_full=masks_off[val_idx],
+        const_off_full=const_off_target[val_idx],
+        mask_off_full=masks_off_target[val_idx],
         budget_merge_full=budget_merge_true[val_idx],
         budget_eff_full=budget_eff_true[val_idx],
         const_off_b=c_val_b0,
@@ -1666,8 +1697,8 @@ def main() -> None:
         mask_hlt=hlt_mask[test_idx],
         const_hlt=hlt_const[test_idx],
         labels=labels[test_idx],
-        const_off_full=const_off[test_idx],
-        mask_off_full=masks_off[test_idx],
+        const_off_full=const_off_target[test_idx],
+        mask_off_full=masks_off_target[test_idx],
         budget_merge_full=budget_merge_true[test_idx],
         budget_eff_full=budget_eff_true[test_idx],
         const_off_b=c_test_b0,
@@ -1803,9 +1834,11 @@ def main() -> None:
             "drop_bank_cycle_epochs": int(args.teacher_drop_bank_cycle_epochs),
         },
         "target_mask": {
-            "drop_prob_max": float(args.target_drop_prob_max),
+            "target_mode": str(target_mode),
+            "drop_prob_max": float(target_drop_prob_for_reco_b),
             "drop_num_banks": int(args.target_drop_num_banks),
             "drop_bank_cycle_epochs": int(args.target_drop_bank_cycle_epochs),
+            "offline_target_topk_pt": int(topk_target),
         },
         "recoB_ratio_count_budget": {
             "eps": float(args.recoB_ratio_count_eps),
