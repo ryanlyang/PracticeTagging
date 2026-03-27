@@ -589,7 +589,21 @@ def _deterministic_drop_mask(
     jet_idx: int,
 ) -> np.ndarray:
     mask_full = mask_off_row.astype(bool, copy=True)
-    mask_hlt = mask_hlt_row.astype(bool, copy=False)
+    mask_hlt_src = mask_hlt_row.astype(bool, copy=False)
+    l_full = int(mask_full.shape[0])
+    l_hlt = int(mask_hlt_src.shape[0])
+
+    # Align HLT mask length to target mask length.
+    # For concat targets we use [offline || hlt], so HLT occupancy is aligned to
+    # the trailing slice of the target sequence.
+    if l_hlt == l_full:
+        mask_hlt = mask_hlt_src
+    elif l_hlt < l_full:
+        mask_hlt = np.zeros((l_full,), dtype=bool)
+        mask_hlt[(l_full - l_hlt):] = mask_hlt_src
+    else:
+        mask_hlt = mask_hlt_src[:l_full]
+
     extra_mask = mask_full & (~mask_hlt)
 
     if drop_prob > 0.0 and np.any(extra_mask):
