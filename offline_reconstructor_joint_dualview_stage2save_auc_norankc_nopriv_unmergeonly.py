@@ -28,7 +28,7 @@ import copy
 import json
 import random
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -104,6 +104,15 @@ def _clamp_target_scale(x: float) -> float:
 def _sigmoid_np(x: np.ndarray) -> np.ndarray:
     x = np.clip(x, -60.0, 60.0)
     return 1.0 / (1.0 + np.exp(-x))
+
+
+def _load_checkpoint_model_state(path: str, device: torch.device) -> Dict[str, torch.Tensor]:
+    obj = torch.load(path, map_location=device)
+    if isinstance(obj, dict) and "model" in obj and isinstance(obj["model"], dict):
+        return obj["model"]
+    if isinstance(obj, dict):
+        return obj
+    raise ValueError(f"Unsupported checkpoint format at {path}")
 
 
 def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) -> torch.Tensor:
@@ -1588,9 +1597,52 @@ def train_joint_dual(
     delta_hlt_model: Optional[nn.Module] = None,
     delta_hlt_threshold_prob: float = 0.50,
     delta_warmup_epochs: int = 0,
+    progressive_unfreeze: bool = False,
+    unfreeze_phase1_epochs: int = 3,
+    unfreeze_phase2_epochs: int = 7,
+    unfreeze_last_n_encoder_layers: int = 2,
+    lambda_param_anchor: float = 0.0,
+    lambda_output_anchor: float = 0.0,
+    anchor_decay: float = 1.0,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
+    def _set_reco_trainability(mode: str) -> int:
+        for p in reconstructor.parameters():
+            p.requires_grad_(False)
+
+        if mode == "all":
+            for p in reconstructor.parameters():
+                p.requires_grad_(True)
+            return sum(int(p.numel()) for p in reconstructor.parameters())
+
+        trainable_prefixes: List[str] = [
+            "token_norm",
+            "action_head",
+            "unsmear_head",
+            "reassign_head",
+            "split_exist_head",
+            "split_delta_head",
+            "pool_attn",
+            "budget_head",
+            "gen_attn",
+            "gen_norm",
+            "gen_head",
+            "gen_exist_head",
+        ]
+        if mode == "lastk":
+            n_layers = len(reconstructor.encoder_layers)
+            k = int(max(0, min(int(unfreeze_last_n_encoder_layers), n_layers)))
+            for idx in range(max(0, n_layers - k), n_layers):
+                trainable_prefixes.append(f"encoder_layers.{idx}")
+
+        trainable = 0
+        for name, p in reconstructor.named_parameters():
+            if any(name.startswith(pref) for pref in trainable_prefixes):
+                p.requires_grad_(True)
+                trainable += int(p.numel())
+        return trainable
+
     for p in reconstructor.parameters():
-        p.requires_grad = not freeze_reconstructor
+        p.requires_grad_(not freeze_reconstructor)
 
     params = [{"params": dual_model.parameters(), "lr": float(lr_dual)}]
     if not freeze_reconstructor:
@@ -1631,12 +1683,45 @@ def train_joint_dual(
         for p in delta_hlt_model.parameters():
             p.requires_grad_(False)
 
+    lambda_param_anchor = float(max(lambda_param_anchor, 0.0))
+    lambda_output_anchor = float(max(lambda_output_anchor, 0.0))
+    anchor_decay = float(max(anchor_decay, 0.0))
+    use_anchor = bool(
+        (not freeze_reconstructor)
+        and (lambda_param_anchor > 0.0 or lambda_output_anchor > 0.0)
+    )
+    reco_anchor_copy = None
+    reco_anchor_state = None
+    if use_anchor:
+        reco_anchor_copy = copy.deepcopy(reconstructor).to(device)
+        reco_anchor_copy.eval()
+        for p in reco_anchor_copy.parameters():
+            p.requires_grad_(False)
+        reco_anchor_state = {
+            k: v.detach().clone().to(device)
+            for k, v in reconstructor.state_dict().items()
+            if torch.is_tensor(v)
+        }
+
     for ep in tqdm(range(int(epochs)), desc=stage_name):
         dual_model.train()
         if freeze_reconstructor:
             reconstructor.eval()
+            current_unfreeze_mode = "frozen"
+            n_trainable_reco = 0
         else:
             reconstructor.train()
+            if bool(progressive_unfreeze):
+                if (ep + 1) <= int(max(unfreeze_phase1_epochs, 0)):
+                    current_unfreeze_mode = "heads"
+                elif (ep + 1) <= int(max(unfreeze_phase2_epochs, 0)):
+                    current_unfreeze_mode = "lastk"
+                else:
+                    current_unfreeze_mode = "all"
+                n_trainable_reco = _set_reco_trainability(current_unfreeze_mode)
+            else:
+                current_unfreeze_mode = "all"
+                n_trainable_reco = _set_reco_trainability("all")
 
         tr_loss = 0.0
         tr_cls = 0.0
@@ -1646,6 +1731,8 @@ def train_joint_dual(
         tr_delta = 0.0
         tr_delta_gain = 0.0
         tr_delta_cost = 0.0
+        tr_anchor_param = 0.0
+        tr_anchor_out = 0.0
         n_tr = 0
 
         for batch in train_loader:
@@ -1740,12 +1827,37 @@ def train_joint_dual(
             else:
                 loss_reco = torch.zeros((), device=device)
 
+            if use_anchor:
+                if reco_anchor_copy is None or reco_anchor_state is None:
+                    raise RuntimeError("Anchor mode enabled but anchor references are missing.")
+                with torch.no_grad():
+                    out_anchor = reco_anchor_copy(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+                loss_anchor_out = (
+                    F.mse_loss(reco_out["cand_weights"], out_anchor["cand_weights"])
+                    + F.mse_loss(reco_out["budget_total"], out_anchor["budget_total"])
+                    + F.mse_loss(reco_out["budget_merge"], out_anchor["budget_merge"])
+                    + F.mse_loss(reco_out["budget_eff"], out_anchor["budget_eff"])
+                )
+                loss_anchor_param = torch.zeros((), device=device)
+                if lambda_param_anchor > 0.0:
+                    for name, p in reconstructor.named_parameters():
+                        if p.requires_grad:
+                            ref = reco_anchor_state[name]
+                            loss_anchor_param = loss_anchor_param + F.mse_loss(p, ref)
+                anchor_scale = float(anchor_decay) ** float(ep)
+            else:
+                loss_anchor_out = torch.zeros((), device=device)
+                loss_anchor_param = torch.zeros((), device=device)
+                anchor_scale = 1.0
+
             loss = (
                 loss_cls
                 + float(lambda_rank) * loss_rank
                 + float(lambda_reco) * loss_reco
                 + float(lambda_cons) * loss_cons
                 + float(lambda_delta_cls) * float(ramp) * loss_delta
+                + float(anchor_scale) * float(lambda_param_anchor) * loss_anchor_param
+                + float(anchor_scale) * float(lambda_output_anchor) * loss_anchor_out
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(dual_model.parameters(), 1.0)
@@ -1762,6 +1874,8 @@ def train_joint_dual(
             tr_delta += loss_delta.item() * bs
             tr_delta_gain += delta_gain.item() * bs
             tr_delta_cost += delta_cost.item() * bs
+            tr_anchor_param += loss_anchor_param.item() * bs
+            tr_anchor_out += loss_anchor_out.item() * bs
             n_tr += bs
 
         sch.step()
@@ -1774,6 +1888,8 @@ def train_joint_dual(
         tr_delta /= max(n_tr, 1)
         tr_delta_gain /= max(n_tr, 1)
         tr_delta_cost /= max(n_tr, 1)
+        tr_anchor_param /= max(n_tr, 1)
+        tr_anchor_out /= max(n_tr, 1)
 
         va_pack = eval_joint_model_both_metrics(
             reconstructor=reconstructor,
@@ -1840,11 +1956,13 @@ def train_joint_dual(
             print(
                 f"{stage_name} ep {ep+1}: train_loss={tr_loss:.4f} "
                 f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}, "
-                f"delta={tr_delta:.4f}, d_gain={tr_delta_gain:.4f}, d_cost={tr_delta_cost:.4f}) | "
+                f"delta={tr_delta:.4f}, d_gain={tr_delta_gain:.4f}, d_cost={tr_delta_cost:.4f}, "
+                f"anc_p={tr_anchor_param:.4f}, anc_o={tr_anchor_out:.4f}) | "
                 f"val_auc_unw={va_auc_unw:.4f}, val_fpr50_unw={va_fpr50_unw:.6f}, "
                 f"val_auc_w={va_auc_w:.4f}, val_fpr50_w={va_fpr50_w:.6f}, "
                 f"val_metric_source={metric_source_epoch}, "
-                f"select={str(select_metric).lower()}, best_sel={best_sel_score:.6f}"
+                f"select={str(select_metric).lower()}, best_sel={best_sel_score:.6f}, "
+                f"unfreeze={current_unfreeze_mode}, reco_trainable={n_trainable_reco}"
             )
 
         if (ep + 1) >= int(min_epochs) and no_improve >= int(patience):
@@ -1877,6 +1995,13 @@ def train_joint_dual(
         "delta_lambda_fp": float(delta_lambda_fp),
         "delta_hlt_threshold_prob": float(delta_hlt_threshold_prob),
         "delta_warmup_epochs": int(max(delta_warmup_epochs, 0)),
+        "progressive_unfreeze": bool(progressive_unfreeze),
+        "unfreeze_phase1_epochs": int(unfreeze_phase1_epochs),
+        "unfreeze_phase2_epochs": int(unfreeze_phase2_epochs),
+        "unfreeze_last_n_encoder_layers": int(unfreeze_last_n_encoder_layers),
+        "lambda_param_anchor": float(lambda_param_anchor),
+        "lambda_output_anchor": float(lambda_output_anchor),
+        "anchor_decay": float(anchor_decay),
     }
     state_pack = {
         "selected": {"dual": best_state_dual_sel, "reco": best_state_reco_sel},
@@ -1965,6 +2090,29 @@ def main() -> None:
     parser.add_argument("--stageC_delta_tau", type=float, default=0.05)
     parser.add_argument("--stageC_delta_lambda_fp", type=float, default=3.0)
     parser.add_argument("--stageC_delta_warmup_epochs", type=int, default=5)
+    parser.add_argument(
+        "--stageC_init_reco_ckpt",
+        type=str,
+        default="",
+        help="Optional path to reconstructor checkpoint to load immediately before Stage-C.",
+    )
+    parser.add_argument(
+        "--stageC_init_dual_ckpt",
+        type=str,
+        default="",
+        help="Optional path to dual-view tagger checkpoint to load immediately before Stage-C.",
+    )
+    parser.add_argument(
+        "--stageC_progressive_unfreeze",
+        action="store_true",
+        help="Use staged unfreezing of reconstructor during Stage-C.",
+    )
+    parser.add_argument("--stageC_unfreeze_phase1_epochs", type=int, default=3)
+    parser.add_argument("--stageC_unfreeze_phase2_epochs", type=int, default=7)
+    parser.add_argument("--stageC_unfreeze_last_n_encoder_layers", type=int, default=2)
+    parser.add_argument("--stageC_lambda_param_anchor", type=float, default=0.0)
+    parser.add_argument("--stageC_lambda_output_anchor", type=float, default=0.0)
+    parser.add_argument("--stageC_anchor_decay", type=float, default=0.95)
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
     parser.add_argument("--use_corrected_flags", action="store_true")
     parser.add_argument("--loss_w_pt_ratio", type=float, default=BASE_CONFIG["loss"]["w_pt_ratio"])
@@ -2679,6 +2827,15 @@ def main() -> None:
         delta_warmup_epochs=int(args.stageC_delta_warmup_epochs),
     )
 
+    if str(args.stageC_init_reco_ckpt).strip():
+        reco_ckpt_path = str(args.stageC_init_reco_ckpt).strip()
+        reconstructor.load_state_dict(_load_checkpoint_model_state(reco_ckpt_path, device))
+        print(f"Loaded Stage-C init reconstructor checkpoint: {reco_ckpt_path}")
+    if str(args.stageC_init_dual_ckpt).strip():
+        dual_ckpt_path = str(args.stageC_init_dual_ckpt).strip()
+        dual_joint.load_state_dict(_load_checkpoint_model_state(dual_ckpt_path, device))
+        print(f"Loaded Stage-C init dual checkpoint: {dual_ckpt_path}")
+
     # Stage B test evaluation + checkpoint snapshot (before Stage C joint finetune).
     auc_stage2, preds_stage2, labs_stage2, _ = eval_joint_model(
         reconstructor,
@@ -2746,6 +2903,13 @@ def main() -> None:
         delta_hlt_model=baseline,
         delta_hlt_threshold_prob=float(hlt_delta_thr_prob),
         delta_warmup_epochs=int(args.stageC_delta_warmup_epochs),
+        progressive_unfreeze=bool(args.stageC_progressive_unfreeze),
+        unfreeze_phase1_epochs=int(args.stageC_unfreeze_phase1_epochs),
+        unfreeze_phase2_epochs=int(args.stageC_unfreeze_phase2_epochs),
+        unfreeze_last_n_encoder_layers=int(args.stageC_unfreeze_last_n_encoder_layers),
+        lambda_param_anchor=float(args.stageC_lambda_param_anchor),
+        lambda_output_anchor=float(args.stageC_lambda_output_anchor),
+        anchor_decay=float(args.stageC_anchor_decay),
     )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
