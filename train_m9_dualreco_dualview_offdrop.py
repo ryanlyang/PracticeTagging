@@ -634,6 +634,7 @@ def build_masked_targets_for_indices(
     seed: int,
     bank: int,
     rho: float,
+    strict_m2_budget: bool = False,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     idx = indices.astype(np.int64)
     c_full = const_off[idx]
@@ -659,7 +660,11 @@ def build_masked_targets_for_indices(
     hlt_count = m_hlt.sum(axis=1).astype(np.float32)
     true_added = np.maximum(true_count - hlt_count, 0.0).astype(np.float32)
     b_merge = (float(rho) * true_added).astype(np.float32)
-    b_eff = ((1.0 - float(rho)) * true_added).astype(np.float32)
+    if bool(strict_m2_budget):
+        # Strict m2-style unmerge-only budgeting: no efficiency split target.
+        b_eff = np.zeros_like(true_added, dtype=np.float32)
+    else:
+        b_eff = ((1.0 - float(rho)) * true_added).astype(np.float32)
     return c_tgt.astype(np.float32), m_tgt.astype(bool), b_merge, b_eff
 
 
@@ -738,6 +743,7 @@ def train_reco_b_masked_m2(
     concat_added_min_hinge_lambda: float,
     recoB_reload_best_at_stage_transition: bool,
     use_ratio_budget: bool,
+    strict_m2_budget: bool = False,
     feature_ablation_mode: str = "none",
 ) -> Tuple[nn.Module, Dict[str, float]]:
     train_cfg = cfg["recoB_training"]
@@ -760,6 +766,7 @@ def train_reco_b_masked_m2(
         seed=int(seed),
         bank=0,
         rho=float(rho),
+        strict_m2_budget=bool(strict_m2_budget),
     )
     ds_val = m2mod.WeightedReconstructionDataset(
         feat_hlt=feat_hlt_std[val_idx],
@@ -809,6 +816,7 @@ def train_reco_b_masked_m2(
             seed=int(seed),
             bank=int(bank),
             rho=float(rho),
+            strict_m2_budget=bool(strict_m2_budget),
         )
         ds_train = m2mod.WeightedReconstructionDataset(
             feat_hlt=feat_hlt_std[train_idx],
@@ -1590,6 +1598,7 @@ def main() -> None:
     ap.add_argument("--recoB_concat_added_min_hinge_lambda", type=float, default=0.20)
     ap.add_argument("--disable_recoB_stagewise_best_reload", action="store_true")
     ap.add_argument("--disable_recoB_ratio_budget", action="store_true")
+    ap.add_argument("--recoB_strict_m2_mode", action="store_true")
 
     # Dual frozen
     ap.add_argument("--dual_frozen_epochs", type=int, default=45)
@@ -1983,10 +1992,14 @@ def main() -> None:
     )
 
     print("\n" + "=" * 70)
-    print("STEP 3: TRAIN RECO-B (M2-STYLE MASKED TARGET + RATIO BUDGET)")
+    if bool(args.recoB_strict_m2_mode):
+        print("STEP 3: TRAIN RECO-B (STRICT M2 MODE: UNMERGE-ONLY + PLAIN BUDGET)")
+    else:
+        print("STEP 3: TRAIN RECO-B (M2-STYLE MASKED TARGET + RATIO BUDGET)")
     print("=" * 70)
 
     target_drop_prob_for_reco_b = float(args.target_drop_prob_max) if target_mode == "offdrop" else 0.0
+    strict_m2_budget = bool(args.recoB_strict_m2_mode)
 
     cfg_reco_b = {
         "recoB_training": {
@@ -2004,6 +2017,8 @@ def main() -> None:
     }
 
     reco_b = m2mod.OfflineReconstructor(input_dim=7, **m2mod.BASE_CONFIG["reconstructor_model"]).to(device)
+    if bool(strict_m2_budget):
+        reco_b = m2mod.wrap_reconstructor_unmerge_only(reco_b)
     reco_b, reco_b_metrics = train_reco_b_masked_m2(
         model=reco_b,
         feat_hlt_std=feat_hlt_std,
@@ -2036,6 +2051,7 @@ def main() -> None:
         concat_added_min_hinge_lambda=float(args.recoB_concat_added_min_hinge_lambda),
         recoB_reload_best_at_stage_transition=not bool(args.disable_recoB_stagewise_best_reload),
         use_ratio_budget=not bool(args.disable_recoB_ratio_budget),
+        strict_m2_budget=bool(strict_m2_budget),
         feature_ablation_mode=str(feature_ablation_mode),
     )
 
@@ -2159,6 +2175,7 @@ def main() -> None:
         seed=int(args.seed),
         bank=0,
         rho=float(rho),
+        strict_m2_budget=bool(strict_m2_budget),
     )
     c_val_b0, m_val_b0, bm_val_b0, be_val_b0 = build_masked_targets_for_indices(
         const_off=const_off_target,
@@ -2169,6 +2186,7 @@ def main() -> None:
         seed=int(args.seed),
         bank=0,
         rho=float(rho),
+        strict_m2_budget=bool(strict_m2_budget),
     )
     c_test_b0, m_test_b0, bm_test_b0, be_test_b0 = build_masked_targets_for_indices(
         const_off=const_off_target,
@@ -2179,6 +2197,7 @@ def main() -> None:
         seed=int(args.seed),
         bank=0,
         rho=float(rho),
+        strict_m2_budget=bool(strict_m2_budget),
     )
 
     ds_train_joint = JointTwoRecoDataset(
@@ -2386,6 +2405,7 @@ def main() -> None:
             "concat_added_min_hinge_lambda": float(args.recoB_concat_added_min_hinge_lambda),
         },
         "recoB_use_ratio_budget": bool(not args.disable_recoB_ratio_budget),
+        "recoB_strict_m2_mode": bool(args.recoB_strict_m2_mode),
         "recoB_ratio_count_budget": {
             "eps": float(args.recoB_ratio_count_eps),
             "under_lambda": float(args.recoB_ratio_count_under_lambda),

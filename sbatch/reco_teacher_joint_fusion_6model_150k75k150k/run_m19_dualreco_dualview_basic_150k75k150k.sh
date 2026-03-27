@@ -83,6 +83,7 @@ CMD=(
   --recoB_stage2_epochs 55
   --recoB_min_full_scale_epochs 5
   --disable_recoB_ratio_budget
+  --recoB_strict_m2_mode
 
   --corrected_weight_floor 0.03
   --reco_eval_batch_size 256
@@ -119,7 +120,7 @@ echo "Model-19 dual-reco dualview basic (s01 Reco-A + m2 Reco-B, no residual hea
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "teacher: standard offline teacher"
 echo "recoA: s01-style StageA (val-AUC selection via --select_metric auc for dual stages)"
-echo "recoB: strict m2-style budget (ratio-aware replacement disabled)"
+echo "recoB: strict m2-style unmerge-only + plain budget (no ratio-aware replacement)"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
