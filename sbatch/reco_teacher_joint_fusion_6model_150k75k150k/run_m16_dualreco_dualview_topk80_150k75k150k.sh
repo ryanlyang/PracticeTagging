@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=m9d40
+#SBATCH --job-name=m16k80
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=16:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m9_dualreco_topk40_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m9_dualreco_topk40_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m16_dualreco_topk80_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m16_dualreco_topk80_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model9_dualreco_dualview_topk40_150k75k150k_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model9_dualreco_dualview_topk40}"
+RUN_NAME="${RUN_NAME:-model16_dualreco_dualview_topk80_150k75k150k_seed0}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model16_dualreco_dualview_topk80}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
@@ -23,14 +23,14 @@ N_VAL_SPLIT="${N_VAL_SPLIT:-75000}"
 N_TEST_SPLIT="${N_TEST_SPLIT:-150000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
-TARGET_TOPK="${TARGET_TOPK:-40}"
+TARGET_TOPK="${TARGET_TOPK:-80}"
 
 RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
-RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.15}"
-RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-4.0}"
-RATIO_COUNT_MARGIN_SCALE="${RATIO_COUNT_MARGIN_SCALE:-10.0}"
-RATIO_COUNT_GAMMA="${RATIO_COUNT_GAMMA:-0.85}"
-RATIO_COUNT_OVER_FLOOR="${RATIO_COUNT_OVER_FLOOR:-0.03}"
+RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.25}"
+RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-2.5}"
+RATIO_COUNT_MARGIN_SCALE="${RATIO_COUNT_MARGIN_SCALE:-7.0}"
+RATIO_COUNT_GAMMA="${RATIO_COUNT_GAMMA:-0.75}"
+RATIO_COUNT_OVER_FLOOR="${RATIO_COUNT_OVER_FLOOR:-0.04}"
 RATIO_COUNT_EPS="${RATIO_COUNT_EPS:-0.015}"
 
 set +u
@@ -131,7 +131,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "Model-9 dual-reco dualview top-k40 (no residual head, val-AUC selection)"
+echo "Model-16 dual-reco dualview top-k80 (no residual head, val-AUC selection)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "target_mode=topk, offline_target_topk_pt=${TARGET_TOPK}"
 echo "recoB ratio-count budget: under=${RATIO_COUNT_UNDER_LAMBDA} over=${RATIO_COUNT_OVER_LAMBDA} margin_base=${RATIO_COUNT_MARGIN_BASE} margin_scale=${RATIO_COUNT_MARGIN_SCALE} gamma=${RATIO_COUNT_GAMMA} floor=${RATIO_COUNT_OVER_FLOOR} eps=${RATIO_COUNT_EPS}"

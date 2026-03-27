@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=m9dmid
+#SBATCH --job-name=m15mid
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=16:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m9_dualreco_offdrop_mid_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m9_dualreco_offdrop_mid_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_mid_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_mid_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model9_dualreco_dualview_offdrop_mid_150k75k150k_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model9_dualreco_dualview_offdrop_mid}"
+RUN_NAME="${RUN_NAME:-model15_dualreco_dualview_offdrop_mid_150k75k150k_seed0}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_mid}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
@@ -139,7 +139,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "Model-9 MID dual-reco dualview (no residual head)"
+echo "Model-15 MID dual-reco dualview (no residual head)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "offdrop_prob_max=${OFFDROP_PROB_MAX} (teacher + recoB target)"
 echo "teacher_drop_mode=deterministic_bank, banks=3, bank_cycle_epochs=1"
