@@ -75,6 +75,36 @@ def threshold_at_target_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: 
     return float(thr[idx]), float(tpr[idx]), float(fpr[idx])
 
 
+def build_concat_constituents(
+    const_off: np.ndarray,
+    mask_off: np.ndarray,
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    max_concat_constits: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    const_cat = np.concatenate([const_off, const_hlt], axis=1)
+    mask_cat = np.concatenate([mask_off, mask_hlt], axis=1)
+
+    full_l = int(const_cat.shape[1])
+    out_l = int(max_concat_constits)
+    if out_l <= 0:
+        out_l = full_l
+
+    if out_l < full_l:
+        const_cat = const_cat[:, :out_l, :]
+        mask_cat = mask_cat[:, :out_l]
+    elif out_l > full_l:
+        n = int(const_cat.shape[0])
+        pad_const = np.zeros((n, out_l - full_l, const_cat.shape[2]), dtype=const_cat.dtype)
+        pad_mask = np.zeros((n, out_l - full_l), dtype=bool)
+        const_cat = np.concatenate([const_cat, pad_const], axis=1)
+        mask_cat = np.concatenate([mask_cat, pad_mask], axis=1)
+
+    const_cat = const_cat.copy()
+    const_cat[~mask_cat] = 0.0
+    return const_cat.astype(np.float32), mask_cat.astype(bool)
+
+
 def _norm_feature_ablation_mode(mode: str) -> str:
     m = str(mode).lower()
     if m in {"none", "no_angle", "no_scale", "core_shape"}:
@@ -164,20 +194,11 @@ def compute_reco_b_losses(
     budget_eff_true: torch.Tensor,
     loss_cfg: Dict,
     feature_ablation_mode: str = "none",
+    target_token_weights: torch.Tensor | None = None,
+    added_min_frac: float = 0.0,
+    added_min_hinge_lambda: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     m = _norm_feature_ablation_mode(feature_ablation_mode)
-    if m == "none":
-        return m2mod.compute_reconstruction_losses(
-            out,
-            const_hlt,
-            mask_hlt,
-            const_off,
-            mask_off,
-            budget_merge_true,
-            budget_eff_true,
-            loss_cfg,
-        )
-
     prof = _reco_b_ablation_profile(m)
     eps = 1e-8
 
@@ -212,8 +233,11 @@ def compute_reco_b_losses(
 
     penalty = float(loss_cfg["unselected_penalty"]) * (1.0 - w).unsqueeze(2)
     tgt_to_pred = (cost + penalty).min(dim=1).values
-    tgt_mask_f = mask_off.float()
-    loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
+    if target_token_weights is None:
+        tgt_w = mask_off.float()
+    else:
+        tgt_w = target_token_weights.float() * mask_off.float()
+    loss_tgt_to_pred = (tgt_to_pred * tgt_w).sum(dim=1) / (tgt_w.sum(dim=1) + eps)
     loss_set = (loss_pred_to_tgt + loss_tgt_to_pred).mean()
 
     pt_pred = pred[:, :, 0]
@@ -291,6 +315,12 @@ def compute_reco_b_losses(
     loss_local_gen = (gen_w * excess).sum() / (gen_w.sum() + eps)
     loss_local = (loss_local_split + loss_local_gen) * float(prof["w_local"])
 
+    if float(added_min_hinge_lambda) > 0.0 and float(added_min_frac) > 0.0:
+        min_added = float(added_min_frac) * true_added
+        loss_added_min = F.relu(min_added - pred_added).mean()
+    else:
+        loss_added_min = torch.zeros((), device=pred.device)
+
     total = (
         float(loss_cfg["w_set"]) * loss_set
         + float(loss_cfg["w_phys"]) * loss_phys
@@ -299,6 +329,7 @@ def compute_reco_b_losses(
         + float(loss_cfg["w_budget"]) * loss_budget
         + float(loss_cfg["w_sparse"]) * loss_sparse
         + float(loss_cfg["w_local"]) * loss_local
+        + float(added_min_hinge_lambda) * loss_added_min
     )
 
     return {
@@ -310,6 +341,7 @@ def compute_reco_b_losses(
         "budget": loss_budget,
         "sparse": loss_sparse,
         "local": loss_local,
+        "added_min_hinge": loss_added_min,
     }
 
 
@@ -600,6 +632,20 @@ def build_masked_targets_for_indices(
     return c_tgt.astype(np.float32), m_tgt.astype(bool), b_merge, b_eff
 
 
+def _build_concat_target_weights(
+    mask_off_target: torch.Tensor,
+    offline_prefix_len: int,
+    offline_token_weight: float,
+    hlt_token_weight: float,
+) -> torch.Tensor:
+    l = int(mask_off_target.shape[1])
+    pref = min(max(int(offline_prefix_len), 0), l)
+    w = mask_off_target.float() * float(hlt_token_weight)
+    if pref > 0:
+        w[:, :pref] = mask_off_target[:, :pref].float() * float(offline_token_weight)
+    return w
+
+
 def ratio_aware_budget_loss_from_out(
     out: Dict[str, torch.Tensor],
     mask_hlt: torch.Tensor,
@@ -653,6 +699,13 @@ def train_reco_b_masked_m2(
     ratio_margin_scale: float,
     ratio_gamma: float,
     ratio_over_floor: float,
+    target_mode: str,
+    max_constits: int,
+    concat_offline_token_weight: float,
+    concat_hlt_token_weight: float,
+    concat_added_min_frac: float,
+    concat_added_min_hinge_lambda: float,
+    recoB_reload_best_at_stage_transition: bool,
     feature_ablation_mode: str = "none",
 ) -> Tuple[nn.Module, Dict[str, float]]:
     train_cfg = cfg["recoB_training"]
@@ -706,6 +759,11 @@ def train_reco_b_masked_m2(
     stage2_end = min(max(stage2_end, stage1_end), total_epochs)
 
     min_stop_epoch = int(stage2_end) + int(train_cfg.get("min_full_scale_epochs", 5))
+    is_concat_target = str(target_mode).lower() == "concat"
+
+    stage_best_val = float("inf")
+    stage_best_state = None
+    stage_best_epoch = -1
 
     for ep in range(total_epochs):
         bank = (int(ep) // int(max(1, drop_bank_cycle_epochs))) % int(max(1, drop_num_banks))
@@ -762,6 +820,14 @@ def train_reco_b_masked_m2(
 
             opt.zero_grad()
             out = model(feat_hlt_b, mask_hlt_b, const_hlt_b, stage_scale=float(sc))
+            target_token_w = None
+            if is_concat_target:
+                target_token_w = _build_concat_target_weights(
+                    mask_off_target=mask_off_b,
+                    offline_prefix_len=int(max_constits),
+                    offline_token_weight=float(concat_offline_token_weight),
+                    hlt_token_weight=float(concat_hlt_token_weight),
+                )
             losses = compute_reco_b_losses(
                 out,
                 const_hlt_b,
@@ -772,6 +838,9 @@ def train_reco_b_masked_m2(
                 be,
                 loss_cfg,
                 feature_ablation_mode=str(feature_ablation_mode),
+                target_token_weights=target_token_w,
+                added_min_frac=float(concat_added_min_frac) if is_concat_target else 0.0,
+                added_min_hinge_lambda=float(concat_added_min_hinge_lambda) if is_concat_target else 0.0,
             )
             loss_budget_asym = ratio_aware_budget_loss_from_out(
                 out=out,
@@ -811,6 +880,14 @@ def train_reco_b_masked_m2(
                 be = batch["budget_eff_true"].to(device)
 
                 out = model(feat_hlt_b, mask_hlt_b, const_hlt_b, stage_scale=1.0)
+                target_token_w = None
+                if is_concat_target:
+                    target_token_w = _build_concat_target_weights(
+                        mask_off_target=mask_off_b,
+                        offline_prefix_len=int(max_constits),
+                        offline_token_weight=float(concat_offline_token_weight),
+                        hlt_token_weight=float(concat_hlt_token_weight),
+                    )
                 losses = compute_reco_b_losses(
                     out,
                     const_hlt_b,
@@ -821,6 +898,9 @@ def train_reco_b_masked_m2(
                     be,
                     loss_cfg,
                     feature_ablation_mode=str(feature_ablation_mode),
+                    target_token_weights=target_token_w,
+                    added_min_frac=float(concat_added_min_frac) if is_concat_target else 0.0,
+                    added_min_hinge_lambda=float(concat_added_min_hinge_lambda) if is_concat_target else 0.0,
                 )
                 loss_budget_asym = ratio_aware_budget_loss_from_out(
                     out=out,
@@ -861,12 +941,28 @@ def train_reco_b_masked_m2(
         else:
             no_improve += 1
 
+        if va_total < stage_best_val:
+            stage_best_val = float(va_total)
+            stage_best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            stage_best_epoch = int(ep + 1)
+
         if (ep + 1) % 5 == 0:
             print(
                 f"RecoB ep {ep+1}: train_total={tr_total:.5f}, val_total={va_total:.5f}, "
                 f"train_budget_asym={tr_budget_asym:.5f}, val_budget_asym={va_budget_asym:.5f}, "
-                f"bank={bank}, best_val={best_val:.5f}"
+                f"bank={bank}, best_val={best_val:.5f}, stage_best={stage_best_val:.5f}"
             )
+
+        if bool(recoB_reload_best_at_stage_transition) and (ep + 1 in {int(stage1_end), int(stage2_end)}) and stage_best_state is not None:
+            model.load_state_dict(stage_best_state)
+            print(
+                f"Reloaded best RecoB checkpoint at stage boundary epoch={ep+1} "
+                f"(stage_best_epoch={stage_best_epoch}, stage_best_val={stage_best_val:.5f})"
+            )
+            stage_best_val = float("inf")
+            stage_best_state = None
+            stage_best_epoch = -1
+            no_improve = 0
 
         if (ep + 1) >= int(min_stop_epoch) and no_improve >= int(train_cfg["patience"]):
             print(f"Early stopping RecoB at epoch {ep+1}")
@@ -1122,6 +1218,12 @@ def train_dual_joint_two_reco(
     recoB_ratio_gamma: float,
     recoB_ratio_over_floor: float,
     recoB_loss_cfg: Dict,
+    target_mode: str,
+    max_constits: int,
+    concat_offline_token_weight: float,
+    concat_hlt_token_weight: float,
+    concat_added_min_frac: float,
+    concat_added_min_hinge_lambda: float,
     feature_ablation_mode: str = "none",
 ) -> Dict[str, float]:
     for p in reco_a.parameters():
@@ -1229,6 +1331,14 @@ def train_dual_joint_two_reco(
                 loss_anchor_a = torch.zeros((), device=device)
 
             if float(lambda_anchor_b) > 0.0:
+                target_token_w_b = None
+                if str(target_mode).lower() == "concat":
+                    target_token_w_b = _build_concat_target_weights(
+                        mask_off_target=mask_off_b,
+                        offline_prefix_len=int(max_constits),
+                        offline_token_weight=float(concat_offline_token_weight),
+                        hlt_token_weight=float(concat_hlt_token_weight),
+                    )
                 losses_b = compute_reco_b_losses(
                     out_b,
                     const_hlt,
@@ -1239,6 +1349,9 @@ def train_dual_joint_two_reco(
                     beb,
                     recoB_loss_cfg,
                     feature_ablation_mode=str(feature_ablation_mode),
+                    target_token_weights=target_token_w_b,
+                    added_min_frac=float(concat_added_min_frac) if str(target_mode).lower() == "concat" else 0.0,
+                    added_min_hinge_lambda=float(concat_added_min_hinge_lambda) if str(target_mode).lower() == "concat" else 0.0,
                 )
                 loss_budget_asym_b = ratio_aware_budget_loss_from_out(
                     out=out_b,
@@ -1422,6 +1535,12 @@ def main() -> None:
     ap.add_argument("--recoB_ratio_count_over_margin_scale", type=float, default=6.0)
     ap.add_argument("--recoB_ratio_count_over_ratio_gamma", type=float, default=0.70)
     ap.add_argument("--recoB_ratio_count_over_lambda_floor", type=float, default=0.05)
+    ap.add_argument("--max_concat_constits", type=int, default=-1)
+    ap.add_argument("--recoB_concat_offline_token_weight", type=float, default=3.0)
+    ap.add_argument("--recoB_concat_hlt_token_weight", type=float, default=0.25)
+    ap.add_argument("--recoB_concat_added_min_frac", type=float, default=0.75)
+    ap.add_argument("--recoB_concat_added_min_hinge_lambda", type=float, default=0.20)
+    ap.add_argument("--disable_recoB_stagewise_best_reload", action="store_true")
 
     # Dual frozen
     ap.add_argument("--dual_frozen_epochs", type=int, default=45)
@@ -1452,7 +1571,7 @@ def main() -> None:
     ap.add_argument("--reco_eval_batch_size", type=int, default=256)
     ap.add_argument("--select_metric", type=str, choices=["auc", "fpr50"], default="auc")
     ap.add_argument("--report_target_tpr", type=float, default=0.50)
-    ap.add_argument("--target_mode", type=str, choices=["offdrop", "topk", "feature_ablation"], default="offdrop")
+    ap.add_argument("--target_mode", type=str, choices=["offdrop", "topk", "feature_ablation", "concat"], default="offdrop")
     ap.add_argument("--offline_target_topk_pt", type=int, default=0)
     ap.add_argument("--target_feature_ablation", type=str, choices=["none", "no_angle", "no_scale", "core_shape"], default="none")
 
@@ -1523,6 +1642,9 @@ def main() -> None:
     target_mode = str(args.target_mode).lower()
     topk_target = int(args.offline_target_topk_pt)
     feature_ablation_mode = "none"
+    max_concat_constits = int(args.max_concat_constits)
+    if max_concat_constits <= 0:
+        max_concat_constits = int(args.max_constits) * 2
 
     if target_mode == "topk":
         if 0 < topk_target < int(args.max_constits):
@@ -1550,6 +1672,18 @@ def main() -> None:
         const_off_target = const_off_full
         masks_off_target = masks_off_full
         print(f"Target mode=feature_ablation, mode={feature_ablation_mode} (HLT input remains full).")
+    elif target_mode == "concat":
+        const_off_target, masks_off_target = build_concat_constituents(
+            const_off=const_off_full,
+            mask_off=masks_off_full,
+            const_hlt=hlt_const,
+            mask_hlt=hlt_mask,
+            max_concat_constits=int(max_concat_constits),
+        )
+        print(
+            f"Target mode=concat, teacher/recoB target uses offline||HLT with max_concat_constits={int(max_concat_constits)}; "
+            f"Reco-A physical target remains full offline."
+        )
     else:
         const_off_target = const_off_full
         masks_off_target = masks_off_full
@@ -1561,9 +1695,25 @@ def main() -> None:
     budget_merge_true = (rho * true_added_raw).astype(np.float32)
     budget_eff_true = ((1.0 - rho) * true_added_raw).astype(np.float32)
 
+    true_count_full = masks_off_full.sum(axis=1).astype(np.float32)
+    true_added_raw_full = np.maximum(true_count_full - hlt_count, 0.0).astype(np.float32)
+    budget_merge_true_full = (rho * true_added_raw_full).astype(np.float32)
+    budget_eff_true_full = ((1.0 - rho) * true_added_raw_full).astype(np.float32)
+
+    if target_mode == "concat":
+        const_off_stageA = const_off_full
+        masks_off_stageA = masks_off_full
+        budget_merge_true_stageA = budget_merge_true_full
+        budget_eff_true_stageA = budget_eff_true_full
+    else:
+        const_off_stageA = const_off_target
+        masks_off_stageA = masks_off_target
+        budget_merge_true_stageA = budget_merge_true
+        budget_eff_true_stageA = budget_eff_true
+
     print(
         f"Non-priv rho split setup: rho={rho:.3f}, "
-        f"mean_true_added_raw={float(true_added_raw.mean()):.3f}, "
+        f"mean_true_added_raw(target)={float(true_added_raw.mean()):.3f}, "
         f"mean_target_merge={float(budget_merge_true.mean()):.3f}, "
         f"mean_target_eff={float(budget_eff_true.mean()):.3f}"
     )
@@ -1630,6 +1780,8 @@ def main() -> None:
         "target_mode": str(target_mode),
         "offline_target_topk_pt": int(topk_target),
         "target_feature_ablation": str(feature_ablation_mode),
+        "max_concat_constits": int(max_concat_constits),
+        "stageA_target": "full_offline" if target_mode == "concat" else "same_as_teacher_target",
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
         json.dump(data_setup, f, indent=2)
@@ -1738,13 +1890,13 @@ def main() -> None:
     print("=" * 70)
     ds_train_reco_a = b.StageAReconstructionDataset(
         feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-        const_off_target[train_idx], masks_off_target[train_idx], labels[train_idx],
-        budget_merge_true[train_idx], budget_eff_true[train_idx],
+        const_off_stageA[train_idx], masks_off_stageA[train_idx], labels[train_idx],
+        budget_merge_true_stageA[train_idx], budget_eff_true_stageA[train_idx],
     )
     ds_val_reco_a = b.StageAReconstructionDataset(
         feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-        const_off_target[val_idx], masks_off_target[val_idx], labels[val_idx],
-        budget_merge_true[val_idx], budget_eff_true[val_idx],
+        const_off_stageA[val_idx], masks_off_stageA[val_idx], labels[val_idx],
+        budget_merge_true_stageA[val_idx], budget_eff_true_stageA[val_idx],
     )
     dl_train_reco_a = DataLoader(ds_train_reco_a, batch_size=int(cfg["reconstructor_training"]["batch_size"]), shuffle=True, drop_last=True, num_workers=args.num_workers, pin_memory=torch.cuda.is_available())
     dl_val_reco_a = DataLoader(ds_val_reco_a, batch_size=int(cfg["reconstructor_training"]["batch_size"]), shuffle=False, num_workers=args.num_workers, pin_memory=torch.cuda.is_available())
@@ -1827,6 +1979,13 @@ def main() -> None:
         ratio_margin_scale=float(args.recoB_ratio_count_over_margin_scale),
         ratio_gamma=float(args.recoB_ratio_count_over_ratio_gamma),
         ratio_over_floor=float(args.recoB_ratio_count_over_lambda_floor),
+        target_mode=str(target_mode),
+        max_constits=int(args.max_constits),
+        concat_offline_token_weight=float(args.recoB_concat_offline_token_weight),
+        concat_hlt_token_weight=float(args.recoB_concat_hlt_token_weight),
+        concat_added_min_frac=float(args.recoB_concat_added_min_frac),
+        concat_added_min_hinge_lambda=float(args.recoB_concat_added_min_hinge_lambda),
+        recoB_reload_best_at_stage_transition=not bool(args.disable_recoB_stagewise_best_reload),
         feature_ablation_mode=str(feature_ablation_mode),
     )
 
@@ -1977,10 +2136,10 @@ def main() -> None:
         mask_hlt=hlt_mask[train_idx],
         const_hlt=hlt_const[train_idx],
         labels=labels[train_idx],
-        const_off_full=const_off_target[train_idx],
-        mask_off_full=masks_off_target[train_idx],
-        budget_merge_full=budget_merge_true[train_idx],
-        budget_eff_full=budget_eff_true[train_idx],
+        const_off_full=const_off_stageA[train_idx],
+        mask_off_full=masks_off_stageA[train_idx],
+        budget_merge_full=budget_merge_true_stageA[train_idx],
+        budget_eff_full=budget_eff_true_stageA[train_idx],
         const_off_b=c_tr_b0,
         mask_off_b=m_tr_b0,
         budget_merge_b=bm_tr_b0,
@@ -1991,10 +2150,10 @@ def main() -> None:
         mask_hlt=hlt_mask[val_idx],
         const_hlt=hlt_const[val_idx],
         labels=labels[val_idx],
-        const_off_full=const_off_target[val_idx],
-        mask_off_full=masks_off_target[val_idx],
-        budget_merge_full=budget_merge_true[val_idx],
-        budget_eff_full=budget_eff_true[val_idx],
+        const_off_full=const_off_stageA[val_idx],
+        mask_off_full=masks_off_stageA[val_idx],
+        budget_merge_full=budget_merge_true_stageA[val_idx],
+        budget_eff_full=budget_eff_true_stageA[val_idx],
         const_off_b=c_val_b0,
         mask_off_b=m_val_b0,
         budget_merge_b=bm_val_b0,
@@ -2005,10 +2164,10 @@ def main() -> None:
         mask_hlt=hlt_mask[test_idx],
         const_hlt=hlt_const[test_idx],
         labels=labels[test_idx],
-        const_off_full=const_off_target[test_idx],
-        mask_off_full=masks_off_target[test_idx],
-        budget_merge_full=budget_merge_true[test_idx],
-        budget_eff_full=budget_eff_true[test_idx],
+        const_off_full=const_off_stageA[test_idx],
+        mask_off_full=masks_off_stageA[test_idx],
+        budget_merge_full=budget_merge_true_stageA[test_idx],
+        budget_eff_full=budget_eff_true_stageA[test_idx],
         const_off_b=c_test_b0,
         mask_off_b=m_test_b0,
         budget_merge_b=bm_test_b0,
@@ -2066,6 +2225,12 @@ def main() -> None:
             recoB_ratio_gamma=float(args.recoB_ratio_count_over_ratio_gamma),
             recoB_ratio_over_floor=float(args.recoB_ratio_count_over_lambda_floor),
             recoB_loss_cfg=cfg_reco_b["loss"],
+            target_mode=str(target_mode),
+            max_constits=int(args.max_constits),
+            concat_offline_token_weight=float(args.recoB_concat_offline_token_weight),
+            concat_hlt_token_weight=float(args.recoB_concat_hlt_token_weight),
+            concat_added_min_frac=float(args.recoB_concat_added_min_frac),
+            concat_added_min_hinge_lambda=float(args.recoB_concat_added_min_hinge_lambda),
             feature_ablation_mode=str(feature_ablation_mode),
         )
 
@@ -2163,6 +2328,11 @@ def main() -> None:
             "drop_bank_cycle_epochs": int(args.target_drop_bank_cycle_epochs),
             "offline_target_topk_pt": int(topk_target),
             "feature_ablation": str(feature_ablation_mode),
+            "max_concat_constits": int(max_concat_constits),
+            "concat_offline_token_weight": float(args.recoB_concat_offline_token_weight),
+            "concat_hlt_token_weight": float(args.recoB_concat_hlt_token_weight),
+            "concat_added_min_frac": float(args.recoB_concat_added_min_frac),
+            "concat_added_min_hinge_lambda": float(args.recoB_concat_added_min_hinge_lambda),
         },
         "recoB_ratio_count_budget": {
             "eps": float(args.recoB_ratio_count_eps),
