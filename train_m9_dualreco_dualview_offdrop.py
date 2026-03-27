@@ -942,19 +942,23 @@ def train_reco_b_masked_m2(
                     added_min_frac=float(concat_added_min_frac) if is_concat_target else 0.0,
                     added_min_hinge_lambda=float(concat_added_min_hinge_lambda) if is_concat_target else 0.0,
                 )
-                loss_budget_asym = ratio_aware_budget_loss_from_out(
-                    out=out,
-                    mask_hlt=mask_hlt_b,
-                    mask_off_target=mask_off_b,
-                    eps=float(ratio_eps),
-                    under_lambda=float(ratio_under_lambda),
-                    over_lambda=float(ratio_over_lambda),
-                    over_margin_base=float(ratio_margin_base),
-                    over_margin_scale=float(ratio_margin_scale),
-                    over_ratio_gamma=float(ratio_gamma),
-                    over_lambda_floor=float(ratio_over_floor),
-                )
-                loss = losses["total"] - w_budget * losses["budget"] + w_budget * loss_budget_asym
+                if bool(use_ratio_budget):
+                    loss_budget_asym = ratio_aware_budget_loss_from_out(
+                        out=out,
+                        mask_hlt=mask_hlt_b,
+                        mask_off_target=mask_off_b,
+                        eps=float(ratio_eps),
+                        under_lambda=float(ratio_under_lambda),
+                        over_lambda=float(ratio_over_lambda),
+                        over_margin_base=float(ratio_margin_base),
+                        over_margin_scale=float(ratio_margin_scale),
+                        over_ratio_gamma=float(ratio_gamma),
+                        over_lambda_floor=float(ratio_over_floor),
+                    )
+                    loss = losses["total"] - w_budget * losses["budget"] + w_budget * loss_budget_asym
+                else:
+                    loss_budget_asym = torch.zeros((), device=feat_hlt_b.device)
+                    loss = losses["total"]
 
                 bs = feat_hlt_b.size(0)
                 va_total += float(loss.item()) * bs

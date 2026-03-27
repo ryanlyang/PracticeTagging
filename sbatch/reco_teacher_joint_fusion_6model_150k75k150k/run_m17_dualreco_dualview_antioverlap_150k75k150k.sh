@@ -24,7 +24,7 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-150000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
-OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.50}"
+OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.0}"
 RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
 RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.25}"
 RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-2.0}"
@@ -92,7 +92,7 @@ CMD=(
   --added_target_scale 0.90
 
   --target_drop_prob_max "${OFFDROP_PROB_MAX}"
-  --target_drop_num_banks 3
+  --target_drop_num_banks 1
   --target_drop_bank_cycle_epochs 1
   --recoB_epochs 90
   --recoB_patience 18
@@ -109,6 +109,8 @@ CMD=(
   --recoB_ratio_count_over_ratio_gamma "${RATIO_COUNT_GAMMA}"
   --recoB_ratio_count_over_lambda_floor "${RATIO_COUNT_OVER_FLOOR}"
   --recoB_ratio_count_eps "${RATIO_COUNT_EPS}"
+
+  --disable_recoB_ratio_budget
 
   --corrected_weight_floor 0.03
   --reco_eval_batch_size 256
