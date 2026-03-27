@@ -1017,6 +1017,8 @@ def main() -> None:
     ap.add_argument("--target_tpr", type=float, default=0.50)
     ap.add_argument("--weight_step_2", type=float, default=0.01)
     ap.add_argument("--weight_samples_multi", type=int, default=12000)
+    ap.add_argument("--weight_samples_multi_sparse", type=int, default=20000)
+    ap.add_argument("--weight_sparse_k_grid", type=str, default="2,3,4,5,6,8,10,12")
     ap.add_argument("--pair_grid_step_multi", type=float, default=0.05)
     ap.add_argument("--meta_sel_frac", type=float, default=0.30)
     ap.add_argument("--meta_c_grid", type=str, default="0.05,0.1,0.3,1,3,10,30")
@@ -1207,13 +1209,17 @@ def main() -> None:
         po["fpr_at_target_tpr_exact"] = float(pa["fpr_at_target_tpr"])
         pair_results_oracle[key] = po
 
+    sparse_k_grid = _parse_int_grid(args.weight_sparse_k_grid, [2, 3, 4, 5, 6, 8, 10, 12])
     weight_candidates = base.generate_weight_candidates(
         n_models=len(model_order),
         n_random=int(args.weight_samples_multi),
         seed=int(args.seed),
         include_pair_grid=True,
         pair_step=float(args.pair_grid_step_multi),
+        n_sparse_random=int(args.weight_samples_multi_sparse),
+        sparse_k_grid=sparse_k_grid,
     )
+    print(f"Weight candidates total: {int(weight_candidates.shape[0])} (dense={int(args.weight_samples_multi)}, sparse={int(args.weight_samples_multi_sparse)})")
 
     mat_val = np.vstack([scores_val[n] for n in model_order])
     mat_test = np.vstack([scores_test[n] for n in model_order])
@@ -1393,6 +1399,8 @@ def main() -> None:
             "target_tpr": target_tpr,
             "weight_step_2": float(args.weight_step_2),
             "weight_samples_multi": int(args.weight_samples_multi),
+            "weight_samples_multi_sparse": int(args.weight_samples_multi_sparse),
+            "weight_sparse_k_grid": sparse_k_grid,
             "pair_grid_step_multi": float(args.pair_grid_step_multi),
             "meta_sel_frac": float(args.meta_sel_frac),
             "meta_c_grid": c_grid,

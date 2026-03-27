@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 from sklearn.isotonic import IsotonicRegression
@@ -103,6 +103,8 @@ def generate_weight_candidates(
     seed: int,
     include_pair_grid: bool,
     pair_step: float,
+    n_sparse_random: int = 0,
+    sparse_k_grid: Sequence[int] | None = None,
 ) -> np.ndarray:
     rows: List[np.ndarray] = []
     eye = np.eye(n_models, dtype=np.float64)
@@ -118,10 +120,30 @@ def generate_weight_candidates(
                 v[j] = float(1.0 - w0)
                 rows.append(v)
 
+    rng = np.random.default_rng(int(seed))
+
     if int(n_random) > 0:
-        rng = np.random.default_rng(int(seed))
         rand_w = rng.dirichlet(alpha=np.ones(n_models, dtype=np.float64), size=int(n_random)).astype(np.float64)
         rows.extend([rand_w[i] for i in range(rand_w.shape[0])])
+
+    n_sparse = int(max(0, n_sparse_random))
+    if n_sparse > 0:
+        if sparse_k_grid is None:
+            sparse_k_grid = [2, 3, 4, 5, 6, 8, 10, 12]
+        ks = sorted(set(max(1, min(int(k), n_models)) for k in sparse_k_grid))
+        if not ks:
+            ks = [min(4, n_models)]
+
+        k_choices = np.asarray(ks, dtype=np.int64)
+        k_idx = rng.integers(0, len(k_choices), size=n_sparse)
+
+        for i in range(n_sparse):
+            k = int(k_choices[int(k_idx[i])])
+            idx = rng.choice(n_models, size=k, replace=False)
+            w_sub = rng.dirichlet(alpha=np.ones(k, dtype=np.float64)).astype(np.float64)
+            v = np.zeros(n_models, dtype=np.float64)
+            v[idx] = w_sub
+            rows.append(v)
 
     W = np.vstack(rows).astype(np.float64)
     W = np.clip(W, 0.0, None)
