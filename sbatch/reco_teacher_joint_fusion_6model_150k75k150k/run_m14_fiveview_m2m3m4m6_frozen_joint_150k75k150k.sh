@@ -67,8 +67,8 @@ CMD=(
   --frozen_lr 3e-4
   --frozen_weight_decay 1e-4
   --frozen_warmup_epochs 5
-  --frozen_lambda_rank 0.2
-  --frozen_rank_tau 0.05
+  --frozen_lambda_rank 0.0
+  --frozen_rank_tau 0.00
   --joint_epochs 12
   --joint_patience 6
   --joint_batch_size 128
@@ -76,8 +76,8 @@ CMD=(
   --joint_lr_reco 2e-6
   --joint_weight_decay 1e-4
   --joint_warmup_epochs 3
-  --joint_lambda_rank 0.2
-  --joint_rank_tau 0.05
+  --joint_lambda_rank 0.0
+  --joint_rank_tau 0.00
   --select_metric "${SELECT_METRIC}"
 )
 
