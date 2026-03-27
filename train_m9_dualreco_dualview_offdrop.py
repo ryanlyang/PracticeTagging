@@ -199,6 +199,23 @@ def compute_reco_b_losses(
     added_min_hinge_lambda: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     m = _norm_feature_ablation_mode(feature_ablation_mode)
+    if (
+        m == "none"
+        and target_token_weights is None
+        and float(added_min_frac) <= 0.0
+        and float(added_min_hinge_lambda) <= 0.0
+    ):
+        return m2mod.compute_reconstruction_losses(
+            out,
+            const_hlt,
+            mask_hlt,
+            const_off,
+            mask_off,
+            budget_merge_true,
+            budget_eff_true,
+            loss_cfg,
+        )
+
     prof = _reco_b_ablation_profile(m)
     eps = 1e-8
 
@@ -706,6 +723,7 @@ def train_reco_b_masked_m2(
     concat_added_min_frac: float,
     concat_added_min_hinge_lambda: float,
     recoB_reload_best_at_stage_transition: bool,
+    use_ratio_budget: bool,
     feature_ablation_mode: str = "none",
 ) -> Tuple[nn.Module, Dict[str, float]]:
     train_cfg = cfg["recoB_training"]
@@ -842,19 +860,27 @@ def train_reco_b_masked_m2(
                 added_min_frac=float(concat_added_min_frac) if is_concat_target else 0.0,
                 added_min_hinge_lambda=float(concat_added_min_hinge_lambda) if is_concat_target else 0.0,
             )
-            loss_budget_asym = ratio_aware_budget_loss_from_out(
-                out=out,
-                mask_hlt=mask_hlt_b,
-                mask_off_target=mask_off_b,
-                eps=float(ratio_eps),
-                under_lambda=float(ratio_under_lambda),
-                over_lambda=float(ratio_over_lambda),
-                over_margin_base=float(ratio_margin_base),
-                over_margin_scale=float(ratio_margin_scale),
-                over_ratio_gamma=float(ratio_gamma),
-                over_lambda_floor=float(ratio_over_floor),
-            )
-            loss = losses["total"] - w_budget * losses["budget"] + w_budget * loss_budget_asym
+            if bool(use_ratio_budget):
+                if bool(use_ratio_budget):
+                    loss_budget_asym = ratio_aware_budget_loss_from_out(
+                        out=out,
+                        mask_hlt=mask_hlt_b,
+                        mask_off_target=mask_off_b,
+                        eps=float(ratio_eps),
+                        under_lambda=float(ratio_under_lambda),
+                        over_lambda=float(ratio_over_lambda),
+                        over_margin_base=float(ratio_margin_base),
+                        over_margin_scale=float(ratio_margin_scale),
+                        over_ratio_gamma=float(ratio_gamma),
+                        over_lambda_floor=float(ratio_over_floor),
+                    )
+                    loss = losses["total"] - w_budget * losses["budget"] + w_budget * loss_budget_asym
+                else:
+                    loss_budget_asym = torch.zeros((), device=feat_hlt_b.device)
+                    loss = losses["total"]
+            else:
+                loss_budget_asym = torch.zeros((), device=feat_hlt_b.device)
+                loss = losses["total"]
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -1224,6 +1250,7 @@ def train_dual_joint_two_reco(
     concat_hlt_token_weight: float,
     concat_added_min_frac: float,
     concat_added_min_hinge_lambda: float,
+    recoB_use_ratio_budget: bool,
     feature_ablation_mode: str = "none",
 ) -> Dict[str, float]:
     for p in reco_a.parameters():
@@ -1353,19 +1380,22 @@ def train_dual_joint_two_reco(
                     added_min_frac=float(concat_added_min_frac) if str(target_mode).lower() == "concat" else 0.0,
                     added_min_hinge_lambda=float(concat_added_min_hinge_lambda) if str(target_mode).lower() == "concat" else 0.0,
                 )
-                loss_budget_asym_b = ratio_aware_budget_loss_from_out(
-                    out=out_b,
-                    mask_hlt=mask_hlt,
-                    mask_off_target=mask_off_b,
-                    eps=float(recoB_ratio_eps),
-                    under_lambda=float(recoB_ratio_under_lambda),
-                    over_lambda=float(recoB_ratio_over_lambda),
-                    over_margin_base=float(recoB_ratio_margin_base),
-                    over_margin_scale=float(recoB_ratio_margin_scale),
-                    over_ratio_gamma=float(recoB_ratio_gamma),
-                    over_lambda_floor=float(recoB_ratio_over_floor),
-                )
-                loss_anchor_b = losses_b["total"] - w_budget_b * losses_b["budget"] + w_budget_b * loss_budget_asym_b
+                if bool(recoB_use_ratio_budget):
+                    loss_budget_asym_b = ratio_aware_budget_loss_from_out(
+                        out=out_b,
+                        mask_hlt=mask_hlt,
+                        mask_off_target=mask_off_b,
+                        eps=float(recoB_ratio_eps),
+                        under_lambda=float(recoB_ratio_under_lambda),
+                        over_lambda=float(recoB_ratio_over_lambda),
+                        over_margin_base=float(recoB_ratio_margin_base),
+                        over_margin_scale=float(recoB_ratio_margin_scale),
+                        over_ratio_gamma=float(recoB_ratio_gamma),
+                        over_lambda_floor=float(recoB_ratio_over_floor),
+                    )
+                    loss_anchor_b = losses_b["total"] - w_budget_b * losses_b["budget"] + w_budget_b * loss_budget_asym_b
+                else:
+                    loss_anchor_b = losses_b["total"]
             else:
                 loss_anchor_b = torch.zeros((), device=device)
 
@@ -1541,6 +1571,7 @@ def main() -> None:
     ap.add_argument("--recoB_concat_added_min_frac", type=float, default=0.75)
     ap.add_argument("--recoB_concat_added_min_hinge_lambda", type=float, default=0.20)
     ap.add_argument("--disable_recoB_stagewise_best_reload", action="store_true")
+    ap.add_argument("--disable_recoB_ratio_budget", action="store_true")
 
     # Dual frozen
     ap.add_argument("--dual_frozen_epochs", type=int, default=45)
@@ -1986,6 +2017,7 @@ def main() -> None:
         concat_added_min_frac=float(args.recoB_concat_added_min_frac),
         concat_added_min_hinge_lambda=float(args.recoB_concat_added_min_hinge_lambda),
         recoB_reload_best_at_stage_transition=not bool(args.disable_recoB_stagewise_best_reload),
+        use_ratio_budget=not bool(args.disable_recoB_ratio_budget),
         feature_ablation_mode=str(feature_ablation_mode),
     )
 
@@ -2231,6 +2263,7 @@ def main() -> None:
             concat_hlt_token_weight=float(args.recoB_concat_hlt_token_weight),
             concat_added_min_frac=float(args.recoB_concat_added_min_frac),
             concat_added_min_hinge_lambda=float(args.recoB_concat_added_min_hinge_lambda),
+            recoB_use_ratio_budget=not bool(args.disable_recoB_ratio_budget),
             feature_ablation_mode=str(feature_ablation_mode),
         )
 
@@ -2334,6 +2367,7 @@ def main() -> None:
             "concat_added_min_frac": float(args.recoB_concat_added_min_frac),
             "concat_added_min_hinge_lambda": float(args.recoB_concat_added_min_hinge_lambda),
         },
+        "recoB_use_ratio_budget": bool(not args.disable_recoB_ratio_budget),
         "recoB_ratio_count_budget": {
             "eps": float(args.recoB_ratio_count_eps),
             "under_lambda": float(args.recoB_ratio_count_under_lambda),
