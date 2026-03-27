@@ -183,10 +183,6 @@ def main() -> None:
     ap.add_argument("--m2_delta020_run_dir", type=str, required=True)
 
     # New dualreco-dualview family (use frozen scores)
-    ap.add_argument("--m9_dual_offdrop_low_run_dir", type=str, required=True)
-    ap.add_argument("--m9_dual_offdrop_mid_run_dir", type=str, required=True)
-    ap.add_argument("--m9_dual_offdrop_high_run_dir", type=str, required=True)
-    ap.add_argument("--m9_dual_topk40_run_dir", type=str, required=True)
 
     ap.add_argument("--m11_dual_run_dir", type=str, required=True)
     ap.add_argument("--m12_dual_run_dir", type=str, required=True)
@@ -207,7 +203,7 @@ def main() -> None:
     ap.add_argument("--meta_sel_frac", type=float, default=0.30)
     ap.add_argument("--meta_c_grid", type=str, default="0.05,0.1,0.3,1,3,10,30")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--output_name", type=str, default="fusion_hlt_joint35_analysis.json")
+    ap.add_argument("--output_name", type=str, default="fusion_hlt_joint31_analysis.json")
     args = ap.parse_args()
 
     target_tpr = float(args.target_tpr)
@@ -255,10 +251,6 @@ def main() -> None:
         ("joint_delta020", Path(args.m2_delta020_run_dir), "fusion_scores_val_test.npz", ["preds_joint_val"], ["preds_joint_test"]),
 
         # New dualreco frozen additions
-        ("dual_m9_offdrop_low", Path(args.m9_dual_offdrop_low_run_dir), "dualreco_dualview_scores.npz", ["preds_dual_frozen_val", "preds_dualview_frozen_val"], ["preds_dual_frozen_test", "preds_dualview_frozen_test"]),
-        ("dual_m9_offdrop_mid", Path(args.m9_dual_offdrop_mid_run_dir), "dualreco_dualview_scores.npz", ["preds_dual_frozen_val", "preds_dualview_frozen_val"], ["preds_dual_frozen_test", "preds_dualview_frozen_test"]),
-        ("dual_m9_offdrop_high", Path(args.m9_dual_offdrop_high_run_dir), "dualreco_dualview_scores.npz", ["preds_dual_frozen_val", "preds_dualview_frozen_val"], ["preds_dual_frozen_test", "preds_dualview_frozen_test"]),
-        ("dual_m9_topk40", Path(args.m9_dual_topk40_run_dir), "dualreco_dualview_scores.npz", ["preds_dual_frozen_val", "preds_dualview_frozen_val"], ["preds_dual_frozen_test", "preds_dualview_frozen_test"]),
 
         ("dual_m11_noangle", Path(args.m11_dual_run_dir), "dualreco_dualview_scores.npz", ["preds_dual_frozen_val", "preds_dualview_frozen_val"], ["preds_dual_frozen_test", "preds_dualview_frozen_test"]),
         ("dual_m12_noscale", Path(args.m12_dual_run_dir), "dualreco_dualview_scores.npz", ["preds_dual_frozen_val", "preds_dualview_frozen_val"], ["preds_dual_frozen_test", "preds_dualview_frozen_test"]),
@@ -308,10 +300,6 @@ def main() -> None:
         "feat_coreshape_m13",
         "joint_delta000",
         "joint_delta020",
-        "dual_m9_offdrop_low",
-        "dual_m9_offdrop_mid",
-        "dual_m9_offdrop_high",
-        "dual_m9_topk40",
         "dual_m11_noangle",
         "dual_m12_noscale",
         "dual_m13_coreshape",

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=an35f
+#SBATCH --job-name=an31f
 #SBATCH --partition=tier3
 #SBATCH --mem=64G
 #SBATCH --time=10:00:00
@@ -39,10 +39,6 @@ M2_D000_RUN_DIR="${M2_D000_RUN_DIR:-${BASE_DIR}/model2_joint_delta000/model2_joi
 M2_D020_RUN_DIR="${M2_D020_RUN_DIR:-${BASE_DIR}/model2_joint_delta020/model2_joint_delta020_150k75k150k_seed0}"
 
 # Additional dualreco family (frozen dualview score)
-M9_DUAL_LOW_RUN_DIR="${M9_DUAL_LOW_RUN_DIR:-${BASE_DIR}/model9_dualreco_dualview_offdrop_low/model9_dualreco_dualview_offdrop_low_150k75k150k_seed0}"
-M9_DUAL_MID_RUN_DIR="${M9_DUAL_MID_RUN_DIR:-${BASE_DIR}/model9_dualreco_dualview_offdrop_mid/model9_dualreco_dualview_offdrop_mid_150k75k150k_seed0}"
-M9_DUAL_HIGH_RUN_DIR="${M9_DUAL_HIGH_RUN_DIR:-${BASE_DIR}/model9_dualreco_dualview_offdrop_high/model9_dualreco_dualview_offdrop_high_150k75k150k_seed0}"
-M9_DUAL_TOPK40_RUN_DIR="${M9_DUAL_TOPK40_RUN_DIR:-${BASE_DIR}/model9_dualreco_dualview_topk40/model9_dualreco_dualview_topk40_150k75k150k_seed0}"
 
 M11_DUAL_RUN_DIR="${M11_DUAL_RUN_DIR:-${BASE_DIR}/model11_dualreco_dualview_feat_noangle/model11_dualreco_dualview_feat_noangle_150k75k150k_seed0}"
 M12_DUAL_RUN_DIR="${M12_DUAL_RUN_DIR:-${BASE_DIR}/model12_dualreco_dualview_feat_noscale/model12_dualreco_dualview_feat_noscale_150k75k150k_seed0}"
@@ -66,7 +62,7 @@ PAIR_GRID_STEP_MULTI="${PAIR_GRID_STEP_MULTI:-0.05}"
 META_SEL_FRAC="${META_SEL_FRAC:-0.30}"
 META_C_GRID="${META_C_GRID:-0.05,0.1,0.3,1,3,10,30}"
 SEED="${SEED:-0}"
-OUTPUT_NAME="${OUTPUT_NAME:-fusion_hlt_joint35_analysis.json}"
+OUTPUT_NAME="${OUTPUT_NAME:-fusion_hlt_joint31_analysis.json}"
 
 set +u
 source ~/.bashrc
@@ -100,11 +96,6 @@ CMD=(
   --m2_delta000_run_dir "${M2_D000_RUN_DIR}"
   --m2_delta020_run_dir "${M2_D020_RUN_DIR}"
 
-  --m9_dual_offdrop_low_run_dir "${M9_DUAL_LOW_RUN_DIR}"
-  --m9_dual_offdrop_mid_run_dir "${M9_DUAL_MID_RUN_DIR}"
-  --m9_dual_offdrop_high_run_dir "${M9_DUAL_HIGH_RUN_DIR}"
-  --m9_dual_topk40_run_dir "${M9_DUAL_TOPK40_RUN_DIR}"
-
   --m11_dual_run_dir "${M11_DUAL_RUN_DIR}"
   --m12_dual_run_dir "${M12_DUAL_RUN_DIR}"
   --m13_dual_run_dir "${M13_DUAL_RUN_DIR}"
@@ -128,7 +119,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "35-model fusion analysis (18 previous + dualreco frozen + m2 delta ablations)"
+echo "31-model fusion analysis (18 previous + added 13 dual/delta models)"
 echo "BASE_DIR: ${BASE_DIR}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
