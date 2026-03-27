@@ -75,6 +75,244 @@ def threshold_at_target_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: 
     return float(thr[idx]), float(tpr[idx]), float(fpr[idx])
 
 
+def _norm_feature_ablation_mode(mode: str) -> str:
+    m = str(mode).lower()
+    if m in {"none", "no_angle", "no_scale", "core_shape"}:
+        return m
+    raise ValueError(f"Unknown feature ablation mode: {mode}")
+
+
+def apply_feature_ablation_to_corrected_np(feat: np.ndarray, mask: np.ndarray, mode: str) -> np.ndarray:
+    m = _norm_feature_ablation_mode(mode)
+    if m == "none":
+        return feat
+    out = feat.copy()
+    out[:, :, :7] = sA.apply_teacher_feature_ablation_np(out[:, :, :7], mask, m)
+    out[~mask] = 0.0
+    return out.astype(np.float32)
+
+
+def apply_feature_ablation_to_corrected_torch(feat: torch.Tensor, mask: torch.Tensor, mode: str) -> torch.Tensor:
+    m = _norm_feature_ablation_mode(mode)
+    if m == "none":
+        return feat
+    out = feat.clone()
+    out[:, :, :7] = sA.apply_teacher_feature_ablation_torch(out[:, :, :7], mask, m)
+    out = out.masked_fill(~mask.unsqueeze(-1), 0.0)
+    return out
+
+
+def _reco_b_ablation_profile(mode: str) -> Dict[str, float]:
+    m = _norm_feature_ablation_mode(mode)
+    if m == "none":
+        return {
+            "c_logpt": 1.00,
+            "c_eta": 0.60,
+            "c_phi": 0.60,
+            "c_logE": 0.25,
+            "w_phys_vec": 1.0,
+            "w_phys_E": 1.0,
+            "w_pt_ratio": 1.0,
+            "w_e_ratio": 1.0,
+            "w_local": 1.0,
+        }
+    if m == "no_angle":
+        return {
+            "c_logpt": 1.00,
+            "c_eta": 0.00,
+            "c_phi": 0.00,
+            "c_logE": 0.25,
+            "w_phys_vec": 0.0,
+            "w_phys_E": 1.0,
+            "w_pt_ratio": 1.0,
+            "w_e_ratio": 1.0,
+            "w_local": 0.0,
+        }
+    if m == "no_scale":
+        return {
+            "c_logpt": 0.00,
+            "c_eta": 0.60,
+            "c_phi": 0.60,
+            "c_logE": 0.00,
+            "w_phys_vec": 0.0,
+            "w_phys_E": 0.0,
+            "w_pt_ratio": 0.0,
+            "w_e_ratio": 0.0,
+            "w_local": 1.0,
+        }
+    # core_shape: keep geometry + relative-shape tendency; de-emphasize absolute energy-scale terms.
+    return {
+        "c_logpt": 0.25,
+        "c_eta": 0.60,
+        "c_phi": 0.60,
+        "c_logE": 0.00,
+        "w_phys_vec": 0.0,
+        "w_phys_E": 0.0,
+        "w_pt_ratio": 0.25,
+        "w_e_ratio": 0.0,
+        "w_local": 1.0,
+    }
+
+
+def compute_reco_b_losses(
+    out: Dict[str, torch.Tensor],
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    const_off: torch.Tensor,
+    mask_off: torch.Tensor,
+    budget_merge_true: torch.Tensor,
+    budget_eff_true: torch.Tensor,
+    loss_cfg: Dict,
+    feature_ablation_mode: str = "none",
+) -> Dict[str, torch.Tensor]:
+    m = _norm_feature_ablation_mode(feature_ablation_mode)
+    if m == "none":
+        return m2mod.compute_reconstruction_losses(
+            out,
+            const_hlt,
+            mask_hlt,
+            const_off,
+            mask_off,
+            budget_merge_true,
+            budget_eff_true,
+            loss_cfg,
+        )
+
+    prof = _reco_b_ablation_profile(m)
+    eps = 1e-8
+
+    pred = out["cand_tokens"]
+    w = out["cand_weights"].clamp(0.0, 1.0)
+
+    p_pt = pred[:, :, 0].clamp(min=eps).unsqueeze(2)
+    t_pt = const_off[:, :, 0].clamp(min=eps).unsqueeze(1)
+    p_eta = pred[:, :, 1].unsqueeze(2)
+    t_eta = const_off[:, :, 1].unsqueeze(1)
+    p_phi = pred[:, :, 2].unsqueeze(2)
+    t_phi = const_off[:, :, 2].unsqueeze(1)
+    p_E = pred[:, :, 3].clamp(min=eps).unsqueeze(2)
+    t_E = const_off[:, :, 3].clamp(min=eps).unsqueeze(1)
+
+    d_logpt = torch.abs(torch.log(p_pt) - torch.log(t_pt))
+    d_eta = torch.abs(p_eta - t_eta)
+    d_phi = torch.abs(torch.atan2(torch.sin(p_phi - t_phi), torch.cos(p_phi - t_phi)))
+    d_logE = torch.abs(torch.log(p_E) - torch.log(t_E))
+
+    cost = (
+        float(prof["c_logpt"]) * d_logpt
+        + float(prof["c_eta"]) * d_eta
+        + float(prof["c_phi"]) * d_phi
+        + float(prof["c_logE"]) * d_logE
+    )
+
+    valid_tgt = mask_off.unsqueeze(1)
+    cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
+    pred_to_tgt = cost.min(dim=2).values
+    loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
+
+    penalty = float(loss_cfg["unselected_penalty"]) * (1.0 - w).unsqueeze(2)
+    tgt_to_pred = (cost + penalty).min(dim=1).values
+    tgt_mask_f = mask_off.float()
+    loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
+    loss_set = (loss_pred_to_tgt + loss_tgt_to_pred).mean()
+
+    pt_pred = pred[:, :, 0]
+    eta_pred = pred[:, :, 1]
+    phi_pred = pred[:, :, 2]
+    E_pred = pred[:, :, 3]
+    px_pred = (w * pt_pred * torch.cos(phi_pred)).sum(dim=1)
+    py_pred = (w * pt_pred * torch.sin(phi_pred)).sum(dim=1)
+    pz_pred = (w * pt_pred * torch.sinh(eta_pred)).sum(dim=1)
+    Es_pred = (w * E_pred).sum(dim=1)
+
+    wt = mask_off.float()
+    pt_true = const_off[:, :, 0]
+    eta_true = const_off[:, :, 1]
+    phi_true = const_off[:, :, 2]
+    E_true = const_off[:, :, 3]
+    px_true = (wt * pt_true * torch.cos(phi_true)).sum(dim=1)
+    py_true = (wt * pt_true * torch.sin(phi_true)).sum(dim=1)
+    pz_true = (wt * pt_true * torch.sinh(eta_true)).sum(dim=1)
+    Es_true = (wt * E_true).sum(dim=1)
+
+    norm_vec = (px_true.abs() + py_true.abs() + pz_true.abs() + 1.0)
+    loss_phys_vec = ((px_pred - px_true).abs() + (py_pred - py_true).abs() + (pz_pred - pz_true).abs()) / norm_vec
+    loss_phys_e = (Es_pred - Es_true).abs() / (Es_true.abs() + 1.0)
+    loss_phys = (float(prof["w_phys_vec"]) * loss_phys_vec + float(prof["w_phys_E"]) * loss_phys_e).mean()
+
+    pred_pt = torch.sqrt(px_pred.pow(2) + py_pred.pow(2) + eps)
+    true_pt = torch.sqrt(px_true.pow(2) + py_true.pow(2) + eps)
+    loss_pt_ratio = F.smooth_l1_loss(pred_pt / (true_pt + eps), torch.ones_like(true_pt))
+    loss_e_ratio = F.smooth_l1_loss(Es_pred / (Es_true + eps), torch.ones_like(Es_true))
+
+    true_count = mask_off.float().sum(dim=1)
+    hlt_count = mask_hlt.float().sum(dim=1)
+    true_added = (true_count - hlt_count).clamp(min=0.0)
+    pred_count = w.sum(dim=1)
+    pred_added = out["child_weight"].sum(dim=1) + out["gen_weight"].sum(dim=1)
+    pred_added_merge = out["child_weight"].sum(dim=1)
+    pred_added_eff = out["gen_weight"].sum(dim=1)
+    budget_total = out["budget_total"]
+    budget_merge = out["budget_merge"]
+    budget_eff = out["budget_eff"]
+    budget_true_total = budget_merge_true + budget_eff_true
+
+    loss_budget = (
+        F.smooth_l1_loss(pred_count, true_count)
+        + F.smooth_l1_loss(budget_total, true_count)
+        + F.smooth_l1_loss(pred_added, true_added)
+        + F.smooth_l1_loss(budget_merge + budget_eff, true_added)
+        + F.smooth_l1_loss(budget_merge, budget_merge_true)
+        + F.smooth_l1_loss(budget_eff, budget_eff_true)
+        + F.smooth_l1_loss(pred_added_merge, budget_merge_true)
+        + F.smooth_l1_loss(pred_added_eff, budget_eff_true)
+        + F.smooth_l1_loss(budget_merge + budget_eff, budget_true_total)
+    )
+
+    loss_sparse = out["child_weight"].mean() + out["gen_weight"].mean()
+
+    split_delta = out["split_delta"]
+    split_step = torch.sqrt(split_delta[..., 1].pow(2) + split_delta[..., 2].pow(2) + 1e-8)
+    split_w = out["child_weight"].reshape(split_step.shape)
+    loss_local_split = (split_w * split_step).sum() / (split_w.sum() + eps)
+
+    gen_tokens = out["gen_tokens"]
+    gen_w = out["gen_weight"]
+    h_eta = const_hlt[:, :, 1]
+    h_phi = const_hlt[:, :, 2]
+    g_eta = gen_tokens[:, :, 1].unsqueeze(2)
+    g_phi = gen_tokens[:, :, 2].unsqueeze(2)
+    d_eta_l = g_eta - h_eta.unsqueeze(1)
+    d_phi_l = torch.atan2(torch.sin(g_phi - h_phi.unsqueeze(1)), torch.cos(g_phi - h_phi.unsqueeze(1)))
+    dR = torch.sqrt(d_eta_l.pow(2) + d_phi_l.pow(2) + 1e-8)
+    dR = torch.where(mask_hlt.unsqueeze(1), dR, torch.full_like(dR, 1e4))
+    nearest = dR.min(dim=2).values
+    excess = F.relu(nearest - float(loss_cfg["gen_local_radius"]))
+    loss_local_gen = (gen_w * excess).sum() / (gen_w.sum() + eps)
+    loss_local = (loss_local_split + loss_local_gen) * float(prof["w_local"])
+
+    total = (
+        float(loss_cfg["w_set"]) * loss_set
+        + float(loss_cfg["w_phys"]) * loss_phys
+        + float(loss_cfg["w_pt_ratio"]) * float(prof["w_pt_ratio"]) * loss_pt_ratio
+        + float(loss_cfg["w_e_ratio"]) * float(prof["w_e_ratio"]) * loss_e_ratio
+        + float(loss_cfg["w_budget"]) * loss_budget
+        + float(loss_cfg["w_sparse"]) * loss_sparse
+        + float(loss_cfg["w_local"]) * loss_local
+    )
+
+    return {
+        "total": total,
+        "set": loss_set,
+        "phys": loss_phys,
+        "pt_ratio": loss_pt_ratio,
+        "e_ratio": loss_e_ratio,
+        "budget": loss_budget,
+        "sparse": loss_sparse,
+        "local": loss_local,
+    }
+
+
 class OfflineDropoutTeacherDataset(Dataset):
     def __init__(
         self,
@@ -415,6 +653,7 @@ def train_reco_b_masked_m2(
     ratio_margin_scale: float,
     ratio_gamma: float,
     ratio_over_floor: float,
+    feature_ablation_mode: str = "none",
 ) -> Tuple[nn.Module, Dict[str, float]]:
     train_cfg = cfg["recoB_training"]
     loss_cfg = cfg["loss"]
@@ -523,7 +762,7 @@ def train_reco_b_masked_m2(
 
             opt.zero_grad()
             out = model(feat_hlt_b, mask_hlt_b, const_hlt_b, stage_scale=float(sc))
-            losses = m2mod.compute_reconstruction_losses(
+            losses = compute_reco_b_losses(
                 out,
                 const_hlt_b,
                 mask_hlt_b,
@@ -532,6 +771,7 @@ def train_reco_b_masked_m2(
                 bm,
                 be,
                 loss_cfg,
+                feature_ablation_mode=str(feature_ablation_mode),
             )
             loss_budget_asym = ratio_aware_budget_loss_from_out(
                 out=out,
@@ -571,7 +811,7 @@ def train_reco_b_masked_m2(
                 be = batch["budget_eff_true"].to(device)
 
                 out = model(feat_hlt_b, mask_hlt_b, const_hlt_b, stage_scale=1.0)
-                losses = m2mod.compute_reconstruction_losses(
+                losses = compute_reco_b_losses(
                     out,
                     const_hlt_b,
                     mask_hlt_b,
@@ -580,6 +820,7 @@ def train_reco_b_masked_m2(
                     bm,
                     be,
                     loss_cfg,
+                    feature_ablation_mode=str(feature_ablation_mode),
                 )
                 loss_budget_asym = ratio_aware_budget_loss_from_out(
                     out=out,
@@ -804,6 +1045,7 @@ def eval_dual_joint_dynamic(
     loader: DataLoader,
     device: torch.device,
     corrected_weight_floor: float,
+    feature_ablation_mode: str = "none",
 ) -> Tuple[float, np.ndarray, np.ndarray, float]:
     reco_a.eval()
     reco_b.eval()
@@ -831,6 +1073,7 @@ def eval_dual_joint_dynamic(
             scale_features_by_weight=True,
             include_flags=False,
         )
+        feat_b = apply_feature_ablation_to_corrected_torch(feat_b, mask_b, str(feature_ablation_mode))
         logits = dual(feat_a, mask_a, feat_b, mask_b).squeeze(1)
         preds.append(torch.sigmoid(logits).detach().cpu().numpy())
         labs.append(y.detach().cpu().numpy())
@@ -879,6 +1122,7 @@ def train_dual_joint_two_reco(
     recoB_ratio_gamma: float,
     recoB_ratio_over_floor: float,
     recoB_loss_cfg: Dict,
+    feature_ablation_mode: str = "none",
 ) -> Dict[str, float]:
     for p in reco_a.parameters():
         p.requires_grad_(True)
@@ -951,6 +1195,7 @@ def train_dual_joint_two_reco(
                 scale_features_by_weight=True,
                 include_flags=False,
             )
+            feat_b = apply_feature_ablation_to_corrected_torch(feat_b, mask_b, str(feature_ablation_mode))
 
             logits = dual(feat_a, mask_a, feat_b, mask_b).squeeze(1)
             loss_cls = F.binary_cross_entropy_with_logits(logits, y)
@@ -984,7 +1229,7 @@ def train_dual_joint_two_reco(
                 loss_anchor_a = torch.zeros((), device=device)
 
             if float(lambda_anchor_b) > 0.0:
-                losses_b = m2mod.compute_reconstruction_losses(
+                losses_b = compute_reco_b_losses(
                     out_b,
                     const_hlt,
                     mask_hlt,
@@ -993,6 +1238,7 @@ def train_dual_joint_two_reco(
                     bmb,
                     beb,
                     recoB_loss_cfg,
+                    feature_ablation_mode=str(feature_ablation_mode),
                 )
                 loss_budget_asym_b = ratio_aware_budget_loss_from_out(
                     out=out_b,
@@ -1045,6 +1291,7 @@ def train_dual_joint_two_reco(
             loader=val_loader,
             device=device,
             corrected_weight_floor=float(corrected_weight_floor),
+            feature_ablation_mode=str(feature_ablation_mode),
         )
 
         if str(select_metric).lower() == "fpr50":
@@ -1205,8 +1452,9 @@ def main() -> None:
     ap.add_argument("--reco_eval_batch_size", type=int, default=256)
     ap.add_argument("--select_metric", type=str, choices=["auc", "fpr50"], default="auc")
     ap.add_argument("--report_target_tpr", type=float, default=0.50)
-    ap.add_argument("--target_mode", type=str, choices=["offdrop", "topk"], default="offdrop")
+    ap.add_argument("--target_mode", type=str, choices=["offdrop", "topk", "feature_ablation"], default="offdrop")
     ap.add_argument("--offline_target_topk_pt", type=int, default=0)
+    ap.add_argument("--target_feature_ablation", type=str, choices=["none", "no_angle", "no_scale", "core_shape"], default="none")
 
     args = ap.parse_args()
 
@@ -1274,6 +1522,8 @@ def main() -> None:
 
     target_mode = str(args.target_mode).lower()
     topk_target = int(args.offline_target_topk_pt)
+    feature_ablation_mode = "none"
+
     if target_mode == "topk":
         if 0 < topk_target < int(args.max_constits):
             const_off_target, masks_off_target = sA.apply_offline_topk_target_mask_by_pt(
@@ -1293,6 +1543,13 @@ def main() -> None:
             target_mode = "offdrop"
             const_off_target = const_off_full
             masks_off_target = masks_off_full
+    elif target_mode == "feature_ablation":
+        feature_ablation_mode = _norm_feature_ablation_mode(str(args.target_feature_ablation))
+        if feature_ablation_mode == "none":
+            raise ValueError("target_mode=feature_ablation requires --target_feature_ablation != none")
+        const_off_target = const_off_full
+        masks_off_target = masks_off_full
+        print(f"Target mode=feature_ablation, mode={feature_ablation_mode} (HLT input remains full).")
     else:
         const_off_target = const_off_full
         masks_off_target = masks_off_full
@@ -1348,6 +1605,11 @@ def main() -> None:
     means, stds = b.get_stats(feat_off, masks_off_target, train_idx)
     feat_off_std = b.standardize(feat_off, masks_off_target, means, stds)
     feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means, stds)
+    feat_off_teacher_std = sA.apply_teacher_feature_ablation_np(
+        feat_off_std,
+        masks_off_target,
+        feature_ablation_mode if target_mode == "feature_ablation" else "none",
+    )
 
     data_setup = {
         "train_path_arg": str(args.train_path),
@@ -1367,6 +1629,7 @@ def main() -> None:
         "rho": float(rho),
         "target_mode": str(target_mode),
         "offline_target_topk_pt": int(topk_target),
+        "target_feature_ablation": str(feature_ablation_mode),
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
         json.dump(data_setup, f, indent=2)
@@ -1384,9 +1647,9 @@ def main() -> None:
     print("=" * 70)
     BS = int(cfg["training"]["batch_size"])
 
-    ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off_target[train_idx], labels[train_idx])
-    ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off_target[val_idx], labels[val_idx])
-    ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off_target[test_idx], labels[test_idx])
+    ds_train_off = b.JetDataset(feat_off_teacher_std[train_idx], masks_off_target[train_idx], labels[train_idx])
+    ds_val_off = b.JetDataset(feat_off_teacher_std[val_idx], masks_off_target[val_idx], labels[val_idx])
+    ds_test_off = b.JetDataset(feat_off_teacher_std[test_idx], masks_off_target[test_idx], labels[test_idx])
     dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
@@ -1417,7 +1680,7 @@ def main() -> None:
             f"beta={float(args.teacher_anti_beta):.4f}, warmup={int(args.teacher_anti_warmup_epochs)})"
         )
         ds_train_teacher_anti = sA.TeacherAntiOverlapDataset(
-            feat_off=feat_off_std[train_idx],
+            feat_off=feat_off_teacher_std[train_idx],
             mask_off=masks_off_target[train_idx],
             feat_hlt=feat_hlt_std[train_idx],
             mask_hlt=hlt_mask[train_idx],
@@ -1443,7 +1706,7 @@ def main() -> None:
         print("Teacher mode: offline-dropout")
         teacher = train_single_view_teacher_with_offline_dropout(
             model=teacher,
-            feat_off=feat_off_std,
+            feat_off=feat_off_teacher_std,
             mask_off=masks_off_target,
             mask_hlt=hlt_mask,
             labels=labels.astype(np.float32),
@@ -1564,6 +1827,7 @@ def main() -> None:
         ratio_margin_scale=float(args.recoB_ratio_count_over_margin_scale),
         ratio_gamma=float(args.recoB_ratio_count_over_ratio_gamma),
         ratio_over_floor=float(args.recoB_ratio_count_over_lambda_floor),
+        feature_ablation_mode=str(feature_ablation_mode),
     )
 
     print("\n" + "=" * 70)
@@ -1591,6 +1855,8 @@ def main() -> None:
         corrected_use_flags=False,
     )
 
+    feat_b_train = apply_feature_ablation_to_corrected_np(feat_b_train, mask_b_train, str(feature_ablation_mode))
+
     feat_a_val, mask_a_val = b.build_corrected_view_numpy(
         reconstructor=reco_a,
         feat_hlt=feat_hlt_std[val_idx],
@@ -1612,6 +1878,8 @@ def main() -> None:
         corrected_use_flags=False,
     )
 
+    feat_b_val = apply_feature_ablation_to_corrected_np(feat_b_val, mask_b_val, str(feature_ablation_mode))
+
     feat_a_test, mask_a_test = b.build_corrected_view_numpy(
         reconstructor=reco_a,
         feat_hlt=feat_hlt_std[test_idx],
@@ -1632,6 +1900,8 @@ def main() -> None:
         corrected_weight_floor=float(args.corrected_weight_floor),
         corrected_use_flags=False,
     )
+
+    feat_b_test = apply_feature_ablation_to_corrected_np(feat_b_test, mask_b_test, str(feature_ablation_mode))
 
     ds_train_dual = DualViewJetDataset(feat_a_train, mask_a_train, feat_b_train, mask_b_train, labels[train_idx])
     ds_val_dual = DualViewJetDataset(feat_a_val, mask_a_val, feat_b_val, mask_b_val, labels[val_idx])
@@ -1796,6 +2066,7 @@ def main() -> None:
             recoB_ratio_gamma=float(args.recoB_ratio_count_over_ratio_gamma),
             recoB_ratio_over_floor=float(args.recoB_ratio_count_over_lambda_floor),
             recoB_loss_cfg=cfg_reco_b["loss"],
+            feature_ablation_mode=str(feature_ablation_mode),
         )
 
         auc_dual_joint_val, preds_dual_joint_val, _, fpr50_dual_joint_val = eval_dual_joint_dynamic(
@@ -1805,6 +2076,7 @@ def main() -> None:
             loader=dl_val_joint,
             device=device,
             corrected_weight_floor=float(args.corrected_weight_floor),
+            feature_ablation_mode=str(feature_ablation_mode),
         )
         auc_dual_joint_test, preds_dual_joint_test, _, fpr50_dual_joint_test = eval_dual_joint_dynamic(
             reco_a=reco_a,
@@ -1813,6 +2085,7 @@ def main() -> None:
             loader=dl_test_joint,
             device=device,
             corrected_weight_floor=float(args.corrected_weight_floor),
+            feature_ablation_mode=str(feature_ablation_mode),
         )
 
         print(
@@ -1889,6 +2162,7 @@ def main() -> None:
             "drop_num_banks": int(args.target_drop_num_banks),
             "drop_bank_cycle_epochs": int(args.target_drop_bank_cycle_epochs),
             "offline_target_topk_pt": int(topk_target),
+            "feature_ablation": str(feature_ablation_mode),
         },
         "recoB_ratio_count_budget": {
             "eps": float(args.recoB_ratio_count_eps),
