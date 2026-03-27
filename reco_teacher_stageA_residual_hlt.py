@@ -38,6 +38,88 @@ from torch.utils.data import DataLoader, Dataset
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd as b
 import reco_teacher_stageA_only_delta_curriculum as sA
 
+_ORIG_TEACHER_GUIDED_RECO_LOSSES = b._compute_teacher_guided_reco_losses
+_RATIO_AWARE_COUNT_CFG: Dict[str, float | bool] = {
+    "enabled": False,
+    "eps": 0.015,
+    "under_lambda": 1.0,
+    "over_lambda": 0.25,
+    "over_margin_base": 2.0,
+    "over_margin_scale": 6.0,
+    "over_ratio_gamma": 0.7,
+    "over_lambda_floor": 0.05,
+}
+
+
+def _compute_ratio_aware_count_budget_hinge(
+    reco_out: Dict[str, torch.Tensor],
+    mask_hlt: torch.Tensor,
+    mask_off: torch.Tensor,
+    cfg: Dict[str, float | bool],
+) -> torch.Tensor:
+    true_count = mask_off.float().sum(dim=1)
+    hlt_count = mask_hlt.float().sum(dim=1)
+    true_added = (true_count - hlt_count).clamp(min=0.0)
+
+    pred_added = reco_out["child_weight"].sum(dim=1) + reco_out["gen_weight"].sum(dim=1)
+
+    ratio = hlt_count / torch.clamp(true_count, min=1.0)
+    deficit = torch.clamp(1.0 - ratio, min=0.0, max=1.0)
+
+    over_margin = float(cfg["over_margin_base"]) + float(cfg["over_margin_scale"]) * deficit
+    over_lambda = float(cfg["over_lambda"]) * (1.0 - float(cfg["over_ratio_gamma"]) * deficit)
+    over_lambda = torch.clamp(over_lambda, min=float(cfg["over_lambda_floor"]))
+    under_lambda = float(cfg["under_lambda"])
+    eps = max(float(cfg["eps"]), 0.0)
+
+    under = F.relu(true_added - pred_added - eps)
+    over = F.relu(pred_added - true_added - eps - over_margin)
+    loss_vec = under_lambda * under.square() + over_lambda * over.square()
+    return loss_vec.mean()
+
+
+def _compute_teacher_guided_reco_losses_ratio_aware(
+    reco_out: Dict[str, torch.Tensor],
+    const_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    const_off: torch.Tensor,
+    mask_off: torch.Tensor,
+    budget_merge_true: torch.Tensor,
+    budget_eff_true: torch.Tensor,
+    teacher_model: nn.Module,
+    means_t: torch.Tensor,
+    stds_t: torch.Tensor,
+    loss_cfg: Dict,
+    kd_temperature: float,
+    budget_eps: float,
+    budget_weight_floor: float,
+) -> Dict[str, torch.Tensor]:
+    losses = _ORIG_TEACHER_GUIDED_RECO_LOSSES(
+        reco_out=reco_out,
+        const_hlt=const_hlt,
+        mask_hlt=mask_hlt,
+        const_off=const_off,
+        mask_off=mask_off,
+        budget_merge_true=budget_merge_true,
+        budget_eff_true=budget_eff_true,
+        teacher_model=teacher_model,
+        means_t=means_t,
+        stds_t=stds_t,
+        loss_cfg=loss_cfg,
+        kd_temperature=kd_temperature,
+        budget_eps=budget_eps,
+        budget_weight_floor=budget_weight_floor,
+    )
+    if bool(_RATIO_AWARE_COUNT_CFG.get("enabled", False)):
+        losses["budget_hinge"] = _compute_ratio_aware_count_budget_hinge(
+            reco_out=reco_out,
+            mask_hlt=mask_hlt,
+            mask_off=mask_off,
+            cfg=_RATIO_AWARE_COUNT_CFG,
+        )
+    return losses
+
+
 
 def sigmoid_np(x: np.ndarray) -> np.ndarray:
     x = np.asarray(x, dtype=np.float64)
@@ -189,6 +271,8 @@ class OfflineDropoutTeacherDataset(Dataset):
         indices: np.ndarray,
         drop_prob: float = 0.0,
         seed: int = 0,
+        drop_mode: str = "random",
+        num_banks: int = 1,
     ):
         self.feat_off = feat_off
         self.mask_off = mask_off
@@ -196,10 +280,27 @@ class OfflineDropoutTeacherDataset(Dataset):
         self.labels = labels.astype(np.float32)
         self.indices = indices.astype(np.int64)
         self.drop_prob = float(drop_prob)
+        self.drop_mode = str(drop_mode)
+        self.num_banks = int(max(1, num_banks))
+        self.current_bank = 0
+        self.base_seed = int(seed)
         self.rng = np.random.default_rng(int(seed))
 
     def set_drop_prob(self, p: float) -> None:
         self.drop_prob = float(np.clip(p, 0.0, 1.0))
+
+    def set_current_bank(self, bank: int) -> None:
+        self.current_bank = int(bank) % int(self.num_banks)
+
+    def _deterministic_keep_extra(self, n_extra: int, idx: int) -> np.ndarray:
+        # Stable per-jet/per-bank Bernoulli mask for reproducible dropout.
+        key = (
+            (self.base_seed * 1315423911)
+            ^ (int(self.current_bank) * 2654435761)
+            ^ (int(idx) * 2246822519)
+        ) & 0xFFFFFFFF
+        rng = np.random.default_rng(np.uint64(key))
+        return rng.random(int(n_extra)) >= float(self.drop_prob)
 
     def __len__(self) -> int:
         return self.indices.shape[0]
@@ -212,12 +313,23 @@ class OfflineDropoutTeacherDataset(Dataset):
 
         extra_mask = mask_full & (~mask_hlt)
         if self.drop_prob > 0.0 and np.any(extra_mask):
-            keep_extra = self.rng.random(int(extra_mask.sum())) >= self.drop_prob
+            if self.drop_mode == "deterministic_bank":
+                keep_extra = self._deterministic_keep_extra(int(extra_mask.sum()), idx)
+            else:
+                keep_extra = self.rng.random(int(extra_mask.sum())) >= self.drop_prob
             drop_mask = extra_mask.copy()
             drop_mask[extra_mask] = ~keep_extra
             mask_drop = mask_full & (~drop_mask)
         else:
             mask_drop = mask_full.copy()
+
+        # Safety: never return an empty constituent set.
+        if not np.any(mask_drop):
+            if np.any(mask_hlt):
+                mask_drop = mask_hlt.copy()
+            elif np.any(mask_full):
+                first = int(np.flatnonzero(mask_full)[0])
+                mask_drop[first] = True
 
         feat_drop = feat_full.copy()
         feat_drop[~mask_drop] = 0.0
@@ -248,6 +360,9 @@ def train_single_view_teacher_with_offline_dropout(
     use_consistency: bool,
     consistency_temp: float,
     lambda_consistency: float,
+    drop_mode: str,
+    drop_num_banks: int,
+    drop_bank_cycle_epochs: int,
     seed: int,
     name: str = "TeacherDrop",
 ) -> nn.Module:
@@ -266,6 +381,8 @@ def train_single_view_teacher_with_offline_dropout(
         indices=train_idx,
         drop_prob=0.0,
         seed=int(seed),
+        drop_mode=str(drop_mode),
+        num_banks=int(max(1, drop_num_banks)),
     )
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0)
 
@@ -278,10 +395,16 @@ def train_single_view_teacher_with_offline_dropout(
 
     t = float(max(consistency_temp, 1e-3))
     use_consistency = bool(use_consistency)
+    bank_cycle_epochs = int(max(1, drop_bank_cycle_epochs))
 
     for ep in range(epochs):
         p = float(drop_prob_max) * min(1.0, float(ep + 1) / float(max(int(drop_warmup_epochs), 1)))
         train_ds.set_drop_prob(p)
+        if str(drop_mode) == "deterministic_bank":
+            bank = (int(ep) // int(bank_cycle_epochs)) % int(max(1, drop_num_banks))
+            train_ds.set_current_bank(bank)
+        else:
+            bank = -1
 
         model.train()
         running_loss = 0.0
@@ -344,8 +467,9 @@ def train_single_view_teacher_with_offline_dropout(
             no_improve += 1
 
         if (ep + 1) % 5 == 0:
+            bank_str = f", bank={bank}" if str(drop_mode) == "deterministic_bank" else ""
             print(
-                f"{name} ep {ep+1}: train_loss={tr_loss:.5f} (full={tr_l_full:.5f}, drop={tr_l_drop:.5f}, cons={tr_l_cons:.5f}, p={p:.3f}) | "
+                f"{name} ep {ep+1}: train_loss={tr_loss:.5f} (full={tr_l_full:.5f}, drop={tr_l_drop:.5f}, cons={tr_l_cons:.5f}, p={p:.3f}{bank_str}) | "
                 f"val_auc={float(val_auc):.4f}, val_fpr50={val_fpr50:.6f}, best_auc={best_auc:.4f}"
             )
 
@@ -960,6 +1084,9 @@ def main() -> None:
     ap.add_argument("--teacher_use_offline_dropout", action="store_true")
     ap.add_argument("--teacher_drop_prob_max", type=float, default=0.5)
     ap.add_argument("--teacher_drop_warmup_epochs", type=int, default=20)
+    ap.add_argument("--teacher_drop_mode", type=str, choices=["random", "deterministic_bank"], default="random")
+    ap.add_argument("--teacher_drop_num_banks", type=int, default=3)
+    ap.add_argument("--teacher_drop_bank_cycle_epochs", type=int, default=1)
     ap.add_argument("--teacher_lambda_drop_cls", type=float, default=1.0)
     ap.add_argument("--teacher_use_consistency", action="store_true")
     ap.add_argument("--teacher_consistency_temp", type=float, default=2.0)
@@ -982,6 +1109,14 @@ def main() -> None:
     ap.add_argument("--stageA_lambda_budget_hinge", type=float, default=0.03)
     ap.add_argument("--stageA_budget_eps", type=float, default=0.015)
     ap.add_argument("--stageA_budget_weight_floor", type=float, default=1e-4)
+    ap.add_argument("--stageA_ratio_count_tolerant", action="store_true")
+    ap.add_argument("--stageA_ratio_count_under_lambda", type=float, default=1.0)
+    ap.add_argument("--stageA_ratio_count_over_lambda", type=float, default=0.25)
+    ap.add_argument("--stageA_ratio_count_over_margin_base", type=float, default=2.0)
+    ap.add_argument("--stageA_ratio_count_over_margin_scale", type=float, default=6.0)
+    ap.add_argument("--stageA_ratio_count_over_ratio_gamma", type=float, default=0.7)
+    ap.add_argument("--stageA_ratio_count_over_lambda_floor", type=float, default=0.05)
+    ap.add_argument("--stageA_ratio_count_eps", type=float, default=-1.0)
     ap.add_argument("--stageA_target_tpr", type=float, default=0.50)
     ap.add_argument("--disable_stageA_loss_normalization", action="store_true")
     ap.add_argument("--stageA_loss_norm_ema_decay", type=float, default=0.98)
@@ -1022,6 +1157,35 @@ def main() -> None:
     alpha_grid = parse_alpha_grid(args.residual_alpha_grid)
 
     b.set_seed(int(args.seed))
+
+    if bool(args.stageA_ratio_count_tolerant):
+        ratio_eps = float(args.stageA_ratio_count_eps)
+        if ratio_eps < 0.0:
+            ratio_eps = float(args.stageA_budget_eps)
+        _RATIO_AWARE_COUNT_CFG.update(
+            {
+                "enabled": True,
+                "eps": float(max(ratio_eps, 0.0)),
+                "under_lambda": float(max(args.stageA_ratio_count_under_lambda, 0.0)),
+                "over_lambda": float(max(args.stageA_ratio_count_over_lambda, 0.0)),
+                "over_margin_base": float(max(args.stageA_ratio_count_over_margin_base, 0.0)),
+                "over_margin_scale": float(max(args.stageA_ratio_count_over_margin_scale, 0.0)),
+                "over_ratio_gamma": float(max(args.stageA_ratio_count_over_ratio_gamma, 0.0)),
+                "over_lambda_floor": float(max(args.stageA_ratio_count_over_lambda_floor, 0.0)),
+            }
+        )
+        b._compute_teacher_guided_reco_losses = _compute_teacher_guided_reco_losses_ratio_aware
+        sA.b._compute_teacher_guided_reco_losses = _compute_teacher_guided_reco_losses_ratio_aware
+        print(
+            "[RatioBudget] Enabled ratio-aware asymmetric count tolerance: "
+            f"eps={_RATIO_AWARE_COUNT_CFG['eps']:.4f}, "
+            f"under={_RATIO_AWARE_COUNT_CFG['under_lambda']:.3f}, "
+            f"over={_RATIO_AWARE_COUNT_CFG['over_lambda']:.3f}, "
+            f"margin_base={_RATIO_AWARE_COUNT_CFG['over_margin_base']:.3f}, "
+            f"margin_scale={_RATIO_AWARE_COUNT_CFG['over_margin_scale']:.3f}, "
+            f"gamma={_RATIO_AWARE_COUNT_CFG['over_ratio_gamma']:.3f}, "
+            f"over_floor={_RATIO_AWARE_COUNT_CFG['over_lambda_floor']:.3f}"
+        )
 
     cfg = b._deepcopy_config()
     cfg["hlt_effects"]["merge_radius"] = float(args.merge_radius)
@@ -1195,6 +1359,9 @@ def main() -> None:
             use_consistency=bool(args.teacher_use_consistency),
             consistency_temp=float(args.teacher_consistency_temp),
             lambda_consistency=float(args.teacher_lambda_consistency),
+            drop_mode=str(args.teacher_drop_mode),
+            drop_num_banks=int(args.teacher_drop_num_banks),
+            drop_bank_cycle_epochs=int(args.teacher_drop_bank_cycle_epochs),
             seed=int(args.seed),
             name="TeacherDrop",
         )
@@ -1610,6 +1777,16 @@ def main() -> None:
                 "rho": float(rho),
                 "alpha_grid": [float(x) for x in alpha_grid],
                 "stageA_reconstructor": reco_val_metrics,
+                "stageA_ratio_count_budget": {
+                    "enabled": bool(args.stageA_ratio_count_tolerant),
+                    "eps": float(_RATIO_AWARE_COUNT_CFG["eps"]),
+                    "under_lambda": float(_RATIO_AWARE_COUNT_CFG["under_lambda"]),
+                    "over_lambda": float(_RATIO_AWARE_COUNT_CFG["over_lambda"]),
+                    "over_margin_base": float(_RATIO_AWARE_COUNT_CFG["over_margin_base"]),
+                    "over_margin_scale": float(_RATIO_AWARE_COUNT_CFG["over_margin_scale"]),
+                    "over_ratio_gamma": float(_RATIO_AWARE_COUNT_CFG["over_ratio_gamma"]),
+                    "over_lambda_floor": float(_RATIO_AWARE_COUNT_CFG["over_lambda_floor"]),
+                },
                 "teacher": {
                     "auc_val": float(auc_teacher_val),
                     "auc_test": float(auc_teacher),
@@ -1617,6 +1794,9 @@ def main() -> None:
                         "enabled": bool(args.teacher_use_offline_dropout),
                         "drop_prob_max": float(args.teacher_drop_prob_max),
                         "drop_warmup_epochs": int(args.teacher_drop_warmup_epochs),
+                        "drop_mode": str(args.teacher_drop_mode),
+                        "drop_num_banks": int(args.teacher_drop_num_banks),
+                        "drop_bank_cycle_epochs": int(args.teacher_drop_bank_cycle_epochs),
                         "lambda_drop_cls": float(args.teacher_lambda_drop_cls),
                         "use_consistency": bool(args.teacher_use_consistency),
                         "consistency_temp": float(args.teacher_consistency_temp),

@@ -25,6 +25,13 @@ OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
 TEACHER_DROP_PROB_MAX="${TEACHER_DROP_PROB_MAX:-0.50}"
+RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
+RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.25}"
+RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-2.0}"
+RATIO_COUNT_MARGIN_SCALE="${RATIO_COUNT_MARGIN_SCALE:-6.0}"
+RATIO_COUNT_GAMMA="${RATIO_COUNT_GAMMA:-0.70}"
+RATIO_COUNT_OVER_FLOOR="${RATIO_COUNT_OVER_FLOOR:-0.05}"
+RATIO_COUNT_EPS="${RATIO_COUNT_EPS:-0.015}"
 
 set +u
 source ~/.bashrc
@@ -56,6 +63,9 @@ CMD=(
   --teacher_use_offline_dropout
   --teacher_drop_prob_max "${TEACHER_DROP_PROB_MAX}"
   --teacher_drop_warmup_epochs 20
+  --teacher_drop_mode deterministic_bank
+  --teacher_drop_num_banks 3
+  --teacher_drop_bank_cycle_epochs 1
   --teacher_lambda_drop_cls 1.0
   --teacher_use_consistency
   --teacher_consistency_temp 2.0
@@ -71,6 +81,14 @@ CMD=(
   --stageA_lambda_budget_hinge 1.0
   --stageA_budget_eps 0.015
   --stageA_budget_weight_floor 1e-4
+  --stageA_ratio_count_tolerant
+  --stageA_ratio_count_under_lambda "${RATIO_COUNT_UNDER_LAMBDA}"
+  --stageA_ratio_count_over_lambda "${RATIO_COUNT_OVER_LAMBDA}"
+  --stageA_ratio_count_over_margin_base "${RATIO_COUNT_MARGIN_BASE}"
+  --stageA_ratio_count_over_margin_scale "${RATIO_COUNT_MARGIN_SCALE}"
+  --stageA_ratio_count_over_ratio_gamma "${RATIO_COUNT_GAMMA}"
+  --stageA_ratio_count_over_lambda_floor "${RATIO_COUNT_OVER_FLOOR}"
+  --stageA_ratio_count_eps "${RATIO_COUNT_EPS}"
   --stageA_target_tpr 0.50
   --stageA_lambda_delta 0.15
   --stageA_delta_tau 0.05
@@ -109,6 +127,8 @@ echo "============================================================"
 echo "Model-9 MID offline-dropout residual"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "teacher_drop_prob_max=${TEACHER_DROP_PROB_MAX}"
+echo "teacher_drop_mode=deterministic_bank, banks=3, bank_cycle_epochs=1"
+echo "ratio_count_budget=on under=${RATIO_COUNT_UNDER_LAMBDA} over=${RATIO_COUNT_OVER_LAMBDA} margin_base=${RATIO_COUNT_MARGIN_BASE} margin_scale=${RATIO_COUNT_MARGIN_SCALE} gamma=${RATIO_COUNT_GAMMA} floor=${RATIO_COUNT_OVER_FLOOR} eps=${RATIO_COUNT_EPS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
