@@ -67,7 +67,6 @@ from offline_reconstructor_no_gt_local30kv2 import (
     apply_hlt_effects_realistic_nomap,
     OfflineReconstructor,
     ReconstructionDataset,
-    compute_reconstruction_losses,
     train_reconstructor,
     reconstruct_dataset,
     plot_roc,
@@ -289,14 +288,47 @@ def compute_reconstruction_losses_weighted(
     valid_tgt = mask_off.unsqueeze(1)
     cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
 
-    pred_to_tgt = cost.min(dim=2).values
-    loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
+    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
+    if set_mode == "chamfer":
+        pred_to_tgt = cost.min(dim=2).values
+        loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
 
-    penalty = float(loss_cfg["unselected_penalty"]) * (1.0 - w).unsqueeze(2)
-    tgt_to_pred = (cost + penalty).min(dim=1).values
-    tgt_mask_f = mask_off.float()
-    loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
-    loss_set_vec = loss_pred_to_tgt + loss_tgt_to_pred
+        penalty = float(loss_cfg["unselected_penalty"]) * (1.0 - w).unsqueeze(2)
+        tgt_to_pred = (cost + penalty).min(dim=1).values
+        tgt_mask_f = mask_off.float()
+        loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
+        loss_set_vec = loss_pred_to_tgt + loss_tgt_to_pred
+    else:
+        # Entropic OT family:
+        # - sinkhorn: moderate epsilon
+        # - ot: near-OT using a smaller epsilon + more iterations
+        tgt_mask_f = mask_off.float()
+        a = w.clamp(min=0.0)
+        a = a / a.sum(dim=1, keepdim=True).clamp(min=eps)
+        b = tgt_mask_f
+        b = b / b.sum(dim=1, keepdim=True).clamp(min=eps)
+
+        if set_mode == "ot":
+            sh_eps = float(loss_cfg.get("ot_eps", 0.02))
+            sh_iters = int(loss_cfg.get("ot_iters", 50))
+        else:
+            sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
+            sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
+        sh_eps = max(sh_eps, 1e-4)
+        sh_iters = max(sh_iters, 1)
+
+        # Stabilized-ish Sinkhorn in primal form.
+        k_raw = torch.exp(-cost / sh_eps)
+        k_mat = torch.where(valid_tgt, k_raw.clamp(min=1e-12), torch.zeros_like(k_raw))
+        u = torch.ones_like(a)
+        v = torch.ones_like(b)
+        for _ in range(sh_iters):
+            kv = torch.bmm(k_mat, v.unsqueeze(-1)).squeeze(-1).clamp(min=eps)
+            u = a / kv
+            ktu = torch.bmm(k_mat.transpose(1, 2), u.unsqueeze(-1)).squeeze(-1).clamp(min=eps)
+            v = b / ktu
+        t_plan = u.unsqueeze(2) * k_mat * v.unsqueeze(1)
+        loss_set_vec = (t_plan * cost).sum(dim=(1, 2))
 
     pred_px, pred_py, pred_pz, pred_E = reco_base._weighted_fourvec_sums(pred, w)
     true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off, mask_off.float())
@@ -1368,29 +1400,17 @@ def train_reconstructor_weighted(
 
             opt.zero_grad()
             out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=sc)
-            if bool(apply_reco_weight) and sw_reco is not None:
-                losses = compute_reconstruction_losses_weighted(
-                    out,
-                    const_hlt,
-                    mask_hlt,
-                    const_off,
-                    mask_off,
-                    budget_merge_true,
-                    budget_eff_true,
-                    loss_cfg,
-                    sample_weight=sw_reco,
-                )
-            else:
-                losses = compute_reconstruction_losses(
-                    out,
-                    const_hlt,
-                    mask_hlt,
-                    const_off,
-                    mask_off,
-                    budget_merge_true,
-                    budget_eff_true,
-                    loss_cfg,
-                )
+            losses = compute_reconstruction_losses_weighted(
+                out,
+                const_hlt,
+                mask_hlt,
+                const_off,
+                mask_off,
+                budget_merge_true,
+                budget_eff_true,
+                loss_cfg,
+                sample_weight=(sw_reco if (bool(apply_reco_weight) and sw_reco is not None) else None),
+            )
             losses["total"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
@@ -1424,7 +1444,7 @@ def train_reconstructor_weighted(
                     sw_reco = sw_reco.to(device)
 
                 out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
-                losses_u = compute_reconstruction_losses(
+                losses_u = compute_reconstruction_losses_weighted(
                     out,
                     const_hlt,
                     mask_hlt,
@@ -1433,6 +1453,7 @@ def train_reconstructor_weighted(
                     budget_merge_true,
                     budget_eff_true,
                     loss_cfg,
+                    sample_weight=None,
                 )
                 if bool(apply_reco_weight) and sw_reco is not None:
                     losses_w = compute_reconstruction_losses_weighted(
@@ -1800,29 +1821,17 @@ def train_joint_dual(
                 ramp = 1.0
 
             if float(lambda_reco) > 0.0:
-                if bool(apply_reco_weight) and sw_reco is not None:
-                    reco_losses = compute_reconstruction_losses_weighted(
-                        reco_out,
-                        const_hlt,
-                        mask_hlt,
-                        const_off,
-                        mask_off,
-                        b_merge,
-                        b_eff,
-                        BASE_CONFIG["loss"],
-                        sample_weight=sw_reco,
-                    )
-                else:
-                    reco_losses = compute_reconstruction_losses(
-                        reco_out,
-                        const_hlt,
-                        mask_hlt,
-                        const_off,
-                        mask_off,
-                        b_merge,
-                        b_eff,
-                        BASE_CONFIG["loss"],
-                    )
+                reco_losses = compute_reconstruction_losses_weighted(
+                    reco_out,
+                    const_hlt,
+                    mask_hlt,
+                    const_off,
+                    mask_off,
+                    b_merge,
+                    b_eff,
+                    BASE_CONFIG["loss"],
+                    sample_weight=(sw_reco if (bool(apply_reco_weight) and sw_reco is not None) else None),
+                )
                 loss_reco = reco_losses["total"]
             else:
                 loss_reco = torch.zeros((), device=device)
@@ -2121,6 +2130,17 @@ def main() -> None:
     parser.add_argument("--loss_w_sparse", type=float, default=BASE_CONFIG["loss"]["w_sparse"])
     parser.add_argument("--loss_w_local", type=float, default=BASE_CONFIG["loss"]["w_local"])
     parser.add_argument(
+        "--loss_set_mode",
+        type=str,
+        default="chamfer",
+        choices=["chamfer", "sinkhorn", "ot"],
+        help="Set-level reconstruction loss: chamfer (default), sinkhorn, or near-OT.",
+    )
+    parser.add_argument("--loss_set_sinkhorn_eps", type=float, default=0.08)
+    parser.add_argument("--loss_set_sinkhorn_iters", type=int, default=25)
+    parser.add_argument("--loss_set_ot_eps", type=float, default=0.02)
+    parser.add_argument("--loss_set_ot_iters", type=int, default=50)
+    parser.add_argument(
         "--added_target_scale",
         type=float,
         default=1.0,
@@ -2196,6 +2216,11 @@ def main() -> None:
     cfg["loss"]["w_budget"] = float(args.loss_w_budget)
     cfg["loss"]["w_sparse"] = float(args.loss_w_sparse)
     cfg["loss"]["w_local"] = float(args.loss_w_local)
+    cfg["loss"]["set_loss_mode"] = str(args.loss_set_mode).strip().lower()
+    cfg["loss"]["sinkhorn_eps"] = float(max(args.loss_set_sinkhorn_eps, 1e-4))
+    cfg["loss"]["sinkhorn_iters"] = int(max(args.loss_set_sinkhorn_iters, 1))
+    cfg["loss"]["ot_eps"] = float(max(args.loss_set_ot_eps, 1e-4))
+    cfg["loss"]["ot_iters"] = int(max(args.loss_set_ot_iters, 1))
 
     cfg["reconstructor_training"]["epochs"] = int(args.stageA_epochs)
     cfg["reconstructor_training"]["patience"] = int(args.stageA_patience)
