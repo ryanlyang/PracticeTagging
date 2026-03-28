@@ -294,14 +294,41 @@ def compute_reconstruction_losses_weighted(
     valid_tgt = mask_off.unsqueeze(1)
     cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
 
+    def _build_chamfer_target_weights() -> torch.Tensor:
+        tgt_mask_f = mask_off.float()
+        if not bool(loss_cfg.get("chamfer_topk_target_weighted", False)):
+            return tgt_mask_f
+
+        topk_k = int(max(loss_cfg.get("chamfer_topk_k", 0), 0))
+        topk_w = float(max(loss_cfg.get("chamfer_topk_weight", 0.0), 0.0))
+        if topk_k <= 0 or topk_w <= 0.0:
+            return tgt_mask_f
+
+        # Rank only valid offline targets by pT; padded slots are forced to the end.
+        tgt_pt = const_off[..., 0].clamp(min=0.0)
+        tgt_pt_rank = torch.where(mask_off, tgt_pt, torch.full_like(tgt_pt, -1e9))
+        sorted_idx = torch.argsort(tgt_pt_rank, dim=1, descending=True)
+        ranks = torch.argsort(sorted_idx, dim=1)
+        topk_mask = (ranks < topk_k) & mask_off
+
+        tgt_w = torch.ones_like(tgt_pt)
+        tgt_w = torch.where(topk_mask, torch.full_like(tgt_w, topk_w), tgt_w)
+        tgt_w = tgt_w * tgt_mask_f
+
+        if bool(loss_cfg.get("chamfer_topk_mean_renorm", True)):
+            denom = tgt_mask_f.sum(dim=1, keepdim=True).clamp(min=eps)
+            mean_w = tgt_w.sum(dim=1, keepdim=True) / denom
+            tgt_w = (tgt_w / mean_w.clamp(min=eps)) * tgt_mask_f
+        return tgt_w
+
     def _loss_set_chamfer_vec() -> torch.Tensor:
         pred_to_tgt = cost.min(dim=2).values
         loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
 
         penalty = float(loss_cfg["unselected_penalty"]) * (1.0 - w).unsqueeze(2)
         tgt_to_pred = (cost + penalty).min(dim=1).values
-        tgt_mask_f = mask_off.float()
-        loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
+        tgt_weights = _build_chamfer_target_weights()
+        loss_tgt_to_pred = (tgt_to_pred * tgt_weights).sum(dim=1) / (tgt_weights.sum(dim=1) + eps)
         return loss_pred_to_tgt + loss_tgt_to_pred
 
     def _loss_set_sinkhorn_vec(sh_eps: float, sh_iters: int) -> torch.Tensor:
@@ -2390,6 +2417,28 @@ def main() -> None:
         default=0.5,
         help="For loss_set_mode=chamfer_sinkhorn: weight on chamfer term in [0,1].",
     )
+    parser.add_argument(
+        "--loss_set_chamfer_topk_target_weighted",
+        action="store_true",
+        help="Upweight top offline-pT targets in chamfer target->pred coverage term.",
+    )
+    parser.add_argument(
+        "--loss_set_chamfer_topk_k",
+        type=int,
+        default=int(BASE_CONFIG["loss"].get("chamfer_topk_k", 20)),
+        help="Number of top offline targets by pT to upweight for chamfer target-side coverage.",
+    )
+    parser.add_argument(
+        "--loss_set_chamfer_topk_weight",
+        type=float,
+        default=float(BASE_CONFIG["loss"].get("chamfer_topk_weight", 2.5)),
+        help="Weight multiplier for top-k offline targets in chamfer target-side coverage.",
+    )
+    parser.add_argument(
+        "--loss_set_chamfer_topk_no_mean_renorm",
+        action="store_true",
+        help="Disable mean renormalization of chamfer top-k target weights.",
+    )
     parser.add_argument("--loss_set_sinkhorn_eps", type=float, default=0.08)
     parser.add_argument("--loss_set_sinkhorn_iters", type=int, default=25)
     parser.add_argument("--loss_set_ot_eps", type=float, default=0.02)
@@ -2481,6 +2530,10 @@ def main() -> None:
     cfg["loss"]["w_local"] = float(args.loss_w_local)
     cfg["loss"]["set_loss_mode"] = str(args.loss_set_mode).strip().lower()
     cfg["loss"]["chamfer_mix"] = float(np.clip(args.loss_set_chamfer_mix, 0.0, 1.0))
+    cfg["loss"]["chamfer_topk_target_weighted"] = bool(args.loss_set_chamfer_topk_target_weighted)
+    cfg["loss"]["chamfer_topk_k"] = int(max(args.loss_set_chamfer_topk_k, 0))
+    cfg["loss"]["chamfer_topk_weight"] = float(max(args.loss_set_chamfer_topk_weight, 0.0))
+    cfg["loss"]["chamfer_topk_mean_renorm"] = not bool(args.loss_set_chamfer_topk_no_mean_renorm)
     cfg["loss"]["sinkhorn_eps"] = float(max(args.loss_set_sinkhorn_eps, 1e-4))
     cfg["loss"]["sinkhorn_iters"] = int(max(args.loss_set_sinkhorn_iters, 1))
     cfg["loss"]["ot_eps"] = float(max(args.loss_set_ot_eps, 1e-4))
