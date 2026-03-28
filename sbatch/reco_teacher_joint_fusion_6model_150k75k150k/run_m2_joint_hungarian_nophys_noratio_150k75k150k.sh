@@ -66,6 +66,7 @@ CMD=(
   --loss_w_phys 0.0
   --loss_w_pt_ratio 0.0
   --loss_w_e_ratio 0.0
+  --loss_w_local 0.05
   --save_fusion_scores
   --disable_final_kd
   --device "${DEVICE}"
