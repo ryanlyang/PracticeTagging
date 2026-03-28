@@ -37,6 +37,12 @@ import torch.nn.functional as F
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
+try:
+    from scipy.optimize import linear_sum_assignment  # type: ignore
+    _HAS_SCIPY_HUNGARIAN = True
+except Exception:
+    linear_sum_assignment = None  # type: ignore
+    _HAS_SCIPY_HUNGARIAN = False
 
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -298,7 +304,7 @@ def compute_reconstruction_losses_weighted(
         tgt_mask_f = mask_off.float()
         loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
         loss_set_vec = loss_pred_to_tgt + loss_tgt_to_pred
-    else:
+    elif set_mode in ("sinkhorn", "ot"):
         # Entropic OT family:
         # - sinkhorn: moderate epsilon
         # - ot: near-OT using a smaller epsilon + more iterations
@@ -329,6 +335,42 @@ def compute_reconstruction_losses_weighted(
             v = b / ktu
         t_plan = u.unsqueeze(2) * k_mat * v.unsqueeze(1)
         loss_set_vec = (t_plan * cost).sum(dim=(1, 2))
+    elif set_mode == "hungarian":
+        if not _HAS_SCIPY_HUNGARIAN:
+            raise RuntimeError(
+                "loss_set_mode='hungarian' requires scipy.optimize.linear_sum_assignment, "
+                "but SciPy is unavailable in this environment."
+            )
+        # Hard assignment (detached matching indices) with differentiable selected costs.
+        bsz = int(cost.shape[0])
+        loss_list = []
+        for bi in range(bsz):
+            n_tgt = int(mask_off[bi].sum().item())
+            if n_tgt <= 0:
+                loss_list.append(torch.zeros((), device=cost.device, dtype=cost.dtype))
+                continue
+            c_bt = cost[bi, :, :n_tgt]
+            c_np = c_bt.detach().cpu().numpy()
+            row_ind, col_ind = linear_sum_assignment(c_np)  # type: ignore[misc]
+            row_t = torch.as_tensor(row_ind, device=cost.device, dtype=torch.long)
+            col_t = torch.as_tensor(col_ind, device=cost.device, dtype=torch.long)
+
+            matched_cost = c_bt[row_t, col_t]  # [n_match]
+            # Coverage: ensure every target has a matched prediction.
+            l_cov = matched_cost.mean()
+
+            # Precision: reward low-cost matched predictions, penalize unmatched predicted mass.
+            wb = w[bi]
+            matched_mask = torch.zeros_like(wb, dtype=torch.bool)
+            matched_mask[row_t] = True
+            wb_m = wb[matched_mask]
+            l_prec_match = (wb_m * matched_cost).sum() / (wb_m.sum() + eps)
+            unmatched_mass = wb[~matched_mask].sum() / (wb.sum() + eps)
+            l_fp = float(loss_cfg["unselected_penalty"]) * unmatched_mass
+            loss_list.append(l_cov + l_prec_match + l_fp)
+        loss_set_vec = torch.stack(loss_list, dim=0)
+    else:
+        raise ValueError(f"Unsupported set_loss_mode: {set_mode}")
 
     pred_px, pred_py, pred_pz, pred_E = reco_base._weighted_fourvec_sums(pred, w)
     true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off, mask_off.float())
@@ -2133,8 +2175,8 @@ def main() -> None:
         "--loss_set_mode",
         type=str,
         default="chamfer",
-        choices=["chamfer", "sinkhorn", "ot"],
-        help="Set-level reconstruction loss: chamfer (default), sinkhorn, or near-OT.",
+        choices=["chamfer", "sinkhorn", "ot", "hungarian"],
+        help="Set-level reconstruction loss: chamfer (default), sinkhorn, near-OT, or hungarian assignment.",
     )
     parser.add_argument("--loss_set_sinkhorn_eps", type=float, default=0.08)
     parser.add_argument("--loss_set_sinkhorn_iters", type=int, default=25)
