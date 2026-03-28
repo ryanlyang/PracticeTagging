@@ -439,6 +439,54 @@ def compute_reconstruction_losses_weighted(
     e_ratio = pred_E / (true_E + eps)
     loss_e_ratio_vec = F.smooth_l1_loss(e_ratio, torch.ones_like(e_ratio), reduction="none")
 
+    # Radial profile loss: compare normalized pT profile in ΔR bins around the offline jet axis.
+    n_radial_bins = int(max(loss_cfg.get("radial_n_bins", 8), 1))
+    radial_max_dr = float(max(loss_cfg.get("radial_max_dr", 1.0), 1e-3))
+    axis_eta = torch.asinh(true_pz / (true_pt + eps))
+    axis_phi = torch.atan2(true_py, true_px)
+
+    pred_tok_pt = pred[:, :, 0].clamp(min=0.0) * w
+    pred_tok_eta = pred[:, :, 1]
+    pred_tok_phi = pred[:, :, 2]
+
+    tgt_tok_pt = const_off[:, :, 0].clamp(min=0.0) * mask_off.float()
+    tgt_tok_eta = const_off[:, :, 1]
+    tgt_tok_phi = const_off[:, :, 2]
+
+    def _delta_r(tok_eta: torch.Tensor, tok_phi: torch.Tensor) -> torch.Tensor:
+        d_eta = tok_eta - axis_eta.unsqueeze(1)
+        d_phi = torch.atan2(
+            torch.sin(tok_phi - axis_phi.unsqueeze(1)),
+            torch.cos(tok_phi - axis_phi.unsqueeze(1)),
+        )
+        return torch.sqrt(d_eta.pow(2) + d_phi.pow(2) + eps)
+
+    dr_pred = _delta_r(pred_tok_eta, pred_tok_phi)
+    dr_tgt = _delta_r(tgt_tok_eta, tgt_tok_phi)
+
+    edges = torch.linspace(
+        0.0,
+        radial_max_dr,
+        steps=n_radial_bins + 1,
+        device=pred.device,
+        dtype=pred.dtype,
+    )
+    lo = edges[:-1].view(1, 1, -1)
+    hi = edges[1:].view(1, 1, -1)
+
+    pred_in = (dr_pred.unsqueeze(-1) >= lo) & (dr_pred.unsqueeze(-1) < hi)
+    tgt_in = (dr_tgt.unsqueeze(-1) >= lo) & (dr_tgt.unsqueeze(-1) < hi)
+    # Include exact edge points at max ΔR in the final bin.
+    pred_in[:, :, -1] = pred_in[:, :, -1] | (dr_pred >= radial_max_dr)
+    tgt_in[:, :, -1] = tgt_in[:, :, -1] | (dr_tgt >= radial_max_dr)
+
+    pred_prof = (pred_tok_pt.unsqueeze(-1) * pred_in.float()).sum(dim=1)
+    tgt_prof = (tgt_tok_pt.unsqueeze(-1) * tgt_in.float()).sum(dim=1)
+
+    pred_prof = pred_prof / (pred_prof.sum(dim=1, keepdim=True) + eps)
+    tgt_prof = tgt_prof / (tgt_prof.sum(dim=1, keepdim=True) + eps)
+    loss_radial_profile_vec = F.smooth_l1_loss(pred_prof, tgt_prof, reduction="none").mean(dim=1)
+
     true_count = mask_off.float().sum(dim=1)
     hlt_count = mask_hlt.float().sum(dim=1)
     true_added = (true_count - hlt_count).clamp(min=0.0)
@@ -493,6 +541,7 @@ def compute_reconstruction_losses_weighted(
         + float(loss_cfg["w_pt_ratio"]) * loss_pt_ratio_vec
         + float(loss_cfg.get("w_m_ratio", 0.0)) * loss_m_ratio_vec
         + float(loss_cfg["w_e_ratio"]) * loss_e_ratio_vec
+        + float(loss_cfg.get("w_radial_profile", 0.0)) * loss_radial_profile_vec
         + float(loss_cfg["w_budget"]) * loss_budget_vec
         + float(loss_cfg["w_sparse"]) * loss_sparse_vec
         + float(loss_cfg["w_local"]) * loss_local_vec
@@ -505,6 +554,7 @@ def compute_reconstruction_losses_weighted(
         "pt_ratio": _weighted_batch_mean(loss_pt_ratio_vec, sw),
         "m_ratio": _weighted_batch_mean(loss_m_ratio_vec, sw),
         "e_ratio": _weighted_batch_mean(loss_e_ratio_vec, sw),
+        "radial_profile": _weighted_batch_mean(loss_radial_profile_vec, sw),
         "budget": _weighted_batch_mean(loss_budget_vec, sw),
         "sparse": _weighted_batch_mean(loss_sparse_vec, sw),
         "local": _weighted_batch_mean(loss_local_vec, sw),
@@ -1478,7 +1528,7 @@ def train_reconstructor_weighted(
         model.train()
         sc = stage_scale_local(ep, train_cfg)
 
-        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_budget = tr_sparse = tr_local = 0.0
+        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_radial = tr_budget = tr_sparse = tr_local = 0.0
         n_tr = 0
         for batch in train_loader:
             feat_hlt = batch["feat_hlt"].to(device)
@@ -1516,14 +1566,15 @@ def train_reconstructor_weighted(
             tr_pt_ratio += losses["pt_ratio"].item() * bs
             tr_m_ratio += losses["m_ratio"].item() * bs
             tr_e_ratio += losses["e_ratio"].item() * bs
+            tr_radial += losses["radial_profile"].item() * bs
             tr_budget += losses["budget"].item() * bs
             tr_sparse += losses["sparse"].item() * bs
             tr_local += losses["local"].item() * bs
             n_tr += bs
 
         model.eval()
-        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_m_ratio_u = va_e_ratio_u = va_budget_u = va_sparse_u = va_local_u = 0.0
-        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_m_ratio_w = va_e_ratio_w = va_budget_w = va_sparse_w = va_local_w = 0.0
+        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_m_ratio_u = va_e_ratio_u = va_radial_u = va_budget_u = va_sparse_u = va_local_u = 0.0
+        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_m_ratio_w = va_e_ratio_w = va_radial_w = va_budget_w = va_sparse_w = va_local_w = 0.0
         n_va = 0
         with torch.no_grad():
             for batch in val_loader:
@@ -1572,6 +1623,7 @@ def train_reconstructor_weighted(
                 va_pt_ratio_u += losses_u["pt_ratio"].item() * bs
                 va_m_ratio_u += losses_u["m_ratio"].item() * bs
                 va_e_ratio_u += losses_u["e_ratio"].item() * bs
+                va_radial_u += losses_u["radial_profile"].item() * bs
                 va_budget_u += losses_u["budget"].item() * bs
                 va_sparse_u += losses_u["sparse"].item() * bs
                 va_local_u += losses_u["local"].item() * bs
@@ -1582,6 +1634,7 @@ def train_reconstructor_weighted(
                 va_pt_ratio_w += losses_w["pt_ratio"].item() * bs
                 va_m_ratio_w += losses_w["m_ratio"].item() * bs
                 va_e_ratio_w += losses_w["e_ratio"].item() * bs
+                va_radial_w += losses_w["radial_profile"].item() * bs
                 va_budget_w += losses_w["budget"].item() * bs
                 va_sparse_w += losses_w["sparse"].item() * bs
                 va_local_w += losses_w["local"].item() * bs
@@ -1594,6 +1647,7 @@ def train_reconstructor_weighted(
         tr_pt_ratio /= max(n_tr, 1)
         tr_m_ratio /= max(n_tr, 1)
         tr_e_ratio /= max(n_tr, 1)
+        tr_radial /= max(n_tr, 1)
         tr_budget /= max(n_tr, 1)
         tr_sparse /= max(n_tr, 1)
         tr_local /= max(n_tr, 1)
@@ -1604,6 +1658,7 @@ def train_reconstructor_weighted(
         va_pt_ratio_u /= max(n_va, 1)
         va_m_ratio_u /= max(n_va, 1)
         va_e_ratio_u /= max(n_va, 1)
+        va_radial_u /= max(n_va, 1)
         va_budget_u /= max(n_va, 1)
         va_sparse_u /= max(n_va, 1)
         va_local_u /= max(n_va, 1)
@@ -1614,6 +1669,7 @@ def train_reconstructor_weighted(
         va_pt_ratio_w /= max(n_va, 1)
         va_m_ratio_w /= max(n_va, 1)
         va_e_ratio_w /= max(n_va, 1)
+        va_radial_w /= max(n_va, 1)
         va_budget_w /= max(n_va, 1)
         va_sparse_w /= max(n_va, 1)
         va_local_w /= max(n_va, 1)
@@ -1646,6 +1702,7 @@ def train_reconstructor_weighted(
                 "val_pt_ratio_unweighted": float(va_pt_ratio_u),
                 "val_m_ratio_unweighted": float(va_m_ratio_u),
                 "val_e_ratio_unweighted": float(va_e_ratio_u),
+                "val_radial_profile_unweighted": float(va_radial_u),
                 "val_budget_unweighted": float(va_budget_u),
                 "val_sparse_unweighted": float(va_sparse_u),
                 "val_local_unweighted": float(va_local_u),
@@ -1655,6 +1712,7 @@ def train_reconstructor_weighted(
                 "val_pt_ratio_weighted": float(va_pt_ratio_w),
                 "val_m_ratio_weighted": float(va_m_ratio_w),
                 "val_e_ratio_weighted": float(va_e_ratio_w),
+                "val_radial_profile_weighted": float(va_radial_w),
                 "val_budget_weighted": float(va_budget_w),
                 "val_sparse_weighted": float(va_sparse_w),
                 "val_local_weighted": float(va_local_w),
@@ -2313,6 +2371,9 @@ def main() -> None:
     parser.add_argument("--loss_w_pt_ratio", type=float, default=BASE_CONFIG["loss"]["w_pt_ratio"])
     parser.add_argument("--loss_w_m_ratio", type=float, default=float(BASE_CONFIG["loss"].get("w_m_ratio", 0.0)))
     parser.add_argument("--loss_w_e_ratio", type=float, default=BASE_CONFIG["loss"]["w_e_ratio"])
+    parser.add_argument("--loss_w_radial_profile", type=float, default=float(BASE_CONFIG["loss"].get("w_radial_profile", 0.0)))
+    parser.add_argument("--loss_radial_n_bins", type=int, default=int(BASE_CONFIG["loss"].get("radial_n_bins", 8)))
+    parser.add_argument("--loss_radial_max_dr", type=float, default=float(BASE_CONFIG["loss"].get("radial_max_dr", 1.0)))
     parser.add_argument("--loss_w_budget", type=float, default=BASE_CONFIG["loss"]["w_budget"])
     parser.add_argument("--loss_w_sparse", type=float, default=BASE_CONFIG["loss"]["w_sparse"])
     parser.add_argument("--loss_w_local", type=float, default=BASE_CONFIG["loss"]["w_local"])
@@ -2412,6 +2473,9 @@ def main() -> None:
     cfg["loss"]["w_pt_ratio"] = float(args.loss_w_pt_ratio)
     cfg["loss"]["w_m_ratio"] = float(args.loss_w_m_ratio)
     cfg["loss"]["w_e_ratio"] = float(args.loss_w_e_ratio)
+    cfg["loss"]["w_radial_profile"] = float(args.loss_w_radial_profile)
+    cfg["loss"]["radial_n_bins"] = int(max(args.loss_radial_n_bins, 1))
+    cfg["loss"]["radial_max_dr"] = float(max(args.loss_radial_max_dr, 1e-3))
     cfg["loss"]["w_budget"] = float(args.loss_w_budget)
     cfg["loss"]["w_sparse"] = float(args.loss_w_sparse)
     cfg["loss"]["w_local"] = float(args.loss_w_local)
