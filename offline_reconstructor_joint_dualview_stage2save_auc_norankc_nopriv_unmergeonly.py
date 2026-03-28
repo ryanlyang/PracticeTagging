@@ -428,6 +428,14 @@ def compute_reconstruction_losses_weighted(
     true_pt = torch.sqrt(true_px.pow(2) + true_py.pow(2) + eps)
     pt_ratio = pred_pt / (true_pt + eps)
     loss_pt_ratio_vec = F.smooth_l1_loss(pt_ratio, torch.ones_like(pt_ratio), reduction="none")
+    pred_p = torch.sqrt(pred_px.pow(2) + pred_py.pow(2) + pred_pz.pow(2) + eps)
+    true_p = torch.sqrt(true_px.pow(2) + true_py.pow(2) + true_pz.pow(2) + eps)
+    pred_m2 = torch.clamp(pred_E.pow(2) - pred_p.pow(2), min=eps)
+    true_m2 = torch.clamp(true_E.pow(2) - true_p.pow(2), min=eps)
+    pred_m = torch.sqrt(pred_m2)
+    true_m = torch.sqrt(true_m2)
+    m_ratio = pred_m / (true_m + eps)
+    loss_m_ratio_vec = F.smooth_l1_loss(m_ratio, torch.ones_like(m_ratio), reduction="none")
     e_ratio = pred_E / (true_E + eps)
     loss_e_ratio_vec = F.smooth_l1_loss(e_ratio, torch.ones_like(e_ratio), reduction="none")
 
@@ -483,6 +491,7 @@ def compute_reconstruction_losses_weighted(
         float(loss_cfg["w_set"]) * loss_set_vec
         + float(loss_cfg["w_phys"]) * loss_phys_vec
         + float(loss_cfg["w_pt_ratio"]) * loss_pt_ratio_vec
+        + float(loss_cfg.get("w_m_ratio", 0.0)) * loss_m_ratio_vec
         + float(loss_cfg["w_e_ratio"]) * loss_e_ratio_vec
         + float(loss_cfg["w_budget"]) * loss_budget_vec
         + float(loss_cfg["w_sparse"]) * loss_sparse_vec
@@ -494,6 +503,7 @@ def compute_reconstruction_losses_weighted(
         "set": _weighted_batch_mean(loss_set_vec, sw),
         "phys": _weighted_batch_mean(loss_phys_vec, sw),
         "pt_ratio": _weighted_batch_mean(loss_pt_ratio_vec, sw),
+        "m_ratio": _weighted_batch_mean(loss_m_ratio_vec, sw),
         "e_ratio": _weighted_batch_mean(loss_e_ratio_vec, sw),
         "budget": _weighted_batch_mean(loss_budget_vec, sw),
         "sparse": _weighted_batch_mean(loss_sparse_vec, sw),
@@ -1468,7 +1478,7 @@ def train_reconstructor_weighted(
         model.train()
         sc = stage_scale_local(ep, train_cfg)
 
-        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_e_ratio = tr_budget = tr_sparse = tr_local = 0.0
+        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_budget = tr_sparse = tr_local = 0.0
         n_tr = 0
         for batch in train_loader:
             feat_hlt = batch["feat_hlt"].to(device)
@@ -1504,6 +1514,7 @@ def train_reconstructor_weighted(
             tr_set += losses["set"].item() * bs
             tr_phys += losses["phys"].item() * bs
             tr_pt_ratio += losses["pt_ratio"].item() * bs
+            tr_m_ratio += losses["m_ratio"].item() * bs
             tr_e_ratio += losses["e_ratio"].item() * bs
             tr_budget += losses["budget"].item() * bs
             tr_sparse += losses["sparse"].item() * bs
@@ -1511,8 +1522,8 @@ def train_reconstructor_weighted(
             n_tr += bs
 
         model.eval()
-        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_e_ratio_u = va_budget_u = va_sparse_u = va_local_u = 0.0
-        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_e_ratio_w = va_budget_w = va_sparse_w = va_local_w = 0.0
+        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_m_ratio_u = va_e_ratio_u = va_budget_u = va_sparse_u = va_local_u = 0.0
+        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_m_ratio_w = va_e_ratio_w = va_budget_w = va_sparse_w = va_local_w = 0.0
         n_va = 0
         with torch.no_grad():
             for batch in val_loader:
@@ -1559,6 +1570,7 @@ def train_reconstructor_weighted(
                 va_set_u += losses_u["set"].item() * bs
                 va_phys_u += losses_u["phys"].item() * bs
                 va_pt_ratio_u += losses_u["pt_ratio"].item() * bs
+                va_m_ratio_u += losses_u["m_ratio"].item() * bs
                 va_e_ratio_u += losses_u["e_ratio"].item() * bs
                 va_budget_u += losses_u["budget"].item() * bs
                 va_sparse_u += losses_u["sparse"].item() * bs
@@ -1568,6 +1580,7 @@ def train_reconstructor_weighted(
                 va_set_w += losses_w["set"].item() * bs
                 va_phys_w += losses_w["phys"].item() * bs
                 va_pt_ratio_w += losses_w["pt_ratio"].item() * bs
+                va_m_ratio_w += losses_w["m_ratio"].item() * bs
                 va_e_ratio_w += losses_w["e_ratio"].item() * bs
                 va_budget_w += losses_w["budget"].item() * bs
                 va_sparse_w += losses_w["sparse"].item() * bs
@@ -1579,6 +1592,7 @@ def train_reconstructor_weighted(
         tr_set /= max(n_tr, 1)
         tr_phys /= max(n_tr, 1)
         tr_pt_ratio /= max(n_tr, 1)
+        tr_m_ratio /= max(n_tr, 1)
         tr_e_ratio /= max(n_tr, 1)
         tr_budget /= max(n_tr, 1)
         tr_sparse /= max(n_tr, 1)
@@ -1588,6 +1602,7 @@ def train_reconstructor_weighted(
         va_set_u /= max(n_va, 1)
         va_phys_u /= max(n_va, 1)
         va_pt_ratio_u /= max(n_va, 1)
+        va_m_ratio_u /= max(n_va, 1)
         va_e_ratio_u /= max(n_va, 1)
         va_budget_u /= max(n_va, 1)
         va_sparse_u /= max(n_va, 1)
@@ -1597,6 +1612,7 @@ def train_reconstructor_weighted(
         va_set_w /= max(n_va, 1)
         va_phys_w /= max(n_va, 1)
         va_pt_ratio_w /= max(n_va, 1)
+        va_m_ratio_w /= max(n_va, 1)
         va_e_ratio_w /= max(n_va, 1)
         va_budget_w /= max(n_va, 1)
         va_sparse_w /= max(n_va, 1)
@@ -1628,6 +1644,7 @@ def train_reconstructor_weighted(
                 "val_set_unweighted": float(va_set_u),
                 "val_phys_unweighted": float(va_phys_u),
                 "val_pt_ratio_unweighted": float(va_pt_ratio_u),
+                "val_m_ratio_unweighted": float(va_m_ratio_u),
                 "val_e_ratio_unweighted": float(va_e_ratio_u),
                 "val_budget_unweighted": float(va_budget_u),
                 "val_sparse_unweighted": float(va_sparse_u),
@@ -1636,6 +1653,7 @@ def train_reconstructor_weighted(
                 "val_set_weighted": float(va_set_w),
                 "val_phys_weighted": float(va_phys_w),
                 "val_pt_ratio_weighted": float(va_pt_ratio_w),
+                "val_m_ratio_weighted": float(va_m_ratio_w),
                 "val_e_ratio_weighted": float(va_e_ratio_w),
                 "val_budget_weighted": float(va_budget_w),
                 "val_sparse_weighted": float(va_sparse_w),
@@ -2293,6 +2311,7 @@ def main() -> None:
     parser.add_argument("--use_corrected_flags", action="store_true")
     parser.add_argument("--loss_w_phys", type=float, default=BASE_CONFIG["loss"]["w_phys"])
     parser.add_argument("--loss_w_pt_ratio", type=float, default=BASE_CONFIG["loss"]["w_pt_ratio"])
+    parser.add_argument("--loss_w_m_ratio", type=float, default=float(BASE_CONFIG["loss"].get("w_m_ratio", 0.0)))
     parser.add_argument("--loss_w_e_ratio", type=float, default=BASE_CONFIG["loss"]["w_e_ratio"])
     parser.add_argument("--loss_w_budget", type=float, default=BASE_CONFIG["loss"]["w_budget"])
     parser.add_argument("--loss_w_sparse", type=float, default=BASE_CONFIG["loss"]["w_sparse"])
@@ -2391,6 +2410,7 @@ def main() -> None:
     cfg["hlt_effects"]["smear_c"] = float(args.smear_c)
     cfg["loss"]["w_phys"] = float(args.loss_w_phys)
     cfg["loss"]["w_pt_ratio"] = float(args.loss_w_pt_ratio)
+    cfg["loss"]["w_m_ratio"] = float(args.loss_w_m_ratio)
     cfg["loss"]["w_e_ratio"] = float(args.loss_w_e_ratio)
     cfg["loss"]["w_budget"] = float(args.loss_w_budget)
     cfg["loss"]["w_sparse"] = float(args.loss_w_sparse)
