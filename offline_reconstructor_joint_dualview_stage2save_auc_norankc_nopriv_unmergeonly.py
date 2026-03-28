@@ -1706,6 +1706,9 @@ def train_joint_dual(
     unfreeze_phase1_epochs: int = 3,
     unfreeze_phase2_epochs: int = 7,
     unfreeze_last_n_encoder_layers: int = 2,
+    alternate_freeze: bool = False,
+    alternate_reco_only_epochs: int = 5,
+    alternate_dual_only_epochs: int = 5,
     lambda_param_anchor: float = 0.0,
     lambda_output_anchor: float = 0.0,
     anchor_decay: float = 1.0,
@@ -1713,6 +1716,9 @@ def train_joint_dual(
     def _set_reco_trainability(mode: str) -> int:
         for p in reconstructor.parameters():
             p.requires_grad_(False)
+
+        if mode == "frozen":
+            return 0
 
         if mode == "all":
             for p in reconstructor.parameters():
@@ -1746,8 +1752,18 @@ def train_joint_dual(
                 trainable += int(p.numel())
         return trainable
 
+    def _set_dual_trainability(trainable: bool) -> int:
+        n = 0
+        for p in dual_model.parameters():
+            p.requires_grad_(bool(trainable))
+            if bool(trainable):
+                n += int(p.numel())
+        return n
+
     for p in reconstructor.parameters():
         p.requires_grad_(not freeze_reconstructor)
+    for p in dual_model.parameters():
+        p.requires_grad_(True)
 
     params = [{"params": dual_model.parameters(), "lr": float(lr_dual)}]
     if not freeze_reconstructor:
@@ -1808,25 +1824,70 @@ def train_joint_dual(
             if torch.is_tensor(v)
         }
 
+    alt_reco_epochs_i = int(max(alternate_reco_only_epochs, 0))
+    alt_dual_epochs_i = int(max(alternate_dual_only_epochs, 0))
+    alt_cycle_len = int(alt_reco_epochs_i + alt_dual_epochs_i)
+    alt_schedule_enabled = bool(
+        (not freeze_reconstructor)
+        and bool(alternate_freeze)
+        and alt_reco_epochs_i > 0
+        and alt_dual_epochs_i > 0
+        and alt_cycle_len > 0
+    )
+    progressive_unfreeze_active = bool(progressive_unfreeze) and (not alt_schedule_enabled)
+    if alt_schedule_enabled and bool(progressive_unfreeze):
+        print(
+            "Note: Stage-C alternating freeze is enabled; "
+            "ignoring --stageC_progressive_unfreeze schedule."
+        )
+
     for ep in tqdm(range(int(epochs)), desc=stage_name):
-        dual_model.train()
+        current_reco_frozen = bool(freeze_reconstructor)
+        current_dual_frozen = False
+
         if freeze_reconstructor:
+            dual_model.train()
             reconstructor.eval()
             current_unfreeze_mode = "frozen"
             n_trainable_reco = 0
+            n_trainable_dual = _set_dual_trainability(True)
         else:
-            reconstructor.train()
-            if bool(progressive_unfreeze):
-                if (ep + 1) <= int(max(unfreeze_phase1_epochs, 0)):
-                    current_unfreeze_mode = "heads"
-                elif (ep + 1) <= int(max(unfreeze_phase2_epochs, 0)):
-                    current_unfreeze_mode = "lastk"
+            if alt_schedule_enabled:
+                cycle_pos = int(ep % alt_cycle_len)
+                if cycle_pos < alt_reco_epochs_i:
+                    # Reco-only phase: freeze dual head, optimize reconstructor through fixed dual path.
+                    dual_model.eval()
+                    n_trainable_dual = _set_dual_trainability(False)
+                    reconstructor.train()
+                    n_trainable_reco = _set_reco_trainability("all")
+                    current_unfreeze_mode = "alt_reco_only"
+                    current_reco_frozen = False
+                    current_dual_frozen = True
+                else:
+                    # Dual-only phase: freeze reconstructor, train dual head.
+                    dual_model.train()
+                    n_trainable_dual = _set_dual_trainability(True)
+                    reconstructor.eval()
+                    n_trainable_reco = _set_reco_trainability("frozen")
+                    current_unfreeze_mode = "alt_dual_only"
+                    current_reco_frozen = True
+                    current_dual_frozen = False
+            else:
+                dual_model.train()
+                n_trainable_dual = _set_dual_trainability(True)
+                reconstructor.train()
+                current_reco_frozen = False
+                if bool(progressive_unfreeze_active):
+                    if (ep + 1) <= int(max(unfreeze_phase1_epochs, 0)):
+                        current_unfreeze_mode = "heads"
+                    elif (ep + 1) <= int(max(unfreeze_phase2_epochs, 0)):
+                        current_unfreeze_mode = "lastk"
+                    else:
+                        current_unfreeze_mode = "all"
+                    n_trainable_reco = _set_reco_trainability(current_unfreeze_mode)
                 else:
                     current_unfreeze_mode = "all"
-                n_trainable_reco = _set_reco_trainability(current_unfreeze_mode)
-            else:
-                current_unfreeze_mode = "all"
-                n_trainable_reco = _set_reco_trainability("all")
+                    n_trainable_reco = _set_reco_trainability("all")
 
         tr_loss = 0.0
         tr_cls = 0.0
@@ -1859,7 +1920,7 @@ def train_joint_dual(
 
             opt.zero_grad()
 
-            if freeze_reconstructor:
+            if current_reco_frozen:
                 with torch.no_grad():
                     reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
             else:
@@ -1953,8 +2014,9 @@ def train_joint_dual(
                 + float(anchor_scale) * float(lambda_output_anchor) * loss_anchor_out
             )
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(dual_model.parameters(), 1.0)
-            if not freeze_reconstructor:
+            if not current_dual_frozen:
+                torch.nn.utils.clip_grad_norm_(dual_model.parameters(), 1.0)
+            if not current_reco_frozen:
                 torch.nn.utils.clip_grad_norm_(reconstructor.parameters(), 1.0)
             opt.step()
 
@@ -2055,7 +2117,8 @@ def train_joint_dual(
                 f"val_auc_w={va_auc_w:.4f}, val_fpr50_w={va_fpr50_w:.6f}, "
                 f"val_metric_source={metric_source_epoch}, "
                 f"select={str(select_metric).lower()}, best_sel={best_sel_score:.6f}, "
-                f"unfreeze={current_unfreeze_mode}, reco_trainable={n_trainable_reco}"
+                f"unfreeze={current_unfreeze_mode}, reco_trainable={n_trainable_reco}, "
+                f"dual_frozen={current_dual_frozen}, dual_trainable={n_trainable_dual}"
             )
 
         if (ep + 1) >= int(min_epochs) and no_improve >= int(patience):
@@ -2088,10 +2151,13 @@ def train_joint_dual(
         "delta_lambda_fp": float(delta_lambda_fp),
         "delta_hlt_threshold_prob": float(delta_hlt_threshold_prob),
         "delta_warmup_epochs": int(max(delta_warmup_epochs, 0)),
-        "progressive_unfreeze": bool(progressive_unfreeze),
+        "progressive_unfreeze": bool(progressive_unfreeze_active),
         "unfreeze_phase1_epochs": int(unfreeze_phase1_epochs),
         "unfreeze_phase2_epochs": int(unfreeze_phase2_epochs),
         "unfreeze_last_n_encoder_layers": int(unfreeze_last_n_encoder_layers),
+        "alternate_freeze": bool(alt_schedule_enabled),
+        "alternate_reco_only_epochs": int(alt_reco_epochs_i),
+        "alternate_dual_only_epochs": int(alt_dual_epochs_i),
         "lambda_param_anchor": float(lambda_param_anchor),
         "lambda_output_anchor": float(lambda_output_anchor),
         "anchor_decay": float(anchor_decay),
@@ -2203,6 +2269,23 @@ def main() -> None:
     parser.add_argument("--stageC_unfreeze_phase1_epochs", type=int, default=3)
     parser.add_argument("--stageC_unfreeze_phase2_epochs", type=int, default=7)
     parser.add_argument("--stageC_unfreeze_last_n_encoder_layers", type=int, default=2)
+    parser.add_argument(
+        "--stageC_alternate_freeze",
+        action="store_true",
+        help="Alternate Stage-C optimization: reco-only phase then dual-only phase in cycles.",
+    )
+    parser.add_argument(
+        "--stageC_alternate_reco_only_epochs",
+        type=int,
+        default=5,
+        help="Epochs per alternating cycle with dual frozen and reconstructor trainable.",
+    )
+    parser.add_argument(
+        "--stageC_alternate_dual_only_epochs",
+        type=int,
+        default=5,
+        help="Epochs per alternating cycle with reconstructor frozen and dual trainable.",
+    )
     parser.add_argument("--stageC_lambda_param_anchor", type=float, default=0.0)
     parser.add_argument("--stageC_lambda_output_anchor", type=float, default=0.0)
     parser.add_argument("--stageC_anchor_decay", type=float, default=0.95)
@@ -3033,6 +3116,9 @@ def main() -> None:
         unfreeze_phase1_epochs=int(args.stageC_unfreeze_phase1_epochs),
         unfreeze_phase2_epochs=int(args.stageC_unfreeze_phase2_epochs),
         unfreeze_last_n_encoder_layers=int(args.stageC_unfreeze_last_n_encoder_layers),
+        alternate_freeze=bool(args.stageC_alternate_freeze),
+        alternate_reco_only_epochs=int(args.stageC_alternate_reco_only_epochs),
+        alternate_dual_only_epochs=int(args.stageC_alternate_dual_only_epochs),
         lambda_param_anchor=float(args.stageC_lambda_param_anchor),
         lambda_output_anchor=float(args.stageC_lambda_output_anchor),
         anchor_decay=float(args.stageC_anchor_decay),
