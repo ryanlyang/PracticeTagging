@@ -327,26 +327,7 @@ def compute_reconstruction_losses_weighted(
         t_plan = u.unsqueeze(2) * k_mat * v.unsqueeze(1)
         return (t_plan * cost).sum(dim=(1, 2))
 
-    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
-    if set_mode == "chamfer":
-        loss_set_vec = _loss_set_chamfer_vec()
-    elif set_mode in ("chamfer_sinkhorn", "sinkhorn_chamfer", "hybrid"):
-        mix = float(np.clip(float(loss_cfg.get("chamfer_mix", 0.5)), 0.0, 1.0))
-        sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
-        sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
-        loss_set_vec = mix * _loss_set_chamfer_vec() + (1.0 - mix) * _loss_set_sinkhorn_vec(sh_eps, sh_iters)
-    elif set_mode in ("sinkhorn", "ot"):
-        # Entropic OT family:
-        # - sinkhorn: moderate epsilon
-        # - ot: near-OT using a smaller epsilon + more iterations
-        if set_mode == "ot":
-            sh_eps = float(loss_cfg.get("ot_eps", 0.02))
-            sh_iters = int(loss_cfg.get("ot_iters", 50))
-        else:
-            sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
-            sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
-        loss_set_vec = _loss_set_sinkhorn_vec(sh_eps, sh_iters)
-    elif set_mode == "hungarian":
+    def _loss_set_hungarian_vec() -> torch.Tensor:
         if not _HAS_SCIPY_HUNGARIAN:
             raise RuntimeError(
                 "loss_set_mode='hungarian' requires scipy.optimize.linear_sum_assignment, "
@@ -379,7 +360,57 @@ def compute_reconstruction_losses_weighted(
             unmatched_mass = wb[~matched_mask].sum() / (wb.sum() + eps)
             l_fp = float(loss_cfg["unselected_penalty"]) * unmatched_mass
             loss_list.append(l_cov + l_prec_match + l_fp)
-        loss_set_vec = torch.stack(loss_list, dim=0)
+        return torch.stack(loss_list, dim=0)
+
+    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
+    if set_mode == "chamfer":
+        loss_set_vec = _loss_set_chamfer_vec()
+    elif set_mode in ("chamfer_sinkhorn", "sinkhorn_chamfer", "hybrid"):
+        mix = float(np.clip(float(loss_cfg.get("chamfer_mix", 0.5)), 0.0, 1.0))
+        sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
+        sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
+        loss_set_vec = mix * _loss_set_chamfer_vec() + (1.0 - mix) * _loss_set_sinkhorn_vec(sh_eps, sh_iters)
+    elif set_mode in ("sinkhorn", "ot"):
+        # Entropic OT family:
+        # - sinkhorn: moderate epsilon
+        # - ot: near-OT using a smaller epsilon + more iterations
+        if set_mode == "ot":
+            sh_eps = float(loss_cfg.get("ot_eps", 0.02))
+            sh_iters = int(loss_cfg.get("ot_iters", 50))
+        else:
+            sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
+            sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
+        loss_set_vec = _loss_set_sinkhorn_vec(sh_eps, sh_iters)
+    elif set_mode == "hungarian":
+        loss_set_vec = _loss_set_hungarian_vec()
+    elif set_mode == "combo":
+        w_chamfer = max(float(loss_cfg.get("combo_w_chamfer", 0.0)), 0.0)
+        w_sinkhorn = max(float(loss_cfg.get("combo_w_sinkhorn", 0.0)), 0.0)
+        w_ot = max(float(loss_cfg.get("combo_w_ot", 0.0)), 0.0)
+        w_hungarian = max(float(loss_cfg.get("combo_w_hungarian", 0.0)), 0.0)
+        w_sum = w_chamfer + w_sinkhorn + w_ot + w_hungarian
+        if w_sum <= 0.0:
+            raise ValueError("loss_set_mode='combo' requires at least one positive combo weight.")
+        w_chamfer /= w_sum
+        w_sinkhorn /= w_sum
+        w_ot /= w_sum
+        w_hungarian /= w_sum
+
+        loss_set_vec = torch.zeros(cost.shape[0], device=cost.device, dtype=cost.dtype)
+        if w_chamfer > 0.0:
+            loss_set_vec = loss_set_vec + w_chamfer * _loss_set_chamfer_vec()
+        if w_sinkhorn > 0.0:
+            loss_set_vec = loss_set_vec + w_sinkhorn * _loss_set_sinkhorn_vec(
+                float(loss_cfg.get("sinkhorn_eps", 0.08)),
+                int(loss_cfg.get("sinkhorn_iters", 25)),
+            )
+        if w_ot > 0.0:
+            loss_set_vec = loss_set_vec + w_ot * _loss_set_sinkhorn_vec(
+                float(loss_cfg.get("ot_eps", 0.02)),
+                int(loss_cfg.get("ot_iters", 50)),
+            )
+        if w_hungarian > 0.0:
+            loss_set_vec = loss_set_vec + w_hungarian * _loss_set_hungarian_vec()
     else:
         raise ValueError(f"Unsupported set_loss_mode: {set_mode}")
 
@@ -2187,8 +2218,8 @@ def main() -> None:
         "--loss_set_mode",
         type=str,
         default="chamfer",
-        choices=["chamfer", "chamfer_sinkhorn", "sinkhorn", "ot", "hungarian"],
-        help="Set-level reconstruction loss: chamfer (default), chamfer_sinkhorn blend, sinkhorn, near-OT, or hungarian assignment.",
+        choices=["chamfer", "chamfer_sinkhorn", "sinkhorn", "ot", "hungarian", "combo"],
+        help="Set-level reconstruction loss: chamfer (default), chamfer_sinkhorn blend, sinkhorn, near-OT, hungarian, or custom combo.",
     )
     parser.add_argument(
         "--loss_set_chamfer_mix",
@@ -2200,6 +2231,10 @@ def main() -> None:
     parser.add_argument("--loss_set_sinkhorn_iters", type=int, default=25)
     parser.add_argument("--loss_set_ot_eps", type=float, default=0.02)
     parser.add_argument("--loss_set_ot_iters", type=int, default=50)
+    parser.add_argument("--loss_set_combo_w_chamfer", type=float, default=1.0)
+    parser.add_argument("--loss_set_combo_w_sinkhorn", type=float, default=0.0)
+    parser.add_argument("--loss_set_combo_w_ot", type=float, default=0.0)
+    parser.add_argument("--loss_set_combo_w_hungarian", type=float, default=0.0)
     parser.add_argument(
         "--added_target_scale",
         type=float,
@@ -2283,6 +2318,10 @@ def main() -> None:
     cfg["loss"]["sinkhorn_iters"] = int(max(args.loss_set_sinkhorn_iters, 1))
     cfg["loss"]["ot_eps"] = float(max(args.loss_set_ot_eps, 1e-4))
     cfg["loss"]["ot_iters"] = int(max(args.loss_set_ot_iters, 1))
+    cfg["loss"]["combo_w_chamfer"] = float(max(args.loss_set_combo_w_chamfer, 0.0))
+    cfg["loss"]["combo_w_sinkhorn"] = float(max(args.loss_set_combo_w_sinkhorn, 0.0))
+    cfg["loss"]["combo_w_ot"] = float(max(args.loss_set_combo_w_ot, 0.0))
+    cfg["loss"]["combo_w_hungarian"] = float(max(args.loss_set_combo_w_hungarian, 0.0))
 
     cfg["reconstructor_training"]["epochs"] = int(args.stageA_epochs)
     cfg["reconstructor_training"]["patience"] = int(args.stageA_patience)
