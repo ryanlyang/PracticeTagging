@@ -294,8 +294,7 @@ def compute_reconstruction_losses_weighted(
     valid_tgt = mask_off.unsqueeze(1)
     cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
 
-    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
-    if set_mode == "chamfer":
+    def _loss_set_chamfer_vec() -> torch.Tensor:
         pred_to_tgt = cost.min(dim=2).values
         loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
 
@@ -303,25 +302,17 @@ def compute_reconstruction_losses_weighted(
         tgt_to_pred = (cost + penalty).min(dim=1).values
         tgt_mask_f = mask_off.float()
         loss_tgt_to_pred = (tgt_to_pred * tgt_mask_f).sum(dim=1) / (tgt_mask_f.sum(dim=1) + eps)
-        loss_set_vec = loss_pred_to_tgt + loss_tgt_to_pred
-    elif set_mode in ("sinkhorn", "ot"):
-        # Entropic OT family:
-        # - sinkhorn: moderate epsilon
-        # - ot: near-OT using a smaller epsilon + more iterations
+        return loss_pred_to_tgt + loss_tgt_to_pred
+
+    def _loss_set_sinkhorn_vec(sh_eps: float, sh_iters: int) -> torch.Tensor:
         tgt_mask_f = mask_off.float()
         a = w.clamp(min=0.0)
         a = a / a.sum(dim=1, keepdim=True).clamp(min=eps)
         b = tgt_mask_f
         b = b / b.sum(dim=1, keepdim=True).clamp(min=eps)
 
-        if set_mode == "ot":
-            sh_eps = float(loss_cfg.get("ot_eps", 0.02))
-            sh_iters = int(loss_cfg.get("ot_iters", 50))
-        else:
-            sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
-            sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
-        sh_eps = max(sh_eps, 1e-4)
-        sh_iters = max(sh_iters, 1)
+        sh_eps = max(float(sh_eps), 1e-4)
+        sh_iters = max(int(sh_iters), 1)
 
         # Stabilized-ish Sinkhorn in primal form.
         k_raw = torch.exp(-cost / sh_eps)
@@ -334,7 +325,27 @@ def compute_reconstruction_losses_weighted(
             ktu = torch.bmm(k_mat.transpose(1, 2), u.unsqueeze(-1)).squeeze(-1).clamp(min=eps)
             v = b / ktu
         t_plan = u.unsqueeze(2) * k_mat * v.unsqueeze(1)
-        loss_set_vec = (t_plan * cost).sum(dim=(1, 2))
+        return (t_plan * cost).sum(dim=(1, 2))
+
+    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
+    if set_mode == "chamfer":
+        loss_set_vec = _loss_set_chamfer_vec()
+    elif set_mode in ("chamfer_sinkhorn", "sinkhorn_chamfer", "hybrid"):
+        mix = float(np.clip(float(loss_cfg.get("chamfer_mix", 0.5)), 0.0, 1.0))
+        sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
+        sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
+        loss_set_vec = mix * _loss_set_chamfer_vec() + (1.0 - mix) * _loss_set_sinkhorn_vec(sh_eps, sh_iters)
+    elif set_mode in ("sinkhorn", "ot"):
+        # Entropic OT family:
+        # - sinkhorn: moderate epsilon
+        # - ot: near-OT using a smaller epsilon + more iterations
+        if set_mode == "ot":
+            sh_eps = float(loss_cfg.get("ot_eps", 0.02))
+            sh_iters = int(loss_cfg.get("ot_iters", 50))
+        else:
+            sh_eps = float(loss_cfg.get("sinkhorn_eps", 0.08))
+            sh_iters = int(loss_cfg.get("sinkhorn_iters", 25))
+        loss_set_vec = _loss_set_sinkhorn_vec(sh_eps, sh_iters)
     elif set_mode == "hungarian":
         if not _HAS_SCIPY_HUNGARIAN:
             raise RuntimeError(
@@ -2176,8 +2187,14 @@ def main() -> None:
         "--loss_set_mode",
         type=str,
         default="chamfer",
-        choices=["chamfer", "sinkhorn", "ot", "hungarian"],
-        help="Set-level reconstruction loss: chamfer (default), sinkhorn, near-OT, or hungarian assignment.",
+        choices=["chamfer", "chamfer_sinkhorn", "sinkhorn", "ot", "hungarian"],
+        help="Set-level reconstruction loss: chamfer (default), chamfer_sinkhorn blend, sinkhorn, near-OT, or hungarian assignment.",
+    )
+    parser.add_argument(
+        "--loss_set_chamfer_mix",
+        type=float,
+        default=0.5,
+        help="For loss_set_mode=chamfer_sinkhorn: weight on chamfer term in [0,1].",
     )
     parser.add_argument("--loss_set_sinkhorn_eps", type=float, default=0.08)
     parser.add_argument("--loss_set_sinkhorn_iters", type=int, default=25)
@@ -2261,6 +2278,7 @@ def main() -> None:
     cfg["loss"]["w_sparse"] = float(args.loss_w_sparse)
     cfg["loss"]["w_local"] = float(args.loss_w_local)
     cfg["loss"]["set_loss_mode"] = str(args.loss_set_mode).strip().lower()
+    cfg["loss"]["chamfer_mix"] = float(np.clip(args.loss_set_chamfer_mix, 0.0, 1.0))
     cfg["loss"]["sinkhorn_eps"] = float(max(args.loss_set_sinkhorn_eps, 1e-4))
     cfg["loss"]["sinkhorn_iters"] = int(max(args.loss_set_sinkhorn_iters, 1))
     cfg["loss"]["ot_eps"] = float(max(args.loss_set_ot_eps, 1e-4))
