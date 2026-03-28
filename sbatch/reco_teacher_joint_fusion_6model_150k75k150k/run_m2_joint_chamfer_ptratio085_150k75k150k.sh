@@ -64,7 +64,7 @@ CMD=(
   --added_target_scale 0.90
   --loss_set_mode chamfer
   --loss_w_phys 0.0
-  --loss_w_pt_ratio 0.85
+  --loss_w_pt_ratio 1.0
   --loss_w_e_ratio 0.0
   --loss_w_local 0.05
   --save_fusion_scores
@@ -73,7 +73,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "Model-2 Joint (SetLoss=Chamfer, L_phys=0, L_e_ratio=0, L_pt_ratio=0.85)"
+echo "Model-2 Joint (SetLoss=Chamfer, L_phys=0, L_e_ratio=0, L_pt_ratio=1.0)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}"
 echo "============================================================"
