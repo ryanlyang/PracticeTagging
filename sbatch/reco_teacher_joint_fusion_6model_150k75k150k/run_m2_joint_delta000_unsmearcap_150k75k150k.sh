@@ -27,6 +27,8 @@ MAX_CONSTITS="${MAX_CONSTITS:-100}"
 # Unsmear hard-cap controls (log-space multiplicative shift caps).
 UNSMEAR_LOGPT_CAP="${UNSMEAR_LOGPT_CAP:-0.25}"
 UNSMEAR_LOGE_CAP="${UNSMEAR_LOGE_CAP:-0.25}"
+LOSS_UNSELECTED_PENALTY="${LOSS_UNSELECTED_PENALTY:-0.00}"
+LOSS_GEN_LOCAL_RADIUS="${LOSS_GEN_LOCAL_RADIUS:-0.00}"
 
 set +u
 source ~/.bashrc
@@ -68,6 +70,8 @@ CMD=(
   --stageC_delta_lambda_fp 3.0
   --stageC_delta_warmup_epochs 8
   --added_target_scale 0.90
+  --loss_unselected_penalty "${LOSS_UNSELECTED_PENALTY}"
+  --loss_gen_local_radius "${LOSS_GEN_LOCAL_RADIUS}"
   --save_fusion_scores
   --disable_final_kd
   --device "${DEVICE}"
@@ -81,7 +85,10 @@ echo "Unsmear caps:"
 echo "  UNSMEAR_LOGPT_CAP=${UNSMEAR_LOGPT_CAP}"
 echo "  UNSMEAR_LOGE_CAP=${UNSMEAR_LOGE_CAP}"
 echo "Reassign behavior: ORIGINAL (not geometry-only)"
-echo "Reconstructor loss config: inherited from delta000 defaults in trainer."
+echo "Reconstructor loss overrides:"
+echo "  unselected_penalty=${LOSS_UNSELECTED_PENALTY}"
+echo "  gen_local_radius=${LOSS_GEN_LOCAL_RADIUS}"
+echo "Other reconstructor losses: inherited from delta000 defaults in trainer."
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
