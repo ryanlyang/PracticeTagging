@@ -562,6 +562,14 @@ def compute_reconstruction_losses_weighted(
     loss_local_gen_vec = (gen_w * excess).sum(dim=1) / (gen_w.sum(dim=1) + eps)
     loss_local_vec = loss_local_split_vec + loss_local_gen_vec
 
+    # Asymmetric false-positive mass penalty:
+    # penalize predicted mass that is far from any offline target token.
+    fp_cost_thresh = float(loss_cfg.get("fp_mass_cost_thresh", 0.80))
+    fp_cost_tau = float(max(loss_cfg.get("fp_mass_tau", 0.10), 1e-4))
+    min_pred_cost = cost.min(dim=2).values
+    unmatched_soft = torch.sigmoid((min_pred_cost - fp_cost_thresh) / fp_cost_tau)
+    loss_fp_mass_vec = (w * unmatched_soft).sum(dim=1) / (w.sum(dim=1) + eps)
+
     total_vec = (
         float(loss_cfg["w_set"]) * loss_set_vec
         + float(loss_cfg["w_phys"]) * loss_phys_vec
@@ -572,6 +580,7 @@ def compute_reconstruction_losses_weighted(
         + float(loss_cfg["w_budget"]) * loss_budget_vec
         + float(loss_cfg["w_sparse"]) * loss_sparse_vec
         + float(loss_cfg["w_local"]) * loss_local_vec
+        + float(loss_cfg.get("w_fp_mass", 0.0)) * loss_fp_mass_vec
     )
 
     return {
@@ -585,6 +594,7 @@ def compute_reconstruction_losses_weighted(
         "budget": _weighted_batch_mean(loss_budget_vec, sw),
         "sparse": _weighted_batch_mean(loss_sparse_vec, sw),
         "local": _weighted_batch_mean(loss_local_vec, sw),
+        "fp_mass": _weighted_batch_mean(loss_fp_mass_vec, sw),
     }
 
 
@@ -1555,7 +1565,7 @@ def train_reconstructor_weighted(
         model.train()
         sc = stage_scale_local(ep, train_cfg)
 
-        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_radial = tr_budget = tr_sparse = tr_local = 0.0
+        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_radial = tr_budget = tr_sparse = tr_local = tr_fp_mass = 0.0
         n_tr = 0
         for batch in train_loader:
             feat_hlt = batch["feat_hlt"].to(device)
@@ -1597,11 +1607,12 @@ def train_reconstructor_weighted(
             tr_budget += losses["budget"].item() * bs
             tr_sparse += losses["sparse"].item() * bs
             tr_local += losses["local"].item() * bs
+            tr_fp_mass += losses["fp_mass"].item() * bs
             n_tr += bs
 
         model.eval()
-        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_m_ratio_u = va_e_ratio_u = va_radial_u = va_budget_u = va_sparse_u = va_local_u = 0.0
-        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_m_ratio_w = va_e_ratio_w = va_radial_w = va_budget_w = va_sparse_w = va_local_w = 0.0
+        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_m_ratio_u = va_e_ratio_u = va_radial_u = va_budget_u = va_sparse_u = va_local_u = va_fp_mass_u = 0.0
+        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_m_ratio_w = va_e_ratio_w = va_radial_w = va_budget_w = va_sparse_w = va_local_w = va_fp_mass_w = 0.0
         n_va = 0
         with torch.no_grad():
             for batch in val_loader:
@@ -1654,6 +1665,7 @@ def train_reconstructor_weighted(
                 va_budget_u += losses_u["budget"].item() * bs
                 va_sparse_u += losses_u["sparse"].item() * bs
                 va_local_u += losses_u["local"].item() * bs
+                va_fp_mass_u += losses_u["fp_mass"].item() * bs
 
                 va_total_w += losses_w["total"].item() * bs
                 va_set_w += losses_w["set"].item() * bs
@@ -1665,6 +1677,7 @@ def train_reconstructor_weighted(
                 va_budget_w += losses_w["budget"].item() * bs
                 va_sparse_w += losses_w["sparse"].item() * bs
                 va_local_w += losses_w["local"].item() * bs
+                va_fp_mass_w += losses_w["fp_mass"].item() * bs
                 n_va += bs
 
         sch.step()
@@ -1678,6 +1691,7 @@ def train_reconstructor_weighted(
         tr_budget /= max(n_tr, 1)
         tr_sparse /= max(n_tr, 1)
         tr_local /= max(n_tr, 1)
+        tr_fp_mass /= max(n_tr, 1)
 
         va_total_u /= max(n_va, 1)
         va_set_u /= max(n_va, 1)
@@ -1689,6 +1703,7 @@ def train_reconstructor_weighted(
         va_budget_u /= max(n_va, 1)
         va_sparse_u /= max(n_va, 1)
         va_local_u /= max(n_va, 1)
+        va_fp_mass_u /= max(n_va, 1)
 
         va_total_w /= max(n_va, 1)
         va_set_w /= max(n_va, 1)
@@ -1700,6 +1715,7 @@ def train_reconstructor_weighted(
         va_budget_w /= max(n_va, 1)
         va_sparse_w /= max(n_va, 1)
         va_local_w /= max(n_va, 1)
+        va_fp_mass_w /= max(n_va, 1)
 
         val_total_sel = float(va_total_w) if bool(apply_reco_weight) else float(va_total_u)
 
@@ -1733,6 +1749,7 @@ def train_reconstructor_weighted(
                 "val_budget_unweighted": float(va_budget_u),
                 "val_sparse_unweighted": float(va_sparse_u),
                 "val_local_unweighted": float(va_local_u),
+                "val_fp_mass_unweighted": float(va_fp_mass_u),
                 "val_total_weighted": float(va_total_w),
                 "val_set_weighted": float(va_set_w),
                 "val_phys_weighted": float(va_phys_w),
@@ -1743,6 +1760,7 @@ def train_reconstructor_weighted(
                 "val_budget_weighted": float(va_budget_w),
                 "val_sparse_weighted": float(va_sparse_w),
                 "val_local_weighted": float(va_local_w),
+                "val_fp_mass_weighted": float(va_fp_mass_w),
             }
         else:
             no_improve += 1
@@ -1753,7 +1771,7 @@ def train_reconstructor_weighted(
                 f"val_total_unw={va_total_u:.4f}, val_total_w={va_total_w:.4f}, "
                 f"select={val_metric_source}, best_sel={best_val:.4f} | "
                 f"set_unw={va_set_u:.4f}, phys_unw={va_phys_u:.4f}, "
-                f"budget_unw={va_budget_u:.4f}, stage_scale={sc:.2f}"
+                f"budget_unw={va_budget_u:.4f}, fp_mass_unw={va_fp_mass_u:.4f}, stage_scale={sc:.2f}"
             )
         if (ep + 1) >= min_stop_epoch and no_improve >= int(train_cfg["patience"]):
             print(f"Early stopping reconstructor at epoch {ep+1}")
@@ -2401,6 +2419,9 @@ def main() -> None:
     parser.add_argument("--loss_w_radial_profile", type=float, default=float(BASE_CONFIG["loss"].get("w_radial_profile", 0.0)))
     parser.add_argument("--loss_radial_n_bins", type=int, default=int(BASE_CONFIG["loss"].get("radial_n_bins", 8)))
     parser.add_argument("--loss_radial_max_dr", type=float, default=float(BASE_CONFIG["loss"].get("radial_max_dr", 1.0)))
+    parser.add_argument("--loss_w_fp_mass", type=float, default=float(BASE_CONFIG["loss"].get("w_fp_mass", 0.0)))
+    parser.add_argument("--loss_fp_mass_cost_thresh", type=float, default=float(BASE_CONFIG["loss"].get("fp_mass_cost_thresh", 0.80)))
+    parser.add_argument("--loss_fp_mass_tau", type=float, default=float(BASE_CONFIG["loss"].get("fp_mass_tau", 0.10)))
     parser.add_argument("--loss_w_budget", type=float, default=BASE_CONFIG["loss"]["w_budget"])
     parser.add_argument("--loss_w_sparse", type=float, default=BASE_CONFIG["loss"]["w_sparse"])
     parser.add_argument("--loss_w_local", type=float, default=BASE_CONFIG["loss"]["w_local"])
@@ -2525,6 +2546,9 @@ def main() -> None:
     cfg["loss"]["w_radial_profile"] = float(args.loss_w_radial_profile)
     cfg["loss"]["radial_n_bins"] = int(max(args.loss_radial_n_bins, 1))
     cfg["loss"]["radial_max_dr"] = float(max(args.loss_radial_max_dr, 1e-3))
+    cfg["loss"]["w_fp_mass"] = float(args.loss_w_fp_mass)
+    cfg["loss"]["fp_mass_cost_thresh"] = float(args.loss_fp_mass_cost_thresh)
+    cfg["loss"]["fp_mass_tau"] = float(max(args.loss_fp_mass_tau, 1e-4))
     cfg["loss"]["w_budget"] = float(args.loss_w_budget)
     cfg["loss"]["w_sparse"] = float(args.loss_w_sparse)
     cfg["loss"]["w_local"] = float(args.loss_w_local)
