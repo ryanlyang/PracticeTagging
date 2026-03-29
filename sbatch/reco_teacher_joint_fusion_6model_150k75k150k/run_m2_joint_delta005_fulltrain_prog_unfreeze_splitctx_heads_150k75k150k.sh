@@ -63,6 +63,8 @@ CMD=(
   --stageC_lr_reco 5e-6
   --lambda_reco 0.4
   --lambda_cons 0.06
+  --loss_unselected_penalty 0.0
+  --loss_gen_local_radius 0.0
   --stageC_lambda_delta 0.05
   --stageC_delta_tau 0.05
   --stageC_delta_lambda_fp 3.0
@@ -82,4 +84,3 @@ echo
 "${CMD[@]}"
 
 echo "Done: ${SAVE_DIR}/${RUN_NAME}"
-

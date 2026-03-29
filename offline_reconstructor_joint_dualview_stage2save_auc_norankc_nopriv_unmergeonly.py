@@ -2483,13 +2483,13 @@ def main() -> None:
     parser.add_argument(
         "--loss_unselected_penalty",
         type=float,
-        default=float(BASE_CONFIG["loss"].get("unselected_penalty", 0.35)),
+        default=float(BASE_CONFIG["loss"].get("unselected_penalty", 0.0)),
         help="Penalty used in set loss for unmatched predicted mass (chamfer/hungarian paths).",
     )
     parser.add_argument(
         "--loss_gen_local_radius",
         type=float,
-        default=float(BASE_CONFIG["loss"].get("gen_local_radius", 0.30)),
+        default=float(BASE_CONFIG["loss"].get("gen_local_radius", 0.0)),
         help="Allowed generation locality radius before local penalty starts.",
     )
     parser.add_argument(

@@ -152,8 +152,8 @@ CONFIG = {
         "w_budget": 0.65,
         "w_sparse": 0.02,
         "w_local": 0.03,
-        "unselected_penalty": 0.35,
-        "gen_local_radius": 0.30,
+        "unselected_penalty": 0.0,
+        "gen_local_radius": 0.0,
     },
     "model": {
         "embed_dim": 128,
