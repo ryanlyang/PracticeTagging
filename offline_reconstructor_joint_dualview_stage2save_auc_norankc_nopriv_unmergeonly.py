@@ -2481,6 +2481,18 @@ def main() -> None:
     parser.add_argument("--loss_w_sparse", type=float, default=BASE_CONFIG["loss"]["w_sparse"])
     parser.add_argument("--loss_w_local", type=float, default=BASE_CONFIG["loss"]["w_local"])
     parser.add_argument(
+        "--loss_unselected_penalty",
+        type=float,
+        default=float(BASE_CONFIG["loss"].get("unselected_penalty", 0.35)),
+        help="Penalty used in set loss for unmatched predicted mass (chamfer/hungarian paths).",
+    )
+    parser.add_argument(
+        "--loss_gen_local_radius",
+        type=float,
+        default=float(BASE_CONFIG["loss"].get("gen_local_radius", 0.30)),
+        help="Allowed generation locality radius before local penalty starts.",
+    )
+    parser.add_argument(
         "--loss_set_mode",
         type=str,
         default="chamfer",
@@ -2607,6 +2619,8 @@ def main() -> None:
     cfg["loss"]["w_budget"] = float(args.loss_w_budget)
     cfg["loss"]["w_sparse"] = float(args.loss_w_sparse)
     cfg["loss"]["w_local"] = float(args.loss_w_local)
+    cfg["loss"]["unselected_penalty"] = float(max(args.loss_unselected_penalty, 0.0))
+    cfg["loss"]["gen_local_radius"] = float(max(args.loss_gen_local_radius, 0.0))
     cfg["loss"]["set_loss_mode"] = str(args.loss_set_mode).strip().lower()
     cfg["loss"]["chamfer_mix"] = float(np.clip(args.loss_set_chamfer_mix, 0.0, 1.0))
     cfg["loss"]["chamfer_topk_target_weighted"] = bool(args.loss_set_chamfer_topk_target_weighted)
