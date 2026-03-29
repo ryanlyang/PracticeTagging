@@ -174,6 +174,9 @@ class OfflineReconstructorUnsmearCap(reco_base.OfflineReconstructor):
             "budget_eff": budget_eff,
             "split_delta": split_delta,
             "gen_tokens": gen_tokens,
+            # Expose effective log-space shifts for optional trust-region penalties.
+            "d_logpt": d_logpt,
+            "d_logE": d_logE,
         }
 
 
