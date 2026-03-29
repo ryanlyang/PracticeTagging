@@ -1532,6 +1532,26 @@ def train_reconstructor_weighted(
             return 1
         return 2
 
+    def _scheduled_loss_cfg(phase_idx: int) -> Dict:
+        cfg_eff = dict(loss_cfg)
+        if not bool(train_cfg.get("loss_schedule_enable", False)):
+            return cfg_eff
+        if phase_idx == 0:
+            cfg_eff["w_set"] = float(cfg_eff.get("w_set", 0.0)) * float(
+                train_cfg.get("loss_sched_early_set_mult", 1.0)
+            )
+            cfg_eff["w_budget"] = float(cfg_eff.get("w_budget", 0.0)) * float(
+                train_cfg.get("loss_sched_early_budget_mult", 1.0)
+            )
+        elif phase_idx == 2:
+            cfg_eff["w_pt_ratio"] = float(cfg_eff.get("w_pt_ratio", 0.0)) * float(
+                train_cfg.get("loss_sched_late_ptratio_mult", 1.0)
+            )
+            cfg_eff["w_local"] = float(cfg_eff.get("w_local", 0.0)) * float(
+                train_cfg.get("loss_sched_late_local_mult", 1.0)
+            )
+        return cfg_eff
+
     phase_names = {
         0: "phase_035",
         1: "phase_070",
@@ -1564,6 +1584,7 @@ def train_reconstructor_weighted(
 
         model.train()
         sc = stage_scale_local(ep, train_cfg)
+        loss_cfg_ep = _scheduled_loss_cfg(phase_idx)
 
         tr_total = tr_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_radial = tr_budget = tr_sparse = tr_local = tr_fp_mass = 0.0
         n_tr = 0
@@ -1589,7 +1610,7 @@ def train_reconstructor_weighted(
                 mask_off,
                 budget_merge_true,
                 budget_eff_true,
-                loss_cfg,
+                loss_cfg_ep,
                 sample_weight=(sw_reco if (bool(apply_reco_weight) and sw_reco is not None) else None),
             )
             losses["total"].backward()
@@ -1636,7 +1657,7 @@ def train_reconstructor_weighted(
                     mask_off,
                     budget_merge_true,
                     budget_eff_true,
-                    loss_cfg,
+                    loss_cfg_ep,
                     sample_weight=None,
                 )
                 if bool(apply_reco_weight) and sw_reco is not None:
@@ -1648,7 +1669,7 @@ def train_reconstructor_weighted(
                         mask_off,
                         budget_merge_true,
                         budget_eff_true,
-                        loss_cfg,
+                        loss_cfg_ep,
                         sample_weight=sw_reco,
                     )
                 else:
@@ -1771,7 +1792,12 @@ def train_reconstructor_weighted(
                 f"val_total_unw={va_total_u:.4f}, val_total_w={va_total_w:.4f}, "
                 f"select={val_metric_source}, best_sel={best_val:.4f} | "
                 f"set_unw={va_set_u:.4f}, phys_unw={va_phys_u:.4f}, "
-                f"budget_unw={va_budget_u:.4f}, fp_mass_unw={va_fp_mass_u:.4f}, stage_scale={sc:.2f}"
+                f"budget_unw={va_budget_u:.4f}, fp_mass_unw={va_fp_mass_u:.4f}, "
+                f"w_set={float(loss_cfg_ep.get('w_set', 0.0)):.3f}, "
+                f"w_budget={float(loss_cfg_ep.get('w_budget', 0.0)):.3f}, "
+                f"w_pt={float(loss_cfg_ep.get('w_pt_ratio', 0.0)):.3f}, "
+                f"w_local={float(loss_cfg_ep.get('w_local', 0.0)):.3f}, "
+                f"stage_scale={sc:.2f}"
             )
         if (ep + 1) >= min_stop_epoch and no_improve >= int(train_cfg["patience"]):
             print(f"Early stopping reconstructor at epoch {ep+1}")
@@ -2332,6 +2358,35 @@ def main() -> None:
         action="store_true",
         help="Disable reloading the best Stage-A validation checkpoint at each stage-scale transition.",
     )
+    parser.add_argument(
+        "--stageA_loss_schedule",
+        action="store_true",
+        help="Enable Stage-A phase-scheduled reconstruction loss weights.",
+    )
+    parser.add_argument(
+        "--stageA_loss_sched_early_set_mult",
+        type=float,
+        default=1.30,
+        help="Phase-1 multiplier for set loss weight.",
+    )
+    parser.add_argument(
+        "--stageA_loss_sched_early_budget_mult",
+        type=float,
+        default=1.30,
+        help="Phase-1 multiplier for budget loss weight.",
+    )
+    parser.add_argument(
+        "--stageA_loss_sched_late_ptratio_mult",
+        type=float,
+        default=1.15,
+        help="Phase-3 multiplier for pT-ratio loss weight.",
+    )
+    parser.add_argument(
+        "--stageA_loss_sched_late_local_mult",
+        type=float,
+        default=1.15,
+        help="Phase-3 multiplier for local loss weight.",
+    )
 
     # Stage B (tagger pretrain, reconstructor frozen)
     parser.add_argument("--stageB_epochs", type=int, default=45)
@@ -2569,6 +2624,11 @@ def main() -> None:
 
     cfg["reconstructor_training"]["epochs"] = int(args.stageA_epochs)
     cfg["reconstructor_training"]["patience"] = int(args.stageA_patience)
+    cfg["reconstructor_training"]["loss_schedule_enable"] = bool(args.stageA_loss_schedule)
+    cfg["reconstructor_training"]["loss_sched_early_set_mult"] = float(args.stageA_loss_sched_early_set_mult)
+    cfg["reconstructor_training"]["loss_sched_early_budget_mult"] = float(args.stageA_loss_sched_early_budget_mult)
+    cfg["reconstructor_training"]["loss_sched_late_ptratio_mult"] = float(args.stageA_loss_sched_late_ptratio_mult)
+    cfg["reconstructor_training"]["loss_sched_late_local_mult"] = float(args.stageA_loss_sched_late_local_mult)
 
     save_root = Path(args.save_dir) / args.run_name
     save_root.mkdir(parents=True, exist_ok=True)
