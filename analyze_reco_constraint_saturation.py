@@ -61,6 +61,7 @@ def _load_checkpoint_model_state(path: Path, device: torch.device) -> Dict[str, 
 def _auto_reco_class_from_run_name(run_name: str) -> Optional[Tuple[str, str]]:
     rn = str(run_name).lower()
     mapping = [
+        ("splitk3_softgate", ("offline_reconstructor_no_gt_local30kv2_splitk3_softgate", "OfflineReconstructorSplitK3SoftGate")),
         ("splitcap120", ("offline_reconstructor_no_gt_local30kv2_splitcap120", "OfflineReconstructorSplitCap120")),
         ("ptclamp10", ("offline_reconstructor_no_gt_local30kv2_ptclamp10", "OfflineReconstructorPtClamp10")),
         ("splitmass_softmax", ("offline_reconstructor_no_gt_local30kv2_splitmass_softmax", "OfflineReconstructorSplitMassSoftmax")),
