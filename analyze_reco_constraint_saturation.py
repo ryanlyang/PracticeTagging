@@ -80,6 +80,7 @@ def _build_reconstructor(
     reco_module: Optional[str],
     reco_class: Optional[str],
     run_name_hint: str,
+    apply_unmerge_wrap: bool = True,
 ):
     cfg = base._deepcopy_config()
 
@@ -97,7 +98,8 @@ def _build_reconstructor(
         reco_cls = base.OfflineReconstructor
 
     model = reco_cls(input_dim=7, **cfg["reconstructor_model"]).to(device)
-    model = base.wrap_reconstructor_unmerge_only(model)
+    if apply_unmerge_wrap:
+        model = base.wrap_reconstructor_unmerge_only(model)
     return model
 
 
@@ -212,6 +214,7 @@ def main():
     p.add_argument("--stage_scale", type=float, default=1.0)
     p.add_argument("--reco_module", type=str, default="")
     p.add_argument("--reco_class", type=str, default="")
+    p.add_argument("--no_unmerge_wrap", action="store_true")
     p.add_argument("--report_json", type=str, default="")
     args = p.parse_args()
 
@@ -243,6 +246,7 @@ def main():
         reco_module=(args.reco_module.strip() or None),
         reco_class=(args.reco_class.strip() or None),
         run_name_hint=run_name_hint,
+        apply_unmerge_wrap=(not bool(args.no_unmerge_wrap)),
     )
     state = _load_checkpoint_model_state(ckpt_path, device)
     model.load_state_dict(state, strict=False)
@@ -279,8 +283,10 @@ def main():
 
     merge_scale_hi = 0.0
     merge_scale_lo = 0.0
+    merge_scale_valid_jets = 0.0
     eff_scale_hi = 0.0
     eff_scale_lo = 0.0
+    eff_scale_valid_jets = 0.0
 
     split_total_frac_vals: list[float] = []
     split_total_frac_p95_vals: list[float] = []
@@ -331,10 +337,11 @@ def main():
             reassign_raw = hooks.out.get("reassign_head", None)
             if reassign_raw is not None:
                 sat = (reassign_raw.abs() > 2.0).float()
-                m = mask_f.unsqueeze(-1)
+                m = mask_f.unsqueeze(-1).expand_as(sat)
+                w_reassign = p_reassign.unsqueeze(-1).expand_as(sat)
                 reassign_sat_sum += float((sat * m).sum().item())
                 reassign_den += float(m.sum().item())
-                reassign_weighted_sat_sum += float((sat * m * p_reassign.unsqueeze(-1)).sum().item())
+                reassign_weighted_sat_sum += float((sat * m * w_reassign).sum().item())
 
             split_exist_raw = hooks.out.get("split_exist_head", None)
             gen_exist_raw = hooks.out.get("gen_exist_head", None)
@@ -342,15 +349,18 @@ def main():
             if split_exist_raw is not None:
                 split_exist_prob = torch.sigmoid(split_exist_raw)
                 sat_sig = ((split_exist_prob < 0.02) | (split_exist_prob > 0.98)).float()
-                m = mask_f.unsqueeze(-1)
+                m = mask_f.unsqueeze(-1).expand_as(sat_sig)
                 split_exist_sig_sat_num += float((sat_sig * m).sum().item())
                 split_exist_sig_sat_den += float(m.sum().item())
 
                 split_exist_pre = split_exist_prob * (p_split.unsqueeze(-1) * stage_scale) * mask_f.unsqueeze(-1)
                 child_sum_pre = split_exist_pre.reshape(split_exist_pre.shape[0], -1).sum(dim=1)
-                raw_scale_merge = out["budget_merge"] / (child_sum_pre + EPS)
-                merge_scale_hi += float((raw_scale_merge > 4.0).float().sum().item())
-                merge_scale_lo += float((raw_scale_merge < 0.25).float().sum().item())
+                budget_merge = out["budget_merge"].reshape(-1)
+                merge_valid = (child_sum_pre > EPS).float()
+                raw_scale_merge = budget_merge / (child_sum_pre + EPS)
+                merge_scale_hi += float((((raw_scale_merge > 4.0).float()) * merge_valid).sum().item())
+                merge_scale_lo += float((((raw_scale_merge < 0.25).float()) * merge_valid).sum().item())
+                merge_scale_valid_jets += float(merge_valid.sum().item())
 
                 if split_delta is not None:
                     sat_ang = (split_delta[..., 1:].abs() > 2.0).float()
@@ -358,11 +368,16 @@ def main():
                     split_angle_sat_den += float(split_exist_pre.sum().item() * 2.0)
 
             if gen_exist_raw is not None:
-                gen_pre = torch.sigmoid(gen_exist_raw) * stage_scale
+                # Hook output shape is [B, G, 1] for nn.Linear(..., 1); squeeze to [B, G]
+                # to avoid accidental [B, B] broadcasting in downstream division.
+                gen_pre = torch.sigmoid(gen_exist_raw.squeeze(-1)) * stage_scale
                 gen_sum_pre = gen_pre.sum(dim=1)
-                raw_scale_eff = out["budget_eff"] / (gen_sum_pre + EPS)
-                eff_scale_hi += float((raw_scale_eff > 4.0).float().sum().item())
-                eff_scale_lo += float((raw_scale_eff < 0.25).float().sum().item())
+                budget_eff = out["budget_eff"].reshape(-1)
+                eff_valid = (gen_sum_pre > EPS).float()
+                raw_scale_eff = budget_eff / (gen_sum_pre + EPS)
+                eff_scale_hi += float((((raw_scale_eff > 4.0).float()) * eff_valid).sum().item())
+                eff_scale_lo += float((((raw_scale_eff < 0.25).float()) * eff_valid).sum().item())
+                eff_scale_valid_jets += float(eff_valid.sum().item())
 
             # Split child mass utilization diagnostics.
             L = int(action_prob.shape[1])
@@ -387,6 +402,7 @@ def main():
         "run_dir": str(run_dir),
         "checkpoint": str(ckpt_path),
         "split": str(args.split),
+        "unmerge_wrap_applied": bool(not args.no_unmerge_wrap),
         "n_jets_processed": int(n_jets),
         "n_masked_tokens": int(n_tokens),
         "action_entropy_mean": action_entropy_sum / n_tokens,
@@ -397,13 +413,25 @@ def main():
         "clamp_loge_hi_frac": clamp_loge_hi / n_tokens,
         "clamp_loge_lo_frac": clamp_loge_lo / n_tokens,
         "reassign_raw_tanh_sat_frac": (reassign_sat_sum / max(reassign_den, EPS)),
-        "reassign_raw_tanh_sat_weighted_by_p_reassign": (reassign_weighted_sat_sum / max(reassign_den, EPS)),
+        "reassign_raw_tanh_sat_weighted_by_p_reassign": (
+            reassign_weighted_sat_sum / max(reassign_den, EPS)
+        ),
         "split_exist_sigmoid_sat_frac": (split_exist_sig_sat_num / max(split_exist_sig_sat_den, EPS)),
         "split_angle_raw_tanh_sat_weighted_frac": (split_angle_sat_num / max(split_angle_sat_den, EPS)),
-        "merge_budget_scale_clamp_hi_frac_jets": merge_scale_hi / max(n_jets, EPS),
-        "merge_budget_scale_clamp_lo_frac_jets": merge_scale_lo / max(n_jets, EPS),
-        "eff_budget_scale_clamp_hi_frac_jets": eff_scale_hi / max(n_jets, EPS),
-        "eff_budget_scale_clamp_lo_frac_jets": eff_scale_lo / max(n_jets, EPS),
+        "merge_budget_scale_clamp_hi_frac_jets": (
+            merge_scale_hi / max(merge_scale_valid_jets, EPS) if merge_scale_valid_jets > 0 else float("nan")
+        ),
+        "merge_budget_scale_clamp_lo_frac_jets": (
+            merge_scale_lo / max(merge_scale_valid_jets, EPS) if merge_scale_valid_jets > 0 else float("nan")
+        ),
+        "merge_budget_scale_valid_jets": int(merge_scale_valid_jets),
+        "eff_budget_scale_clamp_hi_frac_jets": (
+            eff_scale_hi / max(eff_scale_valid_jets, EPS) if eff_scale_valid_jets > 0 else float("nan")
+        ),
+        "eff_budget_scale_clamp_lo_frac_jets": (
+            eff_scale_lo / max(eff_scale_valid_jets, EPS) if eff_scale_valid_jets > 0 else float("nan")
+        ),
+        "eff_budget_scale_valid_jets": int(eff_scale_valid_jets),
         "split_total_frac_mean_token": _mean_std_from_vals(split_total_frac_vals)[0],
         "split_total_frac_p95_token": _mean_std_from_vals(split_total_frac_p95_vals)[0],
     }
@@ -427,4 +455,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
