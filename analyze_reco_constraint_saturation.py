@@ -61,6 +61,7 @@ def _load_checkpoint_model_state(path: Path, device: torch.device) -> Dict[str, 
 def _auto_reco_class_from_run_name(run_name: str) -> Optional[Tuple[str, str]]:
     rn = str(run_name).lower()
     mapping = [
+        ("ptclamp10", ("offline_reconstructor_no_gt_local30kv2_ptclamp10", "OfflineReconstructorPtClamp10")),
         ("splitmass_softmax", ("offline_reconstructor_no_gt_local30kv2_splitmass_softmax", "OfflineReconstructorSplitMassSoftmax")),
         ("splitctx_heads", ("offline_reconstructor_no_gt_local30kv2_splitctx_heads", "OfflineReconstructorSplitCtx")),
         ("splitheads_only", ("offline_reconstructor_no_gt_local30kv2_splitheads_only", "OfflineReconstructorSplitHeadsOnly")),
@@ -212,6 +213,10 @@ def main():
     p.add_argument("--max_batches", type=int, default=-1)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--stage_scale", type=float, default=1.0)
+    p.add_argument("--diag_logpt_min", type=float, default=-9.0)
+    p.add_argument("--diag_logpt_max", type=float, default=9.0)
+    p.add_argument("--diag_loge_min", type=float, default=-9.0)
+    p.add_argument("--diag_loge_max", type=float, default=11.0)
     p.add_argument("--reco_module", type=str, default="")
     p.add_argument("--reco_class", type=str, default="")
     p.add_argument("--no_unmerge_wrap", action="store_true")
@@ -293,6 +298,10 @@ def main():
 
     max_batches = int(args.max_batches)
     stage_scale = float(args.stage_scale)
+    logpt_min = float(args.diag_logpt_min)
+    logpt_max = float(args.diag_logpt_max)
+    loge_min = float(args.diag_loge_min)
+    loge_max = float(args.diag_loge_max)
     with torch.no_grad():
         for bi, (feat_b, mask_b, const_b) in enumerate(loader):
             if max_batches > 0 and bi >= max_batches:
@@ -326,13 +335,13 @@ def main():
             if unsmear_raw is not None:
                 d_logpt = stage_scale * (p_unsmear + 0.5 * p_reassign) * unsmear_raw[..., 0]
                 pre_logpt = torch.log(const_b[..., 0].clamp(min=EPS)) + d_logpt
-                clamp_logpt_hi += float((((pre_logpt > 9.0).float() * mask_f).sum().item()))
-                clamp_logpt_lo += float((((pre_logpt < -9.0).float() * mask_f).sum().item()))
+                clamp_logpt_hi += float((((pre_logpt > logpt_max).float() * mask_f).sum().item()))
+                clamp_logpt_lo += float((((pre_logpt < logpt_min).float() * mask_f).sum().item()))
 
                 d_loge = stage_scale * (p_unsmear + 0.5 * p_reassign) * unsmear_raw[..., 3]
                 pre_loge = torch.log(const_b[..., 3].clamp(min=EPS)) + d_loge
-                clamp_loge_hi += float((((pre_loge > 11.0).float() * mask_f).sum().item()))
-                clamp_loge_lo += float((((pre_loge < -9.0).float() * mask_f).sum().item()))
+                clamp_loge_hi += float((((pre_loge > loge_max).float() * mask_f).sum().item()))
+                clamp_loge_lo += float((((pre_loge < loge_min).float() * mask_f).sum().item()))
 
             reassign_raw = hooks.out.get("reassign_head", None)
             if reassign_raw is not None:
@@ -403,6 +412,10 @@ def main():
         "checkpoint": str(ckpt_path),
         "split": str(args.split),
         "unmerge_wrap_applied": bool(not args.no_unmerge_wrap),
+        "diag_logpt_min": logpt_min,
+        "diag_logpt_max": logpt_max,
+        "diag_loge_min": loge_min,
+        "diag_loge_max": loge_max,
         "n_jets_processed": int(n_jets),
         "n_masked_tokens": int(n_tokens),
         "action_entropy_mean": action_entropy_sum / n_tokens,
