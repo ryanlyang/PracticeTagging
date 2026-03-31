@@ -333,7 +333,7 @@ def main():
     reconstructor = base.wrap_reconstructor_unmerge_only(reconstructor)
     reconstructor.load_state_dict(state_reco, strict=True)
 
-    dual_base_model = base.DualViewCrossAttnClassifier(
+    dual_base_model = mh._ORIG_DUAL_CLASS(
         input_dim_a=int(in_a),
         input_dim_b=int(in_b),
         **cfg["model"],
@@ -476,4 +476,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
