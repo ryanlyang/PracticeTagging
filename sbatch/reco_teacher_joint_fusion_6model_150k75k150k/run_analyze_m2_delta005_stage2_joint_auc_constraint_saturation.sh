@@ -11,7 +11,20 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_DIR="${RUN_DIR:-/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/download_checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_stagec_prog_unfreeze_150k75k150k_seed0}"
+DEFAULT_RUN_SUBPATH="reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_stagec_prog_unfreeze_150k75k150k_seed0"
+DEFAULT_RUN_DIR_CHECKPOINTS="checkpoints/${DEFAULT_RUN_SUBPATH}"
+DEFAULT_RUN_DIR_DOWNLOAD="download_checkpoints/${DEFAULT_RUN_SUBPATH}"
+
+if [[ -z "${RUN_DIR:-}" ]]; then
+  if [[ -d "${DEFAULT_RUN_DIR_CHECKPOINTS}" ]]; then
+    RUN_DIR="${DEFAULT_RUN_DIR_CHECKPOINTS}"
+  elif [[ -d "${DEFAULT_RUN_DIR_DOWNLOAD}" ]]; then
+    RUN_DIR="${DEFAULT_RUN_DIR_DOWNLOAD}"
+  else
+    RUN_DIR="${DEFAULT_RUN_DIR_CHECKPOINTS}"
+  fi
+fi
+
 OUT_DIR="${OUT_DIR:-${RUN_DIR}/constraint_saturation}"
 
 STAGE2_RECO_CKPT="${STAGE2_RECO_CKPT:-${RUN_DIR}/offline_reconstructor_stage2.pt}"
@@ -104,4 +117,3 @@ echo
 echo "Done. Reports:"
 echo "  ${OUT_DIR}/stage2_auc_constraint_saturation_${SPLIT}.json"
 echo "  ${OUT_DIR}/joint_auc_constraint_saturation_${SPLIT}.json"
-
