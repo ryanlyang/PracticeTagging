@@ -242,8 +242,12 @@ def _collect_predictions(
     p_h = np.concatenate(all_p_h) if all_p_h else np.zeros((0, h), dtype=np.float64)
 
     if p_h.size > 0:
-        p_oracle = np.where(y[:, None] > 0.5, p_h, 1.0 - p_h).max(axis=1)
-        argmax_oracle = np.where(y[:, None] > 0.5, p_h, 1.0 - p_h).argmax(axis=1).astype(np.int64)
+        # Choose oracle hypothesis index by correctness score:
+        # y=1 -> maximize p_h ; y=0 -> maximize (1-p_h) == minimize p_h.
+        corr = np.where(y[:, None] > 0.5, p_h, 1.0 - p_h)
+        argmax_oracle = corr.argmax(axis=1).astype(np.int64)
+        # Oracle output must remain a probability for class-1.
+        p_oracle = p_h[np.arange(p_h.shape[0]), argmax_oracle]
     else:
         p_oracle = np.zeros((0,), dtype=np.float64)
         argmax_oracle = np.zeros((0,), dtype=np.int64)

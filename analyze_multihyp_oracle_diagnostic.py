@@ -249,11 +249,12 @@ def _collect_predictions(
     p_h = np.concatenate(all_p_h) if all_p_h else np.zeros((0, h), dtype=np.float64)
     alpha = np.concatenate(all_alpha) if all_alpha else np.zeros((0, h), dtype=np.float64)
 
-    # Oracle-per-jet: choose best hypothesis by truth label.
-    # y=1 -> max score, y=0 -> min score
+    # Oracle-per-jet: choose best hypothesis index by truth label,
+    # but return class-1 probabilities for metric computation.
     if p_h.size > 0:
-        p_oracle = np.where(y[:, None] > 0.5, p_h, 1.0 - p_h).max(axis=1)
-        argmax_oracle = np.where(y[:, None] > 0.5, p_h, 1.0 - p_h).argmax(axis=1).astype(np.int64)
+        corr = np.where(y[:, None] > 0.5, p_h, 1.0 - p_h)
+        argmax_oracle = corr.argmax(axis=1).astype(np.int64)
+        p_oracle = p_h[np.arange(p_h.shape[0]), argmax_oracle]
     else:
         p_oracle = np.zeros((0,), dtype=np.float64)
         argmax_oracle = np.zeros((0,), dtype=np.int64)
@@ -523,4 +524,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
