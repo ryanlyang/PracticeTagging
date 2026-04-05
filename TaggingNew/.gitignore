@@ -1,0 +1,19 @@
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Local experiment outputs
+runs*/
+
+# OS/editor
+.DS_Store
+Thumbs.db
+
+# data
+test.h5
+
+# tmp files
+.tmp*/
