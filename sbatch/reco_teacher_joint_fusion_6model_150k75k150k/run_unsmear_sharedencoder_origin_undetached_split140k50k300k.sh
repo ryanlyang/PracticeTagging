@@ -12,7 +12,46 @@ set -euo pipefail
 mkdir -p offline_reconstructor_logs/unsmear_sharedencoder_joint_new
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+find_repo_root() {
+  local start="$1"
+  local cur
+  cur="$(cd "${start}" 2>/dev/null && pwd || true)"
+  if [[ -z "${cur}" ]]; then
+    return 1
+  fi
+  while [[ "${cur}" != "/" ]]; do
+    if [[ -f "${cur}/TaggingNew/pure_unsmear/joint_new/model.py" ]]; then
+      echo "${cur}"
+      return 0
+    fi
+    cur="$(dirname "${cur}")"
+  done
+  return 1
+}
+
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  for candidate in \
+    "${SLURM_SUBMIT_DIR:-}" \
+    "$(pwd)" \
+    "${SCRIPT_DIR}" \
+    "${HOME}/atlas/PracticeTagging"
+  do
+    if [[ -n "${candidate}" ]]; then
+      if REPO_FOUND="$(find_repo_root "${candidate}")"; then
+        REPO_ROOT="${REPO_FOUND}"
+        break
+      fi
+    fi
+  done
+fi
+
+if [[ -z "${REPO_ROOT:-}" ]]; then
+  echo "ERROR: Could not locate repo root." >&2
+  echo "Tried from: SLURM_SUBMIT_DIR='${SLURM_SUBMIT_DIR:-}', pwd='$(pwd)', script_dir='${SCRIPT_DIR}'." >&2
+  echo "Set REPO_ROOT explicitly, e.g. REPO_ROOT=/home/ryreu/atlas/PracticeTagging sbatch <script>." >&2
+  exit 2
+fi
 
 PY_SCRIPT_DEFAULT="${REPO_ROOT}/TaggingNew/pure_unsmear/joint_new/run_unsmear_sharedencoder_delta_gate_split140k50k300k.py"
 PY_SCRIPT="${PY_SCRIPT:-${PY_SCRIPT_DEFAULT}}"
@@ -123,6 +162,7 @@ CMD=(
 
 echo "============================================================"
 echo "SharedEncoder Unsmear Repro (undetached delta fusion)"
+echo "Repo root: ${REPO_ROOT}"
 echo "Data path: ${DATA_PATH}"
 echo "Run: ${OUTPUT_ROOT}/${RUN_NAME}"
 echo "Split counts: train=${TRAIN_COUNT}, val=${VAL_COUNT}, test=${TEST_COUNT}"
