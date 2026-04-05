@@ -11,9 +11,15 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/unsmear_sharedencoder_joint_new
 
-DATA_PATH="${DATA_PATH:-test.h5}"
-OUTPUT_ROOT="${OUTPUT_ROOT:-TaggingNew/pure_unsmear/joint_new/runs}"
-SHARED_BASELINE_DIR="${SHARED_BASELINE_DIR:-TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+PY_SCRIPT_DEFAULT="${REPO_ROOT}/TaggingNew/pure_unsmear/joint_new/run_unsmear_sharedencoder_delta_gate_split140k50k300k.py"
+PY_SCRIPT="${PY_SCRIPT:-${PY_SCRIPT_DEFAULT}}"
+
+DATA_PATH="${DATA_PATH:-${REPO_ROOT}/test.h5}"
+OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/TaggingNew/pure_unsmear/joint_new/runs}"
+SHARED_BASELINE_DIR="${SHARED_BASELINE_DIR:-${REPO_ROOT}/TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines}"
 RUN_NAME="${RUN_NAME:-unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42}"
 
 SEED="${SEED:-42}"
@@ -55,7 +61,21 @@ set +u
 source ~/.bashrc
 set -u
 conda activate atlas_kd
-cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+cd "${REPO_ROOT}"
+
+if [[ ! -f "${PY_SCRIPT}" ]]; then
+  echo "ERROR: Python runner not found: ${PY_SCRIPT}" >&2
+  echo "Expected file in this checkout:" >&2
+  echo "  ${PY_SCRIPT_DEFAULT}" >&2
+  echo "Current repo root: ${REPO_ROOT}" >&2
+  echo "If needed, set PY_SCRIPT=/abs/path/to/run_unsmear_sharedencoder_delta_gate_split140k50k300k.py" >&2
+  exit 2
+fi
+
+if [[ ! -f "${DATA_PATH}" ]]; then
+  echo "ERROR: DATA_PATH does not exist: ${DATA_PATH}" >&2
+  exit 2
+fi
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
@@ -64,7 +84,7 @@ export NUMEXPR_NUM_THREADS=1
 export PYTHONHASHSEED="${SEED}"
 
 CMD=(
-  python TaggingNew/pure_unsmear/joint_new/run_unsmear_sharedencoder_delta_gate_split140k50k300k.py
+  python "${PY_SCRIPT}"
   --data_path "${DATA_PATH}"
   --run_name "${RUN_NAME}"
   --output_root "${OUTPUT_ROOT}"
