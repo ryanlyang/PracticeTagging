@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=8:00:00
+#SBATCH --time=3:00:00
 #SBATCH --output=offline_reconstructor_logs/unsmear_sharedencoder_joint_new/unsmear_sharedencoder_split140k50k300k_%j.out
 #SBATCH --error=offline_reconstructor_logs/unsmear_sharedencoder_joint_new/unsmear_sharedencoder_split140k50k300k_%j.err
 
