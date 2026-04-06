@@ -423,7 +423,7 @@ def apply_hlt_effects_realistic_with_oracle_tracking(
         valid = np.where(hlt_mask[j])[0]
         if len(valid) == 0:
             continue
-        density_j = _compute_local_density_np(
+        density_j = reco_base._compute_local_density_np(
             eta=hlt[j, :, 1],
             phi=hlt[j, :, 2],
             valid_idx=valid,
