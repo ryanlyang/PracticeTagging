@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=m2marg
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=24G
-#SBATCH --time=02:00:00
+#SBATCH --time=14:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m2_diag_marginal_signal_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m2_diag_marginal_signal_%j.err
 
