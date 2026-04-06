@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=m2router
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=14:00:00
+#SBATCH --time=04:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_router_signal_sweep_6model_200k200k/m2_router_signal_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_router_signal_sweep_6model_200k200k/m2_router_signal_%j.err
 

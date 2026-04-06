@@ -121,8 +121,14 @@ def _infer_dual_input_dims(dual_sd: Dict[str, torch.Tensor]) -> Tuple[int, int]:
 
 def _build_train_file_list(data_setup: Dict, train_path_arg: str) -> List[Path]:
     tf = [Path(p) for p in data_setup.get("train_files", []) if str(p).strip()]
-    if tf:
+    if tf and all(p.exists() for p in tf):
         return tf
+    if tf:
+        missing = sum(1 for p in tf if not p.exists())
+        print(
+            f"[warn] data_setup train_files are not all available in this environment "
+            f"({missing}/{len(tf)} missing); falling back to --train_path={train_path_arg}"
+        )
     train_path = Path(train_path_arg)
     if train_path.is_dir():
         fs = sorted(train_path.glob("*.h5"))
