@@ -557,10 +557,26 @@ def apply_hlt_corruption_single_jet(
     rng: np.random.RandomState,
     tcfg: Dict[str, np.ndarray],
     max_constits: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    diag = {
+        "n_offline": 0.0,
+        "n_after_eff": 0.0,
+        "n_after_threshold": 0.0,
+        "n_after_merge": 0.0,
+        "drop_eff": 0.0,
+        "drop_threshold": 0.0,
+        "drop_merge": 0.0,
+        "drop_total": 0.0,
+        "merge_count": 0.0,
+    }
     valid = tok[msk].copy()
+    diag["n_offline"] = float(len(valid))
     if len(valid) == 0:
-        return np.zeros((max_constits, RAW_DIM), dtype=np.float32), np.zeros((max_constits,), dtype=bool)
+        return (
+            np.zeros((max_constits, RAW_DIM), dtype=np.float32),
+            np.zeros((max_constits,), dtype=bool),
+            diag,
+        )
 
     # 1) Efficiency loss
     pt = np.maximum(valid[:, IDX_PT], 1e-8)
@@ -570,8 +586,15 @@ def apply_hlt_corruption_single_jet(
     keep_prob = np.clip(plateau * sig, 0.03, 0.999)
     keep = rng.rand(len(valid)) < keep_prob
     valid = valid[keep]
+    diag["n_after_eff"] = float(len(valid))
     if len(valid) == 0:
-        return np.zeros((max_constits, RAW_DIM), dtype=np.float32), np.zeros((max_constits,), dtype=bool)
+        diag["drop_eff"] = diag["n_offline"]
+        diag["drop_total"] = diag["n_offline"]
+        return (
+            np.zeros((max_constits, RAW_DIM), dtype=np.float32),
+            np.zeros((max_constits,), dtype=bool),
+            diag,
+        )
 
     # 2) Smearing + reassignment
     for i in range(len(valid)):
@@ -598,11 +621,20 @@ def apply_hlt_corruption_single_jet(
 
     # 3) HLT threshold
     valid = valid[valid[:, IDX_PT] >= params.hlt_pt_threshold]
+    diag["n_after_threshold"] = float(len(valid))
     if len(valid) == 0:
-        return np.zeros((max_constits, RAW_DIM), dtype=np.float32), np.zeros((max_constits,), dtype=bool)
+        diag["drop_eff"] = max(diag["n_offline"] - diag["n_after_eff"], 0.0)
+        diag["drop_threshold"] = max(diag["n_after_eff"] - diag["n_after_threshold"], 0.0)
+        diag["drop_total"] = diag["n_offline"]
+        return (
+            np.zeros((max_constits, RAW_DIM), dtype=np.float32),
+            np.zeros((max_constits,), dtype=bool),
+            diag,
+        )
 
     # 4) Merging (greedy by best pair score)
     steps = 0
+    merge_count = 0
     while len(valid) > 1 and steps < 512:
         steps += 1
         n = len(valid)
@@ -639,6 +671,7 @@ def apply_hlt_corruption_single_jet(
             break
         i, j, out_type = best
         merged = merge_two_tokens(valid[i], valid[j], merged_type_override=out_type)
+        merge_count += 1
         keep = [k for k in range(len(valid)) if k not in (i, j)]
         if keep:
             valid = np.concatenate([valid[keep], merged[None, :]], axis=0)
@@ -652,7 +685,14 @@ def apply_hlt_corruption_single_jet(
     out_mask = np.zeros((max_constits,), dtype=bool)
     out_tok[:take] = valid[:take]
     out_mask[:take] = True
-    return out_tok, out_mask
+    diag["n_after_merge"] = float(len(valid))
+    # In practice n_after_merge <= n_after_threshold, but keep numerically robust.
+    diag["drop_eff"] = max(diag["n_offline"] - diag["n_after_eff"], 0.0)
+    diag["drop_threshold"] = max(diag["n_after_eff"] - diag["n_after_threshold"], 0.0)
+    diag["drop_merge"] = max(diag["n_after_threshold"] - diag["n_after_merge"], 0.0)
+    diag["drop_total"] = max(diag["n_offline"] - diag["n_after_merge"], 0.0)
+    diag["merge_count"] = float(merge_count)
+    return out_tok, out_mask, diag
 
 
 def build_hlt_view(
@@ -660,17 +700,68 @@ def build_hlt_view(
     msk: np.ndarray,
     params: HLTParams,
     seed: int,
-) -> Tuple[np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
     n = len(tok)
     out_tok = np.zeros_like(tok, dtype=np.float32)
     out_msk = np.zeros_like(msk, dtype=bool)
     tcfg = get_type_config()
+    diag_rows: List[Dict[str, float]] = []
     for i in tqdm(range(n), desc="Applying HLT-like corruption"):
         rng = np.random.RandomState(seed + i * 17 + 13)
-        ti, mi = apply_hlt_corruption_single_jet(tok[i], msk[i], params, rng, tcfg, tok.shape[1])
+        ti, mi, di = apply_hlt_corruption_single_jet(tok[i], msk[i], params, rng, tcfg, tok.shape[1])
         out_tok[i] = ti
         out_msk[i] = mi
-    return out_tok, out_msk
+        diag_rows.append(di)
+
+    keys = [
+        "n_offline",
+        "n_after_eff",
+        "n_after_threshold",
+        "n_after_merge",
+        "drop_eff",
+        "drop_threshold",
+        "drop_merge",
+        "drop_total",
+        "merge_count",
+    ]
+    per_jet = {k: np.array([row[k] for row in diag_rows], dtype=np.float32) for k in keys}
+    return out_tok, out_msk, per_jet
+
+
+def summarize_hlt_diagnostics(per_jet: Dict[str, np.ndarray]) -> Dict[str, float]:
+    def m(key: str) -> float:
+        arr = per_jet.get(key)
+        if arr is None or arr.size == 0:
+            return float("nan")
+        return float(np.mean(arr))
+
+    n_off = per_jet.get("n_offline", np.array([], dtype=np.float32))
+    n_merge = per_jet.get("n_after_merge", np.array([], dtype=np.float32))
+    merge_count = per_jet.get("merge_count", np.array([], dtype=np.float32))
+    if n_off.size == 0:
+        return {}
+
+    drop_total_sum = float(np.sum(np.maximum(n_off - n_merge, 0.0)))
+    drop_eff_sum = float(np.sum(np.maximum(per_jet["drop_eff"], 0.0)))
+    drop_thr_sum = float(np.sum(np.maximum(per_jet["drop_threshold"], 0.0)))
+    drop_mer_sum = float(np.sum(np.maximum(per_jet["drop_merge"], 0.0)))
+    denom = max(drop_total_sum, 1e-12)
+
+    return {
+        "n_offline_mean": m("n_offline"),
+        "n_after_eff_mean": m("n_after_eff"),
+        "n_after_threshold_mean": m("n_after_threshold"),
+        "n_after_merge_mean": m("n_after_merge"),
+        "drop_eff_mean": m("drop_eff"),
+        "drop_threshold_mean": m("drop_threshold"),
+        "drop_merge_mean": m("drop_merge"),
+        "drop_total_mean": m("drop_total"),
+        "drop_eff_share": float(drop_eff_sum / denom),
+        "drop_threshold_share": float(drop_thr_sum / denom),
+        "drop_merge_share": float(drop_mer_sum / denom),
+        "mean_merges_per_jet": m("merge_count"),
+        "frac_jets_with_any_merge": float(np.mean(merge_count > 0.0)),
+    }
 
 
 def compute_features(raw_tok: np.ndarray, mask: np.ndarray, feature_mode: str) -> np.ndarray:
@@ -1105,15 +1196,26 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
         eff_width_pt=float(args.eff_width_pt),
     )
     print("Building HLT-like corrupted splits...")
-    tr_hlt_tok, tr_hlt_mask = build_hlt_view(tr_tok, tr_mask, params=hlt_params, seed=args.seed + 1001)
-    va_hlt_tok, va_hlt_mask = build_hlt_view(va_tok, va_mask, params=hlt_params, seed=args.seed + 1002)
-    te_hlt_tok, te_hlt_mask = build_hlt_view(te_tok, te_mask, params=hlt_params, seed=args.seed + 1003)
+    tr_hlt_tok, tr_hlt_mask, tr_hlt_diag = build_hlt_view(tr_tok, tr_mask, params=hlt_params, seed=args.seed + 1001)
+    va_hlt_tok, va_hlt_mask, va_hlt_diag = build_hlt_view(va_tok, va_mask, params=hlt_params, seed=args.seed + 1002)
+    te_hlt_tok, te_hlt_mask, te_hlt_diag = build_hlt_view(te_tok, te_mask, params=hlt_params, seed=args.seed + 1003)
+
+    tr_hlt_diag_summary = summarize_hlt_diagnostics(tr_hlt_diag)
+    va_hlt_diag_summary = summarize_hlt_diagnostics(va_hlt_diag)
+    te_hlt_diag_summary = summarize_hlt_diagnostics(te_hlt_diag)
 
     print(
         "Constituent means | offline/hlt: "
         f"train={tr_mask.sum(axis=1).mean():.2f}/{tr_hlt_mask.sum(axis=1).mean():.2f} "
         f"val={va_mask.sum(axis=1).mean():.2f}/{va_hlt_mask.sum(axis=1).mean():.2f} "
         f"test={te_mask.sum(axis=1).mean():.2f}/{te_hlt_mask.sum(axis=1).mean():.2f}"
+    )
+    print(
+        "HLT drop decomposition (train): "
+        f"eff={tr_hlt_diag_summary.get('drop_eff_share', float('nan')):.3f}, "
+        f"thr={tr_hlt_diag_summary.get('drop_threshold_share', float('nan')):.3f}, "
+        f"merge={tr_hlt_diag_summary.get('drop_merge_share', float('nan')):.3f}, "
+        f"mean_merges/jet={tr_hlt_diag_summary.get('mean_merges_per_jet', float('nan')):.3f}"
     )
 
     # Features + standardization stats from train offline only (shared transform).
@@ -1242,6 +1344,11 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
             "test_offline_mean": float(te_mask.sum(axis=1).mean()),
             "test_hlt_mean": float(te_hlt_mask.sum(axis=1).mean()),
         },
+        "hlt_diagnostics": {
+            "train": tr_hlt_diag_summary,
+            "val": va_hlt_diag_summary,
+            "test": te_hlt_diag_summary,
+        },
         "teacher_val_best": teacher_val,
         "baseline_val_best": baseline_val,
         "test_metrics": {
@@ -1264,6 +1371,9 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
         json.dump(hist_baseline, f, indent=2)
     with (save_dir / "args.json").open("w") as f:
         json.dump(vars(args), f, indent=2, default=str)
+    np.savez_compressed(save_dir / "hlt_diagnostics_train_perjet.npz", **tr_hlt_diag)
+    np.savez_compressed(save_dir / "hlt_diagnostics_val_perjet.npz", **va_hlt_diag)
+    np.savez_compressed(save_dir / "hlt_diagnostics_test_perjet.npz", **te_hlt_diag)
 
     print("\n=== Final Summary ===")
     print(
