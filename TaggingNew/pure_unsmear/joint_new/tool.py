@@ -18,6 +18,15 @@ import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from torch.utils.data import DataLoader, Dataset
 
+try:
+    from scipy.optimize import linear_sum_assignment
+    _HAS_SCIPY_HUNGARIAN = True
+except Exception:
+    linear_sum_assignment = None
+    _HAS_SCIPY_HUNGARIAN = False
+
+_WARNED_NO_SCIPY_HUNGARIAN = False
+
 
 def ensure_dir(path: str | Path) -> Path:
     p = Path(path)
@@ -514,6 +523,57 @@ def _resolve_feature_loss_weights(
     if np.any(arr < 0.0):
         raise ValueError("Feature loss weights must be non-negative.")
     return arr
+
+
+def _hungarian_per_jet_smooth_l1_per_feature(
+    pred: torch.Tensor,
+    tgt: torch.Tensor,
+    mask: torch.Tensor,
+    *,
+    feature_weight_tensor: torch.Tensor,
+    dphi_idx: Optional[int],
+    dphi_scale: float = 1.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Compute per-jet/per-feature SmoothL1 after Hungarian matching.
+
+    Returns:
+      per_jet_by_feature: [B, F]
+      match_frac: [B]
+    """
+    B, _S, Fdim = pred.shape
+    out = torch.zeros((B, Fdim), device=pred.device, dtype=pred.dtype)
+    match_frac = torch.zeros((B,), device=pred.device, dtype=pred.dtype)
+    scale = torch.tensor(float(dphi_scale), device=pred.device, dtype=pred.dtype)
+
+    for bi in range(B):
+        idx = torch.nonzero(mask[bi], as_tuple=False).squeeze(1)
+        n = int(idx.numel())
+        if n <= 0:
+            continue
+
+        p = pred[bi, idx, :]  # [n, F]
+        t = tgt[bi, idx, :]   # [n, F]
+        diff = p.unsqueeze(1) - t.unsqueeze(0)  # [n, n, F]
+        if dphi_idx is not None:
+            diff = diff.clone()
+            diff_phi = wrap_dphi_torch(diff[..., int(dphi_idx)] * scale) / scale
+            diff[..., int(dphi_idx)] = diff_phi
+
+        pair_feat = F.smooth_l1_loss(diff, torch.zeros_like(diff), reduction="none")  # [n, n, F]
+        cost = (pair_feat * feature_weight_tensor.view(1, 1, -1)).sum(dim=-1)         # [n, n]
+        row_ind, col_ind = linear_sum_assignment(cost.detach().cpu().numpy())          # type: ignore[misc]
+
+        if len(row_ind) == 0:
+            continue
+
+        row_t = torch.as_tensor(row_ind, device=pred.device, dtype=torch.long)
+        col_t = torch.as_tensor(col_ind, device=pred.device, dtype=torch.long)
+        matched_feat = pair_feat[row_t, col_t, :]  # [n_match, F]
+        out[bi] = matched_feat.mean(dim=0)
+        match_frac[bi] = float(len(row_ind)) / float(max(n, 1))
+
+    return out, match_frac
 
 
 def get_scheduler(opt, warmup: int, total: int):
@@ -1080,6 +1140,7 @@ def regression_loss_terms(
     sample_weight: Optional[torch.Tensor] = None,
     feature_loss_weights: Optional[Sequence[float] | np.ndarray] = None,
     phys_consistency_weight: float = 0.0,
+    unsmear_loss_mode: str = "mask",
 ) -> dict[str, torch.Tensor]:
     """Unsmear regression loss terms for the joint model."""
     idx_map = {n: i for i, n in enumerate(list(feat_names))}
@@ -1101,7 +1162,29 @@ def regression_loss_terms(
     if phys_weight < 0.0:
         raise ValueError("phys_consistency_weight must be non-negative.")
 
-    if dphi_idx is not None:
+    mode = str(unsmear_loss_mode).strip().lower()
+    if mode not in {"mask", "hungarian"}:
+        raise ValueError(f"Unsupported unsmear_loss_mode='{unsmear_loss_mode}'. Use 'mask' or 'hungarian'.")
+
+    if mode == "hungarian":
+        global _WARNED_NO_SCIPY_HUNGARIAN
+        if (not _HAS_SCIPY_HUNGARIAN) or (linear_sum_assignment is None):
+            if not _WARNED_NO_SCIPY_HUNGARIAN:
+                print("[joint_new] SciPy Hungarian unavailable; falling back to mask loss mode.")
+                _WARNED_NO_SCIPY_HUNGARIAN = True
+            mode = "mask"
+
+    if mode == "hungarian":
+        base_per_jet_by_feature, match_frac_vec = _hungarian_per_jet_smooth_l1_per_feature(
+            mu,
+            y,
+            m,
+            feature_weight_tensor=feature_weight_tensor,
+            dphi_idx=dphi_idx,
+            dphi_scale=dphi_scale,
+        )
+        base_per_jet = (base_per_jet_by_feature * feature_weight_tensor.view(1, -1)).sum(dim=1)
+    elif dphi_idx is not None:
         base_per_jet = _per_jet_masked_smooth_l1_wrap_dphi(
             mu,
             y,
@@ -1116,9 +1199,11 @@ def regression_loss_terms(
             dphi_idx=int(dphi_idx),
             dphi_scale=dphi_scale,
         )
+        match_frac_vec = m.to(mu.dtype).mean(dim=1).clamp(0.0, 1.0)
     else:
         base_per_jet = _per_jet_masked_smooth_l1(mu, y, m)
         base_per_jet_by_feature = _per_jet_masked_smooth_l1_per_feature(mu, y, m)
+        match_frac_vec = m.to(mu.dtype).mean(dim=1).clamp(0.0, 1.0)
     base_unweighted = _weighted_mean(base_per_jet, sample_weight)
 
     feature_losses: dict[str, torch.Tensor] = {}
@@ -1152,6 +1237,8 @@ def regression_loss_terms(
         "base_unweighted": base_unweighted,
         "phys": cons,
         "dr_cons_raw": cons_raw,
+        "loss_mode": mode,
+        "hungarian_match_frac": _weighted_mean(match_frac_vec, sample_weight),
         "feature_losses": feature_losses,
         "weighted_feature_losses": weighted_feature_losses,
         "feature_loss_weights": {
@@ -1781,6 +1868,7 @@ def probe_joint_gradients(
     joint_unsmear_weight: float = 1.0,
     joint_cls_weight: float = 1.0,
     use_sample_weight_for_all_losses: bool = True,
+    unsmear_loss_mode: str = "mask",
 ) -> dict[str, Any]:
     """Collect shared-trunk gradient diagnostics for a joint model."""
     model.eval()
@@ -1809,6 +1897,7 @@ def probe_joint_gradients(
         sample_weight=aux_weight,
         feature_loss_weights=feature_loss_weights,
         phys_consistency_weight=joint_phys_weight,
+        unsmear_loss_mode=unsmear_loss_mode,
     )
     hard_loss = weighted_bce_with_logits(logits.squeeze(-1), y_cls, sample_weight=w)
 
@@ -2322,6 +2411,7 @@ def eval_joint_model(
     kd_alpha: float = 0.0,
     kd_alpha_attn: float = 0.0,
     use_sample_weight_for_all_losses: bool = True,
+    unsmear_loss_mode: str = "mask",
 ):
     """Evaluate a joint model."""
     model.eval()
@@ -2367,6 +2457,7 @@ def eval_joint_model(
             sample_weight=aux_weight,
             feature_loss_weights=feature_loss_weights,
             phys_consistency_weight=joint_phys_weight,
+            unsmear_loss_mode=unsmear_loss_mode,
         )
         hard_loss = weighted_bce_with_logits(logits.squeeze(-1), y_cls, sample_weight=w)
 
@@ -2474,6 +2565,7 @@ def train_or_load_joint_model(
     train_loader_factory: Optional[Callable[[int], DataLoader]] = None,
     grad_probe_cfg: Optional[dict[str, Any]] = None,
     epoch_metrics_path: str | Path | None = None,
+    unsmear_loss_mode: str = "mask",
 ):
     """Train or load a joint model."""
     early_stop_metric = resolve_early_stop_metric_name(early_stop_metric)
@@ -2531,6 +2623,7 @@ def train_or_load_joint_model(
                 sample_weight=aux_weight,
                 feature_loss_weights=feature_loss_weights,
                 phys_consistency_weight=joint_phys_weight,
+                unsmear_loss_mode=unsmear_loss_mode,
             )
             hard_loss = weighted_bce_with_logits(logits.squeeze(-1), y_cls, sample_weight=w)
 
@@ -2600,6 +2693,7 @@ def train_or_load_joint_model(
             kd_alpha=float(kd_alpha),
             kd_alpha_attn=float(kd_alpha_attn),
             use_sample_weight_for_all_losses=use_sample_weight_for_all_losses,
+            unsmear_loss_mode=unsmear_loss_mode,
         )
         train_joint = tot_joint / max(total_mix_den, 1e-12)
         train_uns = tot_uns / max(total_aux_den, 1e-12)
@@ -2661,6 +2755,7 @@ def train_or_load_joint_model(
                 "val_auc": float(val_auc),
                 "val_auc_weighted": float(val_res["auc_weighted"]),
                 "alpha": float(alpha_value),
+                "unsmear_loss_mode": str(unsmear_loss_mode),
                 "best_auc": float(best_auc),
                 "best_auc_weighted": float(best_auc_weighted),
                 "no_imp": int(no_imp),
@@ -2703,6 +2798,7 @@ def train_or_load_joint_model(
             "cls_use_delta_fusion": bool(getattr(model, "cls_use_delta_fusion", False)),
             "cls_detach_delta_for_cls": bool(getattr(model, "cls_detach_delta_for_cls", False)),
             "cls_alpha": float(model.get_fusion_alpha().detach().item()) if hasattr(model, "get_fusion_alpha") else 0.0,
+            "unsmear_loss_mode": str(unsmear_loss_mode),
             "use_sample_weight_for_all_losses": bool(use_sample_weight_for_all_losses),
         },
     )

@@ -151,6 +151,7 @@ def main() -> None:
     ap.add_argument("--joint_unsmear_weight", type=float, default=1.6)
     ap.add_argument("--joint_cls_weight", type=float, default=0.8)
     ap.add_argument("--joint_phys_weight", type=float, default=0.0)
+    ap.add_argument("--joint_unsmear_loss_mode", type=str, default="mask", choices=["mask", "hungarian"])
 
     ap.add_argument("--cls_use_delta_fusion", type=_str2bool, default=True)
     ap.add_argument("--cls_detach_delta_for_cls", type=_str2bool, default=False)
@@ -251,6 +252,7 @@ def main() -> None:
             "joint_unsmear_weight": float(args.joint_unsmear_weight),
             "joint_cls_weight": float(args.joint_cls_weight),
             "joint_phys_weight": float(args.joint_phys_weight),
+            "joint_unsmear_loss_mode": str(args.joint_unsmear_loss_mode).strip().lower(),
             "feature_loss_weights": [1.0] * len(feat_names),
             "resmear_each_epoch_baselines": bool(args.resmear_each_epoch_baselines),
             "resmear_each_epoch_joint": bool(args.resmear_each_epoch_joint),
@@ -267,6 +269,7 @@ def main() -> None:
     print("Feature kind:", config["feature_kind"], "feat_names:", feat_names)
     print("Feature loss weights:", dict(zip(feat_names, np.round(config["training"]["feature_loss_weights"], 4))))
     print("Joint physical consistency weight:", float(config["training"]["joint_phys_weight"]))
+    print("Joint unsmear loss mode:", str(config["training"]["joint_unsmear_loss_mode"]))
     print("Use sample weight for all losses:", bool(config["training"]["use_sample_weight_for_all_losses"]))
     print("Delta fusion enabled:", bool(config["joint_model"]["cls_use_delta_fusion"]))
     print("Detach delta for classifier:", bool(config["joint_model"]["cls_detach_delta_for_cls"]))
@@ -506,6 +509,7 @@ def main() -> None:
         allow_load=bool(config.get("load_joint_model", False)),
         train_loader_factory=joint_train_loader_factory,
         epoch_metrics_path=epoch_metrics_paths["joint_no_kd"],
+        unsmear_loss_mode=str(train_cfg.get("joint_unsmear_loss_mode", "mask")),
     )
 
     joint_model_with_kd = SharedEncoderUnsmearClassifier(**config["joint_model"]).to(device)
@@ -528,6 +532,7 @@ def main() -> None:
         allow_load=bool(config.get("load_joint_model", False)),
         train_loader_factory=joint_train_loader_factory,
         epoch_metrics_path=epoch_metrics_paths["joint_with_kd"],
+        unsmear_loss_mode=str(train_cfg.get("joint_unsmear_loss_mode", "mask")),
     )
 
     auc_teacher, auc_teacher_w, p_teacher, y_true, w_true = tool.evaluate(
@@ -557,6 +562,7 @@ def main() -> None:
         teacher=teacher, use_kd=False,
         kd_temperature=float(kd_cfg["temperature"]), kd_alpha=float(kd_cfg["alpha_kd"]), kd_alpha_attn=float(kd_cfg["alpha_attn"]),
         use_sample_weight_for_all_losses=use_sample_weight_for_all_losses,
+        unsmear_loss_mode=str(train_cfg.get("joint_unsmear_loss_mode", "mask")),
     )
     auc_joint_no_kd = float(joint_test_no_kd["auc"])
     auc_joint_no_kd_w = float(joint_test_no_kd["auc_weighted"])
@@ -574,6 +580,7 @@ def main() -> None:
         teacher=teacher, use_kd=True,
         kd_temperature=float(kd_cfg["temperature"]), kd_alpha=float(kd_cfg["alpha_kd"]), kd_alpha_attn=float(kd_cfg["alpha_attn"]),
         use_sample_weight_for_all_losses=use_sample_weight_for_all_losses,
+        unsmear_loss_mode=str(train_cfg.get("joint_unsmear_loss_mode", "mask")),
     )
     auc_joint_with_kd = float(joint_test_with_kd["auc"])
     auc_joint_with_kd_w = float(joint_test_with_kd["auc_weighted"])

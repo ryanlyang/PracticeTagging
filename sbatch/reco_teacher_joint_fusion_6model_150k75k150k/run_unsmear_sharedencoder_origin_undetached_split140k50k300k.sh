@@ -56,7 +56,13 @@ fi
 PY_SCRIPT_DEFAULT="${REPO_ROOT}/TaggingNew/pure_unsmear/joint_new/run_unsmear_sharedencoder_delta_gate_split140k50k300k.py"
 PY_SCRIPT="${PY_SCRIPT:-${PY_SCRIPT_DEFAULT}}"
 
-DATA_PATH="${DATA_PATH:-${REPO_ROOT}/test.h5}"
+if [[ -z "${DATA_PATH:-}" ]]; then
+  if [[ -f "${REPO_ROOT}/data/test.h5" ]]; then
+    DATA_PATH="${REPO_ROOT}/data/test.h5"
+  else
+    DATA_PATH="${REPO_ROOT}/test.h5"
+  fi
+fi
 OUTPUT_ROOT="${OUTPUT_ROOT:-${REPO_ROOT}/TaggingNew/pure_unsmear/joint_new/runs}"
 SHARED_BASELINE_DIR="${SHARED_BASELINE_DIR:-${REPO_ROOT}/TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines}"
 RUN_NAME="${RUN_NAME:-unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42}"
@@ -84,6 +90,7 @@ KD_ALPHA_ATTN="${KD_ALPHA_ATTN:-0.0}"
 JOINT_UNSMEAR_WEIGHT="${JOINT_UNSMEAR_WEIGHT:-1.6}"
 JOINT_CLS_WEIGHT="${JOINT_CLS_WEIGHT:-0.8}"
 JOINT_PHYS_WEIGHT="${JOINT_PHYS_WEIGHT:-0.0}"
+JOINT_UNSMEAR_LOSS_MODE="${JOINT_UNSMEAR_LOSS_MODE:-mask}"
 
 CLS_USE_DELTA_FUSION="${CLS_USE_DELTA_FUSION:-true}"
 CLS_DETACH_DELTA_FOR_CLS="${CLS_DETACH_DELTA_FOR_CLS:-false}"
@@ -151,6 +158,7 @@ CMD=(
   --joint_unsmear_weight "${JOINT_UNSMEAR_WEIGHT}"
   --joint_cls_weight "${JOINT_CLS_WEIGHT}"
   --joint_phys_weight "${JOINT_PHYS_WEIGHT}"
+  --joint_unsmear_loss_mode "${JOINT_UNSMEAR_LOSS_MODE}"
   --cls_use_delta_fusion "${CLS_USE_DELTA_FUSION}"
   --cls_detach_delta_for_cls "${CLS_DETACH_DELTA_FOR_CLS}"
   --cls_gate_hidden_dim "${CLS_GATE_HIDDEN_DIM}"
@@ -166,6 +174,7 @@ echo "Repo root: ${REPO_ROOT}"
 echo "Data path: ${DATA_PATH}"
 echo "Run: ${OUTPUT_ROOT}/${RUN_NAME}"
 echo "Split counts: train=${TRAIN_COUNT}, val=${VAL_COUNT}, test=${TEST_COUNT}"
+echo "Joint unsmear loss mode: ${JOINT_UNSMEAR_LOSS_MODE}"
 echo "Seed: ${SEED}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
