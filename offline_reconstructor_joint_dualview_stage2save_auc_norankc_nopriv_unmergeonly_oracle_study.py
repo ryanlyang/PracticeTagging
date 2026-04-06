@@ -369,7 +369,7 @@ def apply_hlt_effects_realistic_with_oracle_tracking(
                     if b in to_remove:
                         continue
                     deta = hlt[j, a, 1] - hlt[j, b, 1]
-                    dphi = wrap_phi_np(hlt[j, a, 2] - hlt[j, b, 2])
+                    dphi = reco_base.wrap_phi_np(hlt[j, a, 2] - hlt[j, b, 2])
                     dR = float(np.sqrt(deta * deta + dphi * dphi))
                     if dR >= merge_radius:
                         continue
@@ -506,7 +506,7 @@ def apply_hlt_effects_realistic_with_oracle_tracking(
         ) * eta_scale * q
 
         eta_new = eta_j + rs.normal(loc=0.0, scale=sigma_eta)
-        phi_new = wrap_phi_np(phi_j + rs.normal(loc=0.0, scale=sigma_phi))
+        phi_new = reco_base.wrap_phi_np(phi_j + rs.normal(loc=0.0, scale=sigma_phi))
 
         if float(hcfg["reassign_prob_base"]) > 0.0 and len(valid) > 1:
             p_reassign = float(hcfg["reassign_prob_base"]) + float(hcfg["reassign_density_coeff"]) * dens_j
@@ -514,7 +514,7 @@ def apply_hlt_effects_realistic_with_oracle_tracking(
             do_reassign = rs.random_sample(len(valid)) < p_reassign
             for ii in np.where(do_reassign)[0]:
                 deta = eta_new[ii] - eta_new
-                dphi = wrap_phi_np(phi_new[ii] - phi_new)
+                dphi = reco_base.wrap_phi_np(phi_new[ii] - phi_new)
                 dR = np.sqrt(deta * deta + dphi * dphi)
                 dR[ii] = 1e9
                 nn = int(np.argmin(dR))
@@ -530,7 +530,7 @@ def apply_hlt_effects_realistic_with_oracle_tracking(
                 n_reassigned += 1
 
         eta_new = np.clip(eta_new, -5.0, 5.0)
-        phi_new = wrap_phi_np(phi_new)
+        phi_new = reco_base.wrap_phi_np(phi_new)
         e_new = pt_new * np.cosh(eta_new)
 
         hlt[j, valid, 0] = pt_new
@@ -596,7 +596,7 @@ def apply_hlt_effects_realistic_with_oracle_tracking(
             t_pt = max(float(tgt[0]), 1e-8)
             d_logpt = abs(np.log(h_pt) - np.log(t_pt))
             d_eta = abs(float(hlt[j, i, 1]) - float(tgt[1]))
-            d_phi = abs(float(wrap_phi_np(float(hlt[j, i, 2]) - float(tgt[2]))))
+            d_phi = abs(float(reco_base.wrap_phi_np(float(hlt[j, i, 2]) - float(tgt[2]))))
             score = d_logpt + 0.5 * d_eta + 0.5 * d_phi
             oracle_action[j, i] = 1 if score > unsmear_keep_thresh else 0
 

@@ -4,12 +4,12 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=10:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m2_joint_delta005_fulltrain_prog_unfreeze_oracle_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m2_joint_delta005_fulltrain_prog_unfreeze_oracle_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_oracle_study_6model_150k75k150k/m2_joint_delta005_fulltrain_prog_unfreeze_oracle_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_oracle_study_6model_150k75k150k/m2_joint_delta005_fulltrain_prog_unfreeze_oracle_%j.err
 
 set -euo pipefail
 
-mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
+mkdir -p offline_reconstructor_logs/reco_oracle_study_6model_150k75k150k
 
 ORACLE_VARIANT="${ORACLE_VARIANT:-A}"  # A, B, C, D, E, B_gen
 RUN_NAME="${RUN_NAME:-model2_joint_delta005_fulltrain_prog_unfreeze_oracle_${ORACLE_VARIANT}_150k75k150k_seed0}"
@@ -95,4 +95,3 @@ echo
 "${CMD[@]}"
 
 echo "Done: ${SAVE_DIR}/${RUN_NAME}"
-
