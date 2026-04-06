@@ -830,9 +830,17 @@ def _save_csv(path: Path, rows: List[Dict[str, object]]) -> None:
     if len(rows) == 0:
         path.write_text("")
         return
-    fields = list(rows[0].keys())
+    # Rows can have method-specific extra columns (e.g. thresholds, route fractions).
+    # Build a stable union of keys in first-seen order.
+    seen = set()
+    fields: List[str] = []
+    for r in rows:
+        for k in r.keys():
+            if k not in seen:
+                seen.add(k)
+                fields.append(k)
     with path.open("w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=fields)
+        w = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
         w.writeheader()
         for r in rows:
             w.writerow(r)
