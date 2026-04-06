@@ -72,6 +72,12 @@ TYPE_MU = 4
 TYPE_UNK = 5
 N_TYPES = 6
 
+MERGE_MODE_NONE = 0
+MERGE_MODE_SAME_TYPE = 1
+MERGE_MODE_ELE_GAM = 2
+MERGE_MODE_CH_NH = 3
+N_MERGE_MODES = 4
+
 
 def set_seed(seed: int) -> None:
     random.seed(seed)
@@ -442,6 +448,29 @@ def allowed_merge_and_output_type(ti: int, tj: int) -> Tuple[bool, int | None]:
     return False, None
 
 
+def infer_merge_mode(ti: int, tj: int) -> int:
+    if ti == tj and ti != TYPE_UNK:
+        return MERGE_MODE_SAME_TYPE
+    pair = {ti, tj}
+    if pair == {TYPE_ELE, TYPE_GAM}:
+        return MERGE_MODE_ELE_GAM
+    if pair == {TYPE_CH, TYPE_NH}:
+        return MERGE_MODE_CH_NH
+    return MERGE_MODE_NONE
+
+
+def _empty_unmerge_provenance(max_constits: int) -> Dict[str, np.ndarray]:
+    return {
+        "split_target_mask": np.zeros((max_constits,), dtype=bool),
+        "split_mode_target": np.zeros((max_constits,), dtype=np.int64),
+        "parent_type_id": np.full((max_constits,), TYPE_UNK, dtype=np.int64),
+        "child_type_a_target": np.full((max_constits,), TYPE_UNK, dtype=np.int64),
+        "child_type_b_target": np.full((max_constits,), TYPE_UNK, dtype=np.int64),
+        "child_attr_a_target": np.zeros((max_constits, 5), dtype=np.float32),
+        "child_attr_b_target": np.zeros((max_constits, 5), dtype=np.float32),
+    }
+
+
 def merge_two_tokens(t1: np.ndarray, t2: np.ndarray, merged_type_override: int | None = None) -> np.ndarray:
     out = np.zeros((RAW_DIM,), dtype=np.float32)
     px1, py1, pz1, e1 = token_to_p4(t1)
@@ -557,7 +586,8 @@ def apply_hlt_corruption_single_jet(
     rng: np.random.RandomState,
     tcfg: Dict[str, np.ndarray],
     max_constits: int,
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]]:
+    return_provenance: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, float]] | Tuple[np.ndarray, np.ndarray, Dict[str, float], Dict[str, np.ndarray]]:
     diag = {
         "n_offline": 0.0,
         "n_after_eff": 0.0,
@@ -571,12 +601,16 @@ def apply_hlt_corruption_single_jet(
     }
     valid = tok[msk].copy()
     diag["n_offline"] = float(len(valid))
+    empty_prov = _empty_unmerge_provenance(max_constits)
     if len(valid) == 0:
-        return (
+        out = (
             np.zeros((max_constits, RAW_DIM), dtype=np.float32),
             np.zeros((max_constits,), dtype=bool),
             diag,
         )
+        if return_provenance:
+            return out + (empty_prov,)
+        return out
 
     # 1) Efficiency loss
     pt = np.maximum(valid[:, IDX_PT], 1e-8)
@@ -590,11 +624,14 @@ def apply_hlt_corruption_single_jet(
     if len(valid) == 0:
         diag["drop_eff"] = diag["n_offline"]
         diag["drop_total"] = diag["n_offline"]
-        return (
+        out = (
             np.zeros((max_constits, RAW_DIM), dtype=np.float32),
             np.zeros((max_constits,), dtype=bool),
             diag,
         )
+        if return_provenance:
+            return out + (empty_prov,)
+        return out
 
     # 2) Smearing + reassignment
     for i in range(len(valid)):
@@ -626,11 +663,27 @@ def apply_hlt_corruption_single_jet(
         diag["drop_eff"] = max(diag["n_offline"] - diag["n_after_eff"], 0.0)
         diag["drop_threshold"] = max(diag["n_after_eff"] - diag["n_after_threshold"], 0.0)
         diag["drop_total"] = diag["n_offline"]
-        return (
+        out = (
             np.zeros((max_constits, RAW_DIM), dtype=np.float32),
             np.zeros((max_constits,), dtype=bool),
             diag,
         )
+        if return_provenance:
+            return out + (empty_prov,)
+        return out
+
+    # Per-token provenance metadata for constrained unmerge supervision.
+    def _default_meta() -> Dict[str, object]:
+        return {
+            "is_merged_token": False,
+            "split_mode_target": MERGE_MODE_NONE,
+            "child_type_a_target": TYPE_UNK,
+            "child_type_b_target": TYPE_UNK,
+            "child_attr_a_target": np.zeros((5,), dtype=np.float32),
+            "child_attr_b_target": np.zeros((5,), dtype=np.float32),
+        }
+
+    meta: List[Dict[str, object]] = [_default_meta() for _ in range(len(valid))]
 
     # 4) Merging (greedy by best pair score)
     steps = 0
@@ -670,16 +723,53 @@ def apply_hlt_corruption_single_jet(
         if rng.rand() > np.clip(best_score, 0.0, 0.999):
             break
         i, j, out_type = best
-        merged = merge_two_tokens(valid[i], valid[j], merged_type_override=out_type)
+        t_i = valid[i].copy()
+        t_j = valid[j].copy()
+        m_i = meta[i]
+        m_j = meta[j]
+
+        merged = merge_two_tokens(t_i, t_j, merged_type_override=out_type)
         merge_count += 1
+
+        # Supervise only simple first-level merges: both parents are original (not already merged).
+        split_mode_target = MERGE_MODE_NONE
+        child_type_a_target = TYPE_UNK
+        child_type_b_target = TYPE_UNK
+        child_attr_a_target = np.zeros((5,), dtype=np.float32)
+        child_attr_b_target = np.zeros((5,), dtype=np.float32)
+        if (not bool(m_i["is_merged_token"])) and (not bool(m_j["is_merged_token"])):
+            ti = infer_type_id(t_i)
+            tj = infer_type_id(t_j)
+            mode = infer_merge_mode(ti, tj)
+            if mode != MERGE_MODE_NONE:
+                split_mode_target = int(mode)
+                # Deterministic child ordering: higher-energy source first.
+                a, b = (t_i, t_j) if float(t_i[IDX_E]) >= float(t_j[IDX_E]) else (t_j, t_i)
+                child_type_a_target = int(infer_type_id(a))
+                child_type_b_target = int(infer_type_id(b))
+                child_attr_a_target = a[[IDX_CHARGE, IDX_D0, IDX_D0ERR, IDX_DZ, IDX_DZERR]].astype(np.float32)
+                child_attr_b_target = b[[IDX_CHARGE, IDX_D0, IDX_D0ERR, IDX_DZ, IDX_DZERR]].astype(np.float32)
+
+        merged_meta = {
+            "is_merged_token": True,
+            "split_mode_target": int(split_mode_target),
+            "child_type_a_target": int(child_type_a_target),
+            "child_type_b_target": int(child_type_b_target),
+            "child_attr_a_target": child_attr_a_target,
+            "child_attr_b_target": child_attr_b_target,
+        }
+
         keep = [k for k in range(len(valid)) if k not in (i, j)]
         if keep:
             valid = np.concatenate([valid[keep], merged[None, :]], axis=0)
+            meta = [meta[k] for k in keep] + [merged_meta]
         else:
             valid = merged[None, :]
+            meta = [merged_meta]
 
     order = np.argsort(-valid[:, IDX_PT])
     valid = valid[order]
+    meta = [meta[int(k)] for k in order]
     take = min(len(valid), max_constits)
     out_tok = np.zeros((max_constits, RAW_DIM), dtype=np.float32)
     out_mask = np.zeros((max_constits,), dtype=bool)
@@ -692,7 +782,22 @@ def apply_hlt_corruption_single_jet(
     diag["drop_merge"] = max(diag["n_after_threshold"] - diag["n_after_merge"], 0.0)
     diag["drop_total"] = max(diag["n_offline"] - diag["n_after_merge"], 0.0)
     diag["merge_count"] = float(merge_count)
-    return out_tok, out_mask, diag
+
+    if not return_provenance:
+        return out_tok, out_mask, diag
+
+    prov = _empty_unmerge_provenance(max_constits)
+    for i in range(take):
+        prov["parent_type_id"][i] = int(infer_type_id(valid[i]))
+        m = meta[i]
+        mode = int(m["split_mode_target"])
+        prov["split_mode_target"][i] = mode
+        prov["split_target_mask"][i] = bool(mode != MERGE_MODE_NONE)
+        prov["child_type_a_target"][i] = int(m["child_type_a_target"])
+        prov["child_type_b_target"][i] = int(m["child_type_b_target"])
+        prov["child_attr_a_target"][i] = np.asarray(m["child_attr_a_target"], dtype=np.float32)
+        prov["child_attr_b_target"][i] = np.asarray(m["child_attr_b_target"], dtype=np.float32)
+    return out_tok, out_mask, diag, prov
 
 
 def build_hlt_view(
@@ -700,15 +805,30 @@ def build_hlt_view(
     msk: np.ndarray,
     params: HLTParams,
     seed: int,
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
+    return_provenance: bool = False,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray]] | Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray]]:
     n = len(tok)
     out_tok = np.zeros_like(tok, dtype=np.float32)
     out_msk = np.zeros_like(msk, dtype=bool)
     tcfg = get_type_config()
     diag_rows: List[Dict[str, float]] = []
+    prov_rows: List[Dict[str, np.ndarray]] = []
     for i in tqdm(range(n), desc="Applying HLT-like corruption"):
         rng = np.random.RandomState(seed + i * 17 + 13)
-        ti, mi, di = apply_hlt_corruption_single_jet(tok[i], msk[i], params, rng, tcfg, tok.shape[1])
+        out = apply_hlt_corruption_single_jet(
+            tok[i],
+            msk[i],
+            params,
+            rng,
+            tcfg,
+            tok.shape[1],
+            return_provenance=bool(return_provenance),
+        )
+        if return_provenance:
+            ti, mi, di, pi = out
+            prov_rows.append(pi)
+        else:
+            ti, mi, di = out
         out_tok[i] = ti
         out_msk[i] = mi
         diag_rows.append(di)
@@ -725,7 +845,16 @@ def build_hlt_view(
         "merge_count",
     ]
     per_jet = {k: np.array([row[k] for row in diag_rows], dtype=np.float32) for k in keys}
-    return out_tok, out_msk, per_jet
+    if not return_provenance:
+        return out_tok, out_msk, per_jet
+
+    if not prov_rows:
+        prov = _empty_unmerge_provenance(tok.shape[1])
+        prov = {k: np.repeat(v[None, ...], n, axis=0) for k, v in prov.items()}
+    else:
+        pkeys = list(prov_rows[0].keys())
+        prov = {k: np.stack([row[k] for row in prov_rows], axis=0) for k in pkeys}
+    return out_tok, out_msk, per_jet, prov
 
 
 def summarize_hlt_diagnostics(per_jet: Dict[str, np.ndarray]) -> Dict[str, float]:
