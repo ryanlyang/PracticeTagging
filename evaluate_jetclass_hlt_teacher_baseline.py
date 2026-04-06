@@ -143,6 +143,11 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--merge_prob_scale", type=float, default=1.0)
     p.add_argument("--reassign_scale", type=float, default=1.0)
     p.add_argument("--smear_scale", type=float, default=1.0)
+    p.add_argument("--eff_plateau_barrel", type=float, default=0.98)
+    p.add_argument("--eff_plateau_endcap", type=float, default=0.94)
+    p.add_argument("--eff_turnon_pt", type=float, default=0.9)
+    p.add_argument("--eff_width_pt", type=float, default=0.4)
+    p.add_argument("--target_class", type=str, default="HToBB")
     p.add_argument("--background_class", type=str, default="ZJetsToNuNu")
 
     return p.parse_args()
@@ -385,6 +390,10 @@ class HLTParams:
     merge_prob_scale: float
     reassign_scale: float
     smear_scale: float
+    eff_plateau_barrel: float
+    eff_plateau_endcap: float
+    eff_turnon_pt: float
+    eff_width_pt: float
 
 
 def infer_type_id(token: np.ndarray) -> int:
@@ -417,7 +426,23 @@ def p4_to_ptetaphi(px: float, py: float, pz: float, e: float) -> Tuple[float, fl
     return pt, eta, phi, max(float(e), 1e-8)
 
 
-def merge_two_tokens(t1: np.ndarray, t2: np.ndarray) -> np.ndarray:
+def allowed_merge_and_output_type(ti: int, tj: int) -> Tuple[bool, int | None]:
+    # Same-type merges are allowed (except unknown).
+    if ti == tj and ti != TYPE_UNK:
+        return True, ti
+
+    pair = {ti, tj}
+    # Electron + photon -> electron
+    if pair == {TYPE_ELE, TYPE_GAM}:
+        return True, TYPE_ELE
+    # Charged hadron + neutral hadron -> charged hadron
+    if pair == {TYPE_CH, TYPE_NH}:
+        return True, TYPE_CH
+
+    return False, None
+
+
+def merge_two_tokens(t1: np.ndarray, t2: np.ndarray, merged_type_override: int | None = None) -> np.ndarray:
     out = np.zeros((RAW_DIM,), dtype=np.float32)
     px1, py1, pz1, e1 = token_to_p4(t1)
     px2, py2, pz2, e2 = token_to_p4(t2)
@@ -427,16 +452,16 @@ def merge_two_tokens(t1: np.ndarray, t2: np.ndarray) -> np.ndarray:
     out[IDX_PHI] = phi
     out[IDX_E] = e
 
-    # Dominant-energy token sets PID/type.
+    # Either enforce merge-policy output type, or fallback to dominant-energy type.
     dom = t1 if t1[IDX_E] >= t2[IDX_E] else t2
     out[IDX_PID0:IDX_PID4 + 1] = 0.0
-    dom_type = infer_type_id(dom)
-    if dom_type != TYPE_UNK:
-        out[IDX_PID0 + dom_type] = 1.0
+    merged_type = int(merged_type_override) if merged_type_override is not None else infer_type_id(dom)
+    if merged_type != TYPE_UNK:
+        out[IDX_PID0 + merged_type] = 1.0
 
-    # Charge only if resulting dominant token is track-like.
+    # Charge only if resulting merged token is track-like.
     charge_sum = float(t1[IDX_CHARGE] + t2[IDX_CHARGE])
-    if dom_type in (TYPE_CH, TYPE_ELE, TYPE_MU):
+    if merged_type in (TYPE_CH, TYPE_ELE, TYPE_MU):
         out[IDX_CHARGE] = float(np.clip(np.round(charge_sum), -1.0, 1.0))
     else:
         out[IDX_CHARGE] = 0.0
@@ -538,13 +563,10 @@ def apply_hlt_corruption_single_jet(
         return np.zeros((max_constits, RAW_DIM), dtype=np.float32), np.zeros((max_constits,), dtype=bool)
 
     # 1) Efficiency loss
-    type_ids = np.array([infer_type_id(t) for t in valid], dtype=np.int64)
     pt = np.maximum(valid[:, IDX_PT], 1e-8)
     abseta = np.abs(valid[:, IDX_ETA])
-    plateau = np.where(abseta < 1.5, tcfg["plateau_barrel"][type_ids], tcfg["plateau_endcap"][type_ids])
-    turn = tcfg["turnon_pt"][type_ids]
-    width = tcfg["width_pt"][type_ids]
-    sig = 1.0 / (1.0 + np.exp(-(pt - turn) / np.maximum(width, 1e-6)))
+    plateau = np.where(abseta < 1.5, params.eff_plateau_barrel, params.eff_plateau_endcap)
+    sig = 1.0 / (1.0 + np.exp(-(pt - params.eff_turnon_pt) / max(params.eff_width_pt, 1e-6)))
     keep_prob = np.clip(plateau * sig, 0.03, 0.999)
     keep = rng.rand(len(valid)) < keep_prob
     valid = valid[keep]
@@ -596,6 +618,10 @@ def apply_hlt_corruption_single_jet(
                 deta = eta_i - float(valid[j, IDX_ETA])
                 dphi = math.atan2(math.sin(phi_i - float(valid[j, IDX_PHI])), math.cos(phi_i - float(valid[j, IDX_PHI])))
                 dr = math.sqrt(deta * deta + dphi * dphi)
+                allow_merge, _out_type = allowed_merge_and_output_type(ti, tj)
+                if not allow_merge:
+                    continue
+
                 rmax = float(tcfg["merge_radius"][ti, tj])
                 if dr >= rmax:
                     continue
@@ -606,13 +632,13 @@ def apply_hlt_corruption_single_jet(
                 score = base_p * params.merge_prob_scale * pt_sim * dr_term
                 if score > best_score:
                     best_score = score
-                    best = (i, j)
+                    best = (i, j, _out_type)
         if best is None:
             break
         if rng.rand() > np.clip(best_score, 0.0, 0.999):
             break
-        i, j = best
-        merged = merge_two_tokens(valid[i], valid[j])
+        i, j, out_type = best
+        merged = merge_two_tokens(valid[i], valid[j], merged_type_override=out_type)
         keep = [k for k in range(len(valid)) if k not in (i, j)]
         if keep:
             valid = np.concatenate([valid[keep], merged[None, :]], axis=0)
@@ -814,7 +840,13 @@ def macro_auc_ovr(y_true: np.ndarray, probs: np.ndarray, n_classes: int) -> floa
         return float("nan")
 
 
-def eval_metrics(y_true: np.ndarray, probs: np.ndarray, class_names: Sequence[str], background_class: str) -> Dict[str, float]:
+def eval_metrics(
+    y_true: np.ndarray,
+    probs: np.ndarray,
+    class_names: Sequence[str],
+    background_class: str,
+    target_class: str,
+) -> Dict[str, float]:
     pred = np.argmax(probs, axis=1)
     acc = float((pred == y_true).mean())
     n_classes = probs.shape[1]
@@ -835,6 +867,30 @@ def eval_metrics(y_true: np.ndarray, probs: np.ndarray, class_names: Sequence[st
     else:
         out["signal_vs_bg_fpr50"] = float("nan")
         out["signal_vs_bg_auc"] = float("nan")
+
+    # Professor-style binarized score: score_target / (score_target + score_bg)
+    if target_class in class_names and background_class in class_names:
+        tgt_idx = class_names.index(target_class)
+        bg_idx = class_names.index(background_class)
+        den = np.clip(probs[:, tgt_idx] + probs[:, bg_idx], 1e-8, None)
+        score_tgt_over_pair = np.clip(probs[:, tgt_idx] / den, 0.0, 1.0)
+        pair_mask = np.logical_or(y_true == tgt_idx, y_true == bg_idx)
+        if pair_mask.any():
+            y_pair = (y_true[pair_mask] == tgt_idx).astype(np.int64)
+            s_pair = score_tgt_over_pair[pair_mask]
+            if len(np.unique(y_pair)) > 1:
+                fpr, tpr, _ = roc_curve(y_pair, s_pair)
+                out["target_vs_bg_ratio_fpr50"] = float(fpr_at_target_tpr(fpr, tpr, 0.50))
+                out["target_vs_bg_ratio_auc"] = float(roc_auc_score(y_pair, s_pair))
+            else:
+                out["target_vs_bg_ratio_fpr50"] = float("nan")
+                out["target_vs_bg_ratio_auc"] = float("nan")
+        else:
+            out["target_vs_bg_ratio_fpr50"] = float("nan")
+            out["target_vs_bg_ratio_auc"] = float("nan")
+    else:
+        out["target_vs_bg_ratio_fpr50"] = float("nan")
+        out["target_vs_bg_ratio_auc"] = float("nan")
     return out
 
 
@@ -869,7 +925,14 @@ def train_epoch(model, loader, opt, device, n_classes: int) -> Dict[str, float]:
 
 
 @torch.no_grad()
-def eval_epoch(model, loader, device, class_names: Sequence[str], background_class: str) -> Dict[str, float]:
+def eval_epoch(
+    model,
+    loader,
+    device,
+    class_names: Sequence[str],
+    background_class: str,
+    target_class: str,
+) -> Dict[str, float]:
     model.eval()
     total = 0.0
     n = 0
@@ -890,7 +953,15 @@ def eval_epoch(model, loader, device, class_names: Sequence[str], background_cla
     probs = np.concatenate(all_probs, axis=0)
     ys = np.concatenate(all_y, axis=0)
     out = {"loss": total / max(n, 1)}
-    out.update(eval_metrics(ys, probs, class_names=class_names, background_class=background_class))
+    out.update(
+        eval_metrics(
+            ys,
+            probs,
+            class_names=class_names,
+            background_class=background_class,
+            target_class=target_class,
+        )
+    )
     return out
 
 
@@ -901,6 +972,7 @@ def fit_model(
     n_classes: int,
     class_names: Sequence[str],
     background_class: str,
+    target_class: str,
     args: argparse.Namespace,
     tag: str,
     save_dir: Path,
@@ -925,7 +997,14 @@ def fit_model(
 
     for ep in range(1, args.epochs + 1):
         tr = train_epoch(model, train_loader, opt, device=device, n_classes=n_classes)
-        va = eval_epoch(model, val_loader, device=device, class_names=class_names, background_class=background_class)
+        va = eval_epoch(
+            model,
+            val_loader,
+            device=device,
+            class_names=class_names,
+            background_class=background_class,
+            target_class=target_class,
+        )
         sch.step()
         metric = va["auc_macro_ovr"] if np.isfinite(va["auc_macro_ovr"]) else va["acc"]
         improved = float(metric) > best_metric
@@ -945,12 +1024,15 @@ def fit_model(
             "val_acc": va["acc"],
             "val_auc_macro_ovr": va["auc_macro_ovr"],
             "val_signal_vs_bg_fpr50": va["signal_vs_bg_fpr50"],
+            "val_target_vs_bg_ratio_fpr50": va["target_vs_bg_ratio_fpr50"],
         }
         hist.append(row)
         print(
             f"{tag} ep {ep}: "
             f"train(loss/acc/auc)={tr['loss']:.4f}/{tr['acc']:.4f}/{tr['auc_macro_ovr']:.4f} "
-            f"val(loss/acc/auc/fpr50)={va['loss']:.4f}/{va['acc']:.4f}/{va['auc_macro_ovr']:.4f}/{va['signal_vs_bg_fpr50']:.6f} "
+            f"val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)="
+            f"{va['loss']:.4f}/{va['acc']:.4f}/{va['auc_macro_ovr']:.4f}/"
+            f"{va['signal_vs_bg_fpr50']:.6f}/{va['target_vs_bg_ratio_fpr50']:.6f} "
             f"best={best_metric:.4f}"
         )
         if wait >= args.patience:
@@ -961,7 +1043,14 @@ def fit_model(
         model.load_state_dict(best_state)
     ckpt = save_dir / f"{tag}_best.pt"
     torch.save(model.state_dict(), ckpt)
-    best = eval_epoch(model, val_loader, device=device, class_names=class_names, background_class=background_class)
+    best = eval_epoch(
+        model,
+        val_loader,
+        device=device,
+        class_names=class_names,
+        background_class=background_class,
+        target_class=target_class,
+    )
     return model, best, hist
 
 
@@ -1010,6 +1099,10 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
         merge_prob_scale=float(args.merge_prob_scale),
         reassign_scale=float(args.reassign_scale),
         smear_scale=float(args.smear_scale),
+        eff_plateau_barrel=float(args.eff_plateau_barrel),
+        eff_plateau_endcap=float(args.eff_plateau_endcap),
+        eff_turnon_pt=float(args.eff_turnon_pt),
+        eff_width_pt=float(args.eff_width_pt),
     )
     print("Building HLT-like corrupted splits...")
     tr_hlt_tok, tr_hlt_mask = build_hlt_view(tr_tok, tr_mask, params=hlt_params, seed=args.seed + 1001)
@@ -1066,6 +1159,7 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
         n_classes=n_classes,
         class_names=class_names,
         background_class=args.background_class,
+        target_class=args.target_class,
         args=args,
         tag="teacher_offline",
         save_dir=save_dir,
@@ -1079,6 +1173,7 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
         n_classes=n_classes,
         class_names=class_names,
         background_class=args.background_class,
+        target_class=args.target_class,
         args=args,
         tag="baseline_hlt",
         save_dir=save_dir,
@@ -1087,10 +1182,38 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
     device = torch.device(args.device if torch.cuda.is_available() or str(args.device).startswith("cpu") else "cpu")
     teacher = teacher.to(device)
     baseline = baseline.to(device)
-    teacher_test_on_off = eval_epoch(teacher, dl_te_off, device=device, class_names=class_names, background_class=args.background_class)
-    baseline_test_on_hlt = eval_epoch(baseline, dl_te_hlt, device=device, class_names=class_names, background_class=args.background_class)
-    teacher_test_on_hlt = eval_epoch(teacher, dl_te_hlt, device=device, class_names=class_names, background_class=args.background_class)
-    baseline_test_on_off = eval_epoch(baseline, dl_te_off, device=device, class_names=class_names, background_class=args.background_class)
+    teacher_test_on_off = eval_epoch(
+        teacher,
+        dl_te_off,
+        device=device,
+        class_names=class_names,
+        background_class=args.background_class,
+        target_class=args.target_class,
+    )
+    baseline_test_on_hlt = eval_epoch(
+        baseline,
+        dl_te_hlt,
+        device=device,
+        class_names=class_names,
+        background_class=args.background_class,
+        target_class=args.target_class,
+    )
+    teacher_test_on_hlt = eval_epoch(
+        teacher,
+        dl_te_hlt,
+        device=device,
+        class_names=class_names,
+        background_class=args.background_class,
+        target_class=args.target_class,
+    )
+    baseline_test_on_off = eval_epoch(
+        baseline,
+        dl_te_off,
+        device=device,
+        class_names=class_names,
+        background_class=args.background_class,
+        target_class=args.target_class,
+    )
 
     summary = {
         "class_names": class_names,
@@ -1102,6 +1225,14 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
             "merge_prob_scale": args.merge_prob_scale,
             "reassign_scale": args.reassign_scale,
             "smear_scale": args.smear_scale,
+            "eff_plateau_barrel": args.eff_plateau_barrel,
+            "eff_plateau_endcap": args.eff_plateau_endcap,
+            "eff_turnon_pt": args.eff_turnon_pt,
+            "eff_width_pt": args.eff_width_pt,
+        },
+        "binary_metric_config": {
+            "target_class": args.target_class,
+            "background_class": args.background_class,
         },
         "constituent_stats": {
             "train_offline_mean": float(tr_mask.sum(axis=1).mean()),
@@ -1138,12 +1269,16 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
     print(
         f"Teacher test (offline): acc={teacher_test_on_off['acc']:.4f}, "
         f"auc_macro={teacher_test_on_off['auc_macro_ovr']:.4f}, "
-        f"fpr50(sig-vs-bg)={teacher_test_on_off['signal_vs_bg_fpr50']:.6f}"
+        f"fpr50(sig-vs-bg)={teacher_test_on_off['signal_vs_bg_fpr50']:.6f}, "
+        f"fpr50({args.target_class}/({args.target_class}+{args.background_class}))="
+        f"{teacher_test_on_off['target_vs_bg_ratio_fpr50']:.6f}"
     )
     print(
         f"Baseline test (hlt):   acc={baseline_test_on_hlt['acc']:.4f}, "
         f"auc_macro={baseline_test_on_hlt['auc_macro_ovr']:.4f}, "
-        f"fpr50(sig-vs-bg)={baseline_test_on_hlt['signal_vs_bg_fpr50']:.6f}"
+        f"fpr50(sig-vs-bg)={baseline_test_on_hlt['signal_vs_bg_fpr50']:.6f}, "
+        f"fpr50({args.target_class}/({args.target_class}+{args.background_class}))="
+        f"{baseline_test_on_hlt['target_vs_bg_ratio_fpr50']:.6f}"
     )
     print(f"Saved outputs to: {save_dir}")
 
