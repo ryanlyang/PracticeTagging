@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=m2router
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=04:00:00
