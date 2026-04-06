@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=5:00:00
+#SBATCH --time=1-12:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_v2attr_50k25k100k_stronger_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_v2attr_50k25k100k_stronger_%j.err
 
