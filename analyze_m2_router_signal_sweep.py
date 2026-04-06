@@ -151,6 +151,65 @@ def _wrap_phi(phi: np.ndarray) -> np.ndarray:
     return np.arctan2(np.sin(phi), np.cos(phi))
 
 
+def _wrap_phi_torch(phi: torch.Tensor) -> torch.Tensor:
+    return torch.atan2(torch.sin(phi), torch.cos(phi))
+
+
+def _jet_level_features(
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    feat_hlt_std: np.ndarray,
+) -> Dict[str, np.ndarray]:
+    eps = 1e-8
+    m = mask_hlt.astype(np.float32)
+    pt = np.where(mask_hlt, const_hlt[:, :, 0], 0.0).astype(np.float64)
+    eta = np.where(mask_hlt, const_hlt[:, :, 1], 0.0).astype(np.float64)
+    phi = np.where(mask_hlt, const_hlt[:, :, 2], 0.0).astype(np.float64)
+    E = np.where(mask_hlt, const_hlt[:, :, 3], 0.0).astype(np.float64)
+
+    n_const = m.sum(axis=1)
+    jet_pt = pt.sum(axis=1)
+    jet_E = E.sum(axis=1)
+    px = (pt * np.cos(phi)).sum(axis=1)
+    py = (pt * np.sin(phi)).sum(axis=1)
+    pz = (pt * np.sinh(eta)).sum(axis=1)
+    p2 = px * px + py * py + pz * pz
+    jet_mass2 = np.maximum(jet_E * jet_E - p2, 0.0)
+    jet_mass = np.sqrt(jet_mass2)
+
+    eta_axis = np.where(jet_pt > eps, (pt * eta).sum(axis=1) / np.maximum(jet_pt, eps), 0.0)
+    sin_phi_axis = np.where(jet_pt > eps, (pt * np.sin(phi)).sum(axis=1) / np.maximum(jet_pt, eps), 0.0)
+    cos_phi_axis = np.where(jet_pt > eps, (pt * np.cos(phi)).sum(axis=1) / np.maximum(jet_pt, eps), 1.0)
+    phi_axis = np.arctan2(sin_phi_axis, cos_phi_axis)
+
+    deta = eta - eta_axis[:, None]
+    dphi = _wrap_phi(phi - phi_axis[:, None])
+    dR = np.sqrt(deta * deta + dphi * dphi)
+    jet_width = np.where(jet_pt > eps, (pt * dR).sum(axis=1) / np.maximum(jet_pt, eps), 0.0)
+    ptD = np.where(jet_pt > eps, np.sqrt((pt * pt).sum(axis=1)) / np.maximum(jet_pt, eps), 0.0)
+
+    # Concentration/local-density proxies that are cheap at large scale.
+    topk = min(const_hlt.shape[1], 5)
+    topk_sum = np.partition(pt, -topk, axis=1)[:, -topk:].sum(axis=1)
+    pt_top5_frac = np.where(jet_pt > eps, topk_sum / np.maximum(jet_pt, eps), 0.0)
+    local_density_proxy = n_const / np.maximum(jet_width + 1e-3, 1e-3)
+    ood_z2_mean = (
+        (np.square(feat_hlt_std[:, :, :7]) * m[:, :, None]).sum(axis=(1, 2))
+        / np.maximum(m.sum(axis=1) * 7.0, 1.0)
+    )
+
+    return {
+        "n_const": n_const.astype(np.float32),
+        "jet_pt_sum": jet_pt.astype(np.float32),
+        "jet_mass": jet_mass.astype(np.float32),
+        "jet_width": jet_width.astype(np.float32),
+        "ptD": ptD.astype(np.float32),
+        "pt_top5_frac": pt_top5_frac.astype(np.float32),
+        "local_density_proxy": local_density_proxy.astype(np.float32),
+        "ood_z2_mean": ood_z2_mean.astype(np.float32),
+    }
+
+
 def _merge_two_tokens(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     # Inputs are [pt, eta, phi, E]
     pa, ea, fa, Ea = float(a[0]), float(a[1]), float(a[2]), float(a[3])
@@ -293,6 +352,14 @@ def _infer_scores_and_diag(
             "budget_merge_pressure": np.zeros((n,), dtype=np.float32),
             "budget_eff_pressure": np.zeros((n,), dtype=np.float32),
             "gen_weight_mean": np.zeros((n,), dtype=np.float32),
+            "expected_added_count": np.zeros((n,), dtype=np.float32),
+            "added_count_uncertainty": np.zeros((n,), dtype=np.float32),
+            "correction_magnitude_mean": np.zeros((n,), dtype=np.float32),
+            "correction_magnitude_max": np.zeros((n,), dtype=np.float32),
+            "split_angle_tanh_sat_frac": np.zeros((n,), dtype=np.float32),
+            "split_frac_logit_sat_frac": np.zeros((n,), dtype=np.float32),
+            "budget_merge_clamp_hi_proxy": np.zeros((n,), dtype=np.float32),
+            "budget_eff_clamp_hi_proxy": np.zeros((n,), dtype=np.float32),
         }
 
     baseline.eval()
@@ -345,6 +412,37 @@ def _infer_scores_and_diag(
                 btot = out["budget_total"]
                 child_sum = out["child_weight"].sum(dim=1).clamp(min=1e-6)
                 gen_sum = out["gen_weight"].sum(dim=1).clamp(min=1e-6)
+                exp_added = out["child_weight"].sum(dim=1) + out["gen_weight"].sum(dim=1)
+                add_unc = (
+                    (out["child_weight"] * (1.0 - out["child_weight"])).sum(dim=1)
+                    + (out["gen_weight"] * (1.0 - out["gen_weight"])).sum(dim=1)
+                )
+
+                split_delta = out["split_delta"]
+                split_angle_sat = (torch.abs(split_delta[..., 1:]) > 2.2).float().mean(dim=(1, 2, 3))
+                split_frac_sat = (torch.abs(split_delta[..., 0]) > 4.0).float().mean(dim=(1, 2))
+
+                # Proxy for budget high-clamp activity: if requested budget > realized routed weight.
+                budget_merge_ratio = bm / child_sum
+                budget_eff_ratio = be / gen_sum
+                clamp_merge_hi = (budget_merge_ratio > 1.02).float()
+                clamp_eff_hi = (budget_eff_ratio > 1.02).float()
+
+                # How strongly reco modifies HLT token kinematics (first L token slots).
+                L = int(m.shape[1])
+                tok_tokens = out["cand_tokens"][:, :L, :]
+                pt_h = c[..., 0].clamp(min=1e-8)
+                eta_h = c[..., 1]
+                phi_h = c[..., 2]
+                pt_r = tok_tokens[..., 0].clamp(min=1e-8)
+                eta_r = tok_tokens[..., 1]
+                phi_r = tok_tokens[..., 2]
+                d_logpt = torch.abs(torch.log(pt_r) - torch.log(pt_h))
+                d_eta = torch.abs(eta_r - eta_h)
+                d_phi = torch.abs(_wrap_phi_torch(phi_r - phi_h))
+                corr_mag_tok = d_logpt + 0.5 * d_eta + 0.5 * d_phi
+                corr_mag_mean = (corr_mag_tok * tok_mask).sum(dim=1) / token_den
+                corr_mag_max = corr_mag_tok.masked_fill(~m, 0.0).max(dim=1).values
 
                 diag["action_entropy_mean"][s:e] = ((ent * tok_mask).sum(dim=1) / token_den).cpu().numpy().astype(np.float32)
                 diag["action_peak_mean"][s:e] = ((peak * tok_mask).sum(dim=1) / token_den).cpu().numpy().astype(np.float32)
@@ -358,6 +456,14 @@ def _infer_scores_and_diag(
                 diag["budget_merge_pressure"][s:e] = (bm / child_sum).cpu().numpy().astype(np.float32)
                 diag["budget_eff_pressure"][s:e] = (be / gen_sum).cpu().numpy().astype(np.float32)
                 diag["gen_weight_mean"][s:e] = gen_w.mean(dim=1).cpu().numpy().astype(np.float32)
+                diag["expected_added_count"][s:e] = exp_added.cpu().numpy().astype(np.float32)
+                diag["added_count_uncertainty"][s:e] = add_unc.cpu().numpy().astype(np.float32)
+                diag["correction_magnitude_mean"][s:e] = corr_mag_mean.cpu().numpy().astype(np.float32)
+                diag["correction_magnitude_max"][s:e] = corr_mag_max.cpu().numpy().astype(np.float32)
+                diag["split_angle_tanh_sat_frac"][s:e] = split_angle_sat.cpu().numpy().astype(np.float32)
+                diag["split_frac_logit_sat_frac"][s:e] = split_frac_sat.cpu().numpy().astype(np.float32)
+                diag["budget_merge_clamp_hi_proxy"][s:e] = clamp_merge_hi.cpu().numpy().astype(np.float32)
+                diag["budget_eff_clamp_hi_proxy"][s:e] = clamp_eff_hi.cpu().numpy().astype(np.float32)
 
             ptr += (e - s)
 
@@ -548,6 +654,74 @@ def _shift_features_from_acc(acc: Dict[str, np.ndarray]) -> Dict[str, np.ndarray
     return f
 
 
+def _corruption_full_features(
+    p_h_clean: np.ndarray,
+    p_j_clean: np.ndarray,
+    p_h_corr_list: List[np.ndarray],
+    p_j_corr_list: List[np.ndarray],
+    severities: List[float],
+    kinds: List[str],
+) -> Dict[str, np.ndarray]:
+    ph0 = _clip_probs(p_h_clean).astype(np.float64)
+    pj0 = _clip_probs(p_j_clean).astype(np.float64)
+    phc = np.stack([_clip_probs(x).astype(np.float64) for x in p_h_corr_list], axis=0)  # [C, N]
+    pjc = np.stack([_clip_probs(x).astype(np.float64) for x in p_j_corr_list], axis=0)  # [C, N]
+    sev = np.asarray(severities, dtype=np.float64)[:, None]  # [C, 1]
+    C = phc.shape[0]
+
+    drop_h = np.maximum(ph0[None, :] - phc, 0.0)
+    drop_j = np.maximum(pj0[None, :] - pjc, 0.0)
+    abs_dp_h = np.abs(phc - ph0[None, :])
+    abs_dp_j = np.abs(pjc - pj0[None, :])
+
+    sev_ctr = sev - np.mean(sev, axis=0, keepdims=True)
+    denom = float(np.sum(sev_ctr[:, 0] ** 2)) + 1e-12
+    slope_abs_h = (sev_ctr * abs_dp_h).sum(axis=0) / denom
+    slope_abs_j = (sev_ctr * abs_dp_j).sum(axis=0) / denom
+    slope_drop_h = (sev_ctr * drop_h).sum(axis=0) / denom
+    slope_drop_j = (sev_ctr * drop_j).sum(axis=0) / denom
+
+    # Quadratic fit coefficient on severity^2 as curvature proxy.
+    A = np.concatenate([np.ones_like(sev), sev, sev * sev], axis=1)  # [C,3]
+    pinv = np.linalg.pinv(A)  # [3,C]
+    coef_h = pinv @ drop_h  # [3,N]
+    coef_j = pinv @ drop_j  # [3,N]
+    curv_h = coef_h[2]
+    curv_j = coef_j[2]
+
+    out: Dict[str, np.ndarray] = {
+        "hlt_worst_case_drop": np.max(drop_h, axis=0).astype(np.float32),
+        "joint_worst_case_drop": np.max(drop_j, axis=0).astype(np.float32),
+        "hlt_slope_abs_dprob_vs_severity": slope_abs_h.astype(np.float32),
+        "joint_slope_abs_dprob_vs_severity": slope_abs_j.astype(np.float32),
+        "hlt_slope_drop_vs_severity": slope_drop_h.astype(np.float32),
+        "joint_slope_drop_vs_severity": slope_drop_j.astype(np.float32),
+        "hlt_curvature_drop_vs_severity": curv_h.astype(np.float32),
+        "joint_curvature_drop_vs_severity": curv_j.astype(np.float32),
+        "relative_degradation_mean": np.mean(drop_h - drop_j, axis=0).astype(np.float32),
+        "degrade_win_fraction": np.mean(drop_j < drop_h, axis=0).astype(np.float32),
+    }
+
+    uniq_kinds = sorted(set(kinds))
+    if len(uniq_kinds) >= 2:
+        kind_means_h = []
+        kind_means_j = []
+        for k in uniq_kinds:
+            idx = [i for i, kk in enumerate(kinds) if kk == k]
+            if len(idx) == 0:
+                continue
+            kind_means_h.append(np.mean(abs_dp_h[idx, :], axis=0))
+            kind_means_j.append(np.mean(abs_dp_j[idx, :], axis=0))
+        if len(kind_means_h) >= 2:
+            kmh = np.stack(kind_means_h, axis=0)
+            kmj = np.stack(kind_means_j, axis=0)
+            out["hlt_cross_family_consistency_std"] = np.std(kmh, axis=0).astype(np.float32)
+            out["joint_cross_family_consistency_std"] = np.std(kmj, axis=0).astype(np.float32)
+            out["joint_minus_hlt_cross_family_std"] = (np.std(kmj, axis=0) - np.std(kmh, axis=0)).astype(np.float32)
+
+    return out
+
+
 def _build_raw_features(
     p_h: np.ndarray,
     p_j: np.ndarray,
@@ -684,6 +858,7 @@ def main() -> None:
     ap.add_argument("--cost_alpha_neg", type=float, default=4.0)
     ap.add_argument("--cost_tau", type=float, default=0.02)
     ap.add_argument("--top_pair_signal_k", type=int, default=6)
+    ap.add_argument("--feature_profile", type=str, default="core", choices=["core", "full"])
     ap.add_argument("--out_dir", type=str, default="")
     ap.add_argument("--report_json", type=str, default="")
     ap.add_argument("--save_per_jet_npz", action="store_true")
@@ -806,8 +981,13 @@ def main() -> None:
     )
 
     # ---------------- Corruption sweep ----------------
+    full_profile = (str(args.feature_profile).strip().lower() == "full")
     corruption_list = _parse_corruptions(args.corruptions)
     acc = _init_shift_acc(n_total_router)
+    corr_p_h_list: List[np.ndarray] = []
+    corr_p_j_list: List[np.ndarray] = []
+    corr_sev_list: List[float] = []
+    corr_kind_list: List[str] = []
 
     for kind, severity in corruption_list:
         print(f"[corruption] kind={kind} severity={severity:.4f}")
@@ -837,11 +1017,28 @@ def main() -> None:
             p_j_corr[s:e] = out_b.p_joint
 
         _update_shift_acc(acc, clean.p_hlt, clean.p_joint, p_h_corr, p_j_corr)
+        if full_profile:
+            corr_p_h_list.append(p_h_corr.copy())
+            corr_p_j_list.append(p_j_corr.copy())
+            corr_sev_list.append(float(severity))
+            corr_kind_list.append(str(kind))
 
     shift_feats = _shift_features_from_acc(acc)
+    if full_profile and len(corr_p_h_list) > 0:
+        shift_feats.update(
+            _corruption_full_features(
+                clean.p_hlt,
+                clean.p_joint,
+                corr_p_h_list,
+                corr_p_j_list,
+                corr_sev_list,
+                corr_kind_list,
+            )
+        )
 
     # ---------------- Assemble feature table ----------------
     feature_dict = _build_raw_features(clean.p_hlt, clean.p_joint, clean.diag)
+    feature_dict.update(_jet_level_features(hlt_const, hlt_mask, feat_hlt_std))
     feature_dict.update(shift_feats)
     feature_names = sorted(feature_dict.keys())
     X_all = _stack_features(feature_dict, feature_names)
@@ -903,6 +1100,47 @@ def main() -> None:
     c_h_test = _lowfpr_cost(y_t, ph_t, thr_h30, thr_h50, args.cost_alpha_neg, args.cost_tau)
     c_j_test = _lowfpr_cost(y_t, pj_t, thr_j30, thr_j50, args.cost_alpha_neg, args.cost_tau)
     z_test = (c_j_test < c_h_test).astype(np.int64)
+
+    # Post-threshold signal expansion (used by routers, not by base models).
+    th_dist_h = np.abs(clean.p_hlt - thr_h50).astype(np.float32)
+    th_dist_j = np.abs(clean.p_joint - thr_j50).astype(np.float32)
+    feature_dict["threshold_dist_hlt"] = th_dist_h
+    feature_dict["threshold_dist_joint"] = th_dist_j
+    feature_dict["threshold_dist_gap"] = (th_dist_j - th_dist_h).astype(np.float32)
+    feature_dict["rank_risk"] = np.minimum(th_dist_h, th_dist_j).astype(np.float32)
+
+    # Lightweight conformal-style confidence proxy from fit distribution.
+    nc_h_all = np.minimum(clean.p_hlt, 1.0 - clean.p_hlt).astype(np.float64)
+    nc_j_all = np.minimum(clean.p_joint, 1.0 - clean.p_joint).astype(np.float64)
+    nc_h_fit = np.sort(nc_h_all[idx_analysis][idx_fit])
+    nc_j_fit = np.sort(nc_j_all[idx_analysis][idx_fit])
+    pval_h = 1.0 - (np.searchsorted(nc_h_fit, nc_h_all, side="right") / max(len(nc_h_fit), 1))
+    pval_j = 1.0 - (np.searchsorted(nc_j_fit, nc_j_all, side="right") / max(len(nc_j_fit), 1))
+    feature_dict["conformal_pvalue_proxy_hlt"] = pval_h.astype(np.float32)
+    feature_dict["conformal_pvalue_proxy_joint"] = pval_j.astype(np.float32)
+    feature_dict["conformal_pvalue_gap_j_minus_h"] = (pval_j - pval_h).astype(np.float32)
+
+    if full_profile and len(corr_p_h_list) > 0:
+        ph_corr_mat = np.stack(corr_p_h_list, axis=0).astype(np.float64)
+        pj_corr_mat = np.stack(corr_p_j_list, axis=0).astype(np.float64)
+        cross_h50 = np.mean(((clean.p_hlt[None, :] - thr_h50) * (ph_corr_mat - thr_h50) < 0.0), axis=0)
+        cross_j50 = np.mean(((clean.p_joint[None, :] - thr_j50) * (pj_corr_mat - thr_j50) < 0.0), axis=0)
+        cross_h30 = np.mean(((clean.p_hlt[None, :] - thr_h30) * (ph_corr_mat - thr_h30) < 0.0), axis=0)
+        cross_j30 = np.mean(((clean.p_joint[None, :] - thr_j30) * (pj_corr_mat - thr_j30) < 0.0), axis=0)
+        feature_dict["threshold_cross_flip_rate_hlt_fpr50"] = cross_h50.astype(np.float32)
+        feature_dict["threshold_cross_flip_rate_joint_fpr50"] = cross_j50.astype(np.float32)
+        feature_dict["threshold_cross_flip_rate_gap_fpr50"] = (cross_j50 - cross_h50).astype(np.float32)
+        feature_dict["threshold_cross_flip_rate_hlt_fpr30"] = cross_h30.astype(np.float32)
+        feature_dict["threshold_cross_flip_rate_joint_fpr30"] = cross_j30.astype(np.float32)
+        feature_dict["threshold_cross_flip_rate_gap_fpr30"] = (cross_j30 - cross_h30).astype(np.float32)
+
+    # Rebuild feature matrices after threshold-aware feature expansion.
+    feature_names = sorted(feature_dict.keys())
+    X_all = _stack_features(feature_dict, feature_names)
+    X_a = X_all[idx_analysis]
+    X_t = X_all[idx_test]
+    X_fit = X_a[idx_fit]
+    X_cal = X_a[idx_cal]
 
     # ---------------- Baselines ----------------
     leaderboard: List[Dict[str, object]] = []
@@ -1141,9 +1379,11 @@ def main() -> None:
             "corruptions": [{"kind": k, "severity": float(v)} for (k, v) in corruption_list],
             "cost_alpha_neg": float(args.cost_alpha_neg),
             "cost_tau": float(args.cost_tau),
+            "feature_profile": str(args.feature_profile),
             "dual_input_dim_a": int(dual_in_a),
             "dual_input_dim_b": int(dual_in_b),
             "corrected_use_flags": bool(corrected_use_flags),
+            "n_router_features": int(len(feature_names)),
             "n_total_router": int(n_total_router),
             "n_analysis": int(len(idx_analysis)),
             "n_test": int(len(idx_test)),
@@ -1187,7 +1427,9 @@ def main() -> None:
     print("=" * 72)
     print(f"Run dir: {run_dir}")
     print(f"Out dir: {out_dir}")
+    print(f"Feature profile: {args.feature_profile}")
     print(f"N analysis/test: {len(idx_analysis)} / {len(idx_test)}")
+    print(f"Router features: {len(feature_names)}")
     print(f"Corruptions: {len(corruption_list)}")
     print()
     print("Top methods on held-out test (sorted by FPR@50 then AUC):")
