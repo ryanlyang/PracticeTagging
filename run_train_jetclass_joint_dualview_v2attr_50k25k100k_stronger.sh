@@ -14,7 +14,7 @@ SAVE_DIR="${SAVE_DIR:-checkpoints/jetclass_joint_dualview}"
 RUN_NAME="${RUN_NAME:-jetclass_joint_v2attr_50k25k100k_stronger}"
 SEED="${SEED:-52}"
 DEVICE="${DEVICE:-cuda}"
-NUM_WORKERS="${NUM_WORKERS:-2}"
+NUM_WORKERS="${NUM_WORKERS:-1}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-50000}"
 N_VAL_JETS="${N_VAL_JETS:-25000}"
@@ -141,4 +141,3 @@ echo
 "${CMD[@]}"
 
 echo "Done: ${SAVE_DIR}/${RUN_NAME}"
-

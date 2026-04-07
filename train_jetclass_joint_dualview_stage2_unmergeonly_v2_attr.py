@@ -514,10 +514,10 @@ class JointDualDatasetMulti(Dataset):
             "split_mode_target": self.split_mode_target[i],
             "child_type_a_target": self.child_type_a_target[i],
             "child_type_b_target": self.child_type_b_target[i],
-            "child_charge_a_target": self.child_attr_a_target[i, 0],
-            "child_charge_b_target": self.child_attr_b_target[i, 0],
-            "child_track_a_target": self.child_attr_a_target[i, 1:5],
-            "child_track_b_target": self.child_attr_b_target[i, 1:5],
+            "child_charge_a_target": self.child_attr_a_target[i, :, 0],
+            "child_charge_b_target": self.child_attr_b_target[i, :, 0],
+            "child_track_a_target": self.child_attr_a_target[i, :, 1:5],
+            "child_track_b_target": self.child_attr_b_target[i, :, 1:5],
             "label": self.labels[i],
         }
 
