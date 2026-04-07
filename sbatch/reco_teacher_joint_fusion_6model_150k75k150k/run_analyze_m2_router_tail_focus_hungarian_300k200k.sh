@@ -53,6 +53,16 @@ TAIL_TPR_CUT="${TAIL_TPR_CUT:-0.6}"
 FALLBACK_NON_TAIL="${FALLBACK_NON_TAIL:-joint}"
 SELECTION_METRIC="${SELECTION_METRIC:-fpr50}"
 
+# Router training (epoch-based, no sklearn max_iter cap).
+ROUTER_MODEL="${ROUTER_MODEL:-mlp}"                 # mlp | linear
+ROUTER_HIDDEN="${ROUTER_HIDDEN:-256}"
+ROUTER_DROPOUT="${ROUTER_DROPOUT:-0.10}"
+ROUTER_EPOCHS="${ROUTER_EPOCHS:-40}"
+ROUTER_PATIENCE="${ROUTER_PATIENCE:-8}"
+ROUTER_LR="${ROUTER_LR:-1e-3}"
+ROUTER_WEIGHT_DECAY="${ROUTER_WEIGHT_DECAY:-1e-4}"
+ROUTER_BATCH_SIZE="${ROUTER_BATCH_SIZE:-4096}"
+
 OUT_DIR="${OUT_DIR:-${RUN_DIR}/router_tail_focus_300k200k}"
 SAVE_PER_JET_NPZ="${SAVE_PER_JET_NPZ:-0}"
 
@@ -103,6 +113,14 @@ CMD=(
   --tail_tpr_cut "${TAIL_TPR_CUT}"
   --fallback_non_tail "${FALLBACK_NON_TAIL}"
   --selection_metric "${SELECTION_METRIC}"
+  --router_model "${ROUTER_MODEL}"
+  --router_hidden "${ROUTER_HIDDEN}"
+  --router_dropout "${ROUTER_DROPOUT}"
+  --router_epochs "${ROUTER_EPOCHS}"
+  --router_patience "${ROUTER_PATIENCE}"
+  --router_lr "${ROUTER_LR}"
+  --router_weight_decay "${ROUTER_WEIGHT_DECAY}"
+  --router_batch_size "${ROUTER_BATCH_SIZE}"
   --out_dir "${OUT_DIR}"
   --report_json "${OUT_DIR}/tail_router_report.json"
 )
@@ -122,6 +140,7 @@ echo "Data split: offset=${ROUTER_OFFSET_JETS}, analysis=${ROUTER_N_ANALYSIS}, t
 echo "Tail cut:   TPR < ${TAIL_TPR_CUT} (HLT or Joint)"
 echo "Fallback:   ${FALLBACK_NON_TAIL}"
 echo "Selection:  ${SELECTION_METRIC}"
+echo "Router:     model=${ROUTER_MODEL} epochs=${ROUTER_EPOCHS} patience=${ROUTER_PATIENCE} lr=${ROUTER_LR} bs=${ROUTER_BATCH_SIZE}"
 echo "Use corruption features: ${USE_CORRUPTION_FEATURES}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"

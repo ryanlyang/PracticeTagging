@@ -8,8 +8,10 @@ from typing import Dict, List, Tuple
 
 import numpy as np
 import torch
-from sklearn.linear_model import LogisticRegression
+import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 
 from unmerge_correct_hlt import (
     ParticleTransformer,
@@ -150,6 +152,44 @@ def _apply_tail_routing(
     return score, route_joint
 
 
+class RouterMLP(nn.Module):
+    def __init__(self, in_dim: int, hidden: int = 256, dropout: float = 0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden),
+            nn.ReLU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(hidden, hidden),
+            nn.ReLU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x).squeeze(1)
+
+
+class RouterLinear(nn.Module):
+    def __init__(self, in_dim: int):
+        super().__init__()
+        self.fc = nn.Linear(in_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.fc(x).squeeze(1)
+
+
+def _predict_q(model: nn.Module, x_np: np.ndarray, device: torch.device, batch_size: int = 8192) -> np.ndarray:
+    model.eval()
+    out = np.zeros((x_np.shape[0],), dtype=np.float32)
+    with torch.no_grad():
+        for s in range(0, x_np.shape[0], int(batch_size)):
+            e = min(x_np.shape[0], s + int(batch_size))
+            xb = torch.from_numpy(x_np[s:e]).to(device=device, dtype=torch.float32)
+            logits = model(xb)
+            out[s:e] = torch.sigmoid(logits).detach().cpu().numpy().astype(np.float32)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Tail-focused router train/eval (train+route only in HLT/Joint TPR-tail mask)")
     ap.add_argument("--run_dir", type=str, required=True)
@@ -182,6 +222,14 @@ def main() -> None:
     ap.add_argument("--tail_tpr_cut", type=float, default=0.6)
     ap.add_argument("--fallback_non_tail", type=str, default="joint", choices=["joint", "hlt"])
     ap.add_argument("--selection_metric", type=str, default="fpr50", choices=["fpr50", "auc"])
+    ap.add_argument("--router_model", type=str, default="mlp", choices=["mlp", "linear"])
+    ap.add_argument("--router_hidden", type=int, default=256)
+    ap.add_argument("--router_dropout", type=float, default=0.10)
+    ap.add_argument("--router_epochs", type=int, default=40)
+    ap.add_argument("--router_patience", type=int, default=8)
+    ap.add_argument("--router_lr", type=float, default=1e-3)
+    ap.add_argument("--router_weight_decay", type=float, default=1e-4)
+    ap.add_argument("--router_batch_size", type=int, default=4096)
 
     ap.add_argument("--out_dir", type=str, default="")
     ap.add_argument("--report_json", type=str, default="")
@@ -403,12 +451,130 @@ def main() -> None:
             f"Too few tail training jets ({int(np.sum(tail_fit))}). Consider lower tail cut or more data."
         )
 
-    # Train router on tail-only jets.
-    clf = LogisticRegression(C=0.25, max_iter=4000, class_weight="balanced")
-    clf.fit(X_fit[tail_fit], z_fit[tail_fit])
+    # Train router on tail-only jets with epoch-based optimization.
+    scaler = StandardScaler()
+    scaler.fit(X_fit[tail_fit])
+    X_fit_s = scaler.transform(X_fit).astype(np.float32)
+    X_cal_s = scaler.transform(X_cal).astype(np.float32)
+    X_t_s = scaler.transform(X_t).astype(np.float32)
 
-    q_cal = clf.predict_proba(X_cal)[:, 1]
-    q_test = clf.predict_proba(X_t)[:, 1]
+    x_train_tail = X_fit_s[tail_fit]
+    y_train_tail = z_fit[tail_fit].astype(np.float32)
+    n_pos = int(np.sum(y_train_tail > 0.5))
+    n_neg = int(y_train_tail.shape[0] - n_pos)
+    pos_weight = float(n_neg / max(n_pos, 1))
+
+    if str(args.router_model) == "linear":
+        router = RouterLinear(in_dim=int(X_fit_s.shape[1])).to(device)
+    else:
+        router = RouterMLP(
+            in_dim=int(X_fit_s.shape[1]),
+            hidden=int(args.router_hidden),
+            dropout=float(args.router_dropout),
+        ).to(device)
+
+    opt = torch.optim.AdamW(
+        router.parameters(),
+        lr=float(args.router_lr),
+        weight_decay=float(args.router_weight_decay),
+    )
+    loss_fn = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, dtype=torch.float32, device=device))
+
+    idx_perm = np.arange(x_train_tail.shape[0])
+    best_epoch = -1
+    best_state = None
+    best_sel = float("-inf") if str(args.selection_metric) == "auc" else float("inf")
+    best_q_cal = None
+    best_q_test = None
+    best_threshold_row = None
+    history: List[Dict[str, float]] = []
+    bad_epochs = 0
+
+    for ep in range(1, int(args.router_epochs) + 1):
+        np.random.shuffle(idx_perm)
+        router.train()
+        train_loss_sum = 0.0
+        train_seen = 0
+
+        for s in range(0, idx_perm.shape[0], int(args.router_batch_size)):
+            e = min(idx_perm.shape[0], s + int(args.router_batch_size))
+            bi = idx_perm[s:e]
+            xb = torch.from_numpy(x_train_tail[bi]).to(device=device, dtype=torch.float32)
+            yb = torch.from_numpy(y_train_tail[bi]).to(device=device, dtype=torch.float32)
+
+            opt.zero_grad(set_to_none=True)
+            logits = router(xb)
+            loss = loss_fn(logits, yb)
+            loss.backward()
+            opt.step()
+
+            bsz = int(xb.shape[0])
+            train_loss_sum += float(loss.detach().cpu().item()) * bsz
+            train_seen += bsz
+
+        train_loss = float(train_loss_sum / max(train_seen, 1))
+        q_cal_ep = _predict_q(router, X_cal_s, device, batch_size=max(4096, int(args.router_batch_size)))
+        q_test_ep = _predict_q(router, X_t_s, device, batch_size=max(4096, int(args.router_batch_size)))
+
+        best_ep_row, _ = _choose_best_threshold_tail(
+            y_cal=y_cal,
+            p_h_cal=ph_cal,
+            p_j_cal=pj_cal,
+            q_cal=q_cal_ep,
+            tail_mask_cal=tail_cal,
+            fallback=str(args.fallback_non_tail),
+            objective=str(args.selection_metric),
+        )
+        score_cal_ep, _ = _apply_tail_routing(
+            p_h=ph_cal,
+            p_j=pj_cal,
+            q=q_cal_ep,
+            tail_mask=tail_cal,
+            direction=str(best_ep_row["direction"]),
+            threshold=float(best_ep_row["threshold"]),
+            fallback=str(args.fallback_non_tail),
+        )
+        m_cal_ep = _score_metrics(y_cal, score_cal_ep, ph_cal)
+        sel = float(m_cal_ep["auc"]) if str(args.selection_metric) == "auc" else float(m_cal_ep["fpr50"])
+        improved = (sel > best_sel) if str(args.selection_metric) == "auc" else (sel < best_sel)
+        if improved:
+            best_sel = sel
+            best_epoch = ep
+            best_state = {k: v.detach().cpu().clone() for k, v in router.state_dict().items()}
+            best_q_cal = q_cal_ep.copy()
+            best_q_test = q_test_ep.copy()
+            best_threshold_row = dict(best_ep_row)
+            bad_epochs = 0
+        else:
+            bad_epochs += 1
+
+        history.append(
+            {
+                "epoch": int(ep),
+                "train_loss": float(train_loss),
+                "cal_auc": float(m_cal_ep["auc"]),
+                "cal_fpr30": float(m_cal_ep["fpr30"]),
+                "cal_fpr50": float(m_cal_ep["fpr50"]),
+                "cal_tail_route_frac": float(best_ep_row.get("route_frac_tail_cal", float("nan"))),
+            }
+        )
+
+        print(
+            f"Router ep{ep:02d}: train_loss={train_loss:.5f} | "
+            f"cal_auc={m_cal_ep['auc']:.6f}, cal_fpr50={m_cal_ep['fpr50']:.6f}, "
+            f"tail_route_frac={best_ep_row.get('route_frac_tail_cal', float('nan')):.4f}"
+        )
+
+        if bad_epochs >= int(args.router_patience):
+            print(f"Early stopping router at epoch {ep} (patience={args.router_patience})")
+            break
+
+    if best_state is None or best_q_cal is None or best_q_test is None or best_threshold_row is None:
+        raise RuntimeError("Router training failed to produce a valid best checkpoint")
+
+    router.load_state_dict(best_state, strict=True)
+    q_cal = best_q_cal
+    q_test = best_q_test
 
     best, sweep_rows = _choose_best_threshold_tail(
         y_cal=y_cal,
@@ -419,6 +585,8 @@ def main() -> None:
         fallback=str(args.fallback_non_tail),
         objective=str(args.selection_metric),
     )
+    # Keep selected threshold consistent with best epoch checkpoint when available.
+    best = dict(best_threshold_row)
 
     # Selected route metrics.
     score_cal_sel, route_joint_cal = _apply_tail_routing(
@@ -503,6 +671,14 @@ def main() -> None:
             "n_test_tail": int(np.sum(tail_test)),
         },
         "selected_threshold": best,
+        "router_training": {
+            "model": str(args.router_model),
+            "best_epoch": int(best_epoch),
+            "best_selection_value": float(best_sel),
+            "n_train_tail": int(np.sum(tail_fit)),
+            "pos_weight": float(pos_weight),
+            "history": history,
+        },
         "selected_metrics": {
             "cal": m_sel_cal,
             "test": m_sel_test,
