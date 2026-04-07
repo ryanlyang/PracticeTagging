@@ -48,12 +48,29 @@ def _get_type_config_type_agnostic():
 
 def main() -> None:
     # Monkey-patch only for this process.
+    original_get_type_config = base.get_type_config
+
+    def _get_type_config_type_agnostic_no_recursion():
+        cfg = original_get_type_config()
+
+        r = np.full_like(cfg["merge_radius"], 0.018, dtype=np.float64)
+        p = np.full_like(cfg["merge_prob"], 0.28, dtype=np.float64)
+
+        unk = int(base.TYPE_UNK)
+        r[unk, :] = np.minimum(r[unk, :], 0.010)
+        r[:, unk] = np.minimum(r[:, unk], 0.010)
+        p[unk, :] = np.minimum(p[unk, :], 0.08)
+        p[:, unk] = np.minimum(p[:, unk], 0.08)
+
+        cfg["merge_radius"] = r
+        cfg["merge_prob"] = p
+        return cfg
+
     base.allowed_merge_and_output_type = _allowed_merge_and_output_type_type_agnostic
-    base.get_type_config = _get_type_config_type_agnostic
+    base.get_type_config = _get_type_config_type_agnostic_no_recursion
     args = base.parse_args()
     base.run_experiment(args)
 
 
 if __name__ == "__main__":
     main()
-
