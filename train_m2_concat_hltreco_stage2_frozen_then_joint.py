@@ -286,7 +286,7 @@ def train_concat_joint(
             loss_rank = b.low_fpr_surrogate_loss(logits, y, target_tpr=0.50, tau=0.05)
             loss_cons = reco_out["child_weight"].mean() + reco_out["gen_weight"].mean()
             if float(lambda_reco) > 0.0:
-                reco_losses = b.compute_reconstruction_losses(
+                reco_losses = b.compute_reconstruction_losses_weighted(
                     reco_out,
                     const_hlt,
                     mask_hlt,
@@ -295,6 +295,7 @@ def train_concat_joint(
                     b_merge,
                     b_eff,
                     b.BASE_CONFIG["loss"],
+                    sample_weight=None,
                 )
                 loss_reco = reco_losses["total"]
             else:
@@ -727,4 +728,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
