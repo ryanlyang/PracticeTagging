@@ -169,8 +169,8 @@ def main() -> None:
         raise RuntimeError("No threshold candidates evaluated")
 
     # Evaluate selected hard route on test.
-    s_val_best, m_val_best = _hard_route(g_val, pj_val, ph_val, float(best["threshold"]), str(best["direction"]))
-    s_test_best, m_test_best = _hard_route(g_test, pj_test, ph_test, float(best["threshold"]), str(best["direction"]))
+    s_val_best, route_mask_val = _hard_route(g_val, pj_val, ph_val, float(best["threshold"]), str(best["direction"]))
+    s_test_best, route_mask_test = _hard_route(g_test, pj_test, ph_test, float(best["threshold"]), str(best["direction"]))
 
     m_val_best = _score_metrics(y_val, s_val_best, ph_val)
     m_test_best = _score_metrics(y_test, s_test_best, ph_test)
@@ -207,8 +207,8 @@ def main() -> None:
         "selected": {
             "direction": str(best["direction"]),
             "threshold": float(best["threshold"]),
-            "joint_route_frac_val": float(np.mean(m_val_best)),
-            "joint_route_frac_test": float(np.mean(m_test_best)),
+            "joint_route_frac_val": float(np.mean(route_mask_val)),
+            "joint_route_frac_test": float(np.mean(route_mask_test)),
         },
         "val": {
             "selected_hard_route": m_val_best,
@@ -234,8 +234,8 @@ def main() -> None:
     print(f"Run dir: {run_dir}")
     print(f"Scores: {scores_npz}")
     print(f"Selected: direction={best['direction']} threshold={best['threshold']:.8f}")
-    print(f"Val  route_frac={np.mean(m_val_best):.4f} | AUC={m_val_best['auc']:.6f} FPR30={m_val_best['fpr30']:.6f} FPR50={m_val_best['fpr50']:.6f}")
-    print(f"Test route_frac={np.mean(m_test_best):.4f} | AUC={m_test_best['auc']:.6f} FPR30={m_test_best['fpr30']:.6f} FPR50={m_test_best['fpr50']:.6f}")
+    print(f"Val  route_frac={np.mean(route_mask_val):.4f} | AUC={m_val_best['auc']:.6f} FPR30={m_val_best['fpr30']:.6f} FPR50={m_val_best['fpr50']:.6f}")
+    print(f"Test route_frac={np.mean(route_mask_test):.4f} | AUC={m_test_best['auc']:.6f} FPR30={m_test_best['fpr30']:.6f} FPR50={m_test_best['fpr50']:.6f}")
     print()
     print(
         "Test baselines: "
