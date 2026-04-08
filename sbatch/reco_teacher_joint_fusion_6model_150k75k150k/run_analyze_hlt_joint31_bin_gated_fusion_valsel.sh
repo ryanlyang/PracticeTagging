@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=an31bgv
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=03:00:00
@@ -115,4 +115,3 @@ echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
 "${CMD[@]}"
-
