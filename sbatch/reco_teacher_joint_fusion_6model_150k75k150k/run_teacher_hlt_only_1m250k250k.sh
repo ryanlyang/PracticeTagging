@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=th1m250
+#SBATCH --partition=tier3
+#SBATCH --gres=gpu:1
+#SBATCH --mem=128G
+#SBATCH --time=3-00:00:00
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_1m250k250k_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_1m250k250k_%j.err
+
+set -euo pipefail
+
+mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
+
+RUN_NAME="${RUN_NAME:-teacher_hlt_only_1m250k250k_seed0}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only}"
+SEED="${SEED:-0}"
+DEVICE="${DEVICE:-cuda}"
+NUM_WORKERS="${NUM_WORKERS:-6}"
+
+N_TRAIN_JETS="${N_TRAIN_JETS:-1500000}"
+N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-1000000}"
+N_VAL_SPLIT="${N_VAL_SPLIT:-250000}"
+N_TEST_SPLIT="${N_TEST_SPLIT:-250000}"
+OFFSET_JETS="${OFFSET_JETS:-0}"
+MAX_CONSTITS="${MAX_CONSTITS:-100}"
+
+set +u
+source ~/.bashrc
+set -u
+conda activate atlas_kd
+cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export PYTHONHASHSEED="${SEED}"
+
+mkdir -p "${SAVE_DIR}"
+
+CMD=(
+  python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py
+  --save_dir "${SAVE_DIR}"
+  --run_name "${RUN_NAME}"
+  --n_train_jets "${N_TRAIN_JETS}"
+  --n_train_split "${N_TRAIN_SPLIT}"
+  --n_val_split "${N_VAL_SPLIT}"
+  --n_test_split "${N_TEST_SPLIT}"
+  --offset_jets "${OFFSET_JETS}"
+  --max_constits "${MAX_CONSTITS}"
+  --num_workers "${NUM_WORKERS}"
+  --seed "${SEED}"
+  --selection_metric auc
+  --step1_only
+  --device "${DEVICE}"
+)
+
+echo "============================================================"
+echo "Teacher + HLT Baseline Only (1M/250k/250k split)"
+echo "Run: ${SAVE_DIR}/${RUN_NAME}"
+echo "Data: n_train_jets=${N_TRAIN_JETS}, split=${N_TRAIN_SPLIT}/${N_VAL_SPLIT}/${N_TEST_SPLIT}, offset=${OFFSET_JETS}"
+echo "============================================================"
+printf ' %q' "${CMD[@]}"
+echo
+"${CMD[@]}"
+
+echo "Done: ${SAVE_DIR}/${RUN_NAME}"
