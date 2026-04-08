@@ -650,14 +650,20 @@ def main() -> None:
 
     cfg["reconstructor_training"]["epochs"] = int(args.stageA_epochs)
     cfg["reconstructor_training"]["patience"] = int(args.stageA_patience)
-    if int(args.stageA_phase035_epochs) > 0 or int(args.stageA_phase070_epochs) > 0:
-        if int(args.stageA_phase035_epochs) <= 0 or int(args.stageA_phase070_epochs) <= 0:
+    phase035 = int(args.stageA_phase035_epochs)
+    phase070 = int(args.stageA_phase070_epochs)
+    if phase035 == 0 and phase070 == 0:
+        cfg["reconstructor_training"]["stage1_epochs"] = 0
+        cfg["reconstructor_training"]["stage2_epochs"] = 0
+    elif phase035 > 0 or phase070 > 0:
+        if phase035 <= 0 or phase070 <= 0:
             raise ValueError(
-                "When using custom Stage-A curriculum phase lengths, both "
-                "--stageA_phase035_epochs and --stageA_phase070_epochs must be > 0."
+                "When using custom Stage-A curriculum phase lengths, either set both "
+                "--stageA_phase035_epochs and --stageA_phase070_epochs to 0 "
+                "(to skip warmup phases), or set both to > 0."
             )
-        stage1 = int(args.stageA_phase035_epochs)
-        stage2 = int(args.stageA_phase035_epochs) + int(args.stageA_phase070_epochs)
+        stage1 = phase035
+        stage2 = phase035 + phase070
         if stage2 >= int(args.stageA_epochs):
             raise ValueError(
                 f"Custom Stage-A phase lengths must leave room for phase_100: "
