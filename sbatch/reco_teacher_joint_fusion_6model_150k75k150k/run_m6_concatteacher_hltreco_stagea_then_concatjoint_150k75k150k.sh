@@ -54,7 +54,7 @@ CMD=(
   --num_workers "${NUM_WORKERS}"
   --batch_size "${BATCH_SIZE}"
   --seed "${SEED}"
-  --stageA_epochs 90
+  --stageA_epochs 115
   --stageA_patience 18
   --stageA_kd_temp 2.5
   --stageA_lambda_kd 1.0
@@ -101,4 +101,3 @@ echo
 "${CMD[@]}"
 
 echo "Done: ${SAVE_DIR}/${RUN_NAME}"
-
