@@ -126,14 +126,33 @@ models_order = fusion.get("models_order", [])
 if not isinstance(models_order, list):
     models_order = []
 
-base_ckpt = "checkpoints/reco_teacher_joint_fusion_6model_150k75k150k"
+base_ckpt = Path("checkpoints/reco_teacher_joint_fusion_6model_150k75k150k").expanduser().resolve()
 suffix = "_150k75k150k_seed0"
-for mid in extra:
+
+def _fallback_path(mid: str) -> Path:
     if mid.endswith(suffix):
         parent = mid[: -len(suffix)]
     else:
         parent = mid
-    score_files[mid] = f"{base_ckpt}/{parent}/{mid}/fusion_scores_val_test.npz"
+    return (base_ckpt / parent / mid / "fusion_scores_val_test.npz").resolve()
+
+def _resolve_score_path(mid: str) -> Path:
+    fb = _fallback_path(mid)
+    if fb.exists():
+        return fb
+    if base_ckpt.exists():
+        hits = [p.resolve() for p in base_ckpt.glob(f"**/{mid}/fusion_scores_val_test.npz")]
+        if hits:
+            hits = sorted(set(hits), key=lambda p: (len(str(p)), str(p)))
+            return hits[0]
+    return fb
+
+missing = []
+for mid in extra:
+    p = _resolve_score_path(mid)
+    score_files[mid] = str(p)
+    if not p.exists():
+        missing.append(mid)
     if mid not in models_order:
         models_order.append(mid)
 
@@ -142,6 +161,10 @@ dst.parent.mkdir(parents=True, exist_ok=True)
 dst.write_text(json.dumps(fusion, indent=2))
 print(f"Wrote extended fusion json: {dst}")
 print(f"Total models_order: {len(models_order)}")
+if missing:
+    print("WARNING: unresolved score paths for models:")
+    for m in missing:
+        print(f"  - {m}")
 PY
 FUSION_JSON="${EXTENDED_FUSION_JSON}"
 
