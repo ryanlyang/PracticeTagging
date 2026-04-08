@@ -101,9 +101,14 @@ def _load_means_stds(run_dir: Path) -> Tuple[np.ndarray, np.ndarray]:
     if not p.exists():
         raise FileNotFoundError(f"Missing data_splits.npz: {p}")
     z = np.load(p, allow_pickle=False)
-    if "means" not in z or "stds" not in z:
-        raise KeyError(f"data_splits missing means/stds: {p}")
-    return np.asarray(z["means"], dtype=np.float32), np.asarray(z["stds"], dtype=np.float32)
+    if "means" in z and "stds" in z:
+        return np.asarray(z["means"], dtype=np.float32), np.asarray(z["stds"], dtype=np.float32)
+    # Older concat-teacher runs saved separate normalization tracks.
+    if "means_off" in z and "stds_off" in z:
+        return np.asarray(z["means_off"], dtype=np.float32), np.asarray(z["stds_off"], dtype=np.float32)
+    if "means_hlt" in z and "stds_hlt" in z:
+        return np.asarray(z["means_hlt"], dtype=np.float32), np.asarray(z["stds_hlt"], dtype=np.float32)
+    raise KeyError(f"data_splits missing usable means/stds keys: {p} (keys={list(z.keys())})")
 
 
 def _safe_auc(y: np.ndarray, p: np.ndarray) -> float:
@@ -112,6 +117,13 @@ def _safe_auc(y: np.ndarray, p: np.ndarray) -> float:
     if yb.size == 0 or np.unique(yb).size < 2:
         return float("nan")
     return float(roc_auc_score(yb, pp))
+
+
+def _short_err(exc: Exception, max_len: int = 220) -> str:
+    s = str(exc).replace("\n", " ")
+    if len(s) <= int(max_len):
+        return s
+    return s[: int(max_len) - 3] + "..."
 
 
 def _family_from_score_file(model: str, score_path: Path) -> str:
@@ -650,7 +662,18 @@ def main() -> None:
             score_path = score_paths[model_name]
             run_dir = score_path.parent
             fam = _family_from_score_file(model_name, score_path)
-            means, stds = _load_means_stds(run_dir)
+            stats_source = "run_dir"
+            try:
+                means, stds = _load_means_stds(run_dir)
+            except Exception as e:
+                # Some legacy runs miss per-run stats keys; fall back to anchor stats so
+                # precompute continues and diagnostics can still flag weak models.
+                means, stds = means_anchor, stds_anchor
+                stats_source = f"anchor_fallback:{type(e).__name__}"
+                print(
+                    f"[warn] using anchor means/stds for model={model_name} run_dir={run_dir} "
+                    f"because {_short_err(e)}"
+                )
             cfg = _deepcopy_cfg()
 
             if fam == "joint":
@@ -735,6 +758,7 @@ def main() -> None:
                 "family": fam,
                 "run_dir": str(run_dir),
                 "score_file": str(score_paths.get(model_name, "")),
+                "stats_source": stats_source if model_name != "hlt" else "anchor_hlt",
                 "auc_dev": float(auc_dev),
                 "auc_test_source": float(auc_test),
                 "elapsed_sec": float(dt),
@@ -791,4 +815,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
