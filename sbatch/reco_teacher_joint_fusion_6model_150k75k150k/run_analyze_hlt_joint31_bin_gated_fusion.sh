@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=an31bing
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=03:00:00
