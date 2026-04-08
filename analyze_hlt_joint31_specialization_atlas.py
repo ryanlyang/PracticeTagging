@@ -348,6 +348,10 @@ def _load_scores_from_fusion_json(
         if isinstance(v, str):
             resolved_run_dirs[k] = _safe_path(v, repo_root)
 
+    model_order = list(fusion_obj.get("models_order", MODEL_ORDER_31))
+    if not model_order:
+        model_order = list(MODEL_ORDER_31)
+
     # joint_delta anchor scores / labels
     joint_score_path = score_files_raw.get("joint_delta")
     if not isinstance(joint_score_path, str):
@@ -370,15 +374,51 @@ def _load_scores_from_fusion_json(
     }
     score_file_used: Dict[str, str] = {"joint_delta": str(joint_npz_path)}
 
-    for name, (run_key, file_name, val_keys, test_keys) in MODEL_SCORE_SPECS.items():
-        sf = score_files_raw.get(name)
-        if isinstance(sf, str):
-            npz_path = _safe_path(sf, repo_root)
+    # Generic fallback for additional models whose score npz follows
+    # standard fusion naming.
+    generic_val_keys = [
+        "preds_joint_val",
+        "preds_joint_post_val",
+        "preds_joint_bestfpr_val",
+        "preds_fused_val",
+        "preds_val",
+    ]
+    generic_test_keys = [
+        "preds_joint_test",
+        "preds_joint_post_test",
+        "preds_joint_bestfpr_test",
+        "preds_fused_test",
+        "preds_test",
+    ]
+
+    for name in model_order:
+        if name in ("hlt", "joint_delta"):
+            continue
+
+        if name in MODEL_SCORE_SPECS:
+            run_key, file_name, val_keys, test_keys = MODEL_SCORE_SPECS[name]
+            sf = score_files_raw.get(name)
+            if isinstance(sf, str):
+                npz_path = _safe_path(sf, repo_root)
+            else:
+                rd = resolved_run_dirs.get(run_key)
+                if rd is None:
+                    raise KeyError(f"Missing run dir for {name}: key={run_key}")
+                npz_path = _safe_path(str(rd / file_name), repo_root)
         else:
-            rd = resolved_run_dirs.get(run_key)
-            if rd is None:
-                raise KeyError(f"Missing run dir for {name}: key={run_key}")
-            npz_path = _safe_path(str(rd / file_name), repo_root)
+            sf = score_files_raw.get(name)
+            if isinstance(sf, str):
+                npz_path = _safe_path(sf, repo_root)
+            else:
+                rd = resolved_run_dirs.get(f"{name}_run_dir")
+                if rd is None:
+                    raise KeyError(
+                        f"Missing score path for model={name}. "
+                        f"Add run_dirs.score_files['{name}'] or run_dirs['{name}_run_dir']."
+                    )
+                npz_path = _safe_path(str(rd / "fusion_scores_val_test.npz"), repo_root)
+            val_keys = generic_val_keys
+            test_keys = generic_test_keys
 
         z = base._load_npz(npz_path)
         yv = np.asarray(z["labels_val"], dtype=np.float32)
@@ -394,9 +434,6 @@ def _load_scores_from_fusion_json(
         scores_test[name] = np.asarray(z[k_test], dtype=np.float64)
         score_file_used[name] = str(npz_path)
 
-    model_order = list(fusion_obj.get("models_order", MODEL_ORDER_31))
-    if not model_order:
-        model_order = list(MODEL_ORDER_31)
     for n in model_order:
         if n not in scores_val:
             raise KeyError(f"Model in models_order missing score arrays: {n}")

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=an31roll1m
+#SBATCH --job-name=an55roll1m
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=1-00:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze31_roll1m_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze31_roll1m_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze55_roll1m_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze55_roll1m_%j.err
 
 set -euo pipefail
 
@@ -35,7 +35,7 @@ VAL_POOL_SIZE="${VAL_POOL_SIZE:-1000000}"
 VAL_POOL_OFFSET="${VAL_POOL_OFFSET:-0}"
 N_CHUNKS="${N_CHUNKS:-5}"
 
-CANDIDATE_TOPK_FIT="${CANDIDATE_TOPK_FIT:-31}"
+CANDIDATE_TOPK_FIT="${CANDIDATE_TOPK_FIT:-55}"
 MAX_STEPS="${MAX_STEPS:-20}"
 PATIENCE="${PATIENCE:-5}"
 W_STEP="${W_STEP:-0.01}"
@@ -64,6 +64,82 @@ if [[ ! -f "${FUSION_JSON}" ]]; then
   echo "ERROR: FUSION_JSON not found: ${FUSION_JSON}" >&2
   exit 1
 fi
+
+# Extend base 31-model fusion json to 55 models:
+# 31 base + 15 prior additions + 9 additional high-value runs.
+EXTRA_MODELS=(
+  # Prior 15 additions
+  "model2_joint_delta005_stagec_prog_unfreeze_splitctx_heads_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_jetlatent_set2set_150k75k150k_seed0"
+  "model2_joint_chamfer_budget_local_ptratio_unselected0_localr0_stagec_prog_wlocal010_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_hybridcand_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_splitcap120_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_linear_unsmear_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_hungarian_tokenaux_150k75k150k_seed0"
+  "model2_joint_chamfer_budget_local_ptratio_unselected0_localr0_stagec_prog_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_factorized_edit_150k75k150k_seed0"
+  "model2_joint_chamfer_budget_local_ptratio_eratioon_unselected0_localr0_150k75k150k_seed0"
+  "model2_joint_chamfer_budget_local_ptratio_physon_unselected0_localr0_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_splitmass_softmax_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_actionentropy_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_stagea_taskaux_150k75k150k_seed0"
+  "model2_joint_delta005_fulltrain_prog_unfreeze_splitk3_softgate_150k75k150k_seed0"
+  # Additional 9 high-value additions (includes unsmearcap_trust)
+  "model2_joint_delta005_stagec_prog_unfreeze_150k75k150k_seed0"
+  "model2_joint_chamfer_budget_local_ptratio_unselected0_localr0_150k75k150k_seed0"
+  "model2_joint_ot_sinkhorn_nophys_noratio_150k75k150k_seed0"
+  "model2_joint_hungarian_nophys_noratio_150k75k150k_seed0"
+  "model2_joint_chamfer_phys0_eratio035_unselected0_localr0_150k75k150k_seed0"
+  "model2_joint_ot_chamfer_sinkhorn_nophys_noratio_150k75k150k_seed0"
+  "model2_joint_sinkhorn_150k75k150k_seed0"
+  "model2_joint_chamfer_budget_sparse_150k75k150k_seed0"
+  "model2_joint_delta000_unsmearcap_trust_150k75k150k_seed0"
+)
+
+EXTENDED_FUSION_JSON="${EXTENDED_FUSION_JSON:-${FUSION_JSON%.json}_rolling55.json}"
+export EXTRA_MODELS_CSV="$(IFS=,; echo "${EXTRA_MODELS[*]}")"
+python3 - "${FUSION_JSON}" "${EXTENDED_FUSION_JSON}" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+src = Path(sys.argv[1]).expanduser().resolve()
+dst = Path(sys.argv[2]).expanduser().resolve()
+fusion = json.loads(src.read_text())
+
+extra = [x.strip() for x in os.environ.get("EXTRA_MODELS_CSV", "").split(",") if x.strip()]
+run_dirs = fusion.get("run_dirs", {})
+if not isinstance(run_dirs, dict):
+    run_dirs = {}
+fusion["run_dirs"] = run_dirs
+score_files = run_dirs.get("score_files", {})
+if not isinstance(score_files, dict):
+    score_files = {}
+run_dirs["score_files"] = score_files
+
+models_order = fusion.get("models_order", [])
+if not isinstance(models_order, list):
+    models_order = []
+
+base_ckpt = "checkpoints/reco_teacher_joint_fusion_6model_150k75k150k"
+suffix = "_150k75k150k_seed0"
+for mid in extra:
+    if mid.endswith(suffix):
+        parent = mid[: -len(suffix)]
+    else:
+        parent = mid
+    score_files[mid] = f"{base_ckpt}/{parent}/{mid}/fusion_scores_val_test.npz"
+    if mid not in models_order:
+        models_order.append(mid)
+
+fusion["models_order"] = models_order
+dst.parent.mkdir(parents=True, exist_ok=True)
+dst.write_text(json.dumps(fusion, indent=2))
+print(f"Wrote extended fusion json: {dst}")
+print(f"Total models_order: {len(models_order)}")
+PY
+FUSION_JSON="${EXTENDED_FUSION_JSON}"
 
 # Clamp val-pool request to what exists in the selected fusion artifact.
 read -r VAL_POOL_SIZE_ADJ VAL_POOL_OFFSET_ADJ VAL_POOL_AVAIL <<EOF
@@ -150,7 +226,7 @@ if [[ -n "${REPORT_JSON}" ]]; then
 fi
 
 echo "============================================================"
-echo "31-Model Rolling-Chunk Greedy Fusion (val-size clamped if needed)"
+echo "55-Model Rolling-Chunk Greedy Fusion (1M Val Pool)"
 echo "Fusion json:         ${FUSION_JSON}"
 echo "Target TPR:          ${TARGET_TPR}"
 echo "Anchor:              ${ANCHOR_MODEL}"
