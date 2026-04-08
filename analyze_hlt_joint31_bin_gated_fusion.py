@@ -736,6 +736,7 @@ def main() -> None:
     ap.add_argument("--candidate_models_all", type=str, default="")
     ap.add_argument("--candidate_models_tpr50", type=str, default="")
     ap.add_argument("--candidate_models_tpr30", type=str, default="")
+    ap.add_argument("--selection_mode", type=str, default="split", choices=["split", "valsel"])
     ap.add_argument("--router_cal_frac", type=float, default=0.4)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--calibration", type=str, default="iso", choices=["raw", "iso", "platt"])
@@ -803,17 +804,21 @@ def main() -> None:
     )
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # fit/cal split on validation data for anti-overfit thresholding.
+    # Validation partition for fitting vs threshold selection.
     idx = np.arange(y_val.shape[0], dtype=np.int64)
     yv_int = (y_val > 0.5).astype(np.int64)
-    idx_fit, idx_cal = train_test_split(
-        idx,
-        test_size=float(np.clip(args.router_cal_frac, 0.1, 0.8)),
-        random_state=int(args.seed),
-        stratify=yv_int,
-    )
+    if str(args.selection_mode).lower() == "valsel":
+        idx_fit = idx.copy()
+        idx_ref = idx.copy()
+    else:
+        idx_fit, idx_ref = train_test_split(
+            idx,
+            test_size=float(np.clip(args.router_cal_frac, 0.1, 0.8)),
+            random_state=int(args.seed),
+            stratify=yv_int,
+        )
     y_fit = y_val[idx_fit].astype(np.float32)
-    y_cal = y_val[idx_cal].astype(np.float32)
+    y_ref = y_val[idx_ref].astype(np.float32)
     y_te = y_test.astype(np.float32)
 
     update_rows: List[Dict[str, object]] = []
@@ -829,24 +834,24 @@ def main() -> None:
         if len(cands) < 2:
             raise RuntimeError(f"Need at least anchor + one candidate for tpr={tpr}")
 
-        # Build fit/cal/test maps and calibrated variants for candidate optimization.
+        # Build fit/ref/test maps and calibrated variants for candidate optimization.
         fit_map_raw = {m: np.asarray(scores_val_raw[m][idx_fit], dtype=np.float64) for m in cands}
-        cal_map_raw = {m: np.asarray(scores_val_raw[m][idx_cal], dtype=np.float64) for m in cands}
+        ref_map_raw = {m: np.asarray(scores_val_raw[m][idx_ref], dtype=np.float64) for m in cands}
         test_map_raw = {m: np.asarray(scores_test_raw[m], dtype=np.float64) for m in cands}
 
         fit_map = {}
         cal_map = {}
         test_map = {}
         for m in cands:
-            sf, sc, st = calibrate_scores(
+            sf, sr, st = calibrate_scores(
                 y_fit=y_fit,
                 s_fit=fit_map_raw[m],
-                s_cal=cal_map_raw[m],
+                s_cal=ref_map_raw[m],
                 s_test=test_map_raw[m],
                 mode=str(args.calibration),
             )
             fit_map[m] = sf
-            cal_map[m] = sc
+            cal_map[m] = sr
             test_map[m] = st
 
         # 1) Global greedy blend.
@@ -870,7 +875,7 @@ def main() -> None:
         # 2) Build bins from anchor raw score + distance-to-anchor-threshold.
         thr_anchor_fit = threshold_for_target_tpr(y_fit, fit_map_raw[str(args.anchor_model)], float(tpr))
         dist_fit = np.abs(fit_map_raw[str(args.anchor_model)] - float(thr_anchor_fit))
-        dist_cal = np.abs(cal_map_raw[str(args.anchor_model)] - float(thr_anchor_fit))
+        dist_cal = np.abs(ref_map_raw[str(args.anchor_model)] - float(thr_anchor_fit))
         dist_test = np.abs(test_map_raw[str(args.anchor_model)] - float(thr_anchor_fit))
         bin_fit = _make_bin_ids(
             joint_score=fit_map_raw[str(args.anchor_model)],
@@ -931,19 +936,19 @@ def main() -> None:
         score_dump[f"fused_bin_cal_{k}"] = s_cal_b.astype(np.float32)
         score_dump[f"fused_bin_test_{k}"] = s_test_b.astype(np.float32)
 
-        # 4) Compare methods with threshold selected on cal split.
+        # 4) Compare methods with threshold selected on reference split.
         methods = {
-            "anchor": (cal_map_raw[str(args.anchor_model)], test_map_raw[str(args.anchor_model)]),
+            "anchor": (ref_map_raw[str(args.anchor_model)], test_map_raw[str(args.anchor_model)]),
             "global_blend": (s_cal_g, s_test_g),
             "bin_gated_blend": (s_cal_b, s_test_b),
-            "hlt": (scores_val_raw["hlt"][idx_cal], scores_test_raw["hlt"]),
+            "hlt": (scores_val_raw["hlt"][idx_ref], scores_test_raw["hlt"]),
         }
         if "teacher" in scores_val_raw and "teacher" in scores_test_raw:
-            methods["teacher"] = (scores_val_raw["teacher"][idx_cal], scores_test_raw["teacher"])
+            methods["teacher"] = (scores_val_raw["teacher"][idx_ref], scores_test_raw["teacher"])
 
         tpr_report = {"target_tpr": float(tpr), "candidates": cands, "metrics": {}}
         for mname, (sc, st) in methods.items():
-            ev = eval_from_ref(y_ref=y_cal, s_ref=np.asarray(sc, dtype=np.float64), y_eval=y_te, s_eval=np.asarray(st, dtype=np.float64), target_tpr=float(tpr))
+            ev = eval_from_ref(y_ref=y_ref, s_ref=np.asarray(sc, dtype=np.float64), y_eval=y_te, s_eval=np.asarray(st, dtype=np.float64), target_tpr=float(tpr))
             row = {
                 "target_tpr": float(tpr),
                 "method": mname,
@@ -953,7 +958,7 @@ def main() -> None:
                 "fpr_test": float(ev["fpr_eval"]),
                 "tpr_cal": float(ev["tpr_ref"]),
                 "tpr_test": float(ev["tpr_eval"]),
-                "threshold_from_cal": float(ev["threshold_from_ref"]),
+                "threshold_from_ref": float(ev["threshold_from_ref"]),
             }
             summary_rows.append(row)
             tpr_report["metrics"][mname] = row
@@ -979,9 +984,9 @@ def main() -> None:
     np.savez_compressed(
         out_dir / "bin_gated_scores.npz",
         idx_fit=idx_fit.astype(np.int64),
-        idx_cal=idx_cal.astype(np.int64),
+        idx_ref=idx_ref.astype(np.int64),
         labels_fit=y_fit.astype(np.float32),
-        labels_cal=y_cal.astype(np.float32),
+        labels_ref=y_ref.astype(np.float32),
         labels_test=y_te.astype(np.float32),
         **score_dump,
     )
@@ -1015,8 +1020,9 @@ def main() -> None:
     print(f"Out dir:     {out_dir}")
     print(f"Anchor:      {args.anchor_model}")
     print(f"TPRs:        {','.join(f'{x:.3f}' for x in target_tprs)}")
+    print(f"Selection:   {args.selection_mode}")
     print(f"Calibration: {args.calibration}")
-    print(f"Split fit/cal: {len(idx_fit)} / {len(idx_cal)}")
+    print(f"Split fit/ref: {len(idx_fit)} / {len(idx_ref)}")
     print()
     for tpr in target_tprs:
         key = f"{tpr:.4f}"
@@ -1038,4 +1044,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

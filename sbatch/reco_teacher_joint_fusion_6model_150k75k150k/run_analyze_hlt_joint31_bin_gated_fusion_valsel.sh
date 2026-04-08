@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=an31bing
+#SBATCH --job-name=an31bgv
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=48G
 #SBATCH --time=03:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze31_bingated_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze31_bingated_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze31_bingated_valsel_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze31_bingated_valsel_%j.err
 
 set -euo pipefail
 
@@ -29,7 +29,7 @@ fi
 
 TARGET_TPRS="${TARGET_TPRS:-0.50,0.30}"
 ANCHOR_MODEL="${ANCHOR_MODEL:-joint_delta}"
-SELECTION_MODE="${SELECTION_MODE:-split}"
+SELECTION_MODE="${SELECTION_MODE:-valsel}"
 ROUTER_CAL_FRAC="${ROUTER_CAL_FRAC:-0.40}"
 SEED="${SEED:-0}"
 CALIBRATION="${CALIBRATION:-iso}"
@@ -69,6 +69,10 @@ if [[ ! -f "${FUSION_JSON}" ]]; then
   exit 1
 fi
 
+if [[ -z "${OUT_DIR}" ]]; then
+  OUT_DIR="$(dirname "${FUSION_JSON}")/bin_gated_fusion_31_valsel"
+fi
+
 CMD=(
   python analyze_hlt_joint31_bin_gated_fusion.py
   --fusion_json "${FUSION_JSON}"
@@ -90,25 +94,25 @@ CMD=(
   --min_bin_fit "${MIN_BIN_FIT}"
   --min_global_improve "${MIN_GLOBAL_IMPROVE}"
   --min_bin_improve "${MIN_BIN_IMPROVE}"
+  --out_dir "${OUT_DIR}"
 )
 
-if [[ -n "${OUT_DIR}" ]]; then
-  CMD+=(--out_dir "${OUT_DIR}")
-fi
 if [[ -n "${REPORT_JSON}" ]]; then
   CMD+=(--report_json "${REPORT_JSON}")
 fi
 
 echo "============================================================"
-echo "31-Model Bin-Gated Fusion"
+echo "31-Model Bin-Gated Fusion (Val-Selected)"
 echo "Fusion json: ${FUSION_JSON}"
 echo "TPRs:        ${TARGET_TPRS}"
 echo "Anchor:      ${ANCHOR_MODEL}"
 echo "Selection:   ${SELECTION_MODE}"
 echo "Calibration: ${CALIBRATION}"
+echo "Out dir:     ${OUT_DIR}"
 echo "Cand@0.5:    ${CANDIDATE_MODELS_TPR50}"
 echo "Cand@0.3:    ${CANDIDATE_MODELS_TPR30}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
 "${CMD[@]}"
+
