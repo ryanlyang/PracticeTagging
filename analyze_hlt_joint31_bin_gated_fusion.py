@@ -886,7 +886,7 @@ def main() -> None:
             mid_hi=float(args.dist_mid_high),
         )
         bin_cal = _make_bin_ids(
-            joint_score=cal_map_raw[str(args.anchor_model)],
+            joint_score=ref_map_raw[str(args.anchor_model)],
             dist_to_joint_thr=dist_cal,
             score_edges=score_edges,
             near_cut=float(args.dist_near_cut),
