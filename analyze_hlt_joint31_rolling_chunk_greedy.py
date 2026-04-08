@@ -179,9 +179,73 @@ def _weights_to_str(w: np.ndarray, names: List[str], eps: float = 1e-12) -> str:
     return ",".join(parts)
 
 
+def _load_precomputed_scores(
+    npz_path: Path,
+    manifest_path: Path,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, str], List[str]]:
+    if not npz_path.exists():
+        raise FileNotFoundError(f"precomputed_scores_npz not found: {npz_path}")
+    if not manifest_path.exists():
+        raise FileNotFoundError(f"precomputed_manifest_json not found: {manifest_path}")
+
+    z = np.load(npz_path, allow_pickle=False)
+    need = ["labels_dev", "labels_test", "scores_dev", "scores_test"]
+    missing = [k for k in need if k not in z]
+    if missing:
+        raise KeyError(f"precomputed npz missing keys: {missing}")
+
+    labels_dev = np.asarray(z["labels_dev"], dtype=np.float32)
+    labels_test = np.asarray(z["labels_test"], dtype=np.float32)
+    scores_dev_mat = np.asarray(z["scores_dev"], dtype=np.float64)
+    scores_test_mat = np.asarray(z["scores_test"], dtype=np.float64)
+
+    if scores_dev_mat.ndim != 2 or scores_test_mat.ndim != 2:
+        raise RuntimeError(
+            f"precomputed score matrices must be 2D, got dev={scores_dev_mat.shape}, test={scores_test_mat.shape}"
+        )
+    if scores_dev_mat.shape[1] != labels_dev.shape[0]:
+        raise RuntimeError(
+            f"scores_dev shape mismatch: {scores_dev_mat.shape} vs labels_dev={labels_dev.shape}"
+        )
+    if scores_test_mat.shape[1] != labels_test.shape[0]:
+        raise RuntimeError(
+            f"scores_test shape mismatch: {scores_test_mat.shape} vs labels_test={labels_test.shape}"
+        )
+    if scores_dev_mat.shape[0] != scores_test_mat.shape[0]:
+        raise RuntimeError(
+            f"precomputed model-axis mismatch: dev={scores_dev_mat.shape[0]} vs test={scores_test_mat.shape[0]}"
+        )
+
+    man = json.loads(manifest_path.read_text())
+    model_order = [str(x) for x in man.get("model_order", [])]
+    if not model_order:
+        raise KeyError(f"manifest missing non-empty model_order: {manifest_path}")
+    if len(model_order) != int(scores_dev_mat.shape[0]):
+        raise RuntimeError(
+            f"manifest model_order length={len(model_order)} != scores rows={scores_dev_mat.shape[0]}"
+        )
+
+    score_files_raw = man.get("score_files_used", {})
+    score_files: Dict[str, str] = {}
+    if isinstance(score_files_raw, dict):
+        for k, v in score_files_raw.items():
+            if isinstance(v, str):
+                score_files[str(k)] = str(v)
+
+    scores_dev: Dict[str, np.ndarray] = {}
+    scores_test: Dict[str, np.ndarray] = {}
+    for i, m in enumerate(model_order):
+        scores_dev[m] = np.asarray(scores_dev_mat[i], dtype=np.float64)
+        scores_test[m] = np.asarray(scores_test_mat[i], dtype=np.float64)
+
+    return labels_dev, labels_test, scores_dev, scores_test, score_files, model_order
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Rolling-chunk greedy fusion on 31-model artifacts")
     ap.add_argument("--fusion_json", type=str, required=True)
+    ap.add_argument("--precomputed_scores_npz", type=str, default="")
+    ap.add_argument("--precomputed_manifest_json", type=str, default="")
     ap.add_argument("--target_tpr", type=float, default=0.50)
     ap.add_argument("--anchor_model", type=str, default="joint_delta")
     ap.add_argument("--candidate_models", type=str, default="")
@@ -208,10 +272,31 @@ def main() -> None:
         raise FileNotFoundError(f"fusion_json not found: {fusion_json}")
 
     fusion = json.loads(fusion_json.read_text())
-    y_val_full, y_test, scores_val_full, scores_test, score_files, _run_dirs, model_order = atlas._load_scores_from_fusion_json(
-        fusion_obj=fusion,
-        fusion_json_path=fusion_json,
-    )
+    pre_npz = str(args.precomputed_scores_npz).strip()
+    pre_manifest = str(args.precomputed_manifest_json).strip()
+    using_precomputed = len(pre_npz) > 0
+
+    if using_precomputed:
+        if not pre_manifest:
+            raise ValueError("--precomputed_manifest_json is required when --precomputed_scores_npz is provided")
+        y_val_full, y_test, scores_val_full, scores_test, score_files, pre_model_order = _load_precomputed_scores(
+            npz_path=Path(pre_npz).expanduser().resolve(),
+            manifest_path=Path(pre_manifest).expanduser().resolve(),
+        )
+        model_order = list(fusion.get("models_order", []))
+        if not model_order:
+            model_order = list(pre_model_order)
+        missing_models = [m for m in model_order if m not in scores_val_full]
+        if missing_models:
+            raise KeyError(
+                "Requested models from fusion_json are missing in precomputed artifact: "
+                + ",".join(missing_models)
+            )
+    else:
+        y_val_full, y_test, scores_val_full, scores_test, score_files, _run_dirs, model_order = atlas._load_scores_from_fusion_json(
+            fusion_obj=fusion,
+            fusion_json_path=fusion_json,
+        )
     if str(args.anchor_model) not in model_order:
         raise KeyError(f"anchor_model={args.anchor_model} is not in model_order")
 
@@ -561,6 +646,9 @@ def main() -> None:
         "fusion_json": str(fusion_json),
         "out_dir": str(out_dir),
         "settings": vars(args),
+        "using_precomputed_scores": bool(using_precomputed),
+        "precomputed_scores_npz": str(Path(pre_npz).expanduser().resolve()) if using_precomputed else "",
+        "precomputed_manifest_json": str(Path(pre_manifest).expanduser().resolve()) if using_precomputed else "",
         "n_models_total": int(len(model_order)),
         "n_val_available": int(n_val_avail),
         "val_pool_size": int(val_pool_size),
@@ -638,4 +726,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
