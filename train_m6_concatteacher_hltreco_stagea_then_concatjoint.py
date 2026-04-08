@@ -595,6 +595,8 @@ def main() -> None:
     # Stage-A
     ap.add_argument("--stageA_epochs", type=int, default=90)
     ap.add_argument("--stageA_patience", type=int, default=18)
+    ap.add_argument("--stageA_phase035_epochs", type=int, default=-1)
+    ap.add_argument("--stageA_phase070_epochs", type=int, default=-1)
     ap.add_argument("--stageA_kd_temp", type=float, default=2.5)
     ap.add_argument("--stageA_lambda_kd", type=float, default=1.0)
     ap.add_argument("--stageA_lambda_emb", type=float, default=1.2)
@@ -648,6 +650,21 @@ def main() -> None:
 
     cfg["reconstructor_training"]["epochs"] = int(args.stageA_epochs)
     cfg["reconstructor_training"]["patience"] = int(args.stageA_patience)
+    if int(args.stageA_phase035_epochs) > 0 or int(args.stageA_phase070_epochs) > 0:
+        if int(args.stageA_phase035_epochs) <= 0 or int(args.stageA_phase070_epochs) <= 0:
+            raise ValueError(
+                "When using custom Stage-A curriculum phase lengths, both "
+                "--stageA_phase035_epochs and --stageA_phase070_epochs must be > 0."
+            )
+        stage1 = int(args.stageA_phase035_epochs)
+        stage2 = int(args.stageA_phase035_epochs) + int(args.stageA_phase070_epochs)
+        if stage2 >= int(args.stageA_epochs):
+            raise ValueError(
+                f"Custom Stage-A phase lengths must leave room for phase_100: "
+                f"phase035+phase070={stage2} must be < stageA_epochs={int(args.stageA_epochs)}"
+            )
+        cfg["reconstructor_training"]["stage1_epochs"] = int(stage1)
+        cfg["reconstructor_training"]["stage2_epochs"] = int(stage2)
 
     save_root = Path(args.save_dir) / args.run_name
     save_root.mkdir(parents=True, exist_ok=True)
@@ -767,6 +784,8 @@ def main() -> None:
         },
         "hlt_effects": cfg["hlt_effects"],
         "variant": "concat_teacher_hltreco_stagea_then_concatjoint",
+        "stageA_phase035_epochs": int(args.stageA_phase035_epochs),
+        "stageA_phase070_epochs": int(args.stageA_phase070_epochs),
         "rho": float(rho),
         "mean_true_added_raw": float(true_added_raw.mean()),
         "mean_target_merge": float(budget_merge_true.mean()),
@@ -1210,4 +1229,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
