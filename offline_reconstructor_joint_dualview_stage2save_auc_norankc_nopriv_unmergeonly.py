@@ -2465,6 +2465,11 @@ def main() -> None:
     parser.add_argument("--stageC_lambda_param_anchor", type=float, default=0.0)
     parser.add_argument("--stageC_lambda_output_anchor", type=float, default=0.0)
     parser.add_argument("--stageC_anchor_decay", type=float, default=0.95)
+    parser.add_argument(
+        "--step1_only",
+        action="store_true",
+        help="Run only STEP 1 (Teacher + HLT Baseline) and exit before reconstructor/joint stages.",
+    )
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
     parser.add_argument("--use_corrected_flags", action="store_true")
     parser.add_argument("--loss_w_phys", type=float, default=BASE_CONFIG["loss"]["w_phys"])
@@ -2861,7 +2866,7 @@ def main() -> None:
     baseline = train_single_view_classifier_auc(
         baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
     )
-    auc_baseline, preds_baseline, _ = eval_classifier(baseline, dl_test_hlt, device)
+    auc_baseline, preds_baseline, labs_baseline = eval_classifier(baseline, dl_test_hlt, device)
     auc_baseline_val, preds_baseline_val, labs_baseline_val = eval_classifier(baseline, dl_val_hlt, device)
     hlt_delta_thr_prob = prob_threshold_at_target_tpr(
         np.asarray(preds_baseline_val, dtype=np.float64)[np.asarray(labs_baseline_val, dtype=np.float32) > 0.5],
@@ -2871,6 +2876,66 @@ def main() -> None:
         f"StageC weak-delta HLT reference @TPR=0.50: threshold_prob={float(hlt_delta_thr_prob):.6f}, "
         f"val_auc_hlt={float(auc_baseline_val):.4f}"
     )
+
+    if bool(args.step1_only):
+        labs = np.asarray(labs, dtype=np.float32)
+        labs_baseline = np.asarray(labs_baseline, dtype=np.float32)
+        if not np.array_equal(labs, labs_baseline):
+            raise RuntimeError("Teacher/baseline label mismatch on test split in --step1_only mode.")
+
+        fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
+        fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
+        fpr30_teacher = fpr_at_target_tpr(fpr_t, tpr_t, 0.30)
+        fpr30_baseline = fpr_at_target_tpr(fpr_b, tpr_b, 0.30)
+        fpr50_teacher = fpr_at_target_tpr(fpr_t, tpr_t, 0.50)
+        fpr50_baseline = fpr_at_target_tpr(fpr_b, tpr_b, 0.50)
+
+        print("\n" + "=" * 70)
+        print("FINAL TEST EVALUATION (STEP 1 ONLY)")
+        print("=" * 70)
+        print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
+        print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
+        print(f"FPR@30 Teacher/Baseline: {fpr30_teacher:.6f} / {fpr30_baseline:.6f}")
+        print(f"FPR@50 Teacher/Baseline: {fpr50_teacher:.6f} / {fpr50_baseline:.6f}")
+
+        step1_npz = save_root / "results_step1_teacher_baseline.npz"
+        np.savez_compressed(
+            step1_npz,
+            labels_test=labs.astype(np.float32),
+            preds_teacher_test=np.asarray(preds_teacher, dtype=np.float64),
+            preds_hlt_test=np.asarray(preds_baseline, dtype=np.float64),
+            auc_teacher_test=float(auc_teacher),
+            auc_hlt_test=float(auc_baseline),
+            fpr30_teacher=float(fpr30_teacher),
+            fpr30_hlt=float(fpr30_baseline),
+            fpr50_teacher=float(fpr50_teacher),
+            fpr50_hlt=float(fpr50_baseline),
+        )
+
+        step1_report = {
+            "mode": "step1_only",
+            "auc_teacher_test": float(auc_teacher),
+            "auc_hlt_test": float(auc_baseline),
+            "fpr30_teacher": float(fpr30_teacher),
+            "fpr30_hlt": float(fpr30_baseline),
+            "fpr50_teacher": float(fpr50_teacher),
+            "fpr50_hlt": float(fpr50_baseline),
+            "n_train_jets": int(args.n_train_jets),
+            "n_train_split": int(len(train_idx)),
+            "n_val_split": int(len(val_idx)),
+            "n_test_split": int(len(test_idx)),
+        }
+        with open(save_root / "results_step1_teacher_baseline.json", "w", encoding="utf-8") as f:
+            json.dump(step1_report, f, indent=2)
+
+        if not args.skip_save_models:
+            torch.save({"model": teacher.state_dict(), "auc": auc_teacher}, save_root / "teacher.pt")
+            torch.save({"model": baseline.state_dict(), "auc": auc_baseline}, save_root / "baseline.pt")
+
+        print(f"Saved STEP1-only arrays to: {step1_npz}")
+        print(f"Saved STEP1-only report to: {save_root / 'results_step1_teacher_baseline.json'}")
+        print(f"Done: {save_root}")
+        return
 
     # Discrepancy weighting vectors (optional), derived from teacher-vs-baseline train/val predictions.
     sample_weight_reco = np.ones((len(train_idx),), dtype=np.float32)
