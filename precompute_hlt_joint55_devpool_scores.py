@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import argparse
 import csv
+import importlib
 import json
+import re
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -50,7 +52,10 @@ def _save_csv(path: Path, rows: List[Dict[str, object]]) -> None:
 
 
 def _load_state(path: Path, device: torch.device) -> Dict[str, torch.Tensor]:
-    obj = torch.load(path, map_location=device)
+    try:
+        obj = torch.load(path, map_location=device, weights_only=False)
+    except TypeError:
+        obj = torch.load(path, map_location=device)
     if isinstance(obj, dict) and "model" in obj and isinstance(obj["model"], dict):
         return obj["model"]
     if isinstance(obj, dict):
@@ -126,6 +131,60 @@ def _short_err(exc: Exception, max_len: int = 220) -> str:
     return s[: int(max_len) - 3] + "..."
 
 
+_UNMERGE_WRAPPER_PREFIX = "offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly"
+
+
+def _variant_suffixes_from_run_name(run_name: str) -> List[str]:
+    r = str(run_name)
+    r = re.sub(r"_seed\d+$", "", r)
+    r = re.sub(r"_(\d+[kKmM]\d+[kKmM]\d+[kKmM])$", "", r)
+    markers = [
+        "fulltrain_prog_unfreeze_",
+        "stagec_prog_unfreeze_",
+        "stagec_prog_",
+        "delta000_",
+        "delta005_",
+    ]
+    out: List[str] = []
+    for mk in markers:
+        if mk in r:
+            suf = r.split(mk, 1)[1].strip("_")
+            if suf:
+                out.append(suf)
+    # preserve order, remove dups
+    uniq: List[str] = []
+    seen = set()
+    for s in out:
+        if s not in seen:
+            seen.add(s)
+            uniq.append(s)
+    return uniq
+
+
+def _activate_joint_wrapper_for_run(run_dir: Path, model_name: str) -> str:
+    run_name = str(run_dir.name)
+    suffixes = _variant_suffixes_from_run_name(run_name)
+    candidates = [f"{_UNMERGE_WRAPPER_PREFIX}_{s}" for s in suffixes]
+    for mod_name in candidates:
+        try:
+            importlib.import_module(mod_name)
+            return mod_name
+        except ModuleNotFoundError as e:
+            # Only ignore if the missing module is exactly the candidate wrapper module.
+            if getattr(e, "name", "") == mod_name:
+                continue
+            print(
+                f"[warn] wrapper import failed for model={model_name} run={run_name} "
+                f"module={mod_name}: {_short_err(e)}"
+            )
+        except Exception as e:
+            print(
+                f"[warn] wrapper import failed for model={model_name} run={run_name} "
+                f"module={mod_name}: {_short_err(e)}"
+            )
+    return "base"
+
+
 def _family_from_score_file(model: str, score_path: Path) -> str:
     if model == "hlt":
         return "hlt"
@@ -185,6 +244,7 @@ def _infer_hlt_baseline(
 
 
 def _infer_joint_score(
+    model_name: str,
     run_dir: Path,
     feat_hlt: np.ndarray,
     mask_hlt: np.ndarray,
@@ -195,7 +255,8 @@ def _infer_joint_score(
     batch_size: int,
     cfg: Dict,
     corrected_weight_floor: float,
-) -> np.ndarray:
+) -> Tuple[np.ndarray, str]:
+    wrapper_used = _activate_joint_wrapper_for_run(run_dir=run_dir, model_name=model_name)
     reco_sd = _load_state(
         _pick_existing(
             run_dir,
@@ -221,8 +282,19 @@ def _infer_joint_score(
         device,
     )
 
-    reco = OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
-    reco.load_state_dict(reco_sd, strict=True)
+    reco_cls = getattr(m2base, "OfflineReconstructor", OfflineReconstructor)
+    reco = reco_cls(input_dim=7, **cfg["reconstructor_model"]).to(device)
+    loader_mode = "strict"
+    try:
+        reco.load_state_dict(reco_sd, strict=True)
+    except RuntimeError as e:
+        ik = reco.load_state_dict(reco_sd, strict=False)
+        loader_mode = f"non_strict(missing={len(ik.missing_keys)},unexpected={len(ik.unexpected_keys)})"
+        print(
+            f"[warn] non-strict reconstructor load for model={model_name} run_dir={run_dir} "
+            f"wrapper={wrapper_used} because {_short_err(e)}"
+        )
+
     da, db = _infer_dual_input_dims(dual_sd)
     dual = DualViewCrossAttnClassifier(input_dim_a=int(da), input_dim_b=int(db), **cfg["model"]).to(device)
     dual.load_state_dict(dual_sd, strict=True)
@@ -247,7 +319,7 @@ def _infer_joint_score(
             )
             logit = dual(x, m, feat_b, mask_b).squeeze(1)
             out[s:e] = torch.sigmoid(logit).detach().cpu().numpy().astype(np.float32)
-    return out
+    return out, f"{wrapper_used}|{loader_mode}"
 
 
 def _infer_stagea_reco_teacher_score(
@@ -654,6 +726,9 @@ def main() -> None:
 
     for i, model_name in enumerate(model_order):
         t_model = time.time()
+        # Reset any prior wrapper monkeypatches before resolving current model.
+        importlib.reload(m2base)
+        joint_loader_meta = ""
         if model_name == "hlt":
             fam = "hlt"
             score_dev = hlt_probs_anchor
@@ -677,7 +752,8 @@ def main() -> None:
             cfg = _deepcopy_cfg()
 
             if fam == "joint":
-                score_dev = _infer_joint_score(
+                score_dev, joint_loader_meta = _infer_joint_score(
+                    model_name=model_name,
                     run_dir=run_dir,
                     feat_hlt=feat_hlt,
                     mask_hlt=hlt_mask,
@@ -759,6 +835,7 @@ def main() -> None:
                 "run_dir": str(run_dir),
                 "score_file": str(score_paths.get(model_name, "")),
                 "stats_source": stats_source if model_name != "hlt" else "anchor_hlt",
+                "joint_loader": joint_loader_meta,
                 "auc_dev": float(auc_dev),
                 "auc_test_source": float(auc_test),
                 "elapsed_sec": float(dt),

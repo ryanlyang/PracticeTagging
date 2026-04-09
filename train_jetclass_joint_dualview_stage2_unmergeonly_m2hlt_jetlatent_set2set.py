@@ -27,6 +27,7 @@ from tqdm import tqdm
 import train_jetclass_joint_dualview_stage2_unmergeonly as base
 import train_jetclass_joint_dualview_stage2_unmergeonly_m2hlt as m2hlt
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_jetlatent_set2set as jl
+import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly as reco_joint
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -367,6 +368,10 @@ def _identity_wrap(model: nn.Module) -> nn.Module:
     return model
 
 
+def _identity_enforce(out: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+    return out
+
+
 def _patch_pipeline() -> None:
     # HLT style.
     base.build_hlt_view = m2hlt._build_hlt_view_m2style  # type: ignore[assignment]
@@ -376,6 +381,12 @@ def _patch_pipeline() -> None:
     base.compute_reconstruction_losses_weighted = jl.compute_reconstruction_losses_weighted_set2set  # type: ignore[assignment]
     base.build_soft_corrected_view = jl.build_soft_corrected_view_set2set  # type: ignore[assignment]
     base.wrap_reconstructor_unmerge_only = _identity_wrap  # type: ignore[assignment]
+
+    # Stage-A trainer lives in reco_joint module and calls its own globals.
+    # Patch there too so it uses set2set-compatible loss/behavior.
+    reco_joint.compute_reconstruction_losses_weighted = jl.compute_reconstruction_losses_weighted_set2set  # type: ignore[assignment]
+    reco_joint.enforce_unmerge_only_output = _identity_enforce  # type: ignore[assignment]
+    reco_joint.wrap_reconstructor_unmerge_only = _identity_wrap  # type: ignore[assignment]
 
     # Stage-C controls.
     base.train_joint_dual_multiclass = train_joint_dual_multiclass_with_stagec_controls  # type: ignore[assignment]
@@ -389,4 +400,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
