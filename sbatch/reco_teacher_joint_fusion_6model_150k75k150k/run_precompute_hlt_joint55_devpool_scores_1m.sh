@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=pre55_1m
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=96G
 #SBATCH --time=1-00:00:00

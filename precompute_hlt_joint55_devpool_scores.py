@@ -167,7 +167,14 @@ def _activate_joint_wrapper_for_run(run_dir: Path, model_name: str) -> str:
     candidates = [f"{_UNMERGE_WRAPPER_PREFIX}_{s}" for s in suffixes]
     for mod_name in candidates:
         try:
-            importlib.import_module(mod_name)
+            mod = importlib.import_module(mod_name)
+            # Important: wrappers monkeypatch m2base on import. Since we reload m2base per model,
+            # force wrapper re-execution so patching is re-applied.
+            importlib.reload(mod)
+            # Some wrappers (e.g. jetlatent_set2set) only patch inside an explicit hook.
+            patch_fn = getattr(mod, "_patch_base_module", None)
+            if callable(patch_fn):
+                patch_fn()
             return mod_name
         except ModuleNotFoundError as e:
             # Only ignore if the missing module is exactly the candidate wrapper module.
@@ -183,6 +190,22 @@ def _activate_joint_wrapper_for_run(run_dir: Path, model_name: str) -> str:
                 f"module={mod_name}: {_short_err(e)}"
             )
     return "base"
+
+
+def _looks_like_set2set_checkpoint(reco_sd: Dict[str, torch.Tensor]) -> bool:
+    aw = reco_sd.get("action_head.weight")
+    sew = reco_sd.get("split_exist_head.weight")
+    sdw = reco_sd.get("split_delta_head.weight")
+    if not (isinstance(aw, torch.Tensor) and isinstance(sew, torch.Tensor) and isinstance(sdw, torch.Tensor)):
+        return False
+    if aw.ndim != 2 or sew.ndim != 2 or sdw.ndim != 2:
+        return False
+    return bool(
+        int(aw.shape[0]) == 1
+        and int(sew.shape[0]) == 1
+        and int(sdw.shape[0]) == int(sdw.shape[1])
+        and int(sdw.shape[0]) >= 64
+    )
 
 
 def _family_from_score_file(model: str, score_path: Path) -> str:
@@ -281,6 +304,23 @@ def _infer_joint_score(
         ),
         device,
     )
+
+    # Safety net: some legacy set2set runs only patch the base module via an explicit hook.
+    # If run-name wrapper resolution missed it, auto-activate from checkpoint signature.
+    if wrapper_used == "base" and _looks_like_set2set_checkpoint(reco_sd):
+        mod_name = f"{_UNMERGE_WRAPPER_PREFIX}_jetlatent_set2set"
+        try:
+            mod = importlib.import_module(mod_name)
+            importlib.reload(mod)
+            patch_fn = getattr(mod, "_patch_base_module", None)
+            if callable(patch_fn):
+                patch_fn()
+                wrapper_used = f"{mod_name}(auto)"
+        except Exception as e:
+            print(
+                f"[warn] set2set auto-wrapper activation failed for model={model_name} "
+                f"run_dir={run_dir}: {_short_err(e)}"
+            )
 
     reco_cls = getattr(m2base, "OfflineReconstructor", OfflineReconstructor)
     reco = reco_cls(input_dim=7, **cfg["reconstructor_model"]).to(device)
