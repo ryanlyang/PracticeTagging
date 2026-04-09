@@ -1,26 +1,26 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=th2m250
+#SBATCH --job-name=th2m240
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
 #SBATCH --time=3-00:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m250k250k_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m250k250k_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m200k200k_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m200k200k_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-teacher_hlt_only_2m250k250k_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_2m250k250k/teacher_hlt_only}"
+RUN_NAME="${RUN_NAME:-teacher_hlt_only_2m200k200k_seed0}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_2m200k200k/teacher_hlt_only}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-2500000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-2400000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-2000000}"
-N_VAL_SPLIT="${N_VAL_SPLIT:-250000}"
-N_TEST_SPLIT="${N_TEST_SPLIT:-250000}"
+N_VAL_SPLIT="${N_VAL_SPLIT:-200000}"
+N_TEST_SPLIT="${N_TEST_SPLIT:-200000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
@@ -56,7 +56,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "Teacher + HLT Baseline Only (2M/250k/250k split)"
+echo "Teacher + HLT Baseline Only (2M/200k/200k split)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Data: n_train_jets=${N_TRAIN_JETS}, split=${N_TRAIN_SPLIT}/${N_VAL_SPLIT}/${N_TEST_SPLIT}, offset=${OFFSET_JETS}"
 echo "============================================================"
