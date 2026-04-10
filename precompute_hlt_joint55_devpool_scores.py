@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import importlib
+import inspect
 import json
 import re
 import time
@@ -93,6 +94,49 @@ def _infer_dual_input_dims(sd: Dict[str, torch.Tensor]) -> Tuple[int, int]:
     if da is None or db is None:
         raise RuntimeError("Could not infer dual-view input dims from checkpoint keys")
     return da, db
+
+
+def _infer_optional_input_dim(sd: Dict[str, torch.Tensor], branch: str) -> int | None:
+    key1 = f"input_proj_{branch}.0.weight"
+    key2 = f"input_proj_{branch}.weight"
+    for k, v in sd.items():
+        if not isinstance(v, torch.Tensor):
+            continue
+        if k.endswith(key1) or k.endswith(key2):
+            return int(v.shape[1])
+    return None
+
+
+def _safe_load_state_dict(
+    model: torch.nn.Module,
+    state: Dict[str, torch.Tensor],
+    model_name: str,
+    run_dir: Path,
+    kind: str,
+) -> str:
+    try:
+        model.load_state_dict(state, strict=True)
+        return "strict"
+    except RuntimeError as e:
+        model_sd = model.state_dict()
+        keep: Dict[str, torch.Tensor] = {}
+        dropped = 0
+        for k, v in state.items():
+            t = model_sd.get(k, None)
+            if isinstance(v, torch.Tensor) and isinstance(t, torch.Tensor) and tuple(v.shape) == tuple(t.shape):
+                keep[k] = v
+            else:
+                dropped += 1
+        info = model.load_state_dict(keep, strict=False)
+        print(
+            f"[warn] {kind} compat-load for model={model_name} run_dir={run_dir} "
+            f"because {_short_err(e)} | kept={len(keep)} dropped={dropped} "
+            f"missing={len(info.missing_keys)} unexpected={len(info.unexpected_keys)}"
+        )
+        return (
+            f"compat(missing={len(info.missing_keys)},unexpected={len(info.unexpected_keys)},"
+            f"kept={len(keep)},dropped={dropped})"
+        )
 
 
 def _iter_batches(n: int, batch_size: int):
@@ -324,20 +368,40 @@ def _infer_joint_score(
 
     reco_cls = getattr(m2base, "OfflineReconstructor", OfflineReconstructor)
     reco = reco_cls(input_dim=7, **cfg["reconstructor_model"]).to(device)
-    loader_mode = "strict"
-    try:
-        reco.load_state_dict(reco_sd, strict=True)
-    except RuntimeError as e:
-        ik = reco.load_state_dict(reco_sd, strict=False)
-        loader_mode = f"non_strict(missing={len(ik.missing_keys)},unexpected={len(ik.unexpected_keys)})"
-        print(
-            f"[warn] non-strict reconstructor load for model={model_name} run_dir={run_dir} "
-            f"wrapper={wrapper_used} because {_short_err(e)}"
-        )
+    reco_loader_mode = _safe_load_state_dict(
+        model=reco,
+        state=reco_sd,
+        model_name=model_name,
+        run_dir=run_dir,
+        kind="reconstructor",
+    )
 
     da, db = _infer_dual_input_dims(dual_sd)
-    dual = DualViewCrossAttnClassifier(input_dim_a=int(da), input_dim_b=int(db), **cfg["model"]).to(device)
-    dual.load_state_dict(dual_sd, strict=True)
+    dc = _infer_optional_input_dim(dual_sd, "c")
+    dual_cls = getattr(m2base, "DualViewCrossAttnClassifier", DualViewCrossAttnClassifier)
+    dual_kwargs = dict(cfg["model"])
+    dual_kwargs.update({"input_dim_a": int(da), "input_dim_b": int(db)})
+    try:
+        sig = inspect.signature(dual_cls)
+        if "input_dim_c" in sig.parameters and dc is not None:
+            dual_kwargs["input_dim_c"] = int(dc)
+    except Exception:
+        pass
+    try:
+        dual = dual_cls(**dual_kwargs).to(device)
+    except Exception as e:
+        print(
+            f"[warn] dual classifier ctor fallback for model={model_name} run_dir={run_dir} "
+            f"wrapper={wrapper_used} because {_short_err(e)}"
+        )
+        dual = DualViewCrossAttnClassifier(input_dim_a=int(da), input_dim_b=int(db), **cfg["model"]).to(device)
+    dual_loader_mode = _safe_load_state_dict(
+        model=dual,
+        state=dual_sd,
+        model_name=model_name,
+        run_dir=run_dir,
+        kind="dual",
+    )
     reco.eval()
     dual.eval()
 
@@ -359,7 +423,7 @@ def _infer_joint_score(
             )
             logit = dual(x, m, feat_b, mask_b).squeeze(1)
             out[s:e] = torch.sigmoid(logit).detach().cpu().numpy().astype(np.float32)
-    return out, f"{wrapper_used}|{loader_mode}"
+    return out, f"{wrapper_used}|reco:{reco_loader_mode}|dual:{dual_loader_mode}"
 
 
 def _infer_stagea_reco_teacher_score(
