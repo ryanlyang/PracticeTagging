@@ -7,6 +7,7 @@ import importlib
 import inspect
 import json
 import re
+import sys
 import time
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -178,6 +179,29 @@ def _short_err(exc: Exception, max_len: int = 220) -> str:
 _UNMERGE_WRAPPER_PREFIX = "offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly"
 
 
+def _import_or_reload(mod_name: str):
+    if mod_name in sys.modules:
+        return importlib.reload(sys.modules[mod_name]), "reload"
+    return importlib.import_module(mod_name), "import"
+
+
+def _safe_model_filename(model_name: str) -> str:
+    s = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(model_name)).strip("._")
+    return s or "model"
+
+
+def _model_cache_path(cache_dir: Path, idx: int, model_name: str) -> Path:
+    return cache_dir / f"{int(idx)+1:03d}_{_safe_model_filename(model_name)}.npy"
+
+
+def _atomic_save_npy(path: Path, arr: np.ndarray) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    with tmp.open("wb") as f:
+        np.save(f, np.asarray(arr, dtype=np.float32))
+    tmp.replace(path)
+
+
 def _variant_suffixes_from_run_name(run_name: str) -> List[str]:
     r = str(run_name)
     r = re.sub(r"_seed\d+$", "", r)
@@ -211,15 +235,14 @@ def _activate_joint_wrapper_for_run(run_dir: Path, model_name: str) -> str:
     candidates = [f"{_UNMERGE_WRAPPER_PREFIX}_{s}" for s in suffixes]
     for mod_name in candidates:
         try:
-            mod = importlib.import_module(mod_name)
             # Important: wrappers monkeypatch m2base on import. Since we reload m2base per model,
-            # force wrapper re-execution so patching is re-applied.
-            importlib.reload(mod)
+            # we need wrapper re-execution only when wrapper was already loaded.
+            mod, mode = _import_or_reload(mod_name)
             # Some wrappers (e.g. jetlatent_set2set) only patch inside an explicit hook.
             patch_fn = getattr(mod, "_patch_base_module", None)
             if callable(patch_fn):
                 patch_fn()
-            return mod_name
+            return f"{mod_name}({mode})"
         except ModuleNotFoundError as e:
             # Only ignore if the missing module is exactly the candidate wrapper module.
             if getattr(e, "name", "") == mod_name:
@@ -354,12 +377,11 @@ def _infer_joint_score(
     if wrapper_used == "base" and _looks_like_set2set_checkpoint(reco_sd):
         mod_name = f"{_UNMERGE_WRAPPER_PREFIX}_jetlatent_set2set"
         try:
-            mod = importlib.import_module(mod_name)
-            importlib.reload(mod)
+            mod, mode = _import_or_reload(mod_name)
             patch_fn = getattr(mod, "_patch_base_module", None)
             if callable(patch_fn):
                 patch_fn()
-                wrapper_used = f"{mod_name}(auto)"
+                wrapper_used = f"{mod_name}(auto:{mode})"
         except Exception as e:
             print(
                 f"[warn] set2set auto-wrapper activation failed for model={model_name} "
@@ -730,6 +752,8 @@ def main() -> None:
         if str(args.monitor_csv).strip()
         else (out_dir / "precompute_model_monitor.csv")
     )
+    model_cache_dir = out_dir / "model_score_cache"
+    model_cache_dir.mkdir(parents=True, exist_ok=True)
 
     anchor_run_dir = run_dirs.get("joint_delta_run_dir")
     if anchor_run_dir is None:
@@ -830,6 +854,62 @@ def main() -> None:
 
     for i, model_name in enumerate(model_order):
         t_model = time.time()
+        cache_path = _model_cache_path(model_cache_dir, i, model_name)
+        score_dev = None
+        if cache_path.exists():
+            try:
+                cached = np.load(cache_path, allow_pickle=False)
+                cached = np.asarray(cached, dtype=np.float32).reshape(-1)
+                if int(cached.shape[0]) == int(labels_dev.shape[0]):
+                    score_dev = cached
+                else:
+                    print(
+                        f"[warn] cache size mismatch for model={model_name}: "
+                        f"{cached.shape[0]} vs dev {labels_dev.shape[0]}; recomputing."
+                    )
+            except Exception as e:
+                print(f"[warn] failed to load cache for model={model_name} at {cache_path}: {_short_err(e)}")
+
+        if score_dev is not None:
+            if model_name == "hlt":
+                fam = "hlt"
+                run_dir = anchor_run_dir
+                stats_source = "anchor_hlt(cache)"
+                joint_loader_meta = ""
+            else:
+                score_path = score_paths[model_name]
+                run_dir = score_path.parent
+                fam = _family_from_score_file(model_name, score_path)
+                stats_source = "cache_resume"
+                joint_loader_meta = "cache"
+
+            family_by_model[model_name] = fam
+            scores_dev_mat[i] = np.asarray(score_dev, dtype=np.float32)
+            auc_dev = _safe_auc(labels_dev, score_dev)
+            auc_test = _safe_auc(labels_test, scores_test_mat[i])
+            dt = time.time() - t_model
+            monitor_rows.append(
+                {
+                    "model": model_name,
+                    "family": fam,
+                    "run_dir": str(run_dir),
+                    "score_file": str(score_paths.get(model_name, "")),
+                    "stats_source": stats_source,
+                    "joint_loader": joint_loader_meta,
+                    "auc_dev": float(auc_dev),
+                    "auc_test_source": float(auc_test),
+                    "elapsed_sec": float(dt),
+                    "cache_hit": 1,
+                }
+            )
+            print(
+                f"[{i+1:02d}/{len(model_order):02d}] {model_name:50s} "
+                f"family={fam:22s} auc_dev={auc_dev:.6f} auc_test_src={auc_test:.6f} "
+                f"t={dt:.1f}s [cache]"
+            )
+            _save_csv(monitor_csv, monitor_rows)
+            continue
+
         # Reset any prior wrapper monkeypatches before resolving current model.
         importlib.reload(m2base)
         joint_loader_meta = ""
@@ -837,6 +917,7 @@ def main() -> None:
             fam = "hlt"
             score_dev = hlt_probs_anchor
             run_dir = anchor_run_dir
+            stats_source = "anchor_hlt"
         else:
             score_path = score_paths[model_name]
             run_dir = score_path.parent
@@ -928,6 +1009,7 @@ def main() -> None:
 
         family_by_model[model_name] = fam
         scores_dev_mat[i] = np.asarray(score_dev, dtype=np.float32)
+        _atomic_save_npy(cache_path, np.asarray(score_dev, dtype=np.float32))
 
         auc_dev = _safe_auc(labels_dev, score_dev)
         auc_test = _safe_auc(labels_test, scores_test_mat[i])
@@ -943,12 +1025,14 @@ def main() -> None:
                 "auc_dev": float(auc_dev),
                 "auc_test_source": float(auc_test),
                 "elapsed_sec": float(dt),
+                "cache_hit": 0,
             }
         )
         print(
             f"[{i+1:02d}/{len(model_order):02d}] {model_name:50s} "
             f"family={fam:22s} auc_dev={auc_dev:.6f} auc_test_src={auc_test:.6f} t={dt:.1f}s"
         )
+        _save_csv(monitor_csv, monitor_rows)
 
     np.savez_compressed(
         scores_npz,
@@ -976,6 +1060,7 @@ def main() -> None:
         },
         "settings": vars(args),
         "monitor_csv": str(monitor_csv),
+        "model_cache_dir": str(model_cache_dir),
         "timing_sec": float(time.time() - t0),
     }
     manifest_json.parent.mkdir(parents=True, exist_ok=True)
@@ -990,6 +1075,7 @@ def main() -> None:
     print(f"Scores npz:    {scores_npz}")
     print(f"Manifest json: {manifest_json}")
     print(f"Monitor csv:   {monitor_csv}")
+    print(f"Cache dir:     {model_cache_dir}")
     print(f"Models:        {len(model_order)}")
     print(f"Dev jets:      {int(args.dev_n_jets)} (offset={int(args.dev_offset_jets)})")
 
