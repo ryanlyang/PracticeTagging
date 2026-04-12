@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=th2m500
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
-#SBATCH --mem=128G
-#SBATCH --time=3-00:00:00
+#SBATCH --mem=48G
+#SBATCH --time=1-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m500k500k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m500k500k_%j.err
 
