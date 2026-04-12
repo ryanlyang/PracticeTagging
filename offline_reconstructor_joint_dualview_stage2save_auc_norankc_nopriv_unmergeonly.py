@@ -30,6 +30,7 @@ import random
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+import h5py
 import numpy as np
 import torch
 import torch.nn as nn
@@ -125,6 +126,205 @@ def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) 
         return vec.mean()
     denom = sample_weight.sum().clamp(min=1e-6)
     return (vec * sample_weight).sum() / denom
+
+
+def _parse_h5_path_arg(path_arg: str) -> List[Path]:
+    p = Path(path_arg)
+    if p.is_dir():
+        files = sorted(list(p.glob("*.h5")))
+    else:
+        files = [Path(x) for x in str(path_arg).split(",") if str(x).strip()]
+    if len(files) == 0:
+        raise FileNotFoundError(f"No .h5 files found in: {path_arg}")
+    return files
+
+
+def load_raw_constituents_labels_weights_from_h5(
+    files: List[Path],
+    max_jets: int,
+    max_constits: int,
+    use_train_weights: bool,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load raw constituents + labels and (optionally) ATLAS training_weights from HDF5 files.
+    If training_weights are unavailable in a file, fall back to ones for that file.
+    """
+    const_list: List[np.ndarray] = []
+    label_list: List[np.ndarray] = []
+    w_list: List[np.ndarray] = []
+    jets_read = 0
+
+    for fname in files:
+        if jets_read >= int(max_jets):
+            break
+        with h5py.File(fname, "r") as f:
+            n_file = int(f["labels"].shape[0])
+            take = min(n_file, int(max_jets) - jets_read)
+
+            pt = f["fjet_clus_pt"][:take, : int(max_constits)].astype(np.float32)
+            eta = f["fjet_clus_eta"][:take, : int(max_constits)].astype(np.float32)
+            phi = f["fjet_clus_phi"][:take, : int(max_constits)].astype(np.float32)
+            ene = f["fjet_clus_E"][:take, : int(max_constits)].astype(np.float32)
+            const = np.stack([pt, eta, phi, ene], axis=-1).astype(np.float32)
+
+            labels = f["labels"][:take]
+            if labels.ndim > 1:
+                if labels.shape[1] == 1:
+                    labels = labels[:, 0]
+                else:
+                    labels = np.argmax(labels, axis=1)
+            labels = labels.astype(np.int64)
+
+            if bool(use_train_weights):
+                if "training_weights" in f:
+                    w = np.asarray(f["training_weights"][:take], dtype=np.float32)
+                else:
+                    print(f"Warning: missing 'training_weights' in {fname}; using ones.")
+                    w = np.ones((take,), dtype=np.float32)
+            else:
+                w = np.ones((take,), dtype=np.float32)
+
+            if w.ndim > 1:
+                w = w.reshape(w.shape[0], -1)[:, 0]
+            w = np.asarray(w, dtype=np.float32)
+            if w.shape[0] != labels.shape[0]:
+                raise RuntimeError(
+                    f"training_weights length mismatch in {fname}: {w.shape[0]} vs labels {labels.shape[0]}"
+                )
+
+            const_list.append(const)
+            label_list.append(labels)
+            w_list.append(w)
+            jets_read += int(take)
+
+    if len(const_list) == 0:
+        raise RuntimeError("No jets were loaded from input HDF5 files.")
+
+    all_const = np.concatenate(const_list, axis=0)
+    all_labels = np.concatenate(label_list, axis=0)
+    all_w = np.concatenate(w_list, axis=0)
+    return all_const, all_labels, all_w
+
+
+class WeightedJetDataset(Dataset):
+    def __init__(
+        self,
+        feat: np.ndarray,
+        mask: np.ndarray,
+        labels: np.ndarray,
+        sample_weight: np.ndarray | None = None,
+    ):
+        self.feat = torch.tensor(feat, dtype=torch.float32)
+        self.mask = torch.tensor(mask, dtype=torch.bool)
+        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+        n = int(self.labels.shape[0])
+        if sample_weight is None:
+            sw = np.ones((n,), dtype=np.float32)
+        else:
+            sw = np.asarray(sample_weight, dtype=np.float32)
+            if sw.shape[0] != n:
+                raise ValueError(f"sample_weight length mismatch: {sw.shape[0]} vs {n}")
+        self.sample_weight = torch.tensor(sw, dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return int(self.labels.shape[0])
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "feat": self.feat[i],
+            "mask": self.mask[i],
+            "label": self.labels[i],
+            "sample_weight": self.sample_weight[i],
+        }
+
+
+def _train_classifier_with_optional_weights(
+    model: nn.Module,
+    loader: DataLoader,
+    opt: torch.optim.Optimizer,
+    device: torch.device,
+) -> Tuple[float, float]:
+    model.train()
+    total_loss = 0.0
+    preds: List[np.ndarray] = []
+    labs: List[np.ndarray] = []
+    w_all: List[np.ndarray] = []
+    n_tot = 0
+
+    for batch in loader:
+        x = batch["feat"].to(device)
+        mask = batch["mask"].to(device)
+        y = batch["label"].to(device)
+        sw = batch.get("sample_weight", None)
+        sw_t = None
+        if sw is not None:
+            sw_t = sw.to(device).float().clamp(min=0.0)
+
+        opt.zero_grad()
+        logits = model(x, mask).squeeze(1)
+        if sw_t is None:
+            loss = F.binary_cross_entropy_with_logits(logits, y)
+        else:
+            loss_vec = F.binary_cross_entropy_with_logits(logits, y, reduction="none")
+            loss = (loss_vec * sw_t).sum() / sw_t.sum().clamp(min=1e-6)
+        loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+        opt.step()
+
+        bs = int(y.shape[0])
+        total_loss += float(loss.item()) * bs
+        n_tot += bs
+        preds.append(torch.sigmoid(logits).detach().cpu().numpy().astype(np.float64))
+        labs.append(y.detach().cpu().numpy().astype(np.float64))
+        if sw_t is not None:
+            w_all.append(sw_t.detach().cpu().numpy().astype(np.float64))
+
+    p = np.concatenate(preds, axis=0) if len(preds) else np.array([], dtype=np.float64)
+    l = np.concatenate(labs, axis=0) if len(labs) else np.array([], dtype=np.float64)
+    if len(np.unique(l)) > 1:
+        if len(w_all):
+            w = np.concatenate(w_all, axis=0)
+            auc = float(roc_auc_score(l, p, sample_weight=w))
+        else:
+            auc = float(roc_auc_score(l, p))
+    else:
+        auc = 0.0
+    mean_loss = float(total_loss / max(n_tot, 1))
+    return mean_loss, auc
+
+
+@torch.no_grad()
+def _eval_classifier_with_optional_weights(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[float, np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    model.eval()
+    preds: List[np.ndarray] = []
+    labs: List[np.ndarray] = []
+    w_all: List[np.ndarray] = []
+
+    for batch in loader:
+        x = batch["feat"].to(device)
+        mask = batch["mask"].to(device)
+        logits = model(x, mask).squeeze(1)
+        logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
+        probs = torch.sigmoid(logits).detach().cpu().numpy().astype(np.float64)
+        y = batch["label"].detach().cpu().numpy().astype(np.float64)
+        preds.append(probs)
+        labs.append(y)
+        if "sample_weight" in batch:
+            sw = batch["sample_weight"].detach().cpu().numpy().astype(np.float64)
+            w_all.append(sw)
+
+    p = np.concatenate(preds, axis=0) if len(preds) else np.array([], dtype=np.float64)
+    l = np.concatenate(labs, axis=0) if len(labs) else np.array([], dtype=np.float64)
+    w = np.concatenate(w_all, axis=0) if len(w_all) else None
+    if len(np.unique(l)) > 1:
+        auc = float(roc_auc_score(l, p, sample_weight=w)) if w is not None else float(roc_auc_score(l, p))
+    else:
+        auc = 0.0
+    return auc, p, l, w
 
 
 def predict_single_view_scores(
@@ -658,9 +858,9 @@ def train_single_view_classifier_auc(
     no_improve = 0
 
     for ep in tqdm(range(int(train_cfg["epochs"])), desc=name):
-        _, tr_auc = train_classifier(model, train_loader, opt, device)
-        va_auc, va_preds, va_labs = eval_classifier(model, val_loader, device)
-        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+        _, tr_auc = _train_classifier_with_optional_weights(model, train_loader, opt, device)
+        va_auc, va_preds, va_labs, va_w = _eval_classifier_with_optional_weights(model, val_loader, device)
+        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds, sample_weight=va_w)
         va_fpr50 = fpr_at_target_tpr(va_fpr, va_tpr, 0.50)
         sch.step()
 
@@ -2320,6 +2520,23 @@ def train_joint_dual(
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--train_path", type=str, default="./data")
+    parser.add_argument(
+        "--test_path",
+        type=str,
+        default="",
+        help="Optional external H5 path(s) for test evaluation in --step1_only mode (comma-separated or directory).",
+    )
+    parser.add_argument(
+        "--test_offset_jets",
+        type=int,
+        default=0,
+        help="Start offset in --test_path when using external test data in --step1_only mode.",
+    )
+    parser.add_argument(
+        "--use_train_weights",
+        action="store_true",
+        help="Use ATLAS 'training_weights' (when available) to weight top-tagger BCE in Step-1 training/validation.",
+    )
     parser.add_argument("--n_train_jets", type=int, default=50000)
     parser.add_argument("--offset_jets", type=int, default=0)
     parser.add_argument("--max_constits", type=int, default=80)
@@ -2656,20 +2873,19 @@ def main() -> None:
     print(f"Device: {device}")
     print(f"Save dir: {save_root}")
 
-    train_path = Path(args.train_path)
-    if train_path.is_dir():
-        train_files = sorted(list(train_path.glob("*.h5")))
-    else:
-        train_files = [Path(p) for p in str(args.train_path).split(",") if p.strip()]
-    if len(train_files) == 0:
-        raise FileNotFoundError(f"No .h5 files found in: {args.train_path}")
+    train_files = _parse_h5_path_arg(str(args.train_path))
+    use_external_test = bool(str(args.test_path).strip())
+    if use_external_test and (not bool(args.step1_only)):
+        raise ValueError("--test_path is currently supported only together with --step1_only.")
+    test_files: List[Path] = _parse_h5_path_arg(str(args.test_path)) if use_external_test else []
 
     max_jets_needed = args.offset_jets + args.n_train_jets
     print("Loading offline constituents...")
-    all_const_full, all_labels_full = load_raw_constituents_from_h5(
+    all_const_full, all_labels_full, all_train_w_full = load_raw_constituents_labels_weights_from_h5(
         train_files,
         max_jets=max_jets_needed,
         max_constits=args.max_constits,
+        use_train_weights=bool(args.use_train_weights),
     )
     if all_const_full.shape[0] < max_jets_needed:
         raise RuntimeError(
@@ -2678,6 +2894,7 @@ def main() -> None:
 
     const_raw = all_const_full[args.offset_jets: args.offset_jets + args.n_train_jets]
     labels = all_labels_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.int64)
+    train_weight = all_train_w_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.float32)
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
@@ -2715,10 +2932,11 @@ def main() -> None:
     n_val_split = int(args.n_val_split)
     n_test_split = int(args.n_test_split)
     custom_split = (n_train_split > 0 and n_val_split > 0 and n_test_split > 0)
+    external_test_step1 = bool(use_external_test and bool(args.step1_only))
 
     idx = np.arange(len(labels))
     if custom_split:
-        total_need = int(n_train_split + n_val_split + n_test_split)
+        total_need = int(n_train_split + n_val_split + (0 if external_test_step1 else n_test_split))
         if total_need > len(idx):
             raise ValueError(
                 f"Requested split counts exceed available jets: "
@@ -2733,30 +2951,53 @@ def main() -> None:
             )
         else:
             idx_use = idx
-        train_idx, rem_idx = train_test_split(
-            idx_use,
-            train_size=int(n_train_split),
-            random_state=int(args.seed),
-            stratify=labels[idx_use],
-        )
-        val_idx, test_idx = train_test_split(
-            rem_idx,
-            train_size=int(n_val_split),
-            test_size=int(n_test_split),
-            random_state=int(args.seed),
-            stratify=labels[rem_idx],
-        )
+        if external_test_step1:
+            if n_test_split <= 0:
+                raise ValueError("When using --test_path in --step1_only mode, --n_test_split must be > 0.")
+            train_idx, val_idx = train_test_split(
+                idx_use,
+                train_size=int(n_train_split),
+                test_size=int(n_val_split),
+                random_state=int(args.seed),
+                stratify=labels[idx_use],
+            )
+            test_idx = np.array([], dtype=np.int64)
+        else:
+            train_idx, rem_idx = train_test_split(
+                idx_use,
+                train_size=int(n_train_split),
+                random_state=int(args.seed),
+                stratify=labels[idx_use],
+            )
+            val_idx, test_idx = train_test_split(
+                rem_idx,
+                train_size=int(n_val_split),
+                test_size=int(n_test_split),
+                random_state=int(args.seed),
+                stratify=labels[rem_idx],
+            )
     else:
+        if external_test_step1:
+            raise ValueError(
+                "Using --test_path with --step1_only requires explicit split counts via "
+                "--n_train_split/--n_val_split/--n_test_split."
+            )
         train_idx, temp_idx = train_test_split(
             idx, test_size=0.30, random_state=int(args.seed), stratify=labels
         )
         val_idx, test_idx = train_test_split(
             temp_idx, test_size=0.50, random_state=int(args.seed), stratify=labels[temp_idx]
         )
-    print(
-        f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} "
-        f"(custom_counts={custom_split})"
-    )
+    if external_test_step1:
+        print(
+            f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, "
+            f"Test(external)={int(n_test_split)} (custom_counts={custom_split})"
+        )
+    else:
+        print(
+            f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} "
+            f"(custom_counts={custom_split})"
+        )
 
     stageB_train_frac = float(np.clip(args.stageB_train_frac, 0.0, 1.0))
     if stageB_train_frac <= 0.0:
@@ -2782,6 +3023,11 @@ def main() -> None:
     data_setup = {
         "train_path_arg": str(args.train_path),
         "train_files": [str(p.resolve()) for p in train_files],
+        "test_path_arg": str(args.test_path),
+        "test_files": [str(p.resolve()) for p in test_files] if use_external_test else [],
+        "test_external_step1_only": bool(external_test_step1),
+        "test_offset_jets": int(args.test_offset_jets),
+        "use_train_weights": bool(args.use_train_weights),
         "n_train_jets": int(args.n_train_jets),
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
@@ -2842,9 +3088,56 @@ def main() -> None:
     print("=" * 70)
     BS = int(cfg["training"]["batch_size"])
 
-    ds_train_off = JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
-    ds_val_off = JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
-    ds_test_off = JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
+    train_w_train = train_weight[train_idx].astype(np.float32)
+    train_w_val = train_weight[val_idx].astype(np.float32)
+    ds_train_off = WeightedJetDataset(
+        feat_off_std[train_idx], masks_off[train_idx], labels[train_idx], sample_weight=train_w_train
+    )
+    ds_val_off = WeightedJetDataset(
+        feat_off_std[val_idx], masks_off[val_idx], labels[val_idx], sample_weight=train_w_val
+    )
+
+    labels_test_ref: np.ndarray
+    if external_test_step1:
+        max_test_need = int(args.test_offset_jets) + int(n_test_split)
+        print("Loading external test constituents...")
+        all_const_test, all_labels_test, _all_w_test = load_raw_constituents_labels_weights_from_h5(
+            test_files,
+            max_jets=max_test_need,
+            max_constits=args.max_constits,
+            use_train_weights=False,
+        )
+        if all_const_test.shape[0] < max_test_need:
+            raise RuntimeError(
+                f"Not enough external test jets: requested {max_test_need}, got {all_const_test.shape[0]}"
+            )
+        const_raw_test = all_const_test[args.test_offset_jets: args.test_offset_jets + n_test_split]
+        labels_test_ref = all_labels_test[args.test_offset_jets: args.test_offset_jets + n_test_split].astype(np.int64)
+        raw_mask_test = const_raw_test[:, :, 0] > 0.0
+        masks_off_test = raw_mask_test & (const_raw_test[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
+        const_off_test = const_raw_test.copy()
+        const_off_test[~masks_off_test] = 0.0
+        hlt_const_test, hlt_mask_test, _, _ = apply_hlt_effects_realistic_nomap(
+            const_off_test,
+            masks_off_test,
+            cfg,
+            seed=int(args.seed),
+        )
+        feat_off_test = compute_features(const_off_test, masks_off_test)
+        feat_hlt_test = compute_features(hlt_const_test, hlt_mask_test)
+        feat_off_test_std = standardize(feat_off_test, masks_off_test, means, stds)
+        feat_hlt_test_std = standardize(feat_hlt_test, hlt_mask_test, means, stds)
+        ds_test_off = WeightedJetDataset(
+            feat_off_test_std, masks_off_test, labels_test_ref, sample_weight=np.ones((len(labels_test_ref),), dtype=np.float32)
+        )
+    else:
+        labels_test_ref = labels[test_idx].astype(np.int64)
+        ds_test_off = WeightedJetDataset(
+            feat_off_std[test_idx],
+            masks_off[test_idx],
+            labels[test_idx],
+            sample_weight=np.ones((len(test_idx),), dtype=np.float32),
+        )
     dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
@@ -2853,11 +3146,28 @@ def main() -> None:
     teacher = train_single_view_classifier_auc(
         teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
     )
-    auc_teacher, preds_teacher, labs = eval_classifier(teacher, dl_test_off, device)
+    auc_teacher, preds_teacher, labs, _ = _eval_classifier_with_optional_weights(teacher, dl_test_off, device)
 
-    ds_train_hlt = JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
-    ds_val_hlt = JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
-    ds_test_hlt = JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
+    ds_train_hlt = WeightedJetDataset(
+        feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx], sample_weight=train_w_train
+    )
+    ds_val_hlt = WeightedJetDataset(
+        feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx], sample_weight=train_w_val
+    )
+    if external_test_step1:
+        ds_test_hlt = WeightedJetDataset(
+            feat_hlt_test_std,
+            hlt_mask_test,
+            labels_test_ref,
+            sample_weight=np.ones((len(labels_test_ref),), dtype=np.float32),
+        )
+    else:
+        ds_test_hlt = WeightedJetDataset(
+            feat_hlt_std[test_idx],
+            hlt_mask[test_idx],
+            labels[test_idx],
+            sample_weight=np.ones((len(test_idx),), dtype=np.float32),
+        )
     dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
@@ -2866,8 +3176,10 @@ def main() -> None:
     baseline = train_single_view_classifier_auc(
         baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
     )
-    auc_baseline, preds_baseline, labs_baseline = eval_classifier(baseline, dl_test_hlt, device)
-    auc_baseline_val, preds_baseline_val, labs_baseline_val = eval_classifier(baseline, dl_val_hlt, device)
+    auc_baseline, preds_baseline, labs_baseline, _ = _eval_classifier_with_optional_weights(baseline, dl_test_hlt, device)
+    auc_baseline_val, preds_baseline_val, labs_baseline_val, _ = _eval_classifier_with_optional_weights(
+        baseline, dl_val_hlt, device
+    )
     hlt_delta_thr_prob = prob_threshold_at_target_tpr(
         np.asarray(preds_baseline_val, dtype=np.float64)[np.asarray(labs_baseline_val, dtype=np.float32) > 0.5],
         target_tpr=0.50,
@@ -2920,10 +3232,11 @@ def main() -> None:
             "fpr30_hlt": float(fpr30_baseline),
             "fpr50_teacher": float(fpr50_teacher),
             "fpr50_hlt": float(fpr50_baseline),
+            "test_external_step1_only": bool(external_test_step1),
             "n_train_jets": int(args.n_train_jets),
             "n_train_split": int(len(train_idx)),
             "n_val_split": int(len(val_idx)),
-            "n_test_split": int(len(test_idx)),
+            "n_test_split": int(len(labs)),
         }
         with open(save_root / "results_step1_teacher_baseline.json", "w", encoding="utf-8") as f:
             json.dump(step1_report, f, indent=2)
