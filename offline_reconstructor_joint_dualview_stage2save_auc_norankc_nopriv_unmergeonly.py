@@ -3098,14 +3098,15 @@ def main() -> None:
     )
 
     labels_test_ref: np.ndarray
+    test_weight_ref: np.ndarray
     if external_test_step1:
         max_test_need = int(args.test_offset_jets) + int(n_test_split)
         print("Loading external test constituents...")
-        all_const_test, all_labels_test, _all_w_test = load_raw_constituents_labels_weights_from_h5(
+        all_const_test, all_labels_test, all_w_test = load_raw_constituents_labels_weights_from_h5(
             test_files,
             max_jets=max_test_need,
             max_constits=args.max_constits,
-            use_train_weights=False,
+            use_train_weights=bool(args.use_train_weights),
         )
         if all_const_test.shape[0] < max_test_need:
             raise RuntimeError(
@@ -3113,6 +3114,10 @@ def main() -> None:
             )
         const_raw_test = all_const_test[args.test_offset_jets: args.test_offset_jets + n_test_split]
         labels_test_ref = all_labels_test[args.test_offset_jets: args.test_offset_jets + n_test_split].astype(np.int64)
+        if bool(args.use_train_weights):
+            test_weight_ref = all_w_test[args.test_offset_jets: args.test_offset_jets + n_test_split].astype(np.float32)
+        else:
+            test_weight_ref = np.ones((len(labels_test_ref),), dtype=np.float32)
         raw_mask_test = const_raw_test[:, :, 0] > 0.0
         masks_off_test = raw_mask_test & (const_raw_test[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
         const_off_test = const_raw_test.copy()
@@ -3128,15 +3133,19 @@ def main() -> None:
         feat_off_test_std = standardize(feat_off_test, masks_off_test, means, stds)
         feat_hlt_test_std = standardize(feat_hlt_test, hlt_mask_test, means, stds)
         ds_test_off = WeightedJetDataset(
-            feat_off_test_std, masks_off_test, labels_test_ref, sample_weight=np.ones((len(labels_test_ref),), dtype=np.float32)
+            feat_off_test_std, masks_off_test, labels_test_ref, sample_weight=test_weight_ref
         )
     else:
         labels_test_ref = labels[test_idx].astype(np.int64)
+        if bool(args.use_train_weights):
+            test_weight_ref = train_weight[test_idx].astype(np.float32)
+        else:
+            test_weight_ref = np.ones((len(test_idx),), dtype=np.float32)
         ds_test_off = WeightedJetDataset(
             feat_off_std[test_idx],
             masks_off[test_idx],
             labels[test_idx],
-            sample_weight=np.ones((len(test_idx),), dtype=np.float32),
+            sample_weight=test_weight_ref,
         )
     dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
@@ -3146,7 +3155,7 @@ def main() -> None:
     teacher = train_single_view_classifier_auc(
         teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
     )
-    auc_teacher, preds_teacher, labs, _ = _eval_classifier_with_optional_weights(teacher, dl_test_off, device)
+    auc_teacher, preds_teacher, labs, w_teacher_test = _eval_classifier_with_optional_weights(teacher, dl_test_off, device)
 
     ds_train_hlt = WeightedJetDataset(
         feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx], sample_weight=train_w_train
@@ -3159,14 +3168,14 @@ def main() -> None:
             feat_hlt_test_std,
             hlt_mask_test,
             labels_test_ref,
-            sample_weight=np.ones((len(labels_test_ref),), dtype=np.float32),
+            sample_weight=test_weight_ref,
         )
     else:
         ds_test_hlt = WeightedJetDataset(
             feat_hlt_std[test_idx],
             hlt_mask[test_idx],
             labels[test_idx],
-            sample_weight=np.ones((len(test_idx),), dtype=np.float32),
+            sample_weight=test_weight_ref,
         )
     dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
@@ -3176,7 +3185,7 @@ def main() -> None:
     baseline = train_single_view_classifier_auc(
         baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
     )
-    auc_baseline, preds_baseline, labs_baseline, _ = _eval_classifier_with_optional_weights(baseline, dl_test_hlt, device)
+    auc_baseline, preds_baseline, labs_baseline, w_baseline_test = _eval_classifier_with_optional_weights(baseline, dl_test_hlt, device)
     auc_baseline_val, preds_baseline_val, labs_baseline_val, _ = _eval_classifier_with_optional_weights(
         baseline, dl_val_hlt, device
     )
@@ -3195,8 +3204,10 @@ def main() -> None:
         if not np.array_equal(labs, labs_baseline):
             raise RuntimeError("Teacher/baseline label mismatch on test split in --step1_only mode.")
 
-        fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
-        fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
+        w_teacher_curve = w_teacher_test if bool(args.use_train_weights) else None
+        w_baseline_curve = w_baseline_test if bool(args.use_train_weights) else None
+        fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher, sample_weight=w_teacher_curve)
+        fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline, sample_weight=w_baseline_curve)
         fpr30_teacher = fpr_at_target_tpr(fpr_t, tpr_t, 0.30)
         fpr30_baseline = fpr_at_target_tpr(fpr_b, tpr_b, 0.30)
         fpr50_teacher = fpr_at_target_tpr(fpr_t, tpr_t, 0.50)
@@ -3222,6 +3233,11 @@ def main() -> None:
             fpr30_hlt=float(fpr30_baseline),
             fpr50_teacher=float(fpr50_teacher),
             fpr50_hlt=float(fpr50_baseline),
+            sample_weight_test=(
+                np.asarray(w_teacher_test, dtype=np.float64)
+                if (bool(args.use_train_weights) and w_teacher_test is not None)
+                else np.ones_like(np.asarray(labs, dtype=np.float64))
+            ),
         )
 
         step1_report = {
@@ -3237,6 +3253,7 @@ def main() -> None:
             "n_train_split": int(len(train_idx)),
             "n_val_split": int(len(val_idx)),
             "n_test_split": int(len(labs)),
+            "use_train_weights": bool(args.use_train_weights),
         }
         with open(save_root / "results_step1_teacher_baseline.json", "w", encoding="utf-8") as f:
             json.dump(step1_report, f, indent=2)
