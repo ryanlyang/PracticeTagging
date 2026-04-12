@@ -17,7 +17,11 @@ SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-1500000}"
+TRAIN_PATH="${TRAIN_PATH:-./data/train_quarter.h5}"
+TEST_PATH="${TEST_PATH:-./data/test.h5}"
+TEST_OFFSET_JETS="${TEST_OFFSET_JETS:-0}"
+
+N_TRAIN_JETS="${N_TRAIN_JETS:-1250000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-1000000}"
 N_VAL_SPLIT="${N_VAL_SPLIT:-250000}"
 N_TEST_SPLIT="${N_TEST_SPLIT:-250000}"
@@ -40,6 +44,10 @@ mkdir -p "${SAVE_DIR}"
 
 CMD=(
   python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py
+  --train_path "${TRAIN_PATH}"
+  --test_path "${TEST_PATH}"
+  --test_offset_jets "${TEST_OFFSET_JETS}"
+  --use_train_weights
   --save_dir "${SAVE_DIR}"
   --run_name "${RUN_NAME}"
   --n_train_jets "${N_TRAIN_JETS}"
@@ -56,9 +64,11 @@ CMD=(
 )
 
 echo "============================================================"
-echo "Teacher + HLT Baseline Only (1M/250k/250k split)"
+echo "Teacher + HLT Baseline Only (1M/250k/250k split, real train/test H5, weighted)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
-echo "Data: n_train_jets=${N_TRAIN_JETS}, split=${N_TRAIN_SPLIT}/${N_VAL_SPLIT}/${N_TEST_SPLIT}, offset=${OFFSET_JETS}"
+echo "Train path: ${TRAIN_PATH}"
+echo "Test path:  ${TEST_PATH}"
+echo "Data: n_train_jets=${N_TRAIN_JETS}, split=${N_TRAIN_SPLIT}/${N_VAL_SPLIT}/${N_TEST_SPLIT}, offset=${OFFSET_JETS}, test_offset=${TEST_OFFSET_JETS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=th2m500
+#SBATCH --job-name=th4m1m
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=128G
 #SBATCH --time=3-00:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m500k500k_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_2m500k500k_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_4m1m1m_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_4m1m1m_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-teacher_hlt_only_2m500k500k_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_2m500k500k/teacher_hlt_only}"
+RUN_NAME="${RUN_NAME:-teacher_hlt_only_4m1m1m_seed0}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_4m1m1m/teacher_hlt_only}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
@@ -21,10 +21,10 @@ TRAIN_PATH="${TRAIN_PATH:-./data/train_quarter.h5}"
 TEST_PATH="${TEST_PATH:-./data/test.h5}"
 TEST_OFFSET_JETS="${TEST_OFFSET_JETS:-0}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-2500000}"
-N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-2000000}"
-N_VAL_SPLIT="${N_VAL_SPLIT:-500000}"
-N_TEST_SPLIT="${N_TEST_SPLIT:-500000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-5000000}"
+N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-4000000}"
+N_VAL_SPLIT="${N_VAL_SPLIT:-1000000}"
+N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
@@ -64,7 +64,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "Teacher + HLT Baseline Only (2M/500k/500k split, real train/test H5, weighted)"
+echo "Teacher + HLT Baseline Only (4M/1M/1M split, real train/test H5, weighted)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Train path: ${TRAIN_PATH}"
 echo "Test path:  ${TEST_PATH}"
