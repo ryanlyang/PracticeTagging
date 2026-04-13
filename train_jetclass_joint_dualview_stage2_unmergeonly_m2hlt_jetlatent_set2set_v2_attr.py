@@ -19,6 +19,8 @@ import sys
 from pathlib import Path
 from typing import Dict
 
+import numpy as np
+
 
 def _find_practice_root() -> Path:
     here = Path(__file__).resolve()
@@ -62,8 +64,36 @@ def main() -> None:
         "offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly"
     )
 
-    # HLT profile: match current m2-style setup.
-    v2.build_hlt_view = m2hlt._build_hlt_view_m2style
+    def _build_hlt_view_m2style_with_provenance(
+        tok: np.ndarray,
+        msk: np.ndarray,
+        params,
+        seed: int,
+        return_provenance: bool = False,
+    ):
+        # m2-style builder returns only (tok, mask, diag).
+        out_tok, out_msk, per_jet = m2hlt._build_hlt_view_m2style(tok, msk, params=params, seed=seed)
+        if not return_provenance:
+            return out_tok, out_msk, per_jet
+
+        # V2 expects provenance tensors; m2-style HLT does not currently expose
+        # per-token merge ancestry, so provide a shape-compatible "no split"
+        # placeholder to keep Stage A/B/C training runnable.
+        n_jets, max_constits = out_msk.shape
+        mode_none = int(getattr(v2, "MERGE_MODE_NONE", 0))
+        type_unk = int(getattr(v2, "TYPE_UNK", 5))
+        prov = {
+            "split_target_mask": np.zeros((n_jets, max_constits), dtype=bool),
+            "split_mode_target": np.full((n_jets, max_constits), mode_none, dtype=np.int64),
+            "child_type_a_target": np.full((n_jets, max_constits), type_unk, dtype=np.int64),
+            "child_type_b_target": np.full((n_jets, max_constits), type_unk, dtype=np.int64),
+            "child_attr_a_target": np.zeros((n_jets, max_constits, 5), dtype=np.float32),
+            "child_attr_b_target": np.zeros((n_jets, max_constits, 5), dtype=np.float32),
+        }
+        return out_tok, out_msk, per_jet, prov
+
+    # HLT profile: match current m2-style setup with V2-compatible API.
+    v2.build_hlt_view = _build_hlt_view_m2style_with_provenance
 
     # Reconstructor/loss/corrected-view: swap to jetlatent set2set.
     v2.OfflineReconstructor = jetlatent.OfflineReconstructorJetLatentSet2Set
