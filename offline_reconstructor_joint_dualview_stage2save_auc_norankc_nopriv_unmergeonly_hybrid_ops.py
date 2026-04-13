@@ -535,7 +535,8 @@ def build_soft_corrected_view_hybrid_ops(
 
     # eff_share kept as smooth budget signal.
     valid_count = mask_b.float().sum(dim=1, keepdim=True).clamp(min=1.0)
-    eff_share = (reco_out.get("budget_eff", torch.zeros_like(valid_count.squeeze(-1))).unsqueeze(1) / valid_count).clamp(0.0, 1.0)
+    eff_share_scalar = reco_out.get("budget_eff", torch.zeros_like(valid_count.squeeze(-1))).unsqueeze(1)
+    eff_share = (eff_share_scalar / valid_count).clamp(0.0, 1.0).expand_as(tok_weights)
 
     extra = torch.stack([tok_weights, parent_added, eff_share], dim=-1)
     if bool(include_flags):
