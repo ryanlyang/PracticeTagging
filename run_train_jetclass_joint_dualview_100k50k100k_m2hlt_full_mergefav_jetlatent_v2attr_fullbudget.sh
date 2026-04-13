@@ -3,7 +3,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=23:00:00
+#SBATCH --time=7:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_100k50k100k_m2hlt_full_mergefav_jetlatent_v2attr_fullbudget_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_100k50k100k_m2hlt_full_mergefav_jetlatent_v2attr_fullbudget_%j.err
 
