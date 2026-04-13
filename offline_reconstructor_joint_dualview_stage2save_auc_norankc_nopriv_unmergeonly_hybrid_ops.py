@@ -27,6 +27,11 @@ import torch.nn.functional as F
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly as base
 import offline_reconstructor_no_gt_local30kv2 as reco_base
 
+try:
+    from scipy.optimize import linear_sum_assignment  # type: ignore
+except Exception:
+    linear_sum_assignment = None  # type: ignore
+
 
 def _softplus_pos(x: torch.Tensor, min_val: float = 0.0) -> torch.Tensor:
     return F.softplus(x) + float(min_val)
@@ -347,15 +352,61 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
     valid_tgt = mask_off.unsqueeze(1)
     cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
 
-    # Set2set (Chamfer family, same as existing pipeline).
-    pred_to_tgt = cost.min(dim=2).values
-    loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
+    def _loss_set_chamfer_vec() -> torch.Tensor:
+        pred_to_tgt = cost.min(dim=2).values
+        loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
+        penalty = float(loss_cfg.get("unselected_penalty", 0.0)) * (1.0 - w).unsqueeze(2)
+        tgt_to_pred = (cost + penalty).min(dim=1).values
+        tgt_w = mask_off.float()
+        loss_tgt_to_pred = (tgt_to_pred * tgt_w).sum(dim=1) / (tgt_w.sum(dim=1) + eps)
+        return loss_pred_to_tgt + loss_tgt_to_pred
 
-    penalty = float(loss_cfg.get("unselected_penalty", 0.0)) * (1.0 - w).unsqueeze(2)
-    tgt_to_pred = (cost + penalty).min(dim=1).values
-    tgt_w = mask_off.float()
-    loss_tgt_to_pred = (tgt_to_pred * tgt_w).sum(dim=1) / (tgt_w.sum(dim=1) + eps)
-    loss_set_vec = loss_pred_to_tgt + loss_tgt_to_pred
+    def _loss_set_hungarian_vec() -> torch.Tensor:
+        if linear_sum_assignment is None:
+            raise RuntimeError(
+                "loss_set_mode='hungarian' requires scipy.optimize.linear_sum_assignment, "
+                "but SciPy is unavailable in this environment."
+            )
+        bsz = int(cost.shape[0])
+        loss_list = []
+        for bi in range(bsz):
+            n_tgt = int(mask_off[bi].sum().item())
+            if n_tgt <= 0:
+                loss_list.append(torch.zeros((), device=cost.device, dtype=cost.dtype))
+                continue
+            c_bt = cost[bi, :, :n_tgt]
+            c_np = c_bt.detach().cpu().numpy()
+            row_ind, col_ind = linear_sum_assignment(c_np)  # type: ignore[misc]
+            row_t = torch.as_tensor(row_ind, device=cost.device, dtype=torch.long)
+            col_t = torch.as_tensor(col_ind, device=cost.device, dtype=torch.long)
+
+            matched_cost = c_bt[row_t, col_t]
+            l_cov = matched_cost.mean()
+
+            wb = w[bi]
+            matched_mask = torch.zeros_like(wb, dtype=torch.bool)
+            matched_mask[row_t] = True
+            wb_m = wb[matched_mask]
+            l_prec_match = (wb_m * matched_cost).sum() / (wb_m.sum() + eps)
+            unmatched_mass = wb[~matched_mask].sum() / (wb.sum() + eps)
+            l_fp = float(loss_cfg.get("unselected_penalty", 0.0)) * unmatched_mass
+            loss_list.append(l_cov + l_prec_match + l_fp)
+        return torch.stack(loss_list, dim=0)
+
+    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
+    if set_mode == "chamfer":
+        loss_set_vec = _loss_set_chamfer_vec()
+    elif set_mode == "hungarian":
+        loss_set_vec = _loss_set_hungarian_vec()
+    elif set_mode == "combo":
+        w_chamfer = max(float(loss_cfg.get("combo_w_chamfer", 0.0)), 0.0)
+        w_hungarian = max(float(loss_cfg.get("combo_w_hungarian", 0.0)), 0.0)
+        w_sum = w_chamfer + w_hungarian
+        if w_sum <= 0.0:
+            raise ValueError("loss_set_mode='combo' requires positive combo weights.")
+        loss_set_vec = (w_chamfer / w_sum) * _loss_set_chamfer_vec() + (w_hungarian / w_sum) * _loss_set_hungarian_vec()
+    else:
+        raise ValueError(f"Unsupported set_loss_mode in hybrid ops: {set_mode}")
 
     pred_px, pred_py, pred_pz, pred_E = reco_base._weighted_fourvec_sums(pred, w)
     true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off, mask_off.float())
