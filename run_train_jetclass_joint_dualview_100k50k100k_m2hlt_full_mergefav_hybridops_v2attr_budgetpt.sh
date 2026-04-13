@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=10:00:00
+#SBATCH --time=5:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_100k50k100k_m2hlt_full_mergefav_hybridops_v2attr_budgetpt_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_100k50k100k_m2hlt_full_mergefav_hybridops_v2attr_budgetpt_%j.err
 
