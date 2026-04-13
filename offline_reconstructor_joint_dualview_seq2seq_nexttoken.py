@@ -444,12 +444,14 @@ class HLT2OfflineSeq2Seq(nn.Module):
         gate = torch.sigmoid(self.gate_head(h))
         pred_tok = base_tok + gate * delta
 
-        # keep sin/cos channel normalized
+        # keep sin/cos channel normalized (avoid in-place autograd edits)
         sn = pred_tok[..., 2]
         cs = pred_tok[..., 3]
         norm = torch.sqrt(sn.pow(2) + cs.pow(2) + 1e-8)
-        pred_tok[..., 2] = sn / norm
-        pred_tok[..., 3] = cs / norm
+        pred_tok = torch.cat(
+            [pred_tok[..., :2], (sn / norm).unsqueeze(-1), (cs / norm).unsqueeze(-1), pred_tok[..., 4:]],
+            dim=-1,
+        )
 
         stop_logits = self.stop_head(h).squeeze(-1)
         return pred_tok, stop_logits, attn, gate.squeeze(-1)
