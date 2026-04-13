@@ -2,12 +2,14 @@
 # -*- coding: utf-8 -*-
 
 """
-JetClass V2-Attr + m2-style HLT + jetlatent set2set base reconstructor.
+JetClass V2-Attr + m2-style HLT + hybrid-ops base reconstructor.
 
 Purpose:
 - Keep the V2 constrained attribute-head training/eval pipeline.
-- Swap the base reconstructor to jetlatent set2set.
+- Swap the base reconstructor to hybrid ops.
 - Keep m2-style HLT corruption used by the current jetlatent runs.
+- Enable full-info Stage-A from epoch 1 by adding attr losses directly into
+  the main reconstructor pretrain objective (not only StageA-Attr calibration).
 
 This wrapper avoids modifying existing PracticeTagging scripts.
 """
@@ -21,6 +23,10 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
+import torch
+import torch.nn.functional as F
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 
 RAW_DIM = 14
@@ -83,12 +89,29 @@ def main() -> None:
     TYPE_NH = int(getattr(v2, "TYPE_NH", 1))
     TYPE_GAM = int(getattr(v2, "TYPE_GAM", 2))
     TYPE_ELE = int(getattr(v2, "TYPE_ELE", 3))
+    TYPE_MU = int(getattr(v2, "TYPE_MU", 4))
     TYPE_UNK = int(getattr(v2, "TYPE_UNK", 5))
 
     MERGE_MODE_NONE = int(getattr(v2, "MERGE_MODE_NONE", 0))
     MERGE_MODE_SAME_TYPE = int(getattr(v2, "MERGE_MODE_SAME_TYPE", 1))
     MERGE_MODE_ELE_GAM = int(getattr(v2, "MERGE_MODE_ELE_GAM", 2))
     MERGE_MODE_CH_NH = int(getattr(v2, "MERGE_MODE_CH_NH", 3))
+    _stagea_aux_queue: List[Dict[str, np.ndarray]] = []
+
+    # Parse once so patched Stage-A trainer can use the exact run-time knobs.
+    args = v2.parse_args()
+    stagea_attr_lam_mode = float(args.lambda_attr_mode)
+    stagea_attr_lam_type = float(args.lambda_attr_type)
+    stagea_attr_lam_charge = float(args.lambda_attr_charge)
+    stagea_attr_lam_track = float(args.lambda_attr_track)
+    stagea_mode_none_weight = float(args.v2_mode_none_weight)
+    stagea_mode_label_smoothing = float(args.v2_mode_label_smoothing)
+    stagea_track_weight = float(args.v2_track_weight)
+
+    # Non-split anchor (unsmear/reassign branch): keep non-kin attrs tied to HLT parent.
+    stagea_anchor_type = float(args.lambda_attr_type)
+    stagea_anchor_charge = float(args.lambda_attr_charge)
+    stagea_anchor_track = float(args.lambda_attr_track)
 
     def _infer_type_id(token: np.ndarray) -> int:
         pid = token[IDX_PID0:IDX_PID4 + 1]
@@ -415,23 +438,378 @@ def main() -> None:
             "child_attr_b_target",
         ]
         prov = {k: np.stack([row[k] for row in prov_rows], axis=0) for k in pkeys}
+        _stagea_aux_queue.append(
+            {
+                "hlt_tok_raw": out_tok.copy(),
+                "split_target_mask": prov["split_target_mask"].copy(),
+                "split_mode_target": prov["split_mode_target"].copy(),
+                "child_type_a_target": prov["child_type_a_target"].copy(),
+                "child_type_b_target": prov["child_type_b_target"].copy(),
+                "child_attr_a_target": prov["child_attr_a_target"].copy(),
+                "child_attr_b_target": prov["child_attr_b_target"].copy(),
+            }
+        )
         return out_tok, out_msk, per_jet, prov
+
+    class _WeightedReconstructionDatasetFullInfo(Dataset):
+        """
+        Stage-A reconstruction dataset with full-info supervision fields:
+        - split provenance targets for V2 attr losses,
+        - parent HLT type/charge/track targets for non-split anchor.
+        """
+
+        def __init__(
+            self,
+            feat_hlt: np.ndarray,
+            mask_hlt: np.ndarray,
+            const_hlt: np.ndarray,
+            const_off: np.ndarray,
+            mask_off: np.ndarray,
+            budget_merge_true: np.ndarray,
+            budget_eff_true: np.ndarray,
+            sample_weight_reco: np.ndarray | None = None,
+        ):
+            self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
+            self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+            self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
+            self.const_off = torch.tensor(const_off, dtype=torch.float32)
+            self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
+            self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
+            self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+
+            n = int(feat_hlt.shape[0])
+            if sample_weight_reco is None:
+                sw = np.ones((n,), dtype=np.float32)
+            else:
+                sw = np.asarray(sample_weight_reco, dtype=np.float32)
+                if sw.shape[0] != n:
+                    raise ValueError(f"sample_weight_reco length mismatch: {sw.shape[0]} vs {n}")
+            self.sample_weight_reco = torch.tensor(sw, dtype=torch.float32)
+
+            aux = _stagea_aux_queue.pop(0) if _stagea_aux_queue else None
+            ok = False
+            if aux is not None:
+                hlt_tok_raw = np.asarray(aux["hlt_tok_raw"], dtype=np.float32)
+                ok = (
+                    hlt_tok_raw.ndim == 3
+                    and hlt_tok_raw.shape[0] == feat_hlt.shape[0]
+                    and hlt_tok_raw.shape[1] == feat_hlt.shape[1]
+                )
+            if not ok:
+                hlt_tok_raw = np.zeros((feat_hlt.shape[0], feat_hlt.shape[1], RAW_DIM), dtype=np.float32)
+                split_target_mask = np.zeros((feat_hlt.shape[0], feat_hlt.shape[1]), dtype=bool)
+                split_mode_target = np.full((feat_hlt.shape[0], feat_hlt.shape[1]), MERGE_MODE_NONE, dtype=np.int64)
+                child_type_a_target = np.full((feat_hlt.shape[0], feat_hlt.shape[1]), TYPE_UNK, dtype=np.int64)
+                child_type_b_target = np.full((feat_hlt.shape[0], feat_hlt.shape[1]), TYPE_UNK, dtype=np.int64)
+                child_attr_a_target = np.zeros((feat_hlt.shape[0], feat_hlt.shape[1], 5), dtype=np.float32)
+                child_attr_b_target = np.zeros((feat_hlt.shape[0], feat_hlt.shape[1], 5), dtype=np.float32)
+            else:
+                split_target_mask = np.asarray(aux["split_target_mask"], dtype=bool)
+                split_mode_target = np.asarray(aux["split_mode_target"], dtype=np.int64)
+                child_type_a_target = np.asarray(aux["child_type_a_target"], dtype=np.int64)
+                child_type_b_target = np.asarray(aux["child_type_b_target"], dtype=np.int64)
+                child_attr_a_target = np.asarray(aux["child_attr_a_target"], dtype=np.float32)
+                child_attr_b_target = np.asarray(aux["child_attr_b_target"], dtype=np.float32)
+
+            # Parent (HLT) non-kin targets used to anchor non-split branch.
+            pid_block = hlt_tok_raw[:, :, IDX_PID0:IDX_PID4 + 1]
+            parent_type = np.argmax(pid_block, axis=-1).astype(np.int64)
+            parent_type[np.max(pid_block, axis=-1) <= 0.0] = TYPE_UNK
+            parent_type[~mask_hlt] = TYPE_UNK
+
+            parent_charge = hlt_tok_raw[:, :, IDX_CHARGE].astype(np.float32)
+            parent_charge[~mask_hlt] = 0.0
+
+            parent_track = hlt_tok_raw[:, :, IDX_D0:IDX_DZERR + 1].astype(np.float32)
+            parent_track = np.where(mask_hlt[:, :, None], parent_track, 0.0)
+
+            self.split_target_mask = torch.tensor(split_target_mask, dtype=torch.bool)
+            self.split_mode_target = torch.tensor(split_mode_target, dtype=torch.long)
+            self.child_type_a_target = torch.tensor(child_type_a_target, dtype=torch.long)
+            self.child_type_b_target = torch.tensor(child_type_b_target, dtype=torch.long)
+            self.child_attr_a_target = torch.tensor(child_attr_a_target, dtype=torch.float32)
+            self.child_attr_b_target = torch.tensor(child_attr_b_target, dtype=torch.float32)
+            self.parent_type_target = torch.tensor(parent_type, dtype=torch.long)
+            self.parent_charge_target = torch.tensor(parent_charge, dtype=torch.float32)
+            self.parent_track_target = torch.tensor(parent_track, dtype=torch.float32)
+
+        def __len__(self) -> int:
+            return int(self.feat_hlt.shape[0])
+
+        def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+            return {
+                "feat_hlt": self.feat_hlt[i],
+                "mask_hlt": self.mask_hlt[i],
+                "const_hlt": self.const_hlt[i],
+                "const_off": self.const_off[i],
+                "mask_off": self.mask_off[i],
+                "budget_merge_true": self.budget_merge_true[i],
+                "budget_eff_true": self.budget_eff_true[i],
+                "sample_weight_reco": self.sample_weight_reco[i],
+                "split_target_mask": self.split_target_mask[i],
+                "split_mode_target": self.split_mode_target[i],
+                "child_type_a_target": self.child_type_a_target[i],
+                "child_type_b_target": self.child_type_b_target[i],
+                "child_charge_a_target": self.child_attr_a_target[i, :, 0],
+                "child_charge_b_target": self.child_attr_b_target[i, :, 0],
+                "child_track_a_target": self.child_attr_a_target[i, :, 1:5],
+                "child_track_b_target": self.child_attr_b_target[i, :, 1:5],
+                "parent_type_target": self.parent_type_target[i],
+                "parent_charge_target": self.parent_charge_target[i],
+                "parent_track_target": self.parent_track_target[i],
+            }
+
+    def _compose_stagea_fullinfo_losses(
+        reco_out: Dict[str, torch.Tensor],
+        batch: Dict[str, torch.Tensor],
+        *,
+        loss_cfg: Dict,
+        sample_weight: torch.Tensor | None,
+    ) -> Dict[str, torch.Tensor]:
+        device = reco_out["cand_tokens"].device
+        losses_reco = jetlatent.compute_reconstruction_losses_weighted_hybrid_ops(
+            reco_out,
+            batch["const_hlt"].to(device),
+            batch["mask_hlt"].to(device),
+            batch["const_off"].to(device),
+            batch["mask_off"].to(device),
+            batch["budget_merge_true"].to(device),
+            batch["budget_eff_true"].to(device),
+            loss_cfg,
+            sample_weight=sample_weight,
+        )
+
+        losses_attr = v2.compute_v2_attr_losses(
+            reco_out,
+            batch,
+            mode_none_weight=stagea_mode_none_weight,
+            mode_label_smoothing=stagea_mode_label_smoothing,
+            track_weight=stagea_track_weight,
+        )
+        loss_attr_main = (
+            stagea_attr_lam_mode * losses_attr["mode"]
+            + stagea_attr_lam_type * losses_attr["type"]
+            + stagea_attr_lam_charge * losses_attr["charge"]
+            + stagea_attr_lam_track * losses_attr["track"]
+        )
+
+        # Non-split anchor: for unsmear/reassign path, keep parent attrs close to HLT input attrs.
+        zero = torch.zeros((), device=device)
+        mask_hlt = batch["mask_hlt"].to(device)
+        split_target_mask = batch.get("split_target_mask", torch.zeros_like(mask_hlt)).to(device)
+        nonsplit = mask_hlt & (~split_target_mask)
+        if nonsplit.any() and ("child_type_logits" in reco_out):
+            type_logits = reco_out["child_type_logits"][:, :, 0, :]
+            type_tgt = batch["parent_type_target"].to(device)
+            loss_anchor_type = F.cross_entropy(type_logits[nonsplit], type_tgt[nonsplit])
+        else:
+            loss_anchor_type = zero
+
+        if nonsplit.any() and ("child_charge_pred" in reco_out):
+            charge_pred = reco_out["child_charge_pred"][:, :, 0]
+            charge_tgt = batch["parent_charge_target"].to(device)
+            type_tgt = batch["parent_type_target"].to(device)
+            track_like = (type_tgt == TYPE_CH) | (type_tgt == TYPE_ELE) | (type_tgt == TYPE_MU)
+            charge_mask = nonsplit & track_like
+            if charge_mask.any():
+                loss_anchor_charge = F.smooth_l1_loss(charge_pred[charge_mask], charge_tgt[charge_mask])
+            else:
+                loss_anchor_charge = zero
+        else:
+            loss_anchor_charge = zero
+
+        if nonsplit.any() and ("child_track_pred" in reco_out):
+            track_pred = reco_out["child_track_pred"][:, :, 0, :]
+            track_tgt = batch["parent_track_target"].to(device)
+            type_tgt = batch["parent_type_target"].to(device)
+            track_like = (type_tgt == TYPE_CH) | (type_tgt == TYPE_ELE) | (type_tgt == TYPE_MU)
+            track_mask = (nonsplit & track_like).unsqueeze(-1).expand(-1, -1, 4)
+            if track_mask.any():
+                loss_anchor_track = F.smooth_l1_loss(track_pred[track_mask], track_tgt[track_mask])
+            else:
+                loss_anchor_track = zero
+        else:
+            loss_anchor_track = zero
+
+        loss_anchor = (
+            stagea_anchor_type * loss_anchor_type
+            + stagea_anchor_charge * loss_anchor_charge
+            + stagea_anchor_track * loss_anchor_track
+        )
+
+        total = losses_reco["total"] + loss_attr_main + loss_anchor
+        return {
+            "total": total,
+            "set": losses_reco["set"],
+            "budget": losses_reco["budget"],
+            "pt_ratio": losses_reco["pt_ratio"],
+            "local": losses_reco["local"],
+            "attr_main": loss_attr_main,
+            "anchor": loss_anchor,
+        }
+
+    def _train_reconstructor_weighted_fullinfo(
+        model,
+        train_loader: DataLoader,
+        val_loader: DataLoader,
+        device: torch.device,
+        train_cfg: Dict,
+        loss_cfg: Dict,
+        apply_reco_weight: bool,
+        reload_best_at_stage_transition: bool,
+    ):
+        # `reload_best_at_stage_transition` kept for API compatibility.
+        _ = reload_best_at_stage_transition
+        opt = torch.optim.AdamW(
+            model.parameters(),
+            lr=float(train_cfg["lr"]),
+            weight_decay=float(train_cfg["weight_decay"]),
+        )
+        sch = reco_joint.get_scheduler(opt, int(train_cfg["warmup_epochs"]), int(train_cfg["epochs"]))
+
+        best_state = None
+        best_val = 1e9
+        no_improve = 0
+        min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
+
+        for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
+            model.train()
+            sc = reco_joint.stage_scale_local(ep, train_cfg)
+            tr_total = tr_set = tr_budget = tr_pt = tr_local = tr_attr = tr_anchor = 0.0
+            n_tr = 0
+            for batch in train_loader:
+                feat_hlt = batch["feat_hlt"].to(device)
+                mask_hlt = batch["mask_hlt"].to(device)
+                const_hlt = batch["const_hlt"].to(device)
+                sw_reco = batch.get("sample_weight_reco", None)
+                if sw_reco is not None:
+                    sw_reco = sw_reco.to(device)
+
+                opt.zero_grad()
+                out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=sc)
+                losses = _compose_stagea_fullinfo_losses(
+                    out,
+                    batch,
+                    loss_cfg=loss_cfg,
+                    sample_weight=(sw_reco if (bool(apply_reco_weight) and sw_reco is not None) else None),
+                )
+                losses["total"].backward()
+                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                opt.step()
+
+                bs = int(feat_hlt.size(0))
+                tr_total += float(losses["total"].item()) * bs
+                tr_set += float(losses["set"].item()) * bs
+                tr_budget += float(losses["budget"].item()) * bs
+                tr_pt += float(losses["pt_ratio"].item()) * bs
+                tr_local += float(losses["local"].item()) * bs
+                tr_attr += float(losses["attr_main"].item()) * bs
+                tr_anchor += float(losses["anchor"].item()) * bs
+                n_tr += bs
+
+            model.eval()
+            va_total_u = va_set_u = va_budget_u = va_pt_u = va_local_u = va_attr_u = va_anchor_u = 0.0
+            va_total_w = 0.0
+            n_va = 0
+            with torch.no_grad():
+                for batch in val_loader:
+                    feat_hlt = batch["feat_hlt"].to(device)
+                    mask_hlt = batch["mask_hlt"].to(device)
+                    const_hlt = batch["const_hlt"].to(device)
+                    sw_reco = batch.get("sample_weight_reco", None)
+                    if sw_reco is not None:
+                        sw_reco = sw_reco.to(device)
+
+                    out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
+                    losses_u = _compose_stagea_fullinfo_losses(
+                        out,
+                        batch,
+                        loss_cfg=loss_cfg,
+                        sample_weight=None,
+                    )
+                    if bool(apply_reco_weight) and sw_reco is not None:
+                        losses_w = _compose_stagea_fullinfo_losses(
+                            out,
+                            batch,
+                            loss_cfg=loss_cfg,
+                            sample_weight=sw_reco,
+                        )
+                    else:
+                        losses_w = losses_u
+
+                    bs = int(feat_hlt.size(0))
+                    va_total_u += float(losses_u["total"].item()) * bs
+                    va_set_u += float(losses_u["set"].item()) * bs
+                    va_budget_u += float(losses_u["budget"].item()) * bs
+                    va_pt_u += float(losses_u["pt_ratio"].item()) * bs
+                    va_local_u += float(losses_u["local"].item()) * bs
+                    va_attr_u += float(losses_u["attr_main"].item()) * bs
+                    va_anchor_u += float(losses_u["anchor"].item()) * bs
+                    va_total_w += float(losses_w["total"].item()) * bs
+                    n_va += bs
+
+            sch.step()
+            tr_total /= max(n_tr, 1)
+            tr_set /= max(n_tr, 1)
+            tr_budget /= max(n_tr, 1)
+            tr_pt /= max(n_tr, 1)
+            tr_local /= max(n_tr, 1)
+            tr_attr /= max(n_tr, 1)
+            tr_anchor /= max(n_tr, 1)
+
+            va_total_u /= max(n_va, 1)
+            va_set_u /= max(n_va, 1)
+            va_budget_u /= max(n_va, 1)
+            va_pt_u /= max(n_va, 1)
+            va_local_u /= max(n_va, 1)
+            va_attr_u /= max(n_va, 1)
+            va_anchor_u /= max(n_va, 1)
+            va_total_w /= max(n_va, 1)
+
+            select_metric = va_total_w if bool(apply_reco_weight) else va_total_u
+            if select_metric < best_val:
+                best_val = float(select_metric)
+                best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+                no_improve = 0
+            else:
+                no_improve += 1
+
+            if (ep + 1) % 5 == 0:
+                print(
+                    f"Ep {ep+1}: train_total={tr_total:.4f}, val_total_unw={va_total_u:.4f}, "
+                    f"val_total_w={va_total_w:.4f}, select={'weighted' if bool(apply_reco_weight) else 'unweighted'}, "
+                    f"best_sel={best_val:.4f} | set_unw={va_set_u:.4f}, attr_unw={va_attr_u:.4f}, "
+                    f"anchor_unw={va_anchor_u:.4f}, budget_unw={va_budget_u:.4f}, "
+                    f"w_set={float(loss_cfg.get('w_set', 0.0)):.3f}, w_budget={float(loss_cfg.get('w_budget', 0.0)):.3f}, "
+                    f"w_pt={float(loss_cfg.get('w_pt_ratio', 0.0)):.3f}, w_local={float(loss_cfg.get('w_local', 0.0)):.3f}, "
+                    f"stage_scale={sc:.2f}"
+                )
+
+            if no_improve >= int(train_cfg["patience"]) and (ep + 1) >= int(max(min_stop_epoch, 1)):
+                print(f"Early stopping reconstructor at epoch {ep+1}")
+                break
+
+        if best_state is not None:
+            model.load_state_dict(best_state)
+        return model, {"val_total": float(best_val)}
 
     # HLT profile: match current m2-style setup with V2-compatible API and real provenance.
     v2.build_hlt_view = _build_hlt_view_m2style_with_provenance
 
-    # Reconstructor/loss/corrected-view: swap to jetlatent set2set.
+    # Reconstructor/loss/corrected-view: hybrid ops + full-info Stage-A dataset/trainer.
     v2.OfflineReconstructor = jetlatent.OfflineReconstructorHybridOps
     v2.compute_reconstruction_losses_weighted = jetlatent.compute_reconstruction_losses_weighted_hybrid_ops
     v2.build_soft_corrected_view = jetlatent.build_soft_corrected_view_hybrid_ops
     v2.wrap_reconstructor_unmerge_only = _identity_wrap
+    v2.WeightedReconstructionDataset = _WeightedReconstructionDatasetFullInfo
+    v2.train_reconstructor_weighted = _train_reconstructor_weighted_fullinfo
 
     # Stage-A trainer calls globals from reco_joint; patch there too.
     reco_joint.compute_reconstruction_losses_weighted = jetlatent.compute_reconstruction_losses_weighted_hybrid_ops
     reco_joint.enforce_unmerge_only_output = _identity_enforce
     reco_joint.wrap_reconstructor_unmerge_only = _identity_wrap
+    reco_joint.WeightedReconstructionDataset = _WeightedReconstructionDatasetFullInfo
 
-    args = v2.parse_args()
     v2.run(args)
 
 
