@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=jcHybV2F
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
-#SBATCH --mem=64G
-#SBATCH --time=1-12:00:00
+#SBATCH --mem=32G
+#SBATCH --time=1-00:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_100k50k100k_m2hlt_full_mergefav_hybridops_v2attr_budgetpt_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_100k50k100k_m2hlt_full_mergefav_hybridops_v2attr_budgetpt_%j.err
 
@@ -16,8 +16,8 @@ SEED="${SEED:-52}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-100000}"
-N_VAL_JETS="${N_VAL_JETS:-50000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-50000}"
+N_VAL_JETS="${N_VAL_JETS:-20000}"
 N_TEST_JETS="${N_TEST_JETS:-100000}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 FEATURE_MODE="${FEATURE_MODE:-full}"
