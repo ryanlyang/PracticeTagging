@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=m23k6reco
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=40G
 #SBATCH --time=2-12:00:00
