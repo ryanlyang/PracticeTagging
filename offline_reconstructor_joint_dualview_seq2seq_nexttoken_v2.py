@@ -25,7 +25,7 @@ import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -62,10 +62,13 @@ from unmerge_correct_hlt import (
     compute_jet_pt,
     eval_classifier,
     eval_classifier_dual,
+    get_scheduler,
     get_stats,
     jet_response_resolution,
     load_raw_constituents_from_h5,
     plot_response_resolution,
+    train_classifier,
+    train_classifier_dual,
     standardize,
 )
 
@@ -137,6 +140,21 @@ LOSS_CFG = {
     "scale_weight_cap": 4.0,
     "angle_pt_power": 0.6,
     "physics_warmup_epochs": 12,
+    "w_best_set": 2.5,
+    "w_diversity": 0.08,
+    "selector_ce": 0.6,
+    "selector_rank": 0.2,
+    "selector_rank_margin": 0.25,
+    "winner_mode": "tag",
+    "winner_hybrid_alpha": 1.0,
+    "winner_hybrid_beta": 0.5,
+}
+
+MULTIHYP_CFG = {
+    "num_hypotheses": 1,
+    "joint_epochs": 14,
+    "joint_lr": 1.2e-4,
+    "joint_patience": 6,
 }
 
 TOKEN_DIM_WEIGHTS = torch.tensor([1.0, 0.35, 0.25, 0.25, 1.0], dtype=torch.float32)
@@ -222,6 +240,73 @@ def const_to_token_torch(const: torch.Tensor) -> torch.Tensor:
     )
     tok = torch.nan_to_num(tok, nan=0.0, posinf=0.0, neginf=0.0)
     return tok
+
+
+def compute_features_torch(const: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    """Torch version of unmerge_correct_hlt.compute_features."""
+    pt = torch.clamp(const[..., 0], min=1e-8)
+    eta = torch.clamp(const[..., 1], min=-5.0, max=5.0)
+    phi = const[..., 2]
+    E = torch.clamp(const[..., 3], min=1e-8)
+
+    px = pt * torch.cos(phi)
+    py = pt * torch.sin(phi)
+    pz = pt * torch.sinh(eta)
+
+    m = mask.float()
+    jet_px = (px * m).sum(dim=1, keepdim=True)
+    jet_py = (py * m).sum(dim=1, keepdim=True)
+    jet_pz = (pz * m).sum(dim=1, keepdim=True)
+    jet_E = (E * m).sum(dim=1, keepdim=True)
+
+    jet_pt = torch.sqrt(jet_px.pow(2) + jet_py.pow(2) + 1e-8)
+    jet_p = torch.sqrt(jet_px.pow(2) + jet_py.pow(2) + jet_pz.pow(2) + 1e-8)
+    frac = torch.clamp((jet_p + jet_pz) / (jet_p - jet_pz + 1e-8), min=1e-8, max=1e8)
+    jet_eta = 0.5 * torch.log(frac)
+    jet_phi = torch.atan2(jet_py, jet_px)
+
+    delta_eta = eta - jet_eta
+    delta_phi = torch.atan2(torch.sin(phi - jet_phi), torch.cos(phi - jet_phi))
+
+    log_pt = torch.log(pt + 1e-8)
+    log_E = torch.log(E + 1e-8)
+    log_pt_rel = torch.log(pt / (jet_pt + 1e-8) + 1e-8)
+    log_E_rel = torch.log(E / (jet_E + 1e-8) + 1e-8)
+    delta_r = torch.sqrt(delta_eta.pow(2) + delta_phi.pow(2) + 1e-8)
+
+    feat = torch.stack([delta_eta, delta_phi, log_pt, log_E, log_pt_rel, log_E_rel, delta_r], dim=-1)
+    feat = torch.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
+    feat = torch.clamp(feat, min=-20.0, max=20.0)
+    feat = torch.where(mask.unsqueeze(-1), feat, torch.zeros_like(feat))
+    return feat
+
+
+def standardize_features_torch(
+    feat: torch.Tensor,
+    mask: torch.Tensor,
+    means: torch.Tensor,
+    stds: torch.Tensor,
+) -> torch.Tensor:
+    out = torch.clamp((feat - means.view(1, 1, -1)) / stds.view(1, 1, -1), min=-10.0, max=10.0)
+    out = torch.nan_to_num(out, nan=0.0, posinf=0.0, neginf=0.0)
+    out = torch.where(mask.unsqueeze(-1), out, torch.zeros_like(out))
+    return out
+
+
+def compute_jet_pt_torch(const: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+    pt = torch.clamp(const[..., 0], min=0.0)
+    phi = const[..., 2]
+    w = mask.float()
+    px = (pt * torch.cos(phi) * w).sum(dim=1)
+    py = (pt * torch.sin(phi) * w).sum(dim=1)
+    return torch.sqrt(px.pow(2) + py.pow(2) + 1e-8)
+
+
+def gather_hypothesis(x: torch.Tensor, winner_idx: torch.Tensor) -> torch.Tensor:
+    """Gather x[:,k,...] using winner_idx[B]. x is [B,K,...]."""
+    bsz = int(x.shape[0])
+    gather_idx = winner_idx.view(bsz, 1, *([1] * (x.ndim - 2))).expand(bsz, 1, *x.shape[2:])
+    return torch.gather(x, dim=1, index=gather_idx).squeeze(1)
 
 
 def huber_masked(
@@ -455,6 +540,90 @@ def build_fixed_split_indices(
     return idx_train, idx_val, idx_test
 
 
+def train_single_view_classifier_by_auc(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    train_cfg: Dict,
+    name: str,
+) -> nn.Module:
+    opt = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
+    sch = get_scheduler(opt, train_cfg["warmup_epochs"], train_cfg["epochs"])
+    best_val_auc = -1.0
+    best_state = None
+    no_improve = 0
+
+    for ep in range(int(train_cfg["epochs"])):
+        _, tr_auc = train_classifier(model, train_loader, opt, device)
+        va_auc, va_preds, va_labs = eval_classifier(model, val_loader, device)
+        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+        va_fpr50 = fpr_at_target_tpr(va_fpr, va_tpr, 0.50)
+        sch.step()
+
+        if np.isfinite(va_auc) and float(va_auc) > best_val_auc:
+            best_val_auc = float(va_auc)
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (ep + 1) % 5 == 0:
+            print(
+                f"{name} ep {ep+1}: train_auc={tr_auc:.4f}, val_auc={va_auc:.4f}, "
+                f"val_fpr50={va_fpr50:.6f}, best_auc={best_val_auc:.4f}"
+            )
+        if no_improve >= int(train_cfg["patience"]):
+            print(f"Early stopping {name} at epoch {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model
+
+
+def train_dual_view_classifier_by_auc(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    train_cfg: Dict,
+    name: str,
+) -> nn.Module:
+    opt = torch.optim.AdamW(model.parameters(), lr=train_cfg["lr"], weight_decay=train_cfg["weight_decay"])
+    sch = get_scheduler(opt, train_cfg["warmup_epochs"], train_cfg["epochs"])
+    best_val_auc = -1.0
+    best_state = None
+    no_improve = 0
+
+    for ep in range(int(train_cfg["epochs"])):
+        _, tr_auc = train_classifier_dual(model, train_loader, opt, device)
+        va_auc, va_preds, va_labs = eval_classifier_dual(model, val_loader, device)
+        va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds)
+        va_fpr50 = fpr_at_target_tpr(va_fpr, va_tpr, 0.50)
+        sch.step()
+
+        if np.isfinite(va_auc) and float(va_auc) > best_val_auc:
+            best_val_auc = float(va_auc)
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        if (ep + 1) % 5 == 0:
+            print(
+                f"{name} ep {ep+1}: train_auc={tr_auc:.4f}, val_auc={va_auc:.4f}, "
+                f"val_fpr50={va_fpr50:.6f}, best_auc={best_val_auc:.4f}"
+            )
+        if no_improve >= int(train_cfg["patience"]):
+            print(f"Early stopping {name} at epoch {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model
+
+
 # ----------------------------- Datasets ------------------------------------ #
 class RecoSeqDataset(Dataset):
     def __init__(
@@ -464,12 +633,14 @@ class RecoSeqDataset(Dataset):
         const_hlt: np.ndarray,
         tgt_tok: np.ndarray,
         tgt_mask: np.ndarray,
+        labels: np.ndarray,
     ):
         self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
         self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
         self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
         self.tgt_tok = torch.tensor(tgt_tok, dtype=torch.float32)
         self.tgt_mask = torch.tensor(tgt_mask, dtype=torch.bool)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
 
     def __len__(self) -> int:
         return int(self.feat_hlt.shape[0])
@@ -481,6 +652,7 @@ class RecoSeqDataset(Dataset):
             "const_hlt": self.const_hlt[i],
             "tgt_tok": self.tgt_tok[i],
             "tgt_mask": self.tgt_mask[i],
+            "label": self.labels[i],
         }
 
 
@@ -516,11 +688,13 @@ class HLT2OfflineSeq2Seq(nn.Module):
         max_hlt_tokens: int = 100,
         max_decode_tokens: int = 100,
         use_coord_residual_param: bool = False,
+        num_hypotheses: int = 1,
     ):
         super().__init__()
         self.token_dim = int(token_dim)
         self.max_decode_tokens = int(max_decode_tokens)
         self.use_coord_residual_param = bool(use_coord_residual_param)
+        self.num_hypotheses = int(max(num_hypotheses, 1))
 
         self.enc_in = nn.Sequential(
             nn.Linear(input_dim_hlt, embed_dim),
@@ -573,12 +747,14 @@ class HLT2OfflineSeq2Seq(nn.Module):
             nn.GELU(),
             nn.Linear(embed_dim // 2, 1),
         )
+        self.hyp_embed = nn.Embedding(self.num_hypotheses, embed_dim)
 
         self.bos_token = nn.Parameter(torch.zeros(1, 1, token_dim))
 
         nn.init.normal_(self.hlt_pos, std=0.02)
         nn.init.normal_(self.dec_pos, std=0.02)
         nn.init.normal_(self.bos_token, std=0.02)
+        nn.init.normal_(self.hyp_embed.weight, std=0.02)
 
     def _causal_mask(self, T: int, device: torch.device) -> torch.Tensor:
         return torch.triu(torch.ones((T, T), device=device, dtype=torch.bool), diagonal=1)
@@ -606,8 +782,12 @@ class HLT2OfflineSeq2Seq(nn.Module):
         mem: torch.Tensor,
         mask_hlt: torch.Tensor,
         hlt_tok: torch.Tensor,
+        hyp_idx: int = 0,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         # h: [B, T, D]
+        if self.num_hypotheses > 1:
+            hv = self.hyp_embed.weight[int(hyp_idx)].view(1, 1, -1)
+            h = h + hv
         q = self.q_proj(h)
         logits = torch.matmul(q, mem.transpose(1, 2)) / math.sqrt(float(q.shape[-1]))
         logits = logits.masked_fill((~mask_hlt).unsqueeze(1), -1e9)
@@ -677,6 +857,45 @@ class HLT2OfflineSeq2Seq(nn.Module):
             "gate": gate,
         }
 
+    def forward_teacher_multi(
+        self,
+        feat_hlt: torch.Tensor,
+        mask_hlt: torch.Tensor,
+        const_hlt: torch.Tensor,
+        tgt_tok: torch.Tensor,
+    ) -> Dict[str, torch.Tensor]:
+        B, T, _ = tgt_tok.shape
+        mem, hlt_tok, count_pred = self.encode(feat_hlt, mask_hlt, const_hlt)
+
+        bos = self.bos_token.expand(B, 1, self.token_dim)
+        dec_in_tok = torch.cat([bos, tgt_tok[:, :-1, :]], dim=1)
+        dec_in = self.dec_in(dec_in_tok) + self.dec_pos[:, :T, :]
+        h = self.decoder(
+            dec_in,
+            mem,
+            tgt_mask=self._causal_mask(T, dec_in.device),
+            memory_key_padding_mask=~mask_hlt,
+        )
+
+        pred_toks: List[torch.Tensor] = []
+        stop_logits_list: List[torch.Tensor] = []
+        attns: List[torch.Tensor] = []
+        gates: List[torch.Tensor] = []
+        for k in range(self.num_hypotheses):
+            p, s, a, g = self._predict_from_hidden(h, mem, mask_hlt, hlt_tok, hyp_idx=k)
+            pred_toks.append(p)
+            stop_logits_list.append(s)
+            attns.append(a)
+            gates.append(g)
+
+        return {
+            "pred_tok": torch.stack(pred_toks, dim=1),       # [B,K,T,D]
+            "stop_logits": torch.stack(stop_logits_list, dim=1),  # [B,K,T]
+            "count_pred": count_pred,                        # [B]
+            "attn": torch.stack(attns, dim=1),               # [B,K,T,L]
+            "gate": torch.stack(gates, dim=1),               # [B,K,T]
+        }
+
     @torch.no_grad()
     def decode_greedy(
         self,
@@ -714,6 +933,266 @@ class HLT2OfflineSeq2Seq(nn.Module):
             "stop_probs": stop_probs,
             "count_pred": count_pred,
         }
+
+    @torch.no_grad()
+    def decode_greedy_multi(
+        self,
+        feat_hlt: torch.Tensor,
+        mask_hlt: torch.Tensor,
+        const_hlt: torch.Tensor,
+        max_steps: int,
+    ) -> Dict[str, torch.Tensor]:
+        B = feat_hlt.shape[0]
+        mem, hlt_tok, count_pred = self.encode(feat_hlt, mask_hlt, const_hlt)
+
+        all_pred: List[torch.Tensor] = []
+        all_stop: List[torch.Tensor] = []
+        for k in range(self.num_hypotheses):
+            prev_tok = self.bos_token.expand(B, 1, self.token_dim)
+            pred_seq = []
+            stop_seq = []
+            for _t in range(int(max_steps)):
+                d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
+                h = self.decoder(
+                    d_in,
+                    mem,
+                    tgt_mask=self._causal_mask(prev_tok.shape[1], d_in.device),
+                    memory_key_padding_mask=~mask_hlt,
+                )
+                h_last = h[:, -1:, :]
+                pred_tok, stop_logits, _attn, _gate = self._predict_from_hidden(
+                    h_last, mem, mask_hlt, hlt_tok, hyp_idx=k
+                )
+                pred_seq.append(pred_tok[:, 0, :])
+                stop_seq.append(stop_logits[:, 0])
+                prev_tok = torch.cat([prev_tok, pred_tok], dim=1)
+            pred_tok_full = torch.stack(pred_seq, dim=1)
+            stop_probs = torch.sigmoid(torch.stack(stop_seq, dim=1))
+            all_pred.append(pred_tok_full)
+            all_stop.append(stop_probs)
+
+        return {
+            "pred_tok": torch.stack(all_pred, dim=1),    # [B,K,T,D]
+            "stop_probs": torch.stack(all_stop, dim=1),  # [B,K,T]
+            "count_pred": count_pred,                    # [B]
+        }
+
+
+# ----------------------------- Reco train/eval ----------------------------- #
+class HypothesisSelector(nn.Module):
+    def __init__(self, feat_dim: int, hidden: int = 64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.LayerNorm(feat_dim),
+            nn.Linear(feat_dim, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, hidden),
+            nn.GELU(),
+            nn.Linear(hidden, 1),
+        )
+
+    def forward(self, feat_bkf: torch.Tensor) -> torch.Tensor:
+        # feat_bkf: [B,K,F]
+        return self.net(feat_bkf).squeeze(-1)
+
+
+def selector_rank_loss(sel_logits: torch.Tensor, winner_idx: torch.Tensor, margin: float = 0.25) -> torch.Tensor:
+    # Encourage winner score > others by margin.
+    bsz, k = sel_logits.shape
+    w = sel_logits.gather(1, winner_idx.view(-1, 1))  # [B,1]
+    diff = float(margin) - (w - sel_logits)  # [B,K]
+    rank = F.relu(diff)
+    rank[torch.arange(bsz, device=sel_logits.device), winner_idx] = 0.0
+    return rank.mean()
+
+
+def chamfer_token_loss_vec(
+    pred_tok: torch.Tensor,
+    tgt_tok: torch.Tensor,
+    pred_mask: torch.Tensor,
+    tgt_mask: torch.Tensor,
+) -> torch.Tensor:
+    vals = []
+    for bi in range(int(pred_tok.shape[0])):
+        vals.append(chamfer_token_loss(pred_tok[bi:bi+1], tgt_tok[bi:bi+1], pred_mask[bi:bi+1], tgt_mask[bi:bi+1]))
+    return torch.stack(vals, dim=0)
+
+
+def hungarian_token_loss_vec(
+    pred_tok: torch.Tensor,
+    tgt_tok: torch.Tensor,
+    pred_mask: torch.Tensor,
+    tgt_mask: torch.Tensor,
+    unmatched_penalty: float = 0.35,
+) -> torch.Tensor:
+    vals = []
+    for bi in range(int(pred_tok.shape[0])):
+        vals.append(
+            hungarian_token_loss(
+                pred_tok[bi:bi+1],
+                tgt_tok[bi:bi+1],
+                pred_mask[bi:bi+1],
+                tgt_mask[bi:bi+1],
+                unmatched_penalty=unmatched_penalty,
+            )
+        )
+    return torch.stack(vals, dim=0)
+
+
+@torch.no_grad()
+def build_selector_features_torch(
+    pred_tok_bktd: torch.Tensor,
+    pred_mask_bt: torch.Tensor,
+    hlt_const: torch.Tensor,
+    hlt_mask: torch.Tensor,
+    teacher: nn.Module,
+    feat_means_t: torch.Tensor,
+    feat_stds_t: torch.Tensor,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    # returns feat [B,K,F], teacher_logits [B,K]
+    bsz, k, t, _ = pred_tok_bktd.shape
+    feats_all = []
+    logits_all = []
+    hlt_n = hlt_mask.float().sum(dim=1)
+    hlt_pt = compute_jet_pt_torch(hlt_const, hlt_mask)
+    base_mask = pred_mask_bt
+
+    for hk in range(k):
+        p_tok = pred_tok_bktd[:, hk, :, :]
+        p_const = token_to_const_torch(p_tok)
+        p_feat = compute_features_torch(p_const, base_mask)
+        p_feat_std = standardize_features_torch(p_feat, base_mask, feat_means_t, feat_stds_t)
+        p_logit = teacher(p_feat_std, base_mask).squeeze(-1)
+        p_prob = torch.sigmoid(p_logit)
+        p_entropy = -(p_prob * torch.log(p_prob.clamp(min=1e-8)) + (1.0 - p_prob) * torch.log((1.0 - p_prob).clamp(min=1e-8)))
+        p_n = base_mask.float().sum(dim=1)
+        p_pt = compute_jet_pt_torch(p_const, base_mask)
+        pt_ratio_hlt = p_pt / (hlt_pt + 1e-8)
+
+        feat_k = torch.stack(
+            [
+                p_logit,
+                p_prob,
+                p_entropy,
+                p_n / 100.0,
+                (p_n - hlt_n).abs() / 100.0,
+                pt_ratio_hlt,
+                (pt_ratio_hlt - 1.0).abs(),
+            ],
+            dim=-1,
+        )
+        feats_all.append(feat_k)
+        logits_all.append(p_logit)
+
+    return torch.stack(feats_all, dim=1), torch.stack(logits_all, dim=1)
+
+
+def compute_reco_losses_multihyp(
+    out_multi: Dict[str, torch.Tensor],
+    tgt_tok: torch.Tensor,
+    tgt_mask: torch.Tensor,
+    labels: torch.Tensor,
+    hlt_const: torch.Tensor,
+    hlt_mask: torch.Tensor,
+    teacher: Optional[nn.Module],
+    feat_means_t: Optional[torch.Tensor],
+    feat_stds_t: Optional[torch.Tensor],
+    loss_cfg: Dict,
+    physics_scale: float = 1.0,
+) -> Dict[str, torch.Tensor]:
+    pred_tok_bktd = out_multi["pred_tok"]
+    stop_logits_bkt = out_multi["stop_logits"]
+    attn_bktl = out_multi["attn"]
+    gate_bkt = out_multi["gate"]
+    count_pred = out_multi["count_pred"]
+
+    bsz, k, t, _ = pred_tok_bktd.shape
+    device = pred_tok_bktd.device
+
+    tgt_count = tgt_mask.float().sum(dim=1)
+    steps = torch.arange(t, device=device).unsqueeze(0)
+    pred_mask_bt = steps < tgt_count.long().unsqueeze(1)
+
+    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
+    set_vecs = []
+    tag_vecs = []
+    for hk in range(k):
+        p_tok = pred_tok_bktd[:, hk, :, :]
+        if set_mode == "hungarian":
+            s_vec = hungarian_token_loss_vec(
+                p_tok,
+                tgt_tok,
+                pred_mask_bt,
+                tgt_mask,
+                unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
+            )
+        else:
+            s_vec = chamfer_token_loss_vec(p_tok, tgt_tok, pred_mask_bt, tgt_mask)
+        set_vecs.append(s_vec)
+
+    set_mat = torch.stack(set_vecs, dim=1)  # [B,K]
+
+    selector_feat = None
+    teacher_logits = None
+    if teacher is not None and feat_means_t is not None and feat_stds_t is not None:
+        selector_feat, teacher_logits = build_selector_features_torch(
+            pred_tok_bktd, pred_mask_bt, hlt_const, hlt_mask, teacher, feat_means_t, feat_stds_t
+        )
+        lab = labels.float().view(-1, 1).expand(-1, k)
+        tag_mat = F.binary_cross_entropy_with_logits(teacher_logits, lab, reduction="none")
+    else:
+        tag_mat = set_mat.detach()
+
+    mode = str(loss_cfg.get("winner_mode", "tag")).strip().lower()
+    if mode == "reco":
+        winner_score = set_mat.detach()
+    elif mode == "hybrid":
+        a = float(loss_cfg.get("winner_hybrid_alpha", 1.0))
+        b = float(loss_cfg.get("winner_hybrid_beta", 0.5))
+        winner_score = (a * tag_mat + b * set_mat).detach()
+    else:
+        winner_score = tag_mat.detach()
+
+    winner_idx = torch.argmin(winner_score, dim=1)  # [B]
+
+    out_sel = {
+        "pred_tok": gather_hypothesis(pred_tok_bktd, winner_idx),
+        "stop_logits": gather_hypothesis(stop_logits_bkt, winner_idx),
+        "count_pred": count_pred,
+        "attn": gather_hypothesis(attn_bktl, winner_idx),
+        "gate": gather_hypothesis(gate_bkt, winner_idx),
+    }
+
+    base_losses = compute_reco_losses(out_sel, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+
+    # Strong "at least one hypothesis is very good" objective.
+    best_set = set_mat.min(dim=1).values.mean()
+    total = base_losses["total"] - float(loss_cfg["w_set"]) * base_losses["set"] + float(loss_cfg.get("w_best_set", 2.5)) * best_set
+
+    # Encourage hypotheses to avoid collapse.
+    div = torch.zeros((), device=device, dtype=pred_tok_bktd.dtype)
+    n_pairs = 0
+    m = pred_mask_bt.float().unsqueeze(1).unsqueeze(-1)  # [B,1,T,1]
+    for i in range(k):
+        for j in range(i + 1, k):
+            d = (pred_tok_bktd[:, i, :, :] - pred_tok_bktd[:, j, :, :]).abs()
+            d = (d * m[:, 0]).sum(dim=(1, 2)) / (m[:, 0].sum(dim=(1, 2)) + 1e-6)
+            # minimizing exp(-d) pushes d up.
+            div = div + torch.exp(-d).mean()
+            n_pairs += 1
+    if n_pairs > 0:
+        div = div / float(n_pairs)
+        total = total + float(loss_cfg.get("w_diversity", 0.08)) * div
+
+    out = dict(base_losses)
+    out["total"] = total
+    out["best_set"] = best_set
+    out["diversity"] = div
+    out["winner_idx"] = winner_idx
+    out["set_mat"] = set_mat
+    out["tag_mat"] = tag_mat
+    out["selector_feat"] = selector_feat
+    return out
 
 
 # ----------------------------- Reco train/eval ----------------------------- #
@@ -831,6 +1310,9 @@ def train_reconstructor_seq2seq(
     device: torch.device,
     train_cfg: Dict,
     loss_cfg: Dict,
+    teacher: Optional[nn.Module] = None,
+    feat_means_t: Optional[torch.Tensor] = None,
+    feat_stds_t: Optional[torch.Tensor] = None,
 ) -> Tuple[HLT2OfflineSeq2Seq, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -849,6 +1331,7 @@ def train_reconstructor_seq2seq(
         model.train()
         tr_tot = tr_ar = tr_set = tr_eos = tr_cnt = 0.0
         tr_ang = tr_jpt = tr_je = tr_4v = 0.0
+        tr_best = tr_div = 0.0
         n_tr = 0
 
         for batch in train_loader:
@@ -857,9 +1340,26 @@ def train_reconstructor_seq2seq(
             const_hlt = batch["const_hlt"].to(device)
             tgt_tok = batch["tgt_tok"].to(device)
             tgt_mask = batch["tgt_mask"].to(device)
+            labels = batch["label"].to(device)
 
-            out = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, tgt_tok)
-            losses = compute_reco_losses(out, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+            if model.num_hypotheses > 1:
+                outm = model.forward_teacher_multi(feat_hlt, mask_hlt, const_hlt, tgt_tok)
+                losses = compute_reco_losses_multihyp(
+                    outm,
+                    tgt_tok,
+                    tgt_mask,
+                    labels,
+                    const_hlt,
+                    mask_hlt,
+                    teacher,
+                    feat_means_t,
+                    feat_stds_t,
+                    loss_cfg,
+                    physics_scale=physics_scale,
+                )
+            else:
+                out = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, tgt_tok)
+                losses = compute_reco_losses(out, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
 
             opt.zero_grad(set_to_none=True)
             losses["total"].backward()
@@ -877,10 +1377,13 @@ def train_reconstructor_seq2seq(
             tr_jpt += float(losses["jetpt"].detach().item()) * bsz
             tr_je += float(losses["jete"].detach().item()) * bsz
             tr_4v += float(losses["fourvec"].detach().item()) * bsz
+            tr_best += float(losses.get("best_set", losses["set"]).detach().item()) * bsz
+            tr_div += float(losses.get("diversity", torch.zeros((), device=device)).detach().item()) * bsz
 
         model.eval()
         va_tot = va_ar = va_set = va_eos = va_cnt = 0.0
         va_ang = va_jpt = va_je = va_4v = 0.0
+        va_best = va_div = 0.0
         n_va = 0
         with torch.no_grad():
             for batch in val_loader:
@@ -889,9 +1392,26 @@ def train_reconstructor_seq2seq(
                 const_hlt = batch["const_hlt"].to(device)
                 tgt_tok = batch["tgt_tok"].to(device)
                 tgt_mask = batch["tgt_mask"].to(device)
+                labels = batch["label"].to(device)
 
-                out = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, tgt_tok)
-                losses = compute_reco_losses(out, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+                if model.num_hypotheses > 1:
+                    outm = model.forward_teacher_multi(feat_hlt, mask_hlt, const_hlt, tgt_tok)
+                    losses = compute_reco_losses_multihyp(
+                        outm,
+                        tgt_tok,
+                        tgt_mask,
+                        labels,
+                        const_hlt,
+                        mask_hlt,
+                        teacher,
+                        feat_means_t,
+                        feat_stds_t,
+                        loss_cfg,
+                        physics_scale=physics_scale,
+                    )
+                else:
+                    out = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, tgt_tok)
+                    losses = compute_reco_losses(out, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
 
                 bsz = feat_hlt.shape[0]
                 n_va += bsz
@@ -904,6 +1424,8 @@ def train_reconstructor_seq2seq(
                 va_jpt += float(losses["jetpt"].detach().item()) * bsz
                 va_je += float(losses["jete"].detach().item()) * bsz
                 va_4v += float(losses["fourvec"].detach().item()) * bsz
+                va_best += float(losses.get("best_set", losses["set"]).detach().item()) * bsz
+                va_div += float(losses.get("diversity", torch.zeros((), device=device)).detach().item()) * bsz
 
         tr_tot /= max(n_tr, 1)
         tr_ar /= max(n_tr, 1)
@@ -914,6 +1436,8 @@ def train_reconstructor_seq2seq(
         tr_jpt /= max(n_tr, 1)
         tr_je /= max(n_tr, 1)
         tr_4v /= max(n_tr, 1)
+        tr_best /= max(n_tr, 1)
+        tr_div /= max(n_tr, 1)
 
         va_tot /= max(n_va, 1)
         va_ar /= max(n_va, 1)
@@ -924,15 +1448,17 @@ def train_reconstructor_seq2seq(
         va_jpt /= max(n_va, 1)
         va_je /= max(n_va, 1)
         va_4v /= max(n_va, 1)
+        va_best /= max(n_va, 1)
+        va_div /= max(n_va, 1)
 
         if (ep + 1) % 2 == 0 or ep == 0:
             print(
                 f"Reco ep {ep+1:03d} | "
                 f"phys={physics_scale:.3f} | "
                 f"train total={tr_tot:.5f} ar={tr_ar:.5f} set={tr_set:.5f} eos={tr_eos:.5f} cnt={tr_cnt:.5f} "
-                f"ang={tr_ang:.5f} jpt={tr_jpt:.5f} je={tr_je:.5f} j4={tr_4v:.5f} | "
+                f"ang={tr_ang:.5f} jpt={tr_jpt:.5f} je={tr_je:.5f} j4={tr_4v:.5f} bset={tr_best:.5f} div={tr_div:.5f} | "
                 f"val total={va_tot:.5f} ar={va_ar:.5f} set={va_set:.5f} eos={va_eos:.5f} cnt={va_cnt:.5f} "
-                f"ang={va_ang:.5f} jpt={va_jpt:.5f} je={va_je:.5f} j4={va_4v:.5f}"
+                f"ang={va_ang:.5f} jpt={va_jpt:.5f} je={va_je:.5f} j4={va_4v:.5f} bset={va_best:.5f} div={va_div:.5f}"
             )
 
         if va_tot < best_val:
@@ -1119,6 +1645,275 @@ def reconstruct_dataset_seq2seq(
     )
 
 
+@torch.no_grad()
+def reconstruct_dataset_seq2seq_multihyp(
+    model: HLT2OfflineSeq2Seq,
+    feat_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    const_hlt: np.ndarray,
+    max_constits: int,
+    device: torch.device,
+    batch_size: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    model.eval()
+    ds = RecoInputDataset(feat_hlt, mask_hlt, const_hlt)
+    dl = DataLoader(ds, batch_size=int(batch_size), shuffle=False)
+
+    n_jets = int(feat_hlt.shape[0])
+    t = int(max_constits)
+    k = int(model.num_hypotheses)
+
+    out_const = np.zeros((n_jets, k, t, 4), dtype=np.float32)
+    out_mask = np.zeros((n_jets, k, t), dtype=bool)
+    out_conf = np.zeros((n_jets, k, t), dtype=np.float32)
+
+    offset = 0
+    for batch in dl:
+        feat = batch["feat_hlt"].to(device)
+        m = batch["mask_hlt"].to(device)
+        c = batch["const_hlt"].to(device)
+        bsz = int(feat.shape[0])
+
+        decm = model.decode_greedy_multi(feat, m, c, max_steps=t)
+        pred_tok = decm["pred_tok"]      # [B,K,T,5]
+        stop_probs = decm["stop_probs"]  # [B,K,T]
+        count_pred = decm["count_pred"]  # [B]
+
+        pred_const = token_to_const_torch(pred_tok).detach().cpu().numpy().astype(np.float32)
+        stop_np = stop_probs.detach().cpu().numpy().astype(np.float32)
+        count_np = count_pred.detach().cpu().numpy().astype(np.float32)
+
+        for i in range(bsz):
+            cp = int(np.clip(np.rint(count_np[i]), 0, t))
+            for hk in range(k):
+                s = stop_np[i, hk]
+                stop_pos = np.where(s > 0.5)[0]
+                if stop_pos.size > 0:
+                    L = int(np.clip(stop_pos[0], 0, t))
+                else:
+                    L = cp
+                L = int(np.clip(L, 0, t))
+                arr = pred_const[i, hk]
+                if L > 0:
+                    ord_i = np.argsort(-arr[:L, 0])
+                    arr[:L] = arr[:L][ord_i]
+                idx0 = offset + i
+                out_const[idx0, hk] = arr
+                out_mask[idx0, hk, :L] = True
+                out_conf[idx0, hk, :L] = 1.0
+
+        offset += bsz
+
+    out_const = np.nan_to_num(out_const, nan=0.0, posinf=0.0, neginf=0.0)
+    out_const[~out_mask] = 0.0
+    return out_const, out_mask, out_conf
+
+
+@torch.no_grad()
+def build_selector_features_and_targets(
+    hyp_const_bkt4: np.ndarray,
+    hyp_mask_bkt: np.ndarray,
+    hlt_const_bt4: np.ndarray,
+    hlt_mask_bt: np.ndarray,
+    off_const_bt4: np.ndarray,
+    off_mask_bt: np.ndarray,
+    labels_b: np.ndarray,
+    teacher: nn.Module,
+    feat_means: np.ndarray,
+    feat_stds: np.ndarray,
+    device: torch.device,
+    winner_mode: str,
+    winner_alpha: float,
+    winner_beta: float,
+    set_loss_mode: str,
+    set_unmatched_penalty: float,
+    batch_size: int = 256,
+) -> Tuple[np.ndarray, np.ndarray]:
+    n, k, t, _ = hyp_const_bkt4.shape
+    feat_out = np.zeros((n, k, 7), dtype=np.float32)
+    winner_out = np.zeros((n,), dtype=np.int64)
+
+    means_t = torch.tensor(feat_means, dtype=torch.float32, device=device)
+    stds_t = torch.tensor(feat_stds, dtype=torch.float32, device=device)
+
+    teacher.eval()
+    for st in range(0, n, int(batch_size)):
+        ed = min(st + int(batch_size), n)
+        b = ed - st
+
+        hlt_const = torch.tensor(hlt_const_bt4[st:ed], dtype=torch.float32, device=device)
+        hlt_mask = torch.tensor(hlt_mask_bt[st:ed], dtype=torch.bool, device=device)
+        off_const = torch.tensor(off_const_bt4[st:ed], dtype=torch.float32, device=device)
+        off_mask = torch.tensor(off_mask_bt[st:ed], dtype=torch.bool, device=device)
+        lab = torch.tensor(labels_b[st:ed], dtype=torch.float32, device=device)
+
+        hlt_n = hlt_mask.float().sum(dim=1)
+        hlt_pt = compute_jet_pt_torch(hlt_const, hlt_mask)
+        tag_cols = []
+        set_cols = []
+        feat_cols = []
+        for hk in range(k):
+            p_const = torch.tensor(hyp_const_bkt4[st:ed, hk], dtype=torch.float32, device=device)
+            p_mask = torch.tensor(hyp_mask_bkt[st:ed, hk], dtype=torch.bool, device=device)
+            p_tok = const_to_token_torch(p_const)
+            t_tok = const_to_token_torch(off_const)
+
+            if str(set_loss_mode).lower() == "hungarian":
+                s_vec = hungarian_token_loss_vec(
+                    p_tok,
+                    t_tok,
+                    p_mask,
+                    off_mask,
+                    unmatched_penalty=float(set_unmatched_penalty),
+                )
+            else:
+                s_vec = chamfer_token_loss_vec(p_tok, t_tok, p_mask, off_mask)
+            set_cols.append(s_vec)
+
+            p_feat = compute_features_torch(p_const, p_mask)
+            p_feat_std = standardize_features_torch(p_feat, p_mask, means_t, stds_t)
+            p_logit = teacher(p_feat_std, p_mask).squeeze(-1)
+            p_prob = torch.sigmoid(p_logit)
+            p_entropy = -(p_prob * torch.log(p_prob.clamp(min=1e-8)) + (1.0 - p_prob) * torch.log((1.0 - p_prob).clamp(min=1e-8)))
+            tag_loss = F.binary_cross_entropy_with_logits(p_logit, lab, reduction="none")
+            tag_cols.append(tag_loss)
+
+            p_n = p_mask.float().sum(dim=1)
+            p_pt = compute_jet_pt_torch(p_const, p_mask)
+            pt_ratio_hlt = p_pt / (hlt_pt + 1e-8)
+            f_k = torch.stack(
+                [
+                    p_logit,
+                    p_prob,
+                    p_entropy,
+                    p_n / 100.0,
+                    (p_n - hlt_n).abs() / 100.0,
+                    pt_ratio_hlt,
+                    (pt_ratio_hlt - 1.0).abs(),
+                ],
+                dim=-1,
+            )
+            feat_cols.append(f_k)
+
+        set_mat = torch.stack(set_cols, dim=1)
+        tag_mat = torch.stack(tag_cols, dim=1)
+        feat_mat = torch.stack(feat_cols, dim=1)
+
+        wm = str(winner_mode).strip().lower()
+        if wm == "reco":
+            score = set_mat
+        elif wm == "hybrid":
+            score = float(winner_alpha) * tag_mat + float(winner_beta) * set_mat
+        else:
+            score = tag_mat
+        win = torch.argmin(score, dim=1)
+
+        feat_out[st:ed] = feat_mat.detach().cpu().numpy().astype(np.float32)
+        winner_out[st:ed] = win.detach().cpu().numpy().astype(np.int64)
+
+    return feat_out, winner_out
+
+
+def train_selector_model(
+    selector: HypothesisSelector,
+    feat_tr: np.ndarray,
+    y_tr: np.ndarray,
+    feat_va: np.ndarray,
+    y_va: np.ndarray,
+    device: torch.device,
+    epochs: int = 45,
+    lr: float = 2e-3,
+    batch_size: int = 512,
+    patience: int = 8,
+    rank_weight: float = 0.2,
+    rank_margin: float = 0.25,
+) -> HypothesisSelector:
+    xtr = torch.tensor(feat_tr, dtype=torch.float32)
+    ytr = torch.tensor(y_tr, dtype=torch.long)
+    xva = torch.tensor(feat_va, dtype=torch.float32)
+    yva = torch.tensor(y_va, dtype=torch.long)
+
+    tr_dl = DataLoader(torch.utils.data.TensorDataset(xtr, ytr), batch_size=int(batch_size), shuffle=True)
+    va_dl = DataLoader(torch.utils.data.TensorDataset(xva, yva), batch_size=int(batch_size), shuffle=False)
+
+    selector = selector.to(device)
+    opt = torch.optim.AdamW(selector.parameters(), lr=float(lr), weight_decay=1e-4)
+    best_state = None
+    best_acc = -1.0
+    no_improve = 0
+    for ep in range(int(epochs)):
+        selector.train()
+        for xb, yb in tr_dl:
+            xb = xb.to(device)
+            yb = yb.to(device)
+            logits = selector(xb)
+            loss_ce = F.cross_entropy(logits, yb)
+            loss_rank = selector_rank_loss(logits, yb, margin=float(rank_margin))
+            loss = loss_ce + float(rank_weight) * loss_rank
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(selector.parameters(), max_norm=1.0)
+            opt.step()
+
+        selector.eval()
+        n_ok = 0
+        n_tot = 0
+        with torch.no_grad():
+            for xb, yb in va_dl:
+                xb = xb.to(device)
+                yb = yb.to(device)
+                pred = torch.argmax(selector(xb), dim=1)
+                n_ok += int((pred == yb).sum().item())
+                n_tot += int(yb.numel())
+        va_acc = float(n_ok / max(n_tot, 1))
+        if (ep + 1) % 5 == 0:
+            print(f"Selector ep {ep+1}: val_acc={va_acc:.4f}, best={best_acc:.4f}")
+        if va_acc > best_acc:
+            best_acc = va_acc
+            best_state = {k: v.detach().cpu().clone() for k, v in selector.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+        if no_improve >= int(patience):
+            print(f"Early stopping selector at epoch {ep+1}")
+            break
+
+    if best_state is not None:
+        selector.load_state_dict(best_state)
+    return selector
+
+
+@torch.no_grad()
+def selector_predict_indices(selector: HypothesisSelector, feat_bkf: np.ndarray, device: torch.device, batch_size: int = 1024) -> np.ndarray:
+    x = torch.tensor(feat_bkf, dtype=torch.float32)
+    dl = DataLoader(x, batch_size=int(batch_size), shuffle=False)
+    out = []
+    selector.eval()
+    for xb in dl:
+        xb = xb.to(device)
+        pred = torch.argmax(selector(xb), dim=1)
+        out.append(pred.detach().cpu().numpy().astype(np.int64))
+    return np.concatenate(out, axis=0)
+
+
+def gather_selected_view(
+    hyp_const: np.ndarray,
+    hyp_mask: np.ndarray,
+    hyp_conf: np.ndarray,
+    winner_idx: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n, _k, t, _d = hyp_const.shape
+    const = np.zeros((n, t, 4), dtype=np.float32)
+    mask = np.zeros((n, t), dtype=bool)
+    conf = np.zeros((n, t), dtype=np.float32)
+    for i in range(n):
+        k = int(winner_idx[i])
+        const[i] = hyp_const[i, k]
+        mask[i] = hyp_mask[i, k]
+        conf[i] = hyp_conf[i, k]
+    return const, mask, conf
+
+
 # ----------------------------- Main ---------------------------------------- #
 def main() -> None:
     parser = argparse.ArgumentParser()
@@ -1147,6 +1942,10 @@ def main() -> None:
     parser.add_argument("--beam_len_sigma", type=float, default=1.5)
     parser.add_argument("--beam_temperature", type=float, default=1.0)
     parser.add_argument("--use_coord_residual_param", action="store_true")
+    parser.add_argument("--num_hypotheses", type=int, default=MULTIHYP_CFG["num_hypotheses"])
+    parser.add_argument("--joint_epochs", type=int, default=MULTIHYP_CFG["joint_epochs"])
+    parser.add_argument("--joint_lr", type=float, default=MULTIHYP_CFG["joint_lr"])
+    parser.add_argument("--joint_patience", type=int, default=MULTIHYP_CFG["joint_patience"])
 
     # Loss weights
     parser.add_argument("--loss_w_ar", type=float, default=LOSS_CFG["w_ar"])
@@ -1160,6 +1959,11 @@ def main() -> None:
     parser.add_argument("--loss_w_jetpt", type=float, default=LOSS_CFG["w_jetpt"])
     parser.add_argument("--loss_w_jete", type=float, default=LOSS_CFG["w_jete"])
     parser.add_argument("--loss_w_4vec", type=float, default=LOSS_CFG["w_4vec"])
+    parser.add_argument("--loss_w_best_set", type=float, default=LOSS_CFG["w_best_set"])
+    parser.add_argument("--loss_w_diversity", type=float, default=LOSS_CFG["w_diversity"])
+    parser.add_argument("--winner_mode", type=str, default=LOSS_CFG["winner_mode"], choices=["tag", "reco", "hybrid"])
+    parser.add_argument("--winner_hybrid_alpha", type=float, default=LOSS_CFG["winner_hybrid_alpha"])
+    parser.add_argument("--winner_hybrid_beta", type=float, default=LOSS_CFG["winner_hybrid_beta"])
     parser.add_argument("--enable_scale_sensitive_weighting", action="store_true")
     parser.add_argument("--scale_pt_power", type=float, default=LOSS_CFG["scale_pt_power"])
     parser.add_argument("--scale_weight_cap", type=float, default=LOSS_CFG["scale_weight_cap"])
@@ -1170,6 +1974,11 @@ def main() -> None:
     parser.add_argument("--save_fusion_scores", action="store_true")
     parser.add_argument("--response_n_bins", type=int, default=18)
     parser.add_argument("--response_min_count", type=int, default=300)
+    parser.add_argument("--selector_epochs", type=int, default=45)
+    parser.add_argument("--selector_lr", type=float, default=2e-3)
+    parser.add_argument("--selector_patience", type=int, default=8)
+    parser.add_argument("--selector_rank_weight", type=float, default=LOSS_CFG["selector_rank"])
+    parser.add_argument("--selector_rank_margin", type=float, default=LOSS_CFG["selector_rank_margin"])
 
     # Pseudo-HLT knobs (kept from prior plumbing)
     parser.add_argument("--merge_radius", type=float, default=BASE_CONFIG["hlt_effects"]["merge_radius"])
@@ -1222,6 +2031,14 @@ def main() -> None:
         "w_jetpt": float(args.loss_w_jetpt),
         "w_jete": float(args.loss_w_jete),
         "w_4vec": float(args.loss_w_4vec),
+        "w_best_set": float(args.loss_w_best_set),
+        "w_diversity": float(args.loss_w_diversity),
+        "winner_mode": str(args.winner_mode).strip().lower(),
+        "winner_hybrid_alpha": float(args.winner_hybrid_alpha),
+        "winner_hybrid_beta": float(args.winner_hybrid_beta),
+        "selector_ce": 0.6,
+        "selector_rank": float(args.selector_rank_weight),
+        "selector_rank_margin": float(args.selector_rank_margin),
         "huber_delta": float(args.reco_huber_delta),
         "scale_sensitive_weighting": bool(args.enable_scale_sensitive_weighting),
         "scale_pt_power": float(args.scale_pt_power),
@@ -1321,7 +2138,7 @@ def main() -> None:
     dl_te_off = DataLoader(ds_te_off, batch_size=bs_cls, shuffle=False)
 
     teacher = ParticleTransformer(input_dim=7, **MODEL_CFG).to(device)
-    teacher = train_single_view_classifier(teacher, dl_tr_off, dl_va_off, device, CLS_TRAIN_CFG, name="Teacher")
+    teacher = train_single_view_classifier_by_auc(teacher, dl_tr_off, dl_va_off, device, CLS_TRAIN_CFG, name="Teacher")
     auc_teacher, preds_teacher, labs_test = eval_classifier(teacher, dl_te_off, device)
 
     # ----------------------------- Baseline HLT ----------------------------- #
@@ -1338,7 +2155,7 @@ def main() -> None:
     dl_te_hlt = DataLoader(ds_te_hlt, batch_size=bs_cls, shuffle=False)
 
     baseline = ParticleTransformer(input_dim=7, **MODEL_CFG).to(device)
-    baseline = train_single_view_classifier(baseline, dl_tr_hlt, dl_va_hlt, device, CLS_TRAIN_CFG, name="HLT")
+    baseline = train_single_view_classifier_by_auc(baseline, dl_tr_hlt, dl_va_hlt, device, CLS_TRAIN_CFG, name="HLT")
     auc_hlt, preds_hlt, _ = eval_classifier(baseline, dl_te_hlt, device)
 
     # ----------------------------- Reconstructor ---------------------------- #
@@ -1355,6 +2172,7 @@ def main() -> None:
         const_hlt=hlt_const_sort[train_idx],
         tgt_tok=tgt_tok_all[train_idx],
         tgt_mask=tgt_mask_all[train_idx],
+        labels=labels[train_idx],
     )
     ds_va_reco = RecoSeqDataset(
         feat_hlt=features_hlt_std[val_idx],
@@ -1362,6 +2180,7 @@ def main() -> None:
         const_hlt=hlt_const_sort[val_idx],
         tgt_tok=tgt_tok_all[val_idx],
         tgt_mask=tgt_mask_all[val_idx],
+        labels=labels[val_idx],
     )
 
     dl_tr_reco = DataLoader(
@@ -1392,8 +2211,12 @@ def main() -> None:
         max_hlt_tokens=int(args.max_constits),
         max_decode_tokens=int(args.max_constits),
         use_coord_residual_param=bool(args.use_coord_residual_param),
+        num_hypotheses=int(max(args.num_hypotheses, 1)),
     ).to(device)
 
+    teacher.eval()
+    feat_means_t = torch.tensor(feat_means, dtype=torch.float32, device=device)
+    feat_stds_t = torch.tensor(feat_stds, dtype=torch.float32, device=device)
     reco, reco_val_metrics = train_reconstructor_seq2seq(
         reco,
         dl_tr_reco,
@@ -1401,35 +2224,129 @@ def main() -> None:
         device,
         reco_train_cfg,
         loss_cfg,
+        teacher=teacher if reco.num_hypotheses > 1 else None,
+        feat_means_t=feat_means_t if reco.num_hypotheses > 1 else None,
+        feat_stds_t=feat_stds_t if reco.num_hypotheses > 1 else None,
     )
 
     print("Best reconstructor val metrics:")
     for k, v in reco_val_metrics.items():
         print(f"  {k}: {v:.6f}")
 
+    if reco.num_hypotheses > 1 and int(args.joint_epochs) > 0:
+        print("\n" + "=" * 72)
+        print("STEP 3B: JOINT-LIKE REFINEMENT (Tag-Aware Winner Guidance)")
+        print("=" * 72)
+        joint_cfg = dict(reco_train_cfg)
+        joint_cfg["epochs"] = int(args.joint_epochs)
+        joint_cfg["lr"] = float(args.joint_lr)
+        joint_cfg["patience"] = int(args.joint_patience)
+        joint_cfg["min_epochs"] = max(4, int(args.joint_epochs // 2))
+        reco, reco_val_metrics_joint = train_reconstructor_seq2seq(
+            reco,
+            dl_tr_reco,
+            dl_va_reco,
+            device,
+            joint_cfg,
+            loss_cfg,
+            teacher=teacher,
+            feat_means_t=feat_means_t,
+            feat_stds_t=feat_stds_t,
+        )
+        print("Best joint-like reconstructor val metrics:")
+        for k, v in reco_val_metrics_joint.items():
+            print(f"  {k}: {v:.6f}")
+        for k, v in reco_val_metrics_joint.items():
+            reco_val_metrics[f"joint_{k}"] = float(v)
+
     print("Building reconstructed dataset...")
-    (
-        reco_const,
-        reco_mask,
-        reco_merge_flag,
-        reco_eff_flag,
-        created_merge_count,
-        created_eff_count,
-        pred_budget_total,
-        pred_budget_merge,
-        pred_budget_eff,
-    ) = reconstruct_dataset_seq2seq(
-        model=reco,
-        feat_hlt=features_hlt_std,
-        mask_hlt=hlt_mask_sort,
-        const_hlt=hlt_const_sort,
-        max_constits=int(args.max_constits),
-        device=device,
-        batch_size=int(reco_train_cfg["batch_size"]),
-        beam_size=int(args.beam_size),
-        beam_len_sigma=float(args.beam_len_sigma),
-        beam_temperature=float(args.beam_temperature),
-    )
+    selector = None
+    selector_feat_all = None
+    selector_target_all = None
+    winner_pred_all = None
+    hyp_const_all = None
+    hyp_mask_all = None
+    hyp_conf_all = None
+    if reco.num_hypotheses > 1:
+        print("\n" + "=" * 72)
+        print("STEP 4: MULTI-HYP SELECTOR (K-Way)")
+        print("=" * 72)
+        hyp_const_all, hyp_mask_all, hyp_conf_all = reconstruct_dataset_seq2seq_multihyp(
+            model=reco,
+            feat_hlt=features_hlt_std,
+            mask_hlt=hlt_mask_sort,
+            const_hlt=hlt_const_sort,
+            max_constits=int(args.max_constits),
+            device=device,
+            batch_size=int(reco_train_cfg["batch_size"]),
+        )
+        selector_feat_all, selector_target_all = build_selector_features_and_targets(
+            hyp_const_bkt4=hyp_const_all,
+            hyp_mask_bkt=hyp_mask_all,
+            hlt_const_bt4=hlt_const_sort,
+            hlt_mask_bt=hlt_mask_sort,
+            off_const_bt4=const_off_sort,
+            off_mask_bt=masks_off_sort,
+            labels_b=labels.astype(np.float32),
+            teacher=teacher,
+            feat_means=feat_means,
+            feat_stds=feat_stds,
+            device=device,
+            winner_mode=str(args.winner_mode),
+            winner_alpha=float(args.winner_hybrid_alpha),
+            winner_beta=float(args.winner_hybrid_beta),
+            set_loss_mode=str(args.set_loss_mode),
+            set_unmatched_penalty=float(args.set_unmatched_penalty),
+            batch_size=max(128, int(reco_train_cfg["batch_size"])),
+        )
+        selector = HypothesisSelector(feat_dim=int(selector_feat_all.shape[-1]), hidden=64)
+        selector = train_selector_model(
+            selector,
+            selector_feat_all[train_idx],
+            selector_target_all[train_idx],
+            selector_feat_all[val_idx],
+            selector_target_all[val_idx],
+            device=device,
+            epochs=int(args.selector_epochs),
+            lr=float(args.selector_lr),
+            batch_size=512,
+            patience=int(args.selector_patience),
+            rank_weight=float(args.selector_rank_weight),
+            rank_margin=float(args.selector_rank_margin),
+        )
+        winner_pred_all = selector_predict_indices(selector, selector_feat_all, device=device, batch_size=1024)
+        reco_const, reco_mask, reco_merge_flag = gather_selected_view(hyp_const_all, hyp_mask_all, hyp_conf_all, winner_pred_all)
+        reco_eff_flag = np.zeros_like(reco_merge_flag, dtype=np.float32)
+        hlt_count_all = hlt_mask_sort.sum(axis=1).astype(np.int32)
+        reco_count_all = reco_mask.sum(axis=1).astype(np.int32)
+        created_merge_count = np.maximum(reco_count_all - hlt_count_all, 0).astype(np.int32)
+        created_eff_count = np.zeros_like(created_merge_count, dtype=np.int32)
+        pred_budget_total = created_merge_count.astype(np.float32)
+        pred_budget_merge = created_merge_count.astype(np.float32)
+        pred_budget_eff = np.zeros_like(pred_budget_total, dtype=np.float32)
+    else:
+        (
+            reco_const,
+            reco_mask,
+            reco_merge_flag,
+            reco_eff_flag,
+            created_merge_count,
+            created_eff_count,
+            pred_budget_total,
+            pred_budget_merge,
+            pred_budget_eff,
+        ) = reconstruct_dataset_seq2seq(
+            model=reco,
+            feat_hlt=features_hlt_std,
+            mask_hlt=hlt_mask_sort,
+            const_hlt=hlt_const_sort,
+            max_constits=int(args.max_constits),
+            device=device,
+            batch_size=int(reco_train_cfg["batch_size"]),
+            beam_size=int(args.beam_size),
+            beam_len_sigma=float(args.beam_len_sigma),
+            beam_temperature=float(args.beam_temperature),
+        )
 
     features_reco = compute_features(reco_const, reco_mask)
     features_reco_std = standardize(features_reco, reco_mask, feat_means, feat_stds)
@@ -1441,7 +2358,7 @@ def main() -> None:
 
     # ----------------------------- Taggers on reconstructed view ------------ #
     print("\n" + "=" * 72)
-    print("STEP 4: TAGGERS ON RECONSTRUCTED VIEW")
+    print("STEP 5: TAGGERS ON RECONSTRUCTED VIEW")
     print("=" * 72)
 
     ds_tr_reco_cls = JetDataset(features_reco_std[train_idx], reco_mask[train_idx], labels[train_idx])
@@ -1453,7 +2370,7 @@ def main() -> None:
     dl_te_reco_cls = DataLoader(ds_te_reco_cls, batch_size=bs_cls, shuffle=False)
 
     unmerge = ParticleTransformer(input_dim=7, **MODEL_CFG).to(device)
-    unmerge = train_single_view_classifier(unmerge, dl_tr_reco_cls, dl_va_reco_cls, device, CLS_TRAIN_CFG, name="RecoOnly")
+    unmerge = train_single_view_classifier_by_auc(unmerge, dl_tr_reco_cls, dl_va_reco_cls, device, CLS_TRAIN_CFG, name="RecoOnly")
     auc_unmerge, preds_unmerge, _ = eval_classifier(unmerge, dl_te_reco_cls, device)
 
     # Dual-view (HLT + reconstructed)
@@ -1484,7 +2401,7 @@ def main() -> None:
     dl_te_dual = DataLoader(ds_te_dual, batch_size=bs_cls, shuffle=False)
 
     dual = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=7, **MODEL_CFG).to(device)
-    dual = train_dual_view_classifier(dual, dl_tr_dual, dl_va_dual, device, CLS_TRAIN_CFG, name="DualView")
+    dual = train_dual_view_classifier_by_auc(dual, dl_tr_dual, dl_va_dual, device, CLS_TRAIN_CFG, name="DualView")
     auc_dual, preds_dual, _ = eval_classifier_dual(dual, dl_te_dual, device)
 
     # Dual-view with confidence channels.
@@ -1515,8 +2432,14 @@ def main() -> None:
     dl_te_dual_f = DataLoader(ds_te_dual_f, batch_size=bs_cls, shuffle=False)
 
     dual_flag = DualViewCrossAttnClassifier(input_dim_a=7, input_dim_b=9, **MODEL_CFG).to(device)
-    dual_flag = train_dual_view_classifier(dual_flag, dl_tr_dual_f, dl_va_dual_f, device, CLS_TRAIN_CFG, name="DualView+Conf")
+    dual_flag = train_dual_view_classifier_by_auc(dual_flag, dl_tr_dual_f, dl_va_dual_f, device, CLS_TRAIN_CFG, name="DualView+Conf")
     auc_dual_flag, preds_dual_flag, _ = eval_classifier_dual(dual_flag, dl_te_dual_f, device)
+
+    selector_val_acc = float("nan")
+    selector_test_acc = float("nan")
+    if selector is not None and selector_target_all is not None and winner_pred_all is not None:
+        selector_val_acc = float((winner_pred_all[val_idx] == selector_target_all[val_idx]).mean())
+        selector_test_acc = float((winner_pred_all[test_idx] == selector_target_all[test_idx]).mean())
 
     # ----------------------------- Final metrics ---------------------------- #
     print("\n" + "=" * 72)
@@ -1527,6 +2450,8 @@ def main() -> None:
     print(f"RecoOnly         AUC: {auc_unmerge:.6f}")
     print(f"DualView         AUC: {auc_dual:.6f}")
     print(f"DualView+Conf    AUC: {auc_dual_flag:.6f}")
+    if selector is not None:
+        print(f"Selector acc (val/test): {selector_val_acc:.4f} / {selector_test_acc:.4f}")
 
     fpr_t, tpr_t, _ = roc_curve(labs_test, preds_teacher)
     fpr_h, tpr_h, _ = roc_curve(labs_test, preds_hlt)
@@ -1687,6 +2612,8 @@ def main() -> None:
         hlt_response_std=float(hlt_resp_std),
         reco_response_mean=float(reco_resp_mean),
         reco_response_std=float(reco_resp_std),
+        selector_val_acc=float(selector_val_acc),
+        selector_test_acc=float(selector_test_acc),
     )
 
     with open(save_root / "hlt_stats.json", "w", encoding="utf-8") as f:
@@ -1716,6 +2643,23 @@ def main() -> None:
             indent=2,
         )
 
+    if selector is not None and selector_target_all is not None and winner_pred_all is not None:
+        with open(save_root / "selector_summary.json", "w", encoding="utf-8") as f:
+            json.dump(
+                {
+                    "selector_val_acc": float(selector_val_acc),
+                    "selector_test_acc": float(selector_test_acc),
+                },
+                f,
+                indent=2,
+            )
+        np.savez_compressed(
+            save_root / "selector_outputs.npz",
+            selector_feat_all=selector_feat_all.astype(np.float32),
+            selector_target_all=selector_target_all.astype(np.int64),
+            selector_pred_all=winner_pred_all.astype(np.int64),
+        )
+
     if not args.skip_save_models:
         torch.save({"model": teacher.state_dict(), "auc": float(auc_teacher)}, save_root / "teacher.pt")
         torch.save({"model": baseline.state_dict(), "auc": float(auc_hlt)}, save_root / "baseline.pt")
@@ -1723,6 +2667,8 @@ def main() -> None:
         torch.save({"model": unmerge.state_dict(), "auc": float(auc_unmerge)}, save_root / "reco_only_classifier.pt")
         torch.save({"model": dual.state_dict(), "auc": float(auc_dual)}, save_root / "dual_view_classifier.pt")
         torch.save({"model": dual_flag.state_dict(), "auc": float(auc_dual_flag)}, save_root / "dual_view_conf_classifier.pt")
+        if selector is not None:
+            torch.save({"model": selector.state_dict()}, save_root / "hypothesis_selector.pt")
 
     np.savez_compressed(
         save_root / "reconstructed_dataset.npz",
@@ -1746,6 +2692,15 @@ def main() -> None:
         val_idx=val_idx.astype(np.int64),
         test_idx=test_idx.astype(np.int64),
     )
+
+    if hyp_const_all is not None and hyp_mask_all is not None and hyp_conf_all is not None:
+        np.savez_compressed(
+            save_root / "reconstructed_multihyp_dataset.npz",
+            hyp_const=hyp_const_all.astype(np.float32),
+            hyp_mask=hyp_mask_all.astype(bool),
+            hyp_conf=hyp_conf_all.astype(np.float32),
+            winner_idx=winner_pred_all.astype(np.int64) if winner_pred_all is not None else np.zeros((labels.shape[0],), dtype=np.int64),
+        )
 
     print(f"\nSaved results to: {save_root}")
 
