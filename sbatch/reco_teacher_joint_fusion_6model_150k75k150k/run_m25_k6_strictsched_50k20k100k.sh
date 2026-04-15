@@ -48,7 +48,7 @@ CMD=(
   --max_constits "${MAX_CONSTITS}"
   --num_workers "${NUM_WORKERS}"
   --seed "${SEED}"
-  --reco_epochs 150
+  --reco_epochs 175
   --reco_batch_size 96
   --reco_lr 1.8e-4
   --reco_patience 30
@@ -83,14 +83,19 @@ CMD=(
   --loss_w_jete 0.00
   --loss_w_angle 0.00
   --physics_warmup_epochs 12
-  --strict_tf_warmup_epochs 10
-  --scheduled_sampling_max_prob 0.6
-  --scheduled_sampling_ramp_epochs 20
-  --free_run_transition_epochs 10
-  --free_run_lambda_start 0.15
-  --free_run_lambda_end 0.35
-  --free_run_start_every_n 2
-  --free_run_full_every_n 1
+  --phase1_end_epoch 15
+  --phase2_end_epoch 75
+  --phase3_end_epoch 127
+  --phase2_alpha_fr_end 0.70
+  --phase3_alpha_fr_end 0.95
+  --phase4_alpha_fr 0.95
+  --phase2_ss_end 0.60
+  --phase3_ss_end 0.90
+  --phase4_ss 0.90
+  --phase2_free_run_every_n 2
+  --phase3_free_run_every_n 1
+  --phase4_free_run_every_n 1
+  --phase_lr_decay 0.80
   --response_n_bins 20
   --response_min_count 200
   --save_fusion_scores

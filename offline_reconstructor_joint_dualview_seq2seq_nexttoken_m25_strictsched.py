@@ -23,6 +23,7 @@ import argparse
 import json
 import math
 import random
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -115,7 +116,7 @@ RECO_CFG = {
 
 RECO_TRAIN_CFG = {
     "batch_size": 128,
-    "epochs": 120,
+    "epochs": 175,
     "lr": 2e-4,
     "weight_decay": 1e-5,
     "patience": 25,
@@ -158,6 +159,22 @@ LOSS_CFG = {
     "free_run_lambda_end": 0.35,
     "free_run_start_every_n": 2,
     "free_run_full_every_n": 1,
+    "phase1_end_epoch": 15,
+    "phase2_end_epoch": 75,
+    "phase3_end_epoch": 127,
+    "phase2_alpha_fr_end": 0.70,
+    "phase3_alpha_fr_end": 0.95,
+    "phase4_alpha_fr": 0.95,
+    "phase2_ss_end": 0.60,
+    "phase3_ss_end": 0.90,
+    "phase4_ss": 0.90,
+    "phase2_free_run_every_n": 2,
+    "phase3_free_run_every_n": 1,
+    "phase4_free_run_every_n": 1,
+    "phase_rewind": True,
+    "phase_reset_optimizer": True,
+    "phase_lr_decay": 0.80,
+    "phase_noimprove_final_only": True,
     "winner_mode": "tag",
     "winner_hybrid_alpha": 1.0,
     "winner_hybrid_beta": 0.5,
@@ -1332,6 +1349,75 @@ def free_running_schedule(
     return int(max(full_every_n, 1)), lam
 
 
+def phased_curriculum_schedule(epoch_idx0: int, total_epochs: int, loss_cfg: Dict) -> Dict[str, float]:
+    ep1 = int(epoch_idx0) + 1
+    n_ep = max(int(total_epochs), 1)
+
+    p1_end = int(loss_cfg.get("phase1_end_epoch", 15))
+    p2_end = int(loss_cfg.get("phase2_end_epoch", 75))
+    p3_end = int(loss_cfg.get("phase3_end_epoch", 127))
+    p1_end = max(1, min(p1_end, n_ep))
+    p2_end = max(p1_end + 1, min(p2_end, n_ep))
+    p3_end = max(p2_end + 1, min(p3_end, n_ep))
+
+    a2 = float(loss_cfg.get("phase2_alpha_fr_end", 0.70))
+    a3 = float(loss_cfg.get("phase3_alpha_fr_end", 0.95))
+    a4 = float(loss_cfg.get("phase4_alpha_fr", a3))
+    ss2 = float(loss_cfg.get("phase2_ss_end", 0.60))
+    ss3 = float(loss_cfg.get("phase3_ss_end", 0.90))
+    ss4 = float(loss_cfg.get("phase4_ss", ss3))
+    n2 = int(max(loss_cfg.get("phase2_free_run_every_n", 2), 1))
+    n3 = int(max(loss_cfg.get("phase3_free_run_every_n", 1), 1))
+    n4 = int(max(loss_cfg.get("phase4_free_run_every_n", 1), 1))
+
+    def _interp(start_v: float, end_v: float, start_ep: int, end_ep: int) -> float:
+        if end_ep <= start_ep:
+            return float(end_v)
+        frac = float(ep1 - start_ep) / float(end_ep - start_ep)
+        frac = min(max(frac, 0.0), 1.0)
+        return float(start_v) + (float(end_v) - float(start_v)) * frac
+
+    if ep1 <= p1_end:
+        return {
+            "phase_idx": 1,
+            "phase_name": "stabilize",
+            "use_strict_tf": 1.0,
+            "ss_prob": 0.0,
+            "fr_mix_alpha": 0.0,
+            "fr_every_n": 0.0,
+            "max_phase_idx": 4.0 if n_ep > p3_end else (3.0 if n_ep > p2_end else (2.0 if n_ep > p1_end else 1.0)),
+        }
+    if ep1 <= p2_end:
+        return {
+            "phase_idx": 2,
+            "phase_name": "transition",
+            "use_strict_tf": 1.0,
+            "ss_prob": _interp(0.0, ss2, p1_end + 1, p2_end),
+            "fr_mix_alpha": _interp(0.0, a2, p1_end + 1, p2_end),
+            "fr_every_n": float(n2),
+            "max_phase_idx": 4.0 if n_ep > p3_end else (3.0 if n_ep > p2_end else (2.0 if n_ep > p1_end else 1.0)),
+        }
+    if ep1 <= p3_end:
+        return {
+            "phase_idx": 3,
+            "phase_name": "mostly_freerun",
+            "use_strict_tf": 1.0,
+            "ss_prob": _interp(ss2, ss3, p2_end + 1, p3_end),
+            "fr_mix_alpha": _interp(a2, a3, p2_end + 1, p3_end),
+            "fr_every_n": float(n3),
+            "max_phase_idx": 4.0 if n_ep > p3_end else (3.0 if n_ep > p2_end else (2.0 if n_ep > p1_end else 1.0)),
+        }
+    return {
+        "phase_idx": 4,
+        "phase_name": "late_lockin",
+        "use_strict_tf": 1.0,
+        "ss_prob": float(ss4),
+        "fr_mix_alpha": float(a4),
+        "fr_every_n": float(n4),
+        "max_phase_idx": 4.0 if n_ep > p3_end else (3.0 if n_ep > p2_end else (2.0 if n_ep > p1_end else 1.0)),
+    }
+
+
 def build_decoder_input_tokens(
     bos_token: torch.Tensor,
     teacher_targets: torch.Tensor,
@@ -1707,6 +1793,12 @@ class RecoValMetrics:
     val_jetpt: float
     val_jete: float
     val_fourvec: float
+    val_free_total: float
+    val_free_ar: float
+    val_free_set: float
+    val_free_eos: float
+    val_free_count: float
+    val_free_best_set: float
 
 
 def train_reconstructor_seq2seq(
@@ -1720,6 +1812,13 @@ def train_reconstructor_seq2seq(
     feat_means_t: Optional[torch.Tensor] = None,
     feat_stds_t: Optional[torch.Tensor] = None,
 ) -> Tuple[HLT2OfflineSeq2Seq, Dict[str, float]]:
+    def _fmt_hms(sec: float) -> str:
+        s = int(max(sec, 0.0))
+        h = s // 3600
+        m = (s % 3600) // 60
+        z = s % 60
+        return f"{h:02d}:{m:02d}:{z:02d}"
+
     opt = torch.optim.AdamW(
         model.parameters(),
         lr=float(train_cfg["lr"]),
@@ -1732,28 +1831,62 @@ def train_reconstructor_seq2seq(
     no_improve = 0
 
     physics_warmup_epochs = int(max(loss_cfg.get("physics_warmup_epochs", 0), 0))
-    strict_tf_warmup_epochs = int(max(loss_cfg.get("strict_tf_warmup_epochs", 10), 0))
-    ss_max_prob = float(loss_cfg.get("scheduled_sampling_max_prob", 0.6))
-    ss_ramp_epochs = int(max(loss_cfg.get("scheduled_sampling_ramp_epochs", 20), 1))
-    fr_transition_epochs = int(max(loss_cfg.get("free_run_transition_epochs", 10), 1))
-    fr_lambda_start = float(loss_cfg.get("free_run_lambda_start", 0.15))
-    fr_lambda_end = float(loss_cfg.get("free_run_lambda_end", 0.35))
-    fr_start_every_n = int(max(loss_cfg.get("free_run_start_every_n", 2), 1))
-    fr_full_every_n = int(max(loss_cfg.get("free_run_full_every_n", 1), 1))
+    phase_rewind = bool(loss_cfg.get("phase_rewind", True))
+    phase_reset_optimizer = bool(loss_cfg.get("phase_reset_optimizer", True))
+    phase_lr_decay = float(loss_cfg.get("phase_lr_decay", 0.80))
+    phase_noimprove_final_only = bool(loss_cfg.get("phase_noimprove_final_only", True))
+    current_phase_idx = -1
+    current_phase_name = "init"
+    phase_best_state = None
+    phase_best_val = float("inf")
+    phase_best_epoch = -1
+    total_epochs = int(train_cfg["epochs"])
+    ep_times_sec: List[float] = []
 
-    for ep in range(int(train_cfg["epochs"])):
+    for ep in range(total_epochs):
+        ep_t0 = time.perf_counter()
         physics_scale = 1.0 if physics_warmup_epochs <= 0 else min(1.0, float(ep + 1) / float(physics_warmup_epochs))
-        use_strict_tf = (ep + 1) > strict_tf_warmup_epochs
-        ss_prob = scheduled_sampling_model_prob(ep, strict_tf_warmup_epochs, ss_max_prob, ss_ramp_epochs) if use_strict_tf else 0.0
-        fr_every_n, fr_lambda = free_running_schedule(
-            ep,
-            warmup_epochs=strict_tf_warmup_epochs,
-            transition_epochs=fr_transition_epochs,
-            lambda_start=fr_lambda_start,
-            lambda_end=fr_lambda_end,
-            start_every_n=fr_start_every_n,
-            full_every_n=fr_full_every_n,
-        )
+        phase_sched = phased_curriculum_schedule(ep, total_epochs, loss_cfg)
+        phase_idx = int(phase_sched["phase_idx"])
+        phase_name = str(phase_sched["phase_name"])
+        use_strict_tf = bool(int(phase_sched["use_strict_tf"]))
+        ss_prob = float(phase_sched["ss_prob"])
+        fr_mix_alpha = float(phase_sched["fr_mix_alpha"])
+        fr_every_n = int(phase_sched["fr_every_n"])
+        max_phase_idx = int(phase_sched["max_phase_idx"])
+
+        if current_phase_idx < 0:
+            current_phase_idx = phase_idx
+            current_phase_name = phase_name
+            print(f"Entering phase {current_phase_idx} ({current_phase_name}) at epoch {ep+1}")
+        elif phase_idx != current_phase_idx:
+            if phase_rewind and phase_best_state is not None:
+                model.load_state_dict(phase_best_state)
+                print(
+                    f"Phase transition {current_phase_idx}->{phase_idx}: rewound to "
+                    f"phase-best epoch {phase_best_epoch} (valFR={phase_best_val:.6f})"
+                )
+            else:
+                print(f"Phase transition {current_phase_idx}->{phase_idx}: no phase rewind checkpoint found.")
+
+            if phase_reset_optimizer:
+                old_lr = float(opt.param_groups[0]["lr"])
+                new_lr = old_lr * float(phase_lr_decay)
+                floor_lr = float(train_cfg["lr"]) * 0.20
+                new_lr = max(new_lr, floor_lr)
+                opt = torch.optim.AdamW(
+                    model.parameters(),
+                    lr=float(new_lr),
+                    weight_decay=float(train_cfg["weight_decay"]),
+                )
+                print(f"Phase {phase_idx} optimizer reset: lr {old_lr:.3e} -> {new_lr:.3e}")
+
+            current_phase_idx = phase_idx
+            current_phase_name = phase_name
+            phase_best_state = None
+            phase_best_val = float("inf")
+            phase_best_epoch = -1
+            no_improve = 0
 
         model.train()
         tr_tot = tr_ar = tr_set = tr_eos = tr_cnt = 0.0
@@ -1848,7 +1981,8 @@ def train_reconstructor_seq2seq(
 
                 losses = compute_reco_losses(out, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
 
-            apply_fr = (fr_every_n > 0) and (fr_lambda > 0.0) and ((batch_i + 1) % fr_every_n == 0)
+            tf_total = losses["total"]
+            apply_fr = (fr_every_n > 0) and (fr_mix_alpha > 0.0) and ((batch_i + 1) % fr_every_n == 0)
             if apply_fr:
                 if model.num_hypotheses > 1:
                     outm_fr = model.forward_free_running_multi(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
@@ -1878,9 +2012,10 @@ def train_reconstructor_seq2seq(
                     out_fr = model.forward_free_running(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
                     fr_losses = compute_reco_losses(out_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
 
-                losses["total"] = losses["total"] + float(fr_lambda) * fr_losses["total"]
+                losses["total"] = (1.0 - float(fr_mix_alpha)) * tf_total + float(fr_mix_alpha) * fr_losses["total"]
                 losses["fr_total"] = fr_losses["total"].detach()
             else:
+                losses["total"] = tf_total
                 losses["fr_total"] = torch.zeros((), device=device, dtype=losses["total"].dtype)
 
             opt.zero_grad(set_to_none=True)
@@ -1909,6 +2044,10 @@ def train_reconstructor_seq2seq(
         va_ang = va_jpt = va_je = va_4v = 0.0
         va_cfr = va_cfp = 0.0
         va_best = va_div = 0.0
+        va_fr_tot = va_fr_ar = va_fr_set = va_fr_eos = va_fr_cnt = 0.0
+        va_fr_ang = va_fr_jpt = va_fr_je = va_fr_4v = 0.0
+        va_fr_cfr = va_fr_cfp = 0.0
+        va_fr_best = va_fr_div = 0.0
         n_va = 0
         with torch.no_grad():
             for batch in val_loader:
@@ -2011,6 +2150,47 @@ def train_reconstructor_seq2seq(
                 va_best += float(losses.get("best_set", losses["set"]).detach().item()) * bsz
                 va_div += float(losses.get("diversity", torch.zeros((), device=device)).detach().item()) * bsz
 
+                if model.num_hypotheses > 1:
+                    outm_fr = model.forward_free_running_multi(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
+                    winner_fr = select_winner_idx_from_out_multi(
+                        outm_fr,
+                        tgt_tok,
+                        tgt_mask,
+                        labels,
+                        const_hlt,
+                        mask_hlt,
+                        teacher,
+                        feat_means_t,
+                        feat_stds_t,
+                        loss_cfg,
+                    )
+                    out_sel_fr = {
+                        "pred_tok": gather_hypothesis(outm_fr["pred_tok"], winner_fr),
+                        "stop_logits": gather_hypothesis(outm_fr["stop_logits"], winner_fr),
+                        "conf_logits": gather_hypothesis(outm_fr["conf_logits"], winner_fr),
+                        "count_pred": outm_fr["count_pred"],
+                        "attn": gather_hypothesis(outm_fr["attn"], winner_fr),
+                        "gate": gather_hypothesis(outm_fr["gate"], winner_fr),
+                    }
+                    fr_losses = compute_reco_losses(out_sel_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+                else:
+                    out_fr = model.forward_free_running(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
+                    fr_losses = compute_reco_losses(out_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+
+                va_fr_tot += float(fr_losses["total"].detach().item()) * bsz
+                va_fr_ar += float(fr_losses["ar"].detach().item()) * bsz
+                va_fr_set += float(fr_losses["set"].detach().item()) * bsz
+                va_fr_eos += float(fr_losses["eos"].detach().item()) * bsz
+                va_fr_cnt += float(fr_losses["count"].detach().item()) * bsz
+                va_fr_ang += float(fr_losses["angle"].detach().item()) * bsz
+                va_fr_jpt += float(fr_losses["jetpt"].detach().item()) * bsz
+                va_fr_je += float(fr_losses["jete"].detach().item()) * bsz
+                va_fr_4v += float(fr_losses["fourvec"].detach().item()) * bsz
+                va_fr_cfr += float(fr_losses.get("conf_rank", torch.zeros((), device=device)).detach().item()) * bsz
+                va_fr_cfp += float(fr_losses.get("conf_prefix", torch.zeros((), device=device)).detach().item()) * bsz
+                va_fr_best += float(fr_losses.get("best_set", fr_losses["set"]).detach().item()) * bsz
+                va_fr_div += float(fr_losses.get("diversity", torch.zeros((), device=device)).detach().item()) * bsz
+
         tr_tot /= max(n_tr, 1)
         tr_ar /= max(n_tr, 1)
         tr_set /= max(n_tr, 1)
@@ -2039,22 +2219,49 @@ def train_reconstructor_seq2seq(
         va_cfp /= max(n_va, 1)
         va_best /= max(n_va, 1)
         va_div /= max(n_va, 1)
+        va_fr_tot /= max(n_va, 1)
+        va_fr_ar /= max(n_va, 1)
+        va_fr_set /= max(n_va, 1)
+        va_fr_eos /= max(n_va, 1)
+        va_fr_cnt /= max(n_va, 1)
+        va_fr_ang /= max(n_va, 1)
+        va_fr_jpt /= max(n_va, 1)
+        va_fr_je /= max(n_va, 1)
+        va_fr_4v /= max(n_va, 1)
+        va_fr_cfr /= max(n_va, 1)
+        va_fr_cfp /= max(n_va, 1)
+        va_fr_best /= max(n_va, 1)
+        va_fr_div /= max(n_va, 1)
 
-        if (ep + 1) % 2 == 0 or ep == 0:
-            print(
-                f"Reco ep {ep+1:03d} | "
-                f"phys={physics_scale:.3f} "
-                f"tf={'strict' if use_strict_tf else 'canon'} ss={ss_prob:.2f} fr={fr_lambda:.2f}@{fr_every_n} | "
-                f"train total={tr_tot:.5f} ar={tr_ar:.5f} set={tr_set:.5f} eos={tr_eos:.5f} cnt={tr_cnt:.5f} "
-                f"ang={tr_ang:.5f} jpt={tr_jpt:.5f} je={tr_je:.5f} j4={tr_4v:.5f} "
-                f"crk={tr_cfr:.5f} cpre={tr_cfp:.5f} bset={tr_best:.5f} div={tr_div:.5f} fr={tr_fr:.5f} | "
-                f"val total={va_tot:.5f} ar={va_ar:.5f} set={va_set:.5f} eos={va_eos:.5f} cnt={va_cnt:.5f} "
-                f"ang={va_ang:.5f} jpt={va_jpt:.5f} je={va_je:.5f} j4={va_4v:.5f} "
-                f"crk={va_cfr:.5f} cpre={va_cfp:.5f} bset={va_best:.5f} div={va_div:.5f}"
-            )
+        ep_sec = time.perf_counter() - ep_t0
+        ep_times_sec.append(ep_sec)
+        avg_ep_sec = float(np.mean(ep_times_sec))
+        eta_sec = avg_ep_sec * float(max(int(train_cfg["epochs"]) - (ep + 1), 0))
 
-        if va_tot < best_val:
-            best_val = float(va_tot)
+        print(
+            f"Reco ep {ep+1:03d} | "
+            f"t={_fmt_hms(ep_sec)} eta={_fmt_hms(eta_sec)} | "
+            f"phase={phase_idx}:{phase_name} phys={physics_scale:.3f} "
+            f"tf={'strict' if use_strict_tf else 'canon'} ss={ss_prob:.2f} mixFR={fr_mix_alpha:.2f}@{fr_every_n} | "
+            f"train total={tr_tot:.5f} ar={tr_ar:.5f} set={tr_set:.5f} eos={tr_eos:.5f} cnt={tr_cnt:.5f} "
+            f"ang={tr_ang:.5f} jpt={tr_jpt:.5f} je={tr_je:.5f} j4={tr_4v:.5f} "
+            f"crk={tr_cfr:.5f} cpre={tr_cfp:.5f} bset={tr_best:.5f} div={tr_div:.5f} fr={tr_fr:.5f} | "
+            f"valTF total={va_tot:.5f} ar={va_ar:.5f} set={va_set:.5f} eos={va_eos:.5f} cnt={va_cnt:.5f} "
+            f"ang={va_ang:.5f} jpt={va_jpt:.5f} je={va_je:.5f} j4={va_4v:.5f} "
+            f"crk={va_cfr:.5f} cpre={va_cfp:.5f} bset={va_best:.5f} div={va_div:.5f} | "
+            f"valFR total={va_fr_tot:.5f} ar={va_fr_ar:.5f} set={va_fr_set:.5f} eos={va_fr_eos:.5f} cnt={va_fr_cnt:.5f} "
+            f"ang={va_fr_ang:.5f} jpt={va_fr_jpt:.5f} je={va_fr_je:.5f} j4={va_fr_4v:.5f} "
+            f"crk={va_fr_cfr:.5f} cpre={va_fr_cfp:.5f} bset={va_fr_best:.5f} div={va_fr_div:.5f}"
+        )
+
+        val_select = float(va_fr_tot if np.isfinite(va_fr_tot) else va_tot)
+        if val_select < phase_best_val:
+            phase_best_val = val_select
+            phase_best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            phase_best_epoch = ep + 1
+
+        if val_select < best_val:
+            best_val = val_select
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             best_metrics = RecoValMetrics(
                 val_total=float(va_tot),
@@ -2066,14 +2273,29 @@ def train_reconstructor_seq2seq(
                 val_jetpt=float(va_jpt),
                 val_jete=float(va_je),
                 val_fourvec=float(va_4v),
+                val_free_total=float(va_fr_tot),
+                val_free_ar=float(va_fr_ar),
+                val_free_set=float(va_fr_set),
+                val_free_eos=float(va_fr_eos),
+                val_free_count=float(va_fr_cnt),
+                val_free_best_set=float(va_fr_best),
             )
             no_improve = 0
         else:
             no_improve += 1
 
         if ep + 1 >= int(train_cfg["min_epochs"]) and no_improve >= int(train_cfg["patience"]):
-            print(f"Early stopping reconstructor at epoch {ep+1}")
-            break
+            if phase_noimprove_final_only and phase_idx < max_phase_idx:
+                print(
+                    f"Phase {phase_idx} patience reached at epoch {ep+1}; "
+                    f"continuing curriculum from phase-best epoch {phase_best_epoch} (valFR={phase_best_val:.6f})."
+                )
+                if phase_rewind and phase_best_state is not None:
+                    model.load_state_dict(phase_best_state)
+                no_improve = 0
+            else:
+                print(f"Early stopping reconstructor at epoch {ep+1}")
+                break
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -2089,6 +2311,12 @@ def train_reconstructor_seq2seq(
             val_jetpt=float("nan"),
             val_jete=float("nan"),
             val_fourvec=float("nan"),
+            val_free_total=float("nan"),
+            val_free_ar=float("nan"),
+            val_free_set=float("nan"),
+            val_free_eos=float("nan"),
+            val_free_count=float("nan"),
+            val_free_best_set=float("nan"),
         )
 
     return model, {
@@ -2101,6 +2329,12 @@ def train_reconstructor_seq2seq(
         "val_jetpt": best_metrics.val_jetpt,
         "val_jete": best_metrics.val_jete,
         "val_fourvec": best_metrics.val_fourvec,
+        "val_free_total": best_metrics.val_free_total,
+        "val_free_ar": best_metrics.val_free_ar,
+        "val_free_set": best_metrics.val_free_set,
+        "val_free_eos": best_metrics.val_free_eos,
+        "val_free_count": best_metrics.val_free_count,
+        "val_free_best_set": best_metrics.val_free_best_set,
     }
 
 
@@ -2569,6 +2803,22 @@ def main() -> None:
     parser.add_argument("--free_run_lambda_end", type=float, default=LOSS_CFG["free_run_lambda_end"])
     parser.add_argument("--free_run_start_every_n", type=int, default=LOSS_CFG["free_run_start_every_n"])
     parser.add_argument("--free_run_full_every_n", type=int, default=LOSS_CFG["free_run_full_every_n"])
+    parser.add_argument("--phase1_end_epoch", type=int, default=LOSS_CFG["phase1_end_epoch"])
+    parser.add_argument("--phase2_end_epoch", type=int, default=LOSS_CFG["phase2_end_epoch"])
+    parser.add_argument("--phase3_end_epoch", type=int, default=LOSS_CFG["phase3_end_epoch"])
+    parser.add_argument("--phase2_alpha_fr_end", type=float, default=LOSS_CFG["phase2_alpha_fr_end"])
+    parser.add_argument("--phase3_alpha_fr_end", type=float, default=LOSS_CFG["phase3_alpha_fr_end"])
+    parser.add_argument("--phase4_alpha_fr", type=float, default=LOSS_CFG["phase4_alpha_fr"])
+    parser.add_argument("--phase2_ss_end", type=float, default=LOSS_CFG["phase2_ss_end"])
+    parser.add_argument("--phase3_ss_end", type=float, default=LOSS_CFG["phase3_ss_end"])
+    parser.add_argument("--phase4_ss", type=float, default=LOSS_CFG["phase4_ss"])
+    parser.add_argument("--phase2_free_run_every_n", type=int, default=LOSS_CFG["phase2_free_run_every_n"])
+    parser.add_argument("--phase3_free_run_every_n", type=int, default=LOSS_CFG["phase3_free_run_every_n"])
+    parser.add_argument("--phase4_free_run_every_n", type=int, default=LOSS_CFG["phase4_free_run_every_n"])
+    parser.add_argument("--phase_lr_decay", type=float, default=LOSS_CFG["phase_lr_decay"])
+    parser.add_argument("--no_phase_rewind", action="store_true")
+    parser.add_argument("--no_phase_reset_optimizer", action="store_true")
+    parser.add_argument("--phase_allow_earlystop_all", action="store_true")
     parser.add_argument("--loss_w_angle", type=float, default=LOSS_CFG["w_angle"])
     parser.add_argument("--loss_w_jetpt", type=float, default=LOSS_CFG["w_jetpt"])
     parser.add_argument("--loss_w_jete", type=float, default=LOSS_CFG["w_jete"])
@@ -2662,6 +2912,22 @@ def main() -> None:
         "free_run_lambda_end": float(args.free_run_lambda_end),
         "free_run_start_every_n": int(args.free_run_start_every_n),
         "free_run_full_every_n": int(args.free_run_full_every_n),
+        "phase1_end_epoch": int(args.phase1_end_epoch),
+        "phase2_end_epoch": int(args.phase2_end_epoch),
+        "phase3_end_epoch": int(args.phase3_end_epoch),
+        "phase2_alpha_fr_end": float(args.phase2_alpha_fr_end),
+        "phase3_alpha_fr_end": float(args.phase3_alpha_fr_end),
+        "phase4_alpha_fr": float(args.phase4_alpha_fr),
+        "phase2_ss_end": float(args.phase2_ss_end),
+        "phase3_ss_end": float(args.phase3_ss_end),
+        "phase4_ss": float(args.phase4_ss),
+        "phase2_free_run_every_n": int(args.phase2_free_run_every_n),
+        "phase3_free_run_every_n": int(args.phase3_free_run_every_n),
+        "phase4_free_run_every_n": int(args.phase4_free_run_every_n),
+        "phase_rewind": not bool(args.no_phase_rewind),
+        "phase_reset_optimizer": not bool(args.no_phase_reset_optimizer),
+        "phase_lr_decay": float(args.phase_lr_decay),
+        "phase_noimprove_final_only": not bool(args.phase_allow_earlystop_all),
         "w_angle": float(args.loss_w_angle),
         "w_jetpt": float(args.loss_w_jetpt),
         "w_jete": float(args.loss_w_jete),
