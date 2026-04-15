@@ -997,13 +997,18 @@ class HypothesisSelector(nn.Module):
 
 
 def selector_rank_loss(sel_logits: torch.Tensor, winner_idx: torch.Tensor, margin: float = 0.25) -> torch.Tensor:
-    # Encourage winner score > others by margin.
-    bsz, k = sel_logits.shape
+    # Encourage winner score > others by margin. Avoid inplace writes on autograd tensors.
+    bsz, _k = sel_logits.shape
     w = sel_logits.gather(1, winner_idx.view(-1, 1))  # [B,1]
     diff = float(margin) - (w - sel_logits)  # [B,K]
-    rank = F.relu(diff)
-    rank[torch.arange(bsz, device=sel_logits.device), winner_idx] = 0.0
-    return rank.mean()
+    rank_raw = F.relu(diff)
+
+    keep = torch.ones_like(rank_raw, dtype=torch.bool)
+    keep = keep.scatter(1, winner_idx.view(-1, 1), False)
+
+    rank = rank_raw * keep.to(rank_raw.dtype)
+    denom = keep.to(rank_raw.dtype).sum().clamp_min(1.0)
+    return rank.sum() / denom
 
 
 def chamfer_token_loss_vec(
