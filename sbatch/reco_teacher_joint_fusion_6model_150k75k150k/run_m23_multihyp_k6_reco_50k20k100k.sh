@@ -3,7 +3,7 @@
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=40G
-#SBATCH --time=06:00:00
+#SBATCH --time=2-12:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m23_k6_reco_50k20k100k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m23_k6_reco_50k20k100k_%j.err
 
@@ -71,7 +71,7 @@ CMD=(
   --angle_pt_power 1.0
   --loss_w_ar 1.0
   --loss_w_set 1.0
-  --set_loss_mode chamfer
+  --set_loss_mode hungarian
   --set_unmatched_penalty 0.35
   --loss_w_best_set 2.8
   --loss_w_diversity 0.10
