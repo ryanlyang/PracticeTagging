@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=40G
-#SBATCH --time=5:00:00
+#SBATCH --time=5-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m25_k1_nomicro_bs80_smoke_50k20k100k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m25_k1_nomicro_bs80_smoke_50k20k100k_%j.err
 
@@ -17,10 +17,10 @@ SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-17000}"
-N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-5000}"
-N_VAL_SPLIT="${N_VAL_SPLIT:-2000}"
-N_TEST_SPLIT="${N_TEST_SPLIT:-10000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-170000}"
+N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-50000}"
+N_VAL_SPLIT="${N_VAL_SPLIT:-20000}"
+N_TEST_SPLIT="${N_TEST_SPLIT:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
