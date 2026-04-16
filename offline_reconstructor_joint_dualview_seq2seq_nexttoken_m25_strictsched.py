@@ -171,6 +171,7 @@ LOSS_CFG = {
     "phase2_free_run_every_n": 2,
     "phase3_free_run_every_n": 1,
     "phase4_free_run_every_n": 1,
+    "fr_train_subbatch": 32,
     "phase_rewind": True,
     "phase_reset_optimizer": True,
     "phase_lr_decay": 0.80,
@@ -1835,6 +1836,7 @@ def train_reconstructor_seq2seq(
     phase_reset_optimizer = bool(loss_cfg.get("phase_reset_optimizer", True))
     phase_lr_decay = float(loss_cfg.get("phase_lr_decay", 0.80))
     phase_noimprove_final_only = bool(loss_cfg.get("phase_noimprove_final_only", True))
+    fr_train_subbatch = int(max(loss_cfg.get("fr_train_subbatch", 0), 0))
     current_phase_idx = -1
     current_phase_name = "init"
     phase_best_state = None
@@ -1984,16 +1986,32 @@ def train_reconstructor_seq2seq(
             tf_total = losses["total"]
             apply_fr = (fr_every_n > 0) and (fr_mix_alpha > 0.0) and ((batch_i + 1) % fr_every_n == 0)
             if apply_fr:
+                fr_feat_hlt = feat_hlt
+                fr_mask_hlt = mask_hlt
+                fr_const_hlt = const_hlt
+                fr_tgt_tok = tgt_tok
+                fr_tgt_mask = tgt_mask
+                fr_labels = labels
+                if fr_train_subbatch > 0 and fr_train_subbatch < bsz:
+                    fr_idx = torch.randperm(bsz, device=device)[:fr_train_subbatch]
+                    fr_feat_hlt = feat_hlt.index_select(0, fr_idx)
+                    fr_mask_hlt = mask_hlt.index_select(0, fr_idx)
+                    fr_const_hlt = const_hlt.index_select(0, fr_idx)
+                    fr_tgt_tok = tgt_tok.index_select(0, fr_idx)
+                    fr_tgt_mask = tgt_mask.index_select(0, fr_idx)
+                    fr_labels = labels.index_select(0, fr_idx)
+                fr_tgt_steps = int(fr_tgt_tok.shape[1])
+
                 if model.num_hypotheses > 1:
-                    outm_fr = model.forward_free_running_multi(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
+                    outm_fr = model.forward_free_running_multi(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
                     with torch.no_grad():
                         winner_fr = select_winner_idx_from_out_multi(
                             outm_fr,
-                            tgt_tok,
-                            tgt_mask,
-                            labels,
-                            const_hlt,
-                            mask_hlt,
+                            fr_tgt_tok,
+                            fr_tgt_mask,
+                            fr_labels,
+                            fr_const_hlt,
+                            fr_mask_hlt,
                             teacher,
                             feat_means_t,
                             feat_stds_t,
@@ -2007,10 +2025,10 @@ def train_reconstructor_seq2seq(
                         "attn": gather_hypothesis(outm_fr["attn"], winner_fr),
                         "gate": gather_hypothesis(outm_fr["gate"], winner_fr),
                     }
-                    fr_losses = compute_reco_losses(out_sel_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+                    fr_losses = compute_reco_losses(out_sel_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
                 else:
-                    out_fr = model.forward_free_running(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
-                    fr_losses = compute_reco_losses(out_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+                    out_fr = model.forward_free_running(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
+                    fr_losses = compute_reco_losses(out_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
 
                 losses["total"] = (1.0 - float(fr_mix_alpha)) * tf_total + float(fr_mix_alpha) * fr_losses["total"]
                 losses["fr_total"] = fr_losses["total"].detach()
@@ -2815,6 +2833,7 @@ def main() -> None:
     parser.add_argument("--phase2_free_run_every_n", type=int, default=LOSS_CFG["phase2_free_run_every_n"])
     parser.add_argument("--phase3_free_run_every_n", type=int, default=LOSS_CFG["phase3_free_run_every_n"])
     parser.add_argument("--phase4_free_run_every_n", type=int, default=LOSS_CFG["phase4_free_run_every_n"])
+    parser.add_argument("--fr_train_subbatch", type=int, default=LOSS_CFG["fr_train_subbatch"])
     parser.add_argument("--phase_lr_decay", type=float, default=LOSS_CFG["phase_lr_decay"])
     parser.add_argument("--no_phase_rewind", action="store_true")
     parser.add_argument("--no_phase_reset_optimizer", action="store_true")
@@ -2924,6 +2943,7 @@ def main() -> None:
         "phase2_free_run_every_n": int(args.phase2_free_run_every_n),
         "phase3_free_run_every_n": int(args.phase3_free_run_every_n),
         "phase4_free_run_every_n": int(args.phase4_free_run_every_n),
+        "fr_train_subbatch": int(args.fr_train_subbatch),
         "phase_rewind": not bool(args.no_phase_rewind),
         "phase_reset_optimizer": not bool(args.no_phase_reset_optimizer),
         "phase_lr_decay": float(args.phase_lr_decay),

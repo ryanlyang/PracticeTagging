@@ -35,6 +35,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export PYTHONHASHSEED="${SEED}"
+export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True"
 
 CMD=(
   python offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py
@@ -95,6 +96,7 @@ CMD=(
   --phase2_free_run_every_n 2
   --phase3_free_run_every_n 1
   --phase4_free_run_every_n 1
+  --fr_train_subbatch 16
   --phase_lr_decay 0.80
   --response_n_bins 20
   --response_min_count 200
