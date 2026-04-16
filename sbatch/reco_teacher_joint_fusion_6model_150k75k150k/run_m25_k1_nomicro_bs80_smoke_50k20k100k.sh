@@ -89,7 +89,6 @@ CMD=(
   --phase2_free_run_every_n 2
   --phase3_free_run_every_n 1
   --phase4_free_run_every_n 1
-  --fr_train_subbatch 0
   --phase_lr_decay 0.80
   --save_fusion_scores
   --device "${DEVICE}"

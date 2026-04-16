@@ -2,7 +2,7 @@
 #SBATCH --job-name=m25k1
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
-#SBATCH --mem=40G
+#SBATCH --mem=64G
 #SBATCH --time=20:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m25_k1_50k20k100k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m25_k1_50k20k100k_%j.err
@@ -17,10 +17,10 @@ SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-170000}"
-N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-50000}"
-N_VAL_SPLIT="${N_VAL_SPLIT:-20000}"
-N_TEST_SPLIT="${N_TEST_SPLIT:-100000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-17000}"
+N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-5000}"
+N_VAL_SPLIT="${N_VAL_SPLIT:-2000}"
+N_TEST_SPLIT="${N_TEST_SPLIT:-10000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
@@ -89,7 +89,6 @@ CMD=(
   --phase2_free_run_every_n 2
   --phase3_free_run_every_n 1
   --phase4_free_run_every_n 1
-  --fr_train_subbatch 4
   --phase_lr_decay 0.80
   --save_fusion_scores
   --device "${DEVICE}"

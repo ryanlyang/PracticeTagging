@@ -35,7 +35,6 @@ import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
-from torch.utils.checkpoint import checkpoint
 try:
     from scipy.optimize import linear_sum_assignment  # type: ignore
     _HAS_SCIPY_HUNGARIAN = True
@@ -173,7 +172,6 @@ LOSS_CFG = {
     "phase2_free_run_every_n": 2,
     "phase3_free_run_every_n": 1,
     "phase4_free_run_every_n": 1,
-    "fr_train_subbatch": 8,
     "phase_rewind": True,
     "phase_reset_optimizer": True,
     "phase_lr_decay": 0.80,
@@ -951,6 +949,66 @@ class HLT2OfflineSeq2Seq(nn.Module):
             "gate": torch.stack(gates, dim=1),               # [B,K,T]
         }
 
+    def _decoder_step_cached(
+        self,
+        x_step: torch.Tensor,
+        mem: torch.Tensor,
+        mem_pad: torch.Tensor,
+        layer_cache: List[Optional[torch.Tensor]],
+    ) -> Tuple[torch.Tensor, List[torch.Tensor]]:
+        """
+        Incremental decoder step with per-layer self-attention KV cache.
+        x_step: [B,1,D] token embedding at current decode position.
+        """
+        x = x_step
+        new_cache: List[torch.Tensor] = []
+
+        for li, layer in enumerate(self.decoder.layers):
+            if not bool(getattr(layer, "norm_first", False)):
+                raise RuntimeError("Incremental cached decoding requires norm_first=True decoder layers.")
+
+            # Self-attention block (norm-first): q/k/v all from norm1(x).
+            x_norm = layer.norm1(x)
+            k_prev = layer_cache[li]
+            if k_prev is None:
+                kv = x_norm
+            else:
+                kv = torch.cat([k_prev, x_norm], dim=1)
+            sa_out = layer.self_attn(
+                x_norm,
+                kv,
+                kv,
+                attn_mask=None,
+                key_padding_mask=None,
+                need_weights=False,
+                is_causal=False,
+            )[0]
+            x = x + layer.dropout1(sa_out)
+
+            # Cross-attention block.
+            x_norm2 = layer.norm2(x)
+            ca_out = layer.multihead_attn(
+                x_norm2,
+                mem,
+                mem,
+                attn_mask=None,
+                key_padding_mask=mem_pad,
+                need_weights=False,
+                is_causal=False,
+            )[0]
+            x = x + layer.dropout2(ca_out)
+
+            # FFN block.
+            x_norm3 = layer.norm3(x)
+            ff = layer.linear2(layer.dropout(layer.activation(layer.linear1(x_norm3))))
+            x = x + layer.dropout3(ff)
+
+            new_cache.append(kv)
+
+        if self.decoder.norm is not None:
+            x = self.decoder.norm(x)
+        return x, new_cache
+
     def forward_free_running(
         self,
         feat_hlt: torch.Tensor,
@@ -960,7 +1018,11 @@ class HLT2OfflineSeq2Seq(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         B = feat_hlt.shape[0]
         mem, hlt_tok, count_pred = self.encode(feat_hlt, mask_hlt, const_hlt)
-        prev_tok = self.bos_token.expand(B, 1, self.token_dim)
+        mem_pad = ~mask_hlt
+
+        in_tok = self.bos_token.expand(B, 1, self.token_dim)
+        n_layers = len(self.decoder.layers)
+        layer_cache: List[Optional[torch.Tensor]] = [None] * n_layers
 
         pred_seq: List[torch.Tensor] = []
         stop_seq: List[torch.Tensor] = []
@@ -968,30 +1030,16 @@ class HLT2OfflineSeq2Seq(nn.Module):
         attn_seq: List[torch.Tensor] = []
         gate_seq: List[torch.Tensor] = []
 
-        for _t in range(int(max_steps)):
-            d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
-            tgt_mask = self._causal_mask(prev_tok.shape[1], d_in.device)
-            mem_pad = ~mask_hlt
-            if self.training and torch.is_grad_enabled():
-                # Free-running training can create large graphs; checkpoint decoder activations.
-                def _dec(di: torch.Tensor, me: torch.Tensor, tm: torch.Tensor, mp: torch.Tensor) -> torch.Tensor:
-                    return self.decoder(di, me, tgt_mask=tm, memory_key_padding_mask=mp)
-                h = checkpoint(_dec, d_in, mem, tgt_mask, mem_pad, use_reentrant=False)
-            else:
-                h = self.decoder(
-                    d_in,
-                    mem,
-                    tgt_mask=tgt_mask,
-                    memory_key_padding_mask=mem_pad,
-                )
-            h_last = h[:, -1:, :]
+        for t in range(int(max_steps)):
+            x_step = self.dec_in(in_tok) + self.dec_pos[:, t : t + 1, :]
+            h_last, layer_cache = self._decoder_step_cached(x_step, mem, mem_pad, layer_cache)
             pred_tok, stop_logits, conf_logits, attn, gate = self._predict_from_hidden(h_last, mem, mask_hlt, hlt_tok)
             pred_seq.append(pred_tok[:, 0, :])
             stop_seq.append(stop_logits[:, 0])
             conf_seq.append(conf_logits[:, 0])
             attn_seq.append(attn[:, 0, :])
             gate_seq.append(gate[:, 0])
-            prev_tok = torch.cat([prev_tok, pred_tok], dim=1)
+            in_tok = pred_tok
 
         return {
             "pred_tok": torch.stack(pred_seq, dim=1),          # [B,T,D]
@@ -1011,6 +1059,7 @@ class HLT2OfflineSeq2Seq(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         B = feat_hlt.shape[0]
         mem, hlt_tok, count_pred = self.encode(feat_hlt, mask_hlt, const_hlt)
+        mem_pad = ~mask_hlt
 
         all_pred: List[torch.Tensor] = []
         all_stop: List[torch.Tensor] = []
@@ -1018,28 +1067,17 @@ class HLT2OfflineSeq2Seq(nn.Module):
         all_attn: List[torch.Tensor] = []
         all_gate: List[torch.Tensor] = []
         for k in range(self.num_hypotheses):
-            prev_tok = self.bos_token.expand(B, 1, self.token_dim)
+            in_tok = self.bos_token.expand(B, 1, self.token_dim)
+            n_layers = len(self.decoder.layers)
+            layer_cache: List[Optional[torch.Tensor]] = [None] * n_layers
             pred_seq: List[torch.Tensor] = []
             stop_seq: List[torch.Tensor] = []
             conf_seq: List[torch.Tensor] = []
             attn_seq: List[torch.Tensor] = []
             gate_seq: List[torch.Tensor] = []
-            for _t in range(int(max_steps)):
-                d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
-                tgt_mask = self._causal_mask(prev_tok.shape[1], d_in.device)
-                mem_pad = ~mask_hlt
-                if self.training and torch.is_grad_enabled():
-                    def _dec(di: torch.Tensor, me: torch.Tensor, tm: torch.Tensor, mp: torch.Tensor) -> torch.Tensor:
-                        return self.decoder(di, me, tgt_mask=tm, memory_key_padding_mask=mp)
-                    h = checkpoint(_dec, d_in, mem, tgt_mask, mem_pad, use_reentrant=False)
-                else:
-                    h = self.decoder(
-                        d_in,
-                        mem,
-                        tgt_mask=tgt_mask,
-                        memory_key_padding_mask=mem_pad,
-                    )
-                h_last = h[:, -1:, :]
+            for t in range(int(max_steps)):
+                x_step = self.dec_in(in_tok) + self.dec_pos[:, t : t + 1, :]
+                h_last, layer_cache = self._decoder_step_cached(x_step, mem, mem_pad, layer_cache)
                 pred_tok, stop_logits, conf_logits, attn, gate = self._predict_from_hidden(
                     h_last, mem, mask_hlt, hlt_tok, hyp_idx=k
                 )
@@ -1048,7 +1086,7 @@ class HLT2OfflineSeq2Seq(nn.Module):
                 conf_seq.append(conf_logits[:, 0])
                 attn_seq.append(attn[:, 0, :])
                 gate_seq.append(gate[:, 0])
-                prev_tok = torch.cat([prev_tok, pred_tok], dim=1)
+                in_tok = pred_tok
             all_pred.append(torch.stack(pred_seq, dim=1))
             all_stop.append(torch.stack(stop_seq, dim=1))
             all_conf.append(torch.stack(conf_seq, dim=1))
@@ -1074,26 +1112,23 @@ class HLT2OfflineSeq2Seq(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         B = feat_hlt.shape[0]
         mem, hlt_tok, count_pred = self.encode(feat_hlt, mask_hlt, const_hlt)
+        mem_pad = ~mask_hlt
 
-        prev_tok = self.bos_token.expand(B, 1, self.token_dim)
+        in_tok = self.bos_token.expand(B, 1, self.token_dim)
+        n_layers = len(self.decoder.layers)
+        layer_cache: List[Optional[torch.Tensor]] = [None] * n_layers
         pred_seq = []
         stop_seq = []
         conf_seq = []
 
         for t in range(int(max_steps)):
-            d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
-            h = self.decoder(
-                d_in,
-                mem,
-                tgt_mask=self._causal_mask(prev_tok.shape[1], d_in.device),
-                memory_key_padding_mask=~mask_hlt,
-            )
-            h_last = h[:, -1:, :]
+            x_step = self.dec_in(in_tok) + self.dec_pos[:, t : t + 1, :]
+            h_last, layer_cache = self._decoder_step_cached(x_step, mem, mem_pad, layer_cache)
             pred_tok, stop_logits, conf_logits, _attn, _gate = self._predict_from_hidden(h_last, mem, mask_hlt, hlt_tok)
             pred_seq.append(pred_tok[:, 0, :])
             stop_seq.append(stop_logits[:, 0])
             conf_seq.append(conf_logits[:, 0])
-            prev_tok = torch.cat([prev_tok, pred_tok], dim=1)
+            in_tok = pred_tok
 
         pred_tok_full = torch.stack(pred_seq, dim=1)
         stop_logits_full = torch.stack(stop_seq, dim=1)
@@ -1117,31 +1152,28 @@ class HLT2OfflineSeq2Seq(nn.Module):
     ) -> Dict[str, torch.Tensor]:
         B = feat_hlt.shape[0]
         mem, hlt_tok, count_pred = self.encode(feat_hlt, mask_hlt, const_hlt)
+        mem_pad = ~mask_hlt
 
         all_pred: List[torch.Tensor] = []
         all_stop: List[torch.Tensor] = []
         all_conf: List[torch.Tensor] = []
         for k in range(self.num_hypotheses):
-            prev_tok = self.bos_token.expand(B, 1, self.token_dim)
+            in_tok = self.bos_token.expand(B, 1, self.token_dim)
+            n_layers = len(self.decoder.layers)
+            layer_cache: List[Optional[torch.Tensor]] = [None] * n_layers
             pred_seq = []
             stop_seq = []
             conf_seq = []
-            for _t in range(int(max_steps)):
-                d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
-                h = self.decoder(
-                    d_in,
-                    mem,
-                    tgt_mask=self._causal_mask(prev_tok.shape[1], d_in.device),
-                    memory_key_padding_mask=~mask_hlt,
-                )
-                h_last = h[:, -1:, :]
+            for t in range(int(max_steps)):
+                x_step = self.dec_in(in_tok) + self.dec_pos[:, t : t + 1, :]
+                h_last, layer_cache = self._decoder_step_cached(x_step, mem, mem_pad, layer_cache)
                 pred_tok, stop_logits, conf_logits, _attn, _gate = self._predict_from_hidden(
                     h_last, mem, mask_hlt, hlt_tok, hyp_idx=k
                 )
                 pred_seq.append(pred_tok[:, 0, :])
                 stop_seq.append(stop_logits[:, 0])
                 conf_seq.append(conf_logits[:, 0])
-                prev_tok = torch.cat([prev_tok, pred_tok], dim=1)
+                in_tok = pred_tok
             pred_tok_full = torch.stack(pred_seq, dim=1)
             stop_probs = torch.sigmoid(torch.stack(stop_seq, dim=1))
             conf_probs = torch.sigmoid(torch.stack(conf_seq, dim=1))
@@ -1908,7 +1940,6 @@ def train_reconstructor_seq2seq(
     phase_reset_optimizer = bool(loss_cfg.get("phase_reset_optimizer", True))
     phase_lr_decay = float(loss_cfg.get("phase_lr_decay", 0.80))
     phase_noimprove_final_only = bool(loss_cfg.get("phase_noimprove_final_only", True))
-    fr_train_subbatch = int(max(loss_cfg.get("fr_train_subbatch", 0), 0))
     current_phase_idx = -1
     current_phase_name = "init"
     phase_best_state = None
@@ -2061,72 +2092,41 @@ def train_reconstructor_seq2seq(
 
             opt.zero_grad(set_to_none=True)
             if apply_fr:
-                # Always include all samples for FR supervision via micro-chunks.
                 tf_scaled = (1.0 - float(fr_mix_alpha)) * tf_total
                 tf_scaled.backward()
 
-                fr_chunk = bsz if fr_train_subbatch <= 0 else min(int(fr_train_subbatch), bsz)
-                fr_ok = True
-                idx_all = torch.randperm(bsz, device=device)
-                for st in range(0, bsz, fr_chunk):
-                    ed = min(st + fr_chunk, bsz)
-                    fr_idx = idx_all[st:ed]
-                    fr_feat_hlt = feat_hlt.index_select(0, fr_idx)
-                    fr_mask_hlt = mask_hlt.index_select(0, fr_idx)
-                    fr_const_hlt = const_hlt.index_select(0, fr_idx)
-                    fr_tgt_tok = tgt_tok.index_select(0, fr_idx)
-                    fr_tgt_mask = tgt_mask.index_select(0, fr_idx)
-                    fr_labels = labels.index_select(0, fr_idx)
-                    fr_tgt_steps = int(fr_tgt_tok.shape[1])
-                    w_chunk = float(ed - st) / float(max(bsz, 1))
-
-                    try:
-                        if model.num_hypotheses > 1:
-                            outm_fr = model.forward_free_running_multi(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
-                            with torch.no_grad():
-                                winner_fr = select_winner_idx_from_out_multi(
-                                    outm_fr,
-                                    fr_tgt_tok,
-                                    fr_tgt_mask,
-                                    fr_labels,
-                                    fr_const_hlt,
-                                    fr_mask_hlt,
-                                    teacher,
-                                    feat_means_t,
-                                    feat_stds_t,
-                                    loss_cfg,
-                                )
-                            out_sel_fr = {
-                                "pred_tok": gather_hypothesis(outm_fr["pred_tok"], winner_fr),
-                                "stop_logits": gather_hypothesis(outm_fr["stop_logits"], winner_fr),
-                                "conf_logits": gather_hypothesis(outm_fr["conf_logits"], winner_fr),
-                                "count_pred": outm_fr["count_pred"],
-                                "attn": gather_hypothesis(outm_fr["attn"], winner_fr),
-                                "gate": gather_hypothesis(outm_fr["gate"], winner_fr),
-                            }
-                            fr_losses = compute_reco_losses(out_sel_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
-                        else:
-                            out_fr = model.forward_free_running(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
-                            fr_losses = compute_reco_losses(out_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
-
-                        (float(fr_mix_alpha) * w_chunk * fr_losses["total"]).backward()
-                        fr_total_det += float(fr_losses["total"].detach().item()) * w_chunk
-                    except RuntimeError as e:
-                        if "out of memory" not in str(e).lower():
-                            raise
-                        fr_ok = False
-                        if torch.cuda.is_available():
-                            torch.cuda.empty_cache()
-                        print(
-                            f"[FR-OOM] epoch={ep+1} batch={batch_i+1}: FR chunk OOM at size={ed-st}; "
-                            f"continuing this batch with accumulated grads"
+                fr_tgt_steps = int(max(tgt_mask.float().sum(dim=1).max().item(), 1))
+                if model.num_hypotheses > 1:
+                    outm_fr = model.forward_free_running_multi(feat_hlt, mask_hlt, const_hlt, max_steps=fr_tgt_steps)
+                    with torch.no_grad():
+                        winner_fr = select_winner_idx_from_out_multi(
+                            outm_fr,
+                            tgt_tok,
+                            tgt_mask,
+                            labels,
+                            const_hlt,
+                            mask_hlt,
+                            teacher,
+                            feat_means_t,
+                            feat_stds_t,
+                            loss_cfg,
                         )
-                        break
+                    out_sel_fr = {
+                        "pred_tok": gather_hypothesis(outm_fr["pred_tok"], winner_fr),
+                        "stop_logits": gather_hypothesis(outm_fr["stop_logits"], winner_fr),
+                        "conf_logits": gather_hypothesis(outm_fr["conf_logits"], winner_fr),
+                        "count_pred": outm_fr["count_pred"],
+                        "attn": gather_hypothesis(outm_fr["attn"], winner_fr),
+                        "gate": gather_hypothesis(outm_fr["gate"], winner_fr),
+                    }
+                    fr_losses = compute_reco_losses(out_sel_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
+                else:
+                    out_fr = model.forward_free_running(feat_hlt, mask_hlt, const_hlt, max_steps=fr_tgt_steps)
+                    fr_losses = compute_reco_losses(out_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
 
+                (float(fr_mix_alpha) * fr_losses["total"]).backward()
+                fr_total_det = float(fr_losses["total"].detach().item())
                 total_det = (1.0 - float(fr_mix_alpha)) * float(tf_total.detach().item()) + float(fr_mix_alpha) * fr_total_det
-                if not fr_ok:
-                    # We already kept tf contribution; fr_total_det may be partial.
-                    pass
                 losses["total"] = torch.tensor(total_det, device=device, dtype=tf_total.dtype)
                 losses["fr_total"] = torch.tensor(fr_total_det, device=device, dtype=tf_total.dtype)
             else:
@@ -2264,8 +2264,9 @@ def train_reconstructor_seq2seq(
                 va_best += float(losses.get("best_set", losses["set"]).detach().item()) * bsz
                 va_div += float(losses.get("diversity", torch.zeros((), device=device)).detach().item()) * bsz
 
+                fr_steps = int(max(tgt_mask.float().sum(dim=1).max().item(), 1))
                 if model.num_hypotheses > 1:
-                    outm_fr = model.forward_free_running_multi(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
+                    outm_fr = model.forward_free_running_multi(feat_hlt, mask_hlt, const_hlt, max_steps=fr_steps)
                     winner_fr = select_winner_idx_from_out_multi(
                         outm_fr,
                         tgt_tok,
@@ -2288,7 +2289,7 @@ def train_reconstructor_seq2seq(
                     }
                     fr_losses = compute_reco_losses(out_sel_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
                 else:
-                    out_fr = model.forward_free_running(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
+                    out_fr = model.forward_free_running(feat_hlt, mask_hlt, const_hlt, max_steps=fr_steps)
                     fr_losses = compute_reco_losses(out_fr, tgt_tok, tgt_mask, loss_cfg, physics_scale=physics_scale)
 
                 va_fr_tot += float(fr_losses["total"].detach().item()) * bsz
@@ -2930,7 +2931,6 @@ def main() -> None:
     parser.add_argument("--phase2_free_run_every_n", type=int, default=LOSS_CFG["phase2_free_run_every_n"])
     parser.add_argument("--phase3_free_run_every_n", type=int, default=LOSS_CFG["phase3_free_run_every_n"])
     parser.add_argument("--phase4_free_run_every_n", type=int, default=LOSS_CFG["phase4_free_run_every_n"])
-    parser.add_argument("--fr_train_subbatch", type=int, default=LOSS_CFG["fr_train_subbatch"])
     parser.add_argument("--phase_lr_decay", type=float, default=LOSS_CFG["phase_lr_decay"])
     parser.add_argument("--no_phase_rewind", action="store_true")
     parser.add_argument("--no_phase_reset_optimizer", action="store_true")
@@ -3041,7 +3041,6 @@ def main() -> None:
         "phase2_free_run_every_n": int(args.phase2_free_run_every_n),
         "phase3_free_run_every_n": int(args.phase3_free_run_every_n),
         "phase4_free_run_every_n": int(args.phase4_free_run_every_n),
-        "fr_train_subbatch": int(args.fr_train_subbatch),
         "phase_rewind": not bool(args.no_phase_rewind),
         "phase_reset_optimizer": not bool(args.no_phase_reset_optimizer),
         "phase_lr_decay": float(args.phase_lr_decay),
