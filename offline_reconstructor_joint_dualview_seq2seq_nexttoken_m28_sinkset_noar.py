@@ -133,7 +133,7 @@ LOSS_CFG = {
     "w_jetpt": 0.08,
     "w_jete": 0.0,
     "w_4vec": 0.03,
-    "set_loss_mode": "sinkhorn",
+    "set_loss_mode": "hungarian",
     "hungarian_shortlist_k": 2,
     "set_unmatched_penalty": 0.35,
     "sinkhorn_tau": 0.08,
@@ -1919,19 +1919,40 @@ def compute_reco_losses(
     loss_eos = F.binary_cross_entropy_with_logits(stop_logits, stop_target)
 
     pred_mask_for_set = steps < tgt_count.long().unsqueeze(1)
-    set_mode = str(loss_cfg.get("set_loss_mode", "sinkhorn")).strip().lower()
-    if set_mode != "sinkhorn":
-        raise ValueError("m28 expects --set_loss_mode sinkhorn (set-level Hungarian is disabled in this fork).")
-
-    ar_tgt_tok, ar_tgt_mask, match_cost, loss_set = sinkhorn_align_targets_and_set(
-        pred_tok,
-        tgt_tok,
-        pred_mask_for_set,
-        tgt_mask,
-        tau=float(loss_cfg.get("sinkhorn_tau", 0.08)),
-        n_iters=int(loss_cfg.get("sinkhorn_iters", 20)),
-        unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
-    )
+    set_mode = str(loss_cfg.get("set_loss_mode", "hungarian")).strip().lower()
+    if set_mode == "sinkhorn":
+        ar_tgt_tok, ar_tgt_mask, match_cost, loss_set = sinkhorn_align_targets_and_set(
+            pred_tok,
+            tgt_tok,
+            pred_mask_for_set,
+            tgt_mask,
+            tau=float(loss_cfg.get("sinkhorn_tau", 0.08)),
+            n_iters=int(loss_cfg.get("sinkhorn_iters", 20)),
+            unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
+        )
+    elif set_mode == "hungarian":
+        loss_set = hungarian_token_loss(
+            pred_tok,
+            tgt_tok,
+            pred_mask_for_set,
+            tgt_mask,
+            unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
+        )
+        ar_tgt_tok, ar_tgt_mask, match_cost = hungarian_align_targets(
+            pred_tok,
+            tgt_tok,
+            pred_mask_for_set,
+            tgt_mask,
+            unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
+        )
+    elif set_mode == "chamfer":
+        loss_set = chamfer_token_loss(pred_tok, tgt_tok, pred_mask_for_set, tgt_mask)
+        ar_tgt_tok = tgt_tok
+        ar_tgt_mask = tgt_mask
+        w = TOKEN_DIM_WEIGHTS.to(device).view(1, 1, -1)
+        match_cost = ((pred_tok - ar_tgt_tok).abs() * w).sum(dim=-1)
+    else:
+        raise ValueError(f"Unsupported set_loss_mode='{set_mode}'. Use 'chamfer', 'hungarian', or 'sinkhorn'.")
 
     # m28: disable AR regression loss computation entirely (no AR Hungarian path either).
     loss_ar = torch.zeros((), device=device, dtype=pred_tok.dtype)
@@ -3089,7 +3110,7 @@ def main() -> None:
     device = torch.device(args.device)
     print(f"Device: {device}")
     print(f"Save dir: {save_root}")
-    print("m28 mode: set-level Sinkhorn, AR regression disabled, strict-TF pre-alignment still Hungarian")
+    print("m28 mode: set-level Hungarian (default), AR regression disabled, strict-TF pre-alignment still Hungarian")
 
     # Build local configs.
     hlt_cfg = _deepcopy_cfg()
