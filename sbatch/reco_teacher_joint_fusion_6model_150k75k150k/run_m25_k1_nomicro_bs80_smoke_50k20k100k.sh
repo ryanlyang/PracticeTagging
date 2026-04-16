@@ -50,7 +50,7 @@ CMD=(
   --num_workers "${NUM_WORKERS}"
   --seed "${SEED}"
   --reco_epochs 60
-  --reco_batch_size 80
+  --reco_batch_size 64
   --reco_lr 1.8e-4
   --reco_patience 30
   --reco_min_epochs 45
