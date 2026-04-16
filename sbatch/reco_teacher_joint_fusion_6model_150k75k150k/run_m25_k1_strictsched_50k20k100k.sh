@@ -2,8 +2,8 @@
 #SBATCH --job-name=m25k1
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
-#SBATCH --mem=64G
-#SBATCH --time=1-00:00:00
+#SBATCH --mem=40G
+#SBATCH --time=20:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m25_k1_50k20k100k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m25_k1_50k20k100k_%j.err
 
@@ -17,10 +17,10 @@ SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-270000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-170000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-50000}"
 N_VAL_SPLIT="${N_VAL_SPLIT:-20000}"
-N_TEST_SPLIT="${N_TEST_SPLIT:-200000}"
+N_TEST_SPLIT="${N_TEST_SPLIT:-100000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
@@ -61,6 +61,7 @@ CMD=(
   --num_hypotheses 1
   --joint_epochs 0
   --set_loss_mode hungarian
+  --hungarian_shortlist_k 2
   --ar_use_hungarian_target
   --loss_w_ar 1.0
   --loss_w_set 1.0

@@ -66,6 +66,7 @@ CMD=(
   --selector_rank_weight 0.20
   --selector_rank_margin 0.25
   --set_loss_mode hungarian
+  --hungarian_shortlist_k 2
   --ar_use_hungarian_target
   --loss_w_ar 1.0
   --loss_w_set 1.0

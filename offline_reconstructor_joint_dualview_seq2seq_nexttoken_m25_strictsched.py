@@ -135,6 +135,7 @@ LOSS_CFG = {
     "w_jete": 0.0,
     "w_4vec": 0.03,
     "set_loss_mode": "hungarian",
+    "hungarian_shortlist_k": 2,
     "set_unmatched_penalty": 0.35,
     "huber_delta": 0.12,
     "ar_use_hungarian_target": True,
@@ -1195,10 +1196,22 @@ def chamfer_token_loss_vec(
     pred_mask: torch.Tensor,
     tgt_mask: torch.Tensor,
 ) -> torch.Tensor:
-    vals = []
-    for bi in range(int(pred_tok.shape[0])):
-        vals.append(chamfer_token_loss(pred_tok[bi:bi+1], tgt_tok[bi:bi+1], pred_mask[bi:bi+1], tgt_mask[bi:bi+1]))
-    return torch.stack(vals, dim=0)
+    # Vectorized per-sample Chamfer (returns [B]).
+    w = TOKEN_DIM_WEIGHTS.to(pred_tok.device).view(1, 1, -1)
+    p = pred_tok * w
+    t = tgt_tok * w
+    cost = torch.cdist(p, t, p=1)  # [B,T,T]
+    big = torch.full_like(cost, 1e4)
+
+    cost_p = torch.where(tgt_mask.unsqueeze(1), cost, big)
+    p2t = cost_p.min(dim=2).values
+    p2t = (p2t * pred_mask.float()).sum(dim=1) / (pred_mask.float().sum(dim=1) + 1e-6)
+
+    cost_t = torch.where(pred_mask.unsqueeze(2), cost, big)
+    t2p = cost_t.min(dim=1).values
+    t2p = (t2p * tgt_mask.float()).sum(dim=1) / (tgt_mask.float().sum(dim=1) + 1e-6)
+
+    return p2t + t2p
 
 
 def hungarian_token_loss_vec(
@@ -1455,6 +1468,64 @@ def build_decoder_input_tokens(
     return torch.cat([bos, prev], dim=1)
 
 
+def compute_multihyp_set_matrix(
+    pred_tok_bktd: torch.Tensor,
+    tgt_tok: torch.Tensor,
+    pred_mask_bt: torch.Tensor,
+    tgt_mask: torch.Tensor,
+    *,
+    set_mode: str,
+    unmatched_penalty: float,
+    hungarian_shortlist_k: int,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    """Compute [B,K] set costs with optional Chamfer shortlist before Hungarian."""
+    bsz, k, _t, _d = pred_tok_bktd.shape
+    dev = pred_tok_bktd.device
+    dtype = pred_tok_bktd.dtype
+
+    set_mode = str(set_mode).strip().lower()
+    if set_mode == "chamfer":
+        set_vecs = [
+            chamfer_token_loss_vec(pred_tok_bktd[:, hk, :, :], tgt_tok, pred_mask_bt, tgt_mask)
+            for hk in range(k)
+        ]
+        set_mat = torch.stack(set_vecs, dim=1)
+        shortlist_idx = torch.arange(k, device=dev, dtype=torch.long).unsqueeze(0).expand(bsz, k)
+        return set_mat, shortlist_idx
+
+    if set_mode != "hungarian":
+        raise ValueError(f"Unsupported set_mode='{set_mode}' in compute_multihyp_set_matrix")
+
+    # First pass: cheap metric for shortlist.
+    chamfer_vecs = [
+        chamfer_token_loss_vec(pred_tok_bktd[:, hk, :, :], tgt_tok, pred_mask_bt, tgt_mask)
+        for hk in range(k)
+    ]
+    chamfer_mat = torch.stack(chamfer_vecs, dim=1)  # [B,K]
+
+    s = int(max(hungarian_shortlist_k, 0))
+    if s <= 0 or s >= k:
+        shortlist_idx = torch.arange(k, device=dev, dtype=torch.long).unsqueeze(0).expand(bsz, k)
+    else:
+        shortlist_idx = torch.topk(chamfer_mat, k=s, dim=1, largest=False).indices
+
+    set_mat = torch.full((bsz, k), float("inf"), device=dev, dtype=dtype)
+    batch_idx = torch.arange(bsz, device=dev, dtype=torch.long)
+    for si in range(int(shortlist_idx.shape[1])):
+        hyp_idx = shortlist_idx[:, si]
+        p_tok = pred_tok_bktd[batch_idx, hyp_idx, :, :]
+        s_vec = hungarian_token_loss_vec(
+            p_tok,
+            tgt_tok,
+            pred_mask_bt,
+            tgt_mask,
+            unmatched_penalty=float(unmatched_penalty),
+        )
+        set_mat[batch_idx, hyp_idx] = s_vec
+
+    return set_mat, shortlist_idx
+
+
 @torch.no_grad()
 def select_winner_idx_from_out_multi(
     out_multi: Dict[str, torch.Tensor],
@@ -1474,24 +1545,18 @@ def select_winner_idx_from_out_multi(
     tgt_count = tgt_mask.float().sum(dim=1)
     pred_mask_bt = steps < tgt_count.long().unsqueeze(1)
 
-    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
-    set_vecs = []
-    for hk in range(k):
-        p_tok = pred_tok_bktd[:, hk, :, :]
-        if set_mode == "hungarian":
-            s_vec = hungarian_token_loss_vec(
-                p_tok,
-                tgt_tok,
-                pred_mask_bt,
-                tgt_mask,
-                unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
-            )
-        else:
-            s_vec = chamfer_token_loss_vec(p_tok, tgt_tok, pred_mask_bt, tgt_mask)
-        set_vecs.append(s_vec)
-    set_mat = torch.stack(set_vecs, dim=1)  # [B,K]
+    mode = str(loss_cfg.get("winner_mode", "tag")).strip().lower()
+    set_mat, _shortlist_idx = compute_multihyp_set_matrix(
+        pred_tok_bktd,
+        tgt_tok,
+        pred_mask_bt,
+        tgt_mask,
+        set_mode=str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower(),
+        unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
+        hungarian_shortlist_k=int(loss_cfg.get("hungarian_shortlist_k", 0)),
+    )
 
-    if teacher is not None and feat_means_t is not None and feat_stds_t is not None:
+    if mode in ("tag", "hybrid") and teacher is not None and feat_means_t is not None and feat_stds_t is not None:
         _selector_feat, teacher_logits = build_selector_features_torch(
             pred_tok_bktd,
             pred_mask_bt,
@@ -1506,7 +1571,6 @@ def select_winner_idx_from_out_multi(
     else:
         tag_mat = set_mat
 
-    mode = str(loss_cfg.get("winner_mode", "tag")).strip().lower()
     if mode == "reco":
         winner_score = set_mat
     elif mode == "hybrid":
@@ -1594,28 +1658,20 @@ def compute_reco_losses_multihyp(
     steps = torch.arange(t, device=device).unsqueeze(0)
     pred_mask_bt = steps < tgt_count.long().unsqueeze(1)
 
-    set_mode = str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower()
-    set_vecs = []
-    tag_vecs = []
-    for hk in range(k):
-        p_tok = pred_tok_bktd[:, hk, :, :]
-        if set_mode == "hungarian":
-            s_vec = hungarian_token_loss_vec(
-                p_tok,
-                tgt_tok,
-                pred_mask_bt,
-                tgt_mask,
-                unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
-            )
-        else:
-            s_vec = chamfer_token_loss_vec(p_tok, tgt_tok, pred_mask_bt, tgt_mask)
-        set_vecs.append(s_vec)
-
-    set_mat = torch.stack(set_vecs, dim=1)  # [B,K]
+    mode = str(loss_cfg.get("winner_mode", "tag")).strip().lower()
+    set_mat, shortlist_idx = compute_multihyp_set_matrix(
+        pred_tok_bktd,
+        tgt_tok,
+        pred_mask_bt,
+        tgt_mask,
+        set_mode=str(loss_cfg.get("set_loss_mode", "chamfer")).strip().lower(),
+        unmatched_penalty=float(loss_cfg.get("set_unmatched_penalty", 0.35)),
+        hungarian_shortlist_k=int(loss_cfg.get("hungarian_shortlist_k", 0)),
+    )
 
     selector_feat = None
     teacher_logits = None
-    if teacher is not None and feat_means_t is not None and feat_stds_t is not None:
+    if mode in ("tag", "hybrid") and teacher is not None and feat_means_t is not None and feat_stds_t is not None:
         selector_feat, teacher_logits = build_selector_features_torch(
             pred_tok_bktd, pred_mask_bt, hlt_const, hlt_mask, teacher, feat_means_t, feat_stds_t
         )
@@ -1624,7 +1680,6 @@ def compute_reco_losses_multihyp(
     else:
         tag_mat = set_mat.detach()
 
-    mode = str(loss_cfg.get("winner_mode", "tag")).strip().lower()
     if mode == "reco":
         winner_score = set_mat.detach()
     elif mode == "hybrid":
@@ -1673,6 +1728,7 @@ def compute_reco_losses_multihyp(
     out["winner_idx"] = winner_idx
     out["set_mat"] = set_mat
     out["tag_mat"] = tag_mat
+    out["shortlist_idx"] = shortlist_idx
     out["selector_feat"] = selector_feat
     return out
 
@@ -2851,6 +2907,7 @@ def main() -> None:
     parser.add_argument("--conf_prefix_tau", type=float, default=LOSS_CFG["prefix_tau"])
     parser.add_argument("--set_loss_mode", type=str, default=LOSS_CFG["set_loss_mode"], choices=["chamfer", "hungarian"])
     parser.add_argument("--set_unmatched_penalty", type=float, default=LOSS_CFG["set_unmatched_penalty"])
+    parser.add_argument("--hungarian_shortlist_k", type=int, default=LOSS_CFG["hungarian_shortlist_k"])
     parser.add_argument("--ar_use_hungarian_target", action="store_true")
     parser.add_argument("--no_ar_use_hungarian_target", action="store_true")
     parser.add_argument("--strict_tf_warmup_epochs", type=int, default=LOSS_CFG["strict_tf_warmup_epochs"])
@@ -2954,6 +3011,7 @@ def main() -> None:
         "prefix_tau": float(args.conf_prefix_tau),
         "set_loss_mode": str(args.set_loss_mode).strip().lower(),
         "set_unmatched_penalty": float(args.set_unmatched_penalty),
+        "hungarian_shortlist_k": int(args.hungarian_shortlist_k),
         "ar_use_hungarian_target": (
             False
             if bool(args.no_ar_use_hungarian_target)

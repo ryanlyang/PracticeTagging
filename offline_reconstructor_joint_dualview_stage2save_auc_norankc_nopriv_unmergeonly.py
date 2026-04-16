@@ -146,8 +146,9 @@ def load_raw_constituents_labels_weights_from_h5(
     use_train_weights: bool,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Load raw constituents + labels and (optionally) ATLAS training_weights from HDF5 files.
-    If training_weights are unavailable in a file, fall back to ones for that file.
+    Load raw constituents + labels and (optionally) per-jet training weights from HDF5 files.
+    Accepts either "training_weights" (legacy) or "weights" (ATLAS open-data files).
+    If neither key is available in a file, falls back to ones for that file.
     """
     const_list: List[np.ndarray] = []
     label_list: List[np.ndarray] = []
@@ -178,8 +179,11 @@ def load_raw_constituents_labels_weights_from_h5(
             if bool(use_train_weights):
                 if "training_weights" in f:
                     w = np.asarray(f["training_weights"][:take], dtype=np.float32)
+                elif "weights" in f:
+                    w = np.asarray(f["weights"][:take], dtype=np.float32)
+                    print(f"Info: using 'weights' from {fname} as training weights.")
                 else:
-                    print(f"Warning: missing 'training_weights' in {fname}; using ones.")
+                    print(f"Warning: missing 'training_weights'/'weights' in {fname}; using ones.")
                     w = np.ones((take,), dtype=np.float32)
             else:
                 w = np.ones((take,), dtype=np.float32)
