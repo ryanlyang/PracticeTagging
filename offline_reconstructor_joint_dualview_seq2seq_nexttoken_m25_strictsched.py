@@ -1773,14 +1773,26 @@ def compute_reco_losses(
     loss_cfg: Dict,
     physics_scale: float = 1.0,
 ) -> Dict[str, torch.Tensor]:
-    B, T, _ = tgt_tok.shape
-    device = tgt_tok.device
-
     pred_tok = out["pred_tok"]
     stop_logits = out["stop_logits"]
     conf_logits = out.get("conf_logits", torch.zeros_like(stop_logits))
     count_pred = out["count_pred"]
     attn = out["attn"]
+    device = pred_tok.device
+
+    # Dynamic free-run decoding may use fewer steps than padded target length.
+    # Align targets to prediction length for consistent loss shapes.
+    t_pred = int(pred_tok.shape[1])
+    t_tgt = int(tgt_tok.shape[1])
+    if t_tgt > t_pred:
+        tgt_tok = tgt_tok[:, :t_pred, :]
+        tgt_mask = tgt_mask[:, :t_pred]
+    elif t_tgt < t_pred:
+        pad = t_pred - t_tgt
+        tgt_tok = F.pad(tgt_tok, (0, 0, 0, pad, 0, 0), mode="constant", value=0.0)
+        tgt_mask = F.pad(tgt_mask, (0, pad), mode="constant", value=False)
+
+    B, T, _ = tgt_tok.shape
 
     tgt_count = tgt_mask.float().sum(dim=1)
 
