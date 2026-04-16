@@ -35,6 +35,7 @@ import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, Dataset
+from torch.utils.checkpoint import checkpoint
 try:
     from scipy.optimize import linear_sum_assignment  # type: ignore
     _HAS_SCIPY_HUNGARIAN = True
@@ -171,7 +172,7 @@ LOSS_CFG = {
     "phase2_free_run_every_n": 2,
     "phase3_free_run_every_n": 1,
     "phase4_free_run_every_n": 1,
-    "fr_train_subbatch": 32,
+    "fr_train_subbatch": 8,
     "phase_rewind": True,
     "phase_reset_optimizer": True,
     "phase_lr_decay": 0.80,
@@ -968,12 +969,20 @@ class HLT2OfflineSeq2Seq(nn.Module):
 
         for _t in range(int(max_steps)):
             d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
-            h = self.decoder(
-                d_in,
-                mem,
-                tgt_mask=self._causal_mask(prev_tok.shape[1], d_in.device),
-                memory_key_padding_mask=~mask_hlt,
-            )
+            tgt_mask = self._causal_mask(prev_tok.shape[1], d_in.device)
+            mem_pad = ~mask_hlt
+            if self.training and torch.is_grad_enabled():
+                # Free-running training can create large graphs; checkpoint decoder activations.
+                def _dec(di: torch.Tensor, me: torch.Tensor, tm: torch.Tensor, mp: torch.Tensor) -> torch.Tensor:
+                    return self.decoder(di, me, tgt_mask=tm, memory_key_padding_mask=mp)
+                h = checkpoint(_dec, d_in, mem, tgt_mask, mem_pad, use_reentrant=False)
+            else:
+                h = self.decoder(
+                    d_in,
+                    mem,
+                    tgt_mask=tgt_mask,
+                    memory_key_padding_mask=mem_pad,
+                )
             h_last = h[:, -1:, :]
             pred_tok, stop_logits, conf_logits, attn, gate = self._predict_from_hidden(h_last, mem, mask_hlt, hlt_tok)
             pred_seq.append(pred_tok[:, 0, :])
@@ -1016,12 +1025,19 @@ class HLT2OfflineSeq2Seq(nn.Module):
             gate_seq: List[torch.Tensor] = []
             for _t in range(int(max_steps)):
                 d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
-                h = self.decoder(
-                    d_in,
-                    mem,
-                    tgt_mask=self._causal_mask(prev_tok.shape[1], d_in.device),
-                    memory_key_padding_mask=~mask_hlt,
-                )
+                tgt_mask = self._causal_mask(prev_tok.shape[1], d_in.device)
+                mem_pad = ~mask_hlt
+                if self.training and torch.is_grad_enabled():
+                    def _dec(di: torch.Tensor, me: torch.Tensor, tm: torch.Tensor, mp: torch.Tensor) -> torch.Tensor:
+                        return self.decoder(di, me, tgt_mask=tm, memory_key_padding_mask=mp)
+                    h = checkpoint(_dec, d_in, mem, tgt_mask, mem_pad, use_reentrant=False)
+                else:
+                    h = self.decoder(
+                        d_in,
+                        mem,
+                        tgt_mask=tgt_mask,
+                        memory_key_padding_mask=mem_pad,
+                    )
                 h_last = h[:, -1:, :]
                 pred_tok, stop_logits, conf_logits, attn, gate = self._predict_from_hidden(
                     h_last, mem, mask_hlt, hlt_tok, hyp_idx=k
@@ -1985,59 +2001,83 @@ def train_reconstructor_seq2seq(
 
             tf_total = losses["total"]
             apply_fr = (fr_every_n > 0) and (fr_mix_alpha > 0.0) and ((batch_i + 1) % fr_every_n == 0)
+            fr_total_det = 0.0
+
+            opt.zero_grad(set_to_none=True)
             if apply_fr:
-                fr_feat_hlt = feat_hlt
-                fr_mask_hlt = mask_hlt
-                fr_const_hlt = const_hlt
-                fr_tgt_tok = tgt_tok
-                fr_tgt_mask = tgt_mask
-                fr_labels = labels
-                if fr_train_subbatch > 0 and fr_train_subbatch < bsz:
-                    fr_idx = torch.randperm(bsz, device=device)[:fr_train_subbatch]
+                # Always include all samples for FR supervision via micro-chunks.
+                tf_scaled = (1.0 - float(fr_mix_alpha)) * tf_total
+                tf_scaled.backward()
+
+                fr_chunk = bsz if fr_train_subbatch <= 0 else min(int(fr_train_subbatch), bsz)
+                fr_ok = True
+                idx_all = torch.randperm(bsz, device=device)
+                for st in range(0, bsz, fr_chunk):
+                    ed = min(st + fr_chunk, bsz)
+                    fr_idx = idx_all[st:ed]
                     fr_feat_hlt = feat_hlt.index_select(0, fr_idx)
                     fr_mask_hlt = mask_hlt.index_select(0, fr_idx)
                     fr_const_hlt = const_hlt.index_select(0, fr_idx)
                     fr_tgt_tok = tgt_tok.index_select(0, fr_idx)
                     fr_tgt_mask = tgt_mask.index_select(0, fr_idx)
                     fr_labels = labels.index_select(0, fr_idx)
-                fr_tgt_steps = int(fr_tgt_tok.shape[1])
+                    fr_tgt_steps = int(fr_tgt_tok.shape[1])
+                    w_chunk = float(ed - st) / float(max(bsz, 1))
 
-                if model.num_hypotheses > 1:
-                    outm_fr = model.forward_free_running_multi(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
-                    with torch.no_grad():
-                        winner_fr = select_winner_idx_from_out_multi(
-                            outm_fr,
-                            fr_tgt_tok,
-                            fr_tgt_mask,
-                            fr_labels,
-                            fr_const_hlt,
-                            fr_mask_hlt,
-                            teacher,
-                            feat_means_t,
-                            feat_stds_t,
-                            loss_cfg,
+                    try:
+                        if model.num_hypotheses > 1:
+                            outm_fr = model.forward_free_running_multi(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
+                            with torch.no_grad():
+                                winner_fr = select_winner_idx_from_out_multi(
+                                    outm_fr,
+                                    fr_tgt_tok,
+                                    fr_tgt_mask,
+                                    fr_labels,
+                                    fr_const_hlt,
+                                    fr_mask_hlt,
+                                    teacher,
+                                    feat_means_t,
+                                    feat_stds_t,
+                                    loss_cfg,
+                                )
+                            out_sel_fr = {
+                                "pred_tok": gather_hypothesis(outm_fr["pred_tok"], winner_fr),
+                                "stop_logits": gather_hypothesis(outm_fr["stop_logits"], winner_fr),
+                                "conf_logits": gather_hypothesis(outm_fr["conf_logits"], winner_fr),
+                                "count_pred": outm_fr["count_pred"],
+                                "attn": gather_hypothesis(outm_fr["attn"], winner_fr),
+                                "gate": gather_hypothesis(outm_fr["gate"], winner_fr),
+                            }
+                            fr_losses = compute_reco_losses(out_sel_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
+                        else:
+                            out_fr = model.forward_free_running(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
+                            fr_losses = compute_reco_losses(out_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
+
+                        (float(fr_mix_alpha) * w_chunk * fr_losses["total"]).backward()
+                        fr_total_det += float(fr_losses["total"].detach().item()) * w_chunk
+                    except RuntimeError as e:
+                        if "out of memory" not in str(e).lower():
+                            raise
+                        fr_ok = False
+                        if torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        print(
+                            f"[FR-OOM] epoch={ep+1} batch={batch_i+1}: FR chunk OOM at size={ed-st}; "
+                            f"continuing this batch with accumulated grads"
                         )
-                    out_sel_fr = {
-                        "pred_tok": gather_hypothesis(outm_fr["pred_tok"], winner_fr),
-                        "stop_logits": gather_hypothesis(outm_fr["stop_logits"], winner_fr),
-                        "conf_logits": gather_hypothesis(outm_fr["conf_logits"], winner_fr),
-                        "count_pred": outm_fr["count_pred"],
-                        "attn": gather_hypothesis(outm_fr["attn"], winner_fr),
-                        "gate": gather_hypothesis(outm_fr["gate"], winner_fr),
-                    }
-                    fr_losses = compute_reco_losses(out_sel_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
-                else:
-                    out_fr = model.forward_free_running(fr_feat_hlt, fr_mask_hlt, fr_const_hlt, max_steps=fr_tgt_steps)
-                    fr_losses = compute_reco_losses(out_fr, fr_tgt_tok, fr_tgt_mask, loss_cfg, physics_scale=physics_scale)
+                        break
 
-                losses["total"] = (1.0 - float(fr_mix_alpha)) * tf_total + float(fr_mix_alpha) * fr_losses["total"]
-                losses["fr_total"] = fr_losses["total"].detach()
+                total_det = (1.0 - float(fr_mix_alpha)) * float(tf_total.detach().item()) + float(fr_mix_alpha) * fr_total_det
+                if not fr_ok:
+                    # We already kept tf contribution; fr_total_det may be partial.
+                    pass
+                losses["total"] = torch.tensor(total_det, device=device, dtype=tf_total.dtype)
+                losses["fr_total"] = torch.tensor(fr_total_det, device=device, dtype=tf_total.dtype)
             else:
                 losses["total"] = tf_total
-                losses["fr_total"] = torch.zeros((), device=device, dtype=losses["total"].dtype)
+                losses["fr_total"] = torch.zeros((), device=device, dtype=tf_total.dtype)
+                losses["total"].backward()
 
-            opt.zero_grad(set_to_none=True)
-            losses["total"].backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             opt.step()
 
