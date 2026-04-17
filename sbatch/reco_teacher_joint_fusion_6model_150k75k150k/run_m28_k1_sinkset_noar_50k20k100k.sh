@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=m28k1
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=24:00:00
+#SBATCH --time=2-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m28_k1_chamset_noar_50k20k100k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m28_k1_chamset_noar_50k20k100k_%j.err
 
@@ -50,7 +50,7 @@ CMD=(
   --num_workers "${NUM_WORKERS}"
   --seed "${SEED}"
   --reco_epochs 175
-  --reco_batch_size 112
+  --reco_batch_size 80
   --reco_lr 1.8e-4
   --reco_patience 30
   --reco_min_epochs 45
