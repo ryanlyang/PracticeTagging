@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sbatch run_m29_k6_jetlatent_selector_allthree_150k75k150k.sh
+sbatch run_m29_k6_jetlatent_selector_selectordual_150k75k150k.sh
+sbatch run_m29_k6_jetlatent_selector_selectoronly_150k75k150k.sh
+sbatch run_m29_k6_jetlatent_selector_singleview_150k75k150k.sh
