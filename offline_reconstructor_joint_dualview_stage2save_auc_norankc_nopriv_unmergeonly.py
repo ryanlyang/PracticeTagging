@@ -1790,7 +1790,7 @@ def train_reconstructor_weighted(
         sc = stage_scale_local(ep, train_cfg)
         loss_cfg_ep = _scheduled_loss_cfg(phase_idx)
 
-        tr_total = tr_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_radial = tr_budget = tr_sparse = tr_local = tr_fp_mass = 0.0
+        tr_total = tr_set = tr_best_set = tr_phys = tr_pt_ratio = tr_m_ratio = tr_e_ratio = tr_radial = tr_budget = tr_sparse = tr_local = tr_fp_mass = 0.0
         n_tr = 0
         for batch in train_loader:
             feat_hlt = batch["feat_hlt"].to(device)
@@ -1824,6 +1824,7 @@ def train_reconstructor_weighted(
             bs = feat_hlt.size(0)
             tr_total += losses["total"].item() * bs
             tr_set += losses["set"].item() * bs
+            tr_best_set += losses.get("best_set", losses["set"]).item() * bs
             tr_phys += losses["phys"].item() * bs
             tr_pt_ratio += losses["pt_ratio"].item() * bs
             tr_m_ratio += losses["m_ratio"].item() * bs
@@ -1836,8 +1837,8 @@ def train_reconstructor_weighted(
             n_tr += bs
 
         model.eval()
-        va_total_u = va_set_u = va_phys_u = va_pt_ratio_u = va_m_ratio_u = va_e_ratio_u = va_radial_u = va_budget_u = va_sparse_u = va_local_u = va_fp_mass_u = 0.0
-        va_total_w = va_set_w = va_phys_w = va_pt_ratio_w = va_m_ratio_w = va_e_ratio_w = va_radial_w = va_budget_w = va_sparse_w = va_local_w = va_fp_mass_w = 0.0
+        va_total_u = va_set_u = va_best_set_u = va_phys_u = va_pt_ratio_u = va_m_ratio_u = va_e_ratio_u = va_radial_u = va_budget_u = va_sparse_u = va_local_u = va_fp_mass_u = 0.0
+        va_total_w = va_set_w = va_best_set_w = va_phys_w = va_pt_ratio_w = va_m_ratio_w = va_e_ratio_w = va_radial_w = va_budget_w = va_sparse_w = va_local_w = va_fp_mass_w = 0.0
         n_va = 0
         with torch.no_grad():
             for batch in val_loader:
@@ -1882,6 +1883,7 @@ def train_reconstructor_weighted(
                 bs = feat_hlt.size(0)
                 va_total_u += losses_u["total"].item() * bs
                 va_set_u += losses_u["set"].item() * bs
+                va_best_set_u += losses_u.get("best_set", losses_u["set"]).item() * bs
                 va_phys_u += losses_u["phys"].item() * bs
                 va_pt_ratio_u += losses_u["pt_ratio"].item() * bs
                 va_m_ratio_u += losses_u["m_ratio"].item() * bs
@@ -1894,6 +1896,7 @@ def train_reconstructor_weighted(
 
                 va_total_w += losses_w["total"].item() * bs
                 va_set_w += losses_w["set"].item() * bs
+                va_best_set_w += losses_w.get("best_set", losses_w["set"]).item() * bs
                 va_phys_w += losses_w["phys"].item() * bs
                 va_pt_ratio_w += losses_w["pt_ratio"].item() * bs
                 va_m_ratio_w += losses_w["m_ratio"].item() * bs
@@ -1908,6 +1911,7 @@ def train_reconstructor_weighted(
         sch.step()
         tr_total /= max(n_tr, 1)
         tr_set /= max(n_tr, 1)
+        tr_best_set /= max(n_tr, 1)
         tr_phys /= max(n_tr, 1)
         tr_pt_ratio /= max(n_tr, 1)
         tr_m_ratio /= max(n_tr, 1)
@@ -1920,6 +1924,7 @@ def train_reconstructor_weighted(
 
         va_total_u /= max(n_va, 1)
         va_set_u /= max(n_va, 1)
+        va_best_set_u /= max(n_va, 1)
         va_phys_u /= max(n_va, 1)
         va_pt_ratio_u /= max(n_va, 1)
         va_m_ratio_u /= max(n_va, 1)
@@ -1932,6 +1937,7 @@ def train_reconstructor_weighted(
 
         va_total_w /= max(n_va, 1)
         va_set_w /= max(n_va, 1)
+        va_best_set_w /= max(n_va, 1)
         va_phys_w /= max(n_va, 1)
         va_pt_ratio_w /= max(n_va, 1)
         va_m_ratio_w /= max(n_va, 1)
@@ -1966,6 +1972,7 @@ def train_reconstructor_weighted(
                 "val_total": float(val_total_sel),
                 "val_total_unweighted": float(va_total_u),
                 "val_set_unweighted": float(va_set_u),
+                "val_best_set_unweighted": float(va_best_set_u),
                 "val_phys_unweighted": float(va_phys_u),
                 "val_pt_ratio_unweighted": float(va_pt_ratio_u),
                 "val_m_ratio_unweighted": float(va_m_ratio_u),
@@ -1977,6 +1984,7 @@ def train_reconstructor_weighted(
                 "val_fp_mass_unweighted": float(va_fp_mass_u),
                 "val_total_weighted": float(va_total_w),
                 "val_set_weighted": float(va_set_w),
+                "val_best_set_weighted": float(va_best_set_w),
                 "val_phys_weighted": float(va_phys_w),
                 "val_pt_ratio_weighted": float(va_pt_ratio_w),
                 "val_m_ratio_weighted": float(va_m_ratio_w),
@@ -1995,8 +2003,9 @@ def train_reconstructor_weighted(
                 f"Ep {ep+1}: train_total={tr_total:.4f}, "
                 f"val_total_unw={va_total_u:.4f}, val_total_w={va_total_w:.4f}, "
                 f"select={val_metric_source}, best_sel={best_val:.4f} | "
-                f"set_unw={va_set_u:.4f}, phys_unw={va_phys_u:.4f}, "
+                f"set_unw={va_set_u:.4f}, bset_unw={va_best_set_u:.4f}, phys_unw={va_phys_u:.4f}, "
                 f"budget_unw={va_budget_u:.4f}, fp_mass_unw={va_fp_mass_u:.4f}, "
+                f"set_mode={str(loss_cfg_ep.get('set_loss_mode', 'chamfer')).strip().lower()}, "
                 f"w_set={float(loss_cfg_ep.get('w_set', 0.0)):.3f}, "
                 f"w_budget={float(loss_cfg_ep.get('w_budget', 0.0)):.3f}, "
                 f"w_pt={float(loss_cfg_ep.get('w_pt_ratio', 0.0)):.3f}, "
