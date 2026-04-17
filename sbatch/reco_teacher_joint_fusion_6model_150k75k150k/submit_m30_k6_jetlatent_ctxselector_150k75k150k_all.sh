@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+sbatch run_m30_k6_jetlatent_ctxselector_allthree_150k75k150k.sh
+sbatch run_m30_k6_jetlatent_ctxselector_selectordual_150k75k150k.sh
+sbatch run_m30_k6_jetlatent_ctxselector_selectoronly_150k75k150k.sh
+sbatch run_m30_k6_jetlatent_ctxselector_singleview_150k75k150k.sh
