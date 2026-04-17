@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=2-00:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m28_k1_chamset_noar_50k20k100k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m28_k1_chamset_noar_50k20k100k_%j.err
 
@@ -60,7 +60,7 @@ CMD=(
   --beam_temperature 0.9
   --num_hypotheses 1
   --joint_epochs 0
-  --set_loss_mode chamfer
+  --set_loss_mode hungarian
   --hungarian_shortlist_k 2
   --loss_w_ar 0.0
   --loss_w_set 1.0
