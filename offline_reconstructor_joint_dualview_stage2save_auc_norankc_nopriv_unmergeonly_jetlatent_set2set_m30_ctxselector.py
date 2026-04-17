@@ -741,7 +741,6 @@ def _score_for_winner(set_mat: torch.Tensor, tag_mat: torch.Tensor) -> torch.Ten
     return float(M29_STATE.opts.winner_alpha) * tag_mat + float(M29_STATE.opts.winner_beta) * set_mat
 
 
-@torch.no_grad()
 def _fit_selector_from_loaders(
     reconstructor: nn.Module,
     train_loader: DataLoader,
@@ -755,6 +754,7 @@ def _fit_selector_from_loaders(
 
     reconstructor.eval()
 
+    @torch.no_grad()
     def collect(loader: DataLoader) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         feat_all: List[np.ndarray] = []
         tgt_all: List[np.ndarray] = []
