@@ -2,7 +2,7 @@
 #SBATCH --job-name=th4m1m
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
-#SBATCH --mem=128G
+#SBATCH --mem=164G
 #SBATCH --time=3-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_4m1m1m_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_4m1m1m_%j.err
