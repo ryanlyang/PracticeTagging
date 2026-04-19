@@ -970,9 +970,16 @@ def _decode_degrade_hlt_loss_matrix(
     off_w_flat = off_w_m.reshape(b * m, off_w_m.shape[2])
     off_mask_flat = (off_w_flat.detach() if detach_threshold_mask else off_w_flat) > float(pred_exist_threshold)
 
-    off_for_deg = off_const_flat.clone()
-    off_for_deg[..., 0] = off_for_deg[..., 0] * off_w_flat
-    off_for_deg[..., 3] = off_for_deg[..., 3] * off_w_flat
+    # Avoid in-place edits on graph-view tensors; build the degraded input out-of-place.
+    off_for_deg = torch.stack(
+        [
+            off_const_flat[..., 0] * off_w_flat,
+            off_const_flat[..., 1],
+            off_const_flat[..., 2],
+            off_const_flat[..., 3] * off_w_flat,
+        ],
+        dim=-1,
+    )
 
     hlt_pred_flat, hlt_pred_exist_logit_flat = degrader(off_for_deg, off_mask_flat)
     hlt_pred_w_flat = torch.sigmoid(hlt_pred_exist_logit_flat)
