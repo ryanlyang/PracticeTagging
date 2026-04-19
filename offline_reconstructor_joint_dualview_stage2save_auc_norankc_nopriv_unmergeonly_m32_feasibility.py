@@ -37,7 +37,6 @@ import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmerg
 import offline_reconstructor_no_gt_local30kv2 as reco_base
 from unmerge_correct_hlt import (
     ParticleTransformer,
-    apply_hlt_effects_realistic_nomap,
     compute_features,
     get_stats,
     standardize,
@@ -1789,7 +1788,7 @@ def main() -> None:
     const_off[~masks_off] = 0.0
 
     print("Generating pseudo-HLT...")
-    const_hlt, mask_hlt, hlt_stats, _budget = apply_hlt_effects_realistic_nomap(
+    const_hlt, mask_hlt, hlt_stats, _budget = reco_base.apply_hlt_effects_realistic_nomap(
         const_off,
         masks_off,
         cfg,
