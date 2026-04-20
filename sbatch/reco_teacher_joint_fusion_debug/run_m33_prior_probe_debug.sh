@@ -18,21 +18,21 @@ DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-80}"
 
-# Quick debug split: enough to catch manifold failures without huge runtime.
-N_TRAIN_JETS="${N_TRAIN_JETS:-45000}"
-N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-12000}"
-N_VAL_SPLIT="${N_VAL_SPLIT:-4000}"
-N_TEST_SPLIT="${N_TEST_SPLIT:-8000}"
+# Larger probe split to reduce noise and stress-test manifold behavior.
+N_TRAIN_JETS="${N_TRAIN_JETS:-120000}"
+N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-50000}"
+N_VAL_SPLIT="${N_VAL_SPLIT:-20000}"
+N_TEST_SPLIT="${N_TEST_SPLIT:-30000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 
-TEACHER_EPOCHS="${TEACHER_EPOCHS:-10}"
-TEACHER_PATIENCE="${TEACHER_PATIENCE:-3}"
-PRIOR_EPOCHS="${PRIOR_EPOCHS:-20}"
-PRIOR_PATIENCE="${PRIOR_PATIENCE:-5}"
-CRITIC_EPOCHS="${CRITIC_EPOCHS:-8}"
-N_PRIOR_SAMPLES_PER_CLASS="${N_PRIOR_SAMPLES_PER_CLASS:-1000}"
-ROUNDTRIP_EVAL_COUNT="${ROUNDTRIP_EVAL_COUNT:-1500}"
+TEACHER_EPOCHS="${TEACHER_EPOCHS:-20}"
+TEACHER_PATIENCE="${TEACHER_PATIENCE:-6}"
+PRIOR_EPOCHS="${PRIOR_EPOCHS:-60}"
+PRIOR_PATIENCE="${PRIOR_PATIENCE:-14}"
+CRITIC_EPOCHS="${CRITIC_EPOCHS:-20}"
+N_PRIOR_SAMPLES_PER_CLASS="${N_PRIOR_SAMPLES_PER_CLASS:-4000}"
+ROUNDTRIP_EVAL_COUNT="${ROUNDTRIP_EVAL_COUNT:-5000}"
 
 set +u
 source ~/.bashrc
@@ -72,7 +72,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "m33 prior probe (debug)"
+echo "m33 prior probe (larger debug stress-test)"
 echo "Run:   ${SAVE_DIR}/${RUN_NAME}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}"
 echo "============================================================"
