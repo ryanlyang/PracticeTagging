@@ -298,6 +298,155 @@ def _residual_fast_vec(
     }
 
 
+def _raw5_from_const(const: torch.Tensor) -> torch.Tensor:
+    eps = 1e-8
+    pt = const[..., 0].clamp(min=eps)
+    eta = const[..., 1].clamp(min=-5.0, max=5.0)
+    phi = const[..., 2]
+    e = const[..., 3].clamp(min=eps)
+    eta_scaled = (eta / 5.0).clamp(min=-0.999, max=0.999)
+    eta_raw = 0.5 * torch.log((1.0 + eta_scaled) / (1.0 - eta_scaled))
+    return torch.stack([torch.log(pt), eta_raw, torch.sin(phi), torch.cos(phi), torch.log(e)], dim=-1)
+
+
+def _const_from_raw5(raw: torch.Tensor) -> torch.Tensor:
+    logpt = torch.clamp(raw[..., 0], min=-9.0, max=9.0)
+    eta = 5.0 * torch.tanh(raw[..., 1])
+    sinphi = raw[..., 2]
+    cosphi = raw[..., 3]
+    loge = torch.clamp(raw[..., 4], min=-9.0, max=11.0)
+
+    pt = torch.exp(logpt)
+    phi = torch.atan2(sinphi, cosphi)
+    e = torch.exp(loge)
+    e = torch.maximum(e, pt * torch.cosh(eta))
+    return torch.stack([pt, eta, phi, e], dim=-1)
+
+
+def _dsoft_residual_vec(
+    pred_const: torch.Tensor,
+    pred_w: torch.Tensor,
+    tgt_const: torch.Tensor,
+    tgt_mask: torch.Tensor,
+    w_chamfer: float,
+    w_count: float,
+    w_pt: float,
+    w_mass: float,
+    unmatched_penalty: float,
+) -> Dict[str, torch.Tensor]:
+    r_set = _set_loss_chamfer_vec(
+        pred_const=pred_const,
+        pred_w=pred_w,
+        tgt_const=tgt_const,
+        tgt_mask=tgt_mask,
+        unmatched_penalty=float(unmatched_penalty),
+    )
+    r_count = _count_loss_vec(pred_w, tgt_mask)
+
+    pred_pt = (pred_const[..., 0] * pred_w).sum(dim=1)
+    tgt_pt = (tgt_const[..., 0] * tgt_mask.float()).sum(dim=1)
+    r_pt = torch.abs(pred_pt - tgt_pt) / (tgt_pt + 1e-6)
+
+    ww = pred_w
+    pt_w = pred_const[..., 0] * ww
+    eta = pred_const[..., 1]
+    phi = pred_const[..., 2]
+    e_w = pred_const[..., 3] * ww
+    px = (pt_w * torch.cos(phi)).sum(dim=1)
+    py = (pt_w * torch.sin(phi)).sum(dim=1)
+    pz = (pt_w * torch.sinh(eta)).sum(dim=1)
+    et = e_w.sum(dim=1)
+    m2 = et * et - px * px - py * py - pz * pz
+    pred_mass = torch.sqrt(torch.clamp(m2, min=0.0))
+    tgt_mass = _jet_mass_vec(tgt_const, tgt_mask)
+    r_mass = torch.abs(pred_mass - tgt_mass) / (tgt_mass + 1e-6)
+
+    total = (
+        float(w_chamfer) * r_set
+        + float(w_count) * r_count
+        + float(w_pt) * r_pt
+        + float(w_mass) * r_mass
+    )
+    return {
+        "total": total,
+        "set": r_set,
+        "count": r_count,
+        "pt": r_pt,
+        "mass": r_mass,
+    }
+
+
+def _post_acceptance_refine_batch(
+    degrader: "OfflineToHLTDegrader",
+    cand_const_bkld: torch.Tensor,
+    cand_mask_bkl: torch.Tensor,
+    tgt_const_bld: torch.Tensor,
+    tgt_mask_bl: torch.Tensor,
+    steps: int,
+    step_size: float,
+    max_step_norm: float,
+    anchor_lambda: float,
+    w_chamfer: float,
+    w_count: float,
+    w_pt: float,
+    w_mass: float,
+    unmatched_penalty: float,
+) -> torch.Tensor:
+    if int(max(steps, 0)) <= 0:
+        return cand_const_bkld
+
+    b, k, l, _ = cand_const_bkld.shape
+    n = b * k
+    c0 = cand_const_bkld.reshape(n, l, 4)
+    m0 = cand_mask_bkl.reshape(n, l)
+    tgt_const = tgt_const_bld.unsqueeze(1).expand(-1, k, -1, -1).reshape(n, l, 4)
+    tgt_mask = tgt_mask_bl.unsqueeze(1).expand(-1, k, -1).reshape(n, l)
+
+    raw = _raw5_from_const(c0).detach().requires_grad_(True)
+    n_steps = int(max(steps, 0))
+    lr = float(max(step_size, 1e-6))
+
+    for _ in range(n_steps):
+        c_now = _const_from_raw5(raw)
+        c_now = torch.where(m0.unsqueeze(-1), c_now, torch.zeros_like(c_now))
+
+        h_pred, h_logit = degrader(c_now, m0)
+        h_w = torch.sigmoid(h_logit)
+        soft = _dsoft_residual_vec(
+            pred_const=h_pred,
+            pred_w=h_w,
+            tgt_const=tgt_const,
+            tgt_mask=tgt_mask,
+            w_chamfer=float(w_chamfer),
+            w_count=float(w_count),
+            w_pt=float(w_pt),
+            w_mass=float(w_mass),
+            unmatched_penalty=float(unmatched_penalty),
+        )
+        # Keep refined offline candidates close to accepted ones.
+        anchor = _set_loss_chamfer_vec(
+            pred_const=c_now,
+            pred_w=m0.float(),
+            tgt_const=c0,
+            tgt_mask=m0,
+            unmatched_penalty=float(unmatched_penalty),
+        )
+        loss = soft["total"].mean() + float(anchor_lambda) * anchor.mean()
+        grad = torch.autograd.grad(loss, raw, only_inputs=True, create_graph=False)[0]
+        grad = torch.where(m0.unsqueeze(-1), grad, torch.zeros_like(grad))
+
+        step = -lr * grad
+        if float(max_step_norm) > 0.0:
+            sn = torch.sqrt(step.pow(2).sum(dim=(1, 2), keepdim=True) + 1e-8)
+            clip = torch.clamp(float(max_step_norm) / sn, max=1.0)
+            step = step * clip
+        raw = (raw + step).detach().requires_grad_(True)
+
+    c_fin = _const_from_raw5(raw.detach())
+    c_fin = torch.where(m0.unsqueeze(-1), c_fin, torch.zeros_like(c_fin))
+    return c_fin.reshape(b, k, l, 4)
+
+
 class SetEncoder(nn.Module):
     def __init__(
         self,
@@ -2143,6 +2292,12 @@ def _chunked_search_candidates_split(
     refine_steps: int,
     refine_step_size: float,
     refine_max_step_norm: float,
+    post_accept_refine_steps: int,
+    post_accept_refine_step_size: float,
+    post_accept_refine_max_step_norm: float,
+    post_accept_refine_anchor_lambda: float,
+    post_accept_refine_accept_margin: float,
+    post_accept_refine_batch_size: int,
     w_chamfer: float,
     w_count: float,
     w_pt: float,
@@ -2151,6 +2306,8 @@ def _chunked_search_candidates_split(
     proposer.eval()
     ae.eval()
     degrader.eval()
+    for p in degrader.parameters():
+        p.requires_grad_(False)
 
     n, max_const, _ = const_hlt.shape
     out: Dict[str, Dict[str, np.ndarray]] = {}
@@ -2319,6 +2476,82 @@ def _chunked_search_candidates_split(
                     resid_pt_out[g, k] = float(z["res_pt"])  # type: ignore[index]
                     resid_mass_out[g, k] = float(z["res_mass"])  # type: ignore[index]
                     feasible_out[g, k] = bool(z["feasible"])  # type: ignore[index]
+
+        if int(post_accept_refine_steps) > 0:
+            refine_bs = int(max(1, post_accept_refine_batch_size))
+            improved_total = 0
+            delta_total_sum = 0.0
+            for s in tqdm(range(0, n, refine_bs), desc=f"PostRefC{cls_val}", leave=False):
+                e = min(n, s + refine_bs)
+                ch = torch.tensor(cand_const_out[s:e], dtype=torch.float32, device=device)
+                cm = torch.tensor(cand_mask_out[s:e], dtype=torch.bool, device=device)
+                tgt_h = torch.tensor(const_hlt[s:e], dtype=torch.float32, device=device)
+                tgt_m = torch.tensor(mask_hlt[s:e], dtype=torch.bool, device=device)
+
+                with torch.enable_grad():
+                    ch_ref = _post_acceptance_refine_batch(
+                        degrader=degrader,
+                        cand_const_bkld=ch,
+                        cand_mask_bkl=cm,
+                        tgt_const_bld=tgt_h,
+                        tgt_mask_bl=tgt_m,
+                        steps=int(post_accept_refine_steps),
+                        step_size=float(post_accept_refine_step_size),
+                        max_step_norm=float(post_accept_refine_max_step_norm),
+                        anchor_lambda=float(post_accept_refine_anchor_lambda),
+                        w_chamfer=float(w_chamfer),
+                        w_count=float(w_count),
+                        w_pt=float(w_pt),
+                        w_mass=float(w_mass),
+                        unmatched_penalty=float(unmatched_penalty),
+                    )
+
+                resid_new = _evaluate_hard_residual_matrix(
+                    cand_const_bmd=ch_ref,
+                    cand_mask_bmd=cm,
+                    tgt_const_bld=tgt_h,
+                    tgt_mask_bl=tgt_m,
+                    jet_keys_b=jet_keys[s:e].astype(np.int64),
+                    cfg=cfg,
+                    base_seed=int(base_seed),
+                    w_chamfer=float(w_chamfer),
+                    w_count=float(w_count),
+                    w_pt=float(w_pt),
+                    w_mass=float(w_mass),
+                    unmatched_penalty=float(unmatched_penalty),
+                )
+
+                new_total = resid_new["total"].detach().cpu().numpy().astype(np.float32)
+                new_set = resid_new["set"].detach().cpu().numpy().astype(np.float32)
+                new_count = resid_new["count"].detach().cpu().numpy().astype(np.float32)
+                new_pt = resid_new["pt"].detach().cpu().numpy().astype(np.float32)
+                new_mass = resid_new["mass"].detach().cpu().numpy().astype(np.float32)
+
+                old_total = resid_total_out[s:e].copy()
+                improve = new_total < (old_total - float(post_accept_refine_accept_margin))
+                if np.any(improve):
+                    improved_total += int(improve.sum())
+                    delta_total_sum += float((old_total[improve] - new_total[improve]).sum())
+
+                ch_ref_np = ch_ref.detach().cpu().numpy().astype(np.float32)
+                cand_const_out[s:e] = np.where(improve[..., None, None], ch_ref_np, cand_const_out[s:e])
+                resid_total_out[s:e] = np.where(improve, new_total, resid_total_out[s:e])
+                resid_set_out[s:e] = np.where(improve, new_set, resid_set_out[s:e])
+                resid_count_out[s:e] = np.where(improve, new_count, resid_count_out[s:e])
+                resid_pt_out[s:e] = np.where(improve, new_pt, resid_pt_out[s:e])
+                resid_mass_out[s:e] = np.where(improve, new_mass, resid_mass_out[s:e])
+                feasible_out[s:e] = (
+                    (resid_total_out[s:e] <= float(eps_total))
+                    & (resid_count_out[s:e] <= float(eps_count))
+                )
+
+            feasible_cnt_vec = feasible_out.sum(axis=1).astype(np.int32)
+            total_slots = int(n * int(target_k))
+            mean_delta = float(delta_total_sum / max(1, improved_total))
+            print(
+                f"Post-accept refine class{cls_val}: improved={improved_total}/{total_slots} "
+                f"({(100.0 * improved_total / max(1,total_slots)):.1f}%), mean_delta={mean_delta:.5f}"
+            )
 
         out[f"class{cls_val}"] = {
             "const": cand_const_out,
@@ -2800,6 +3033,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--search_w_count", type=float, default=0.25)
     p.add_argument("--search_w_pt", type=float, default=0.10)
     p.add_argument("--search_w_mass", type=float, default=0.05)
+    p.add_argument("--post_accept_refine_steps", type=int, default=0)
+    p.add_argument("--post_accept_refine_lr", type=float, default=0.03)
+    p.add_argument("--post_accept_refine_max_step_norm", type=float, default=0.20)
+    p.add_argument("--post_accept_refine_anchor_lambda", type=float, default=0.10)
+    p.add_argument("--post_accept_refine_accept_margin", type=float, default=0.00)
+    p.add_argument("--post_accept_refine_batch_size", type=int, default=16)
 
     p.add_argument("--selector_epochs", type=int, default=40)
     p.add_argument("--selector_patience", type=int, default=8)
@@ -2838,7 +3077,8 @@ def main() -> None:
         f"Shortlist config: train K0={int(args.proposer_k0_train)} -> M={top_m_train}; "
         f"infer K0={int(args.k0_infer)} -> M={top_m_infer}; "
         f"search(chunk={int(args.search_chunk_k0)}, rounds={int(args.search_max_rounds)}, targetK={int(args.search_target_k)}); "
-        f"refine(train,infer)=({int(args.proposer_refine_steps)},{int(args.infer_refine_steps)})"
+        f"refine(train,infer)=({int(args.proposer_refine_steps)},{int(args.infer_refine_steps)}); "
+        f"post_refine={int(args.post_accept_refine_steps)}"
     )
     print("=" * 72)
 
@@ -3268,6 +3508,12 @@ def main() -> None:
         refine_steps=int(args.infer_refine_steps),
         refine_step_size=float(args.infer_refine_lr),
         refine_max_step_norm=float(args.infer_refine_max_step_norm),
+        post_accept_refine_steps=int(args.post_accept_refine_steps),
+        post_accept_refine_step_size=float(args.post_accept_refine_lr),
+        post_accept_refine_max_step_norm=float(args.post_accept_refine_max_step_norm),
+        post_accept_refine_anchor_lambda=float(args.post_accept_refine_anchor_lambda),
+        post_accept_refine_accept_margin=float(args.post_accept_refine_accept_margin),
+        post_accept_refine_batch_size=int(args.post_accept_refine_batch_size),
         w_chamfer=float(args.search_w_chamfer),
         w_count=float(args.search_w_count),
         w_pt=float(args.search_w_pt),
@@ -3300,6 +3546,12 @@ def main() -> None:
         refine_steps=int(args.infer_refine_steps),
         refine_step_size=float(args.infer_refine_lr),
         refine_max_step_norm=float(args.infer_refine_max_step_norm),
+        post_accept_refine_steps=int(args.post_accept_refine_steps),
+        post_accept_refine_step_size=float(args.post_accept_refine_lr),
+        post_accept_refine_max_step_norm=float(args.post_accept_refine_max_step_norm),
+        post_accept_refine_anchor_lambda=float(args.post_accept_refine_anchor_lambda),
+        post_accept_refine_accept_margin=float(args.post_accept_refine_accept_margin),
+        post_accept_refine_batch_size=int(args.post_accept_refine_batch_size),
         w_chamfer=float(args.search_w_chamfer),
         w_count=float(args.search_w_count),
         w_pt=float(args.search_w_pt),
@@ -3332,6 +3584,12 @@ def main() -> None:
         refine_steps=int(args.infer_refine_steps),
         refine_step_size=float(args.infer_refine_lr),
         refine_max_step_norm=float(args.infer_refine_max_step_norm),
+        post_accept_refine_steps=int(args.post_accept_refine_steps),
+        post_accept_refine_step_size=float(args.post_accept_refine_lr),
+        post_accept_refine_max_step_norm=float(args.post_accept_refine_max_step_norm),
+        post_accept_refine_anchor_lambda=float(args.post_accept_refine_anchor_lambda),
+        post_accept_refine_accept_margin=float(args.post_accept_refine_accept_margin),
+        post_accept_refine_batch_size=int(args.post_accept_refine_batch_size),
         w_chamfer=float(args.search_w_chamfer),
         w_count=float(args.search_w_count),
         w_pt=float(args.search_w_pt),
