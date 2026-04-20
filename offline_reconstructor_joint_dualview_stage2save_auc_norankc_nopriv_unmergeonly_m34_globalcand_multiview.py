@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 
 """
-m33: Deterministic-feasibility candidate search + DualView top tagging.
+m34: Deterministic-feasibility global-candidate search + MultiView top tagging.
 
 Pipeline:
 1) Train teacher (offline) and baseline (HLT) classifiers.
@@ -11,7 +11,7 @@ Pipeline:
 4) Train HLT->latent class-conditional proposer (weakly feasibility-regularized).
 5) Deterministic chunked search with D_hard acceptance to build candidate pools.
 6) Train realism selector (real offline vs generated candidate).
-7) Train final DualView heads (NoGate + Gated) using HLT and selected candidates.
+7) Train final MultiView heads (NoGate + Gated) using HLT and selected top-3 candidates.
 """
 
 from __future__ import annotations
@@ -950,6 +950,157 @@ class DualViewGatedClassifier(nn.Module):
         return (1.0 - g) * logit_h + g * logit_c
 
 
+class MultiView3NoGateClassifier(nn.Module):
+    def __init__(
+        self,
+        cand_feat_dim: int,
+        embed_dim: int,
+        num_heads: int,
+        num_layers: int,
+        ff_dim: int,
+        dropout: float,
+        num_cands: int = 3,
+    ):
+        super().__init__()
+        self.num_cands = int(num_cands)
+        self.hlt_encoder = SetEncoder(
+            input_dim=5,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        self.cand_encoder = SetEncoder(
+            input_dim=5,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=max(2, num_layers // 2),
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        self.feat_proj = nn.Sequential(
+            nn.Linear(cand_feat_dim, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.head = nn.Sequential(
+            nn.Linear(embed_dim * (2 + self.num_cands), 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),
+        )
+
+    def forward(
+        self,
+        const_hlt: torch.Tensor,
+        mask_hlt: torch.Tensor,
+        cand_const: torch.Tensor,
+        cand_mask: torch.Tensor,
+        cand_feat: torch.Tensor,
+    ) -> torch.Tensor:
+        h = self.hlt_encoder(_const_to_token5(const_hlt), mask_hlt)
+        c_embs = []
+        for i in range(self.num_cands):
+            c_i = self.cand_encoder(_const_to_token5(cand_const[:, i]), cand_mask[:, i])
+            c_embs.append(c_i)
+        c_cat = torch.cat(c_embs, dim=-1)
+        f = self.feat_proj(cand_feat)
+        x = torch.cat([h, c_cat, f], dim=-1)
+        return self.head(x).squeeze(-1)
+
+
+class MultiView3GatedClassifier(nn.Module):
+    def __init__(
+        self,
+        cand_feat_dim: int,
+        embed_dim: int,
+        num_heads: int,
+        num_layers: int,
+        ff_dim: int,
+        dropout: float,
+        num_cands: int = 3,
+    ):
+        super().__init__()
+        self.num_cands = int(num_cands)
+        self.hlt_encoder = SetEncoder(
+            input_dim=5,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        self.cand_encoder = SetEncoder(
+            input_dim=5,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=max(2, num_layers // 2),
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        self.feat_proj = nn.Sequential(
+            nn.Linear(cand_feat_dim, embed_dim),
+            nn.LayerNorm(embed_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.hlt_head = nn.Sequential(
+            nn.Linear(embed_dim, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),
+        )
+        self.cand_head = nn.Sequential(
+            nn.Linear(embed_dim * (1 + self.num_cands), 256),
+            nn.LayerNorm(256),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(embed_dim * (2 + self.num_cands), 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        const_hlt: torch.Tensor,
+        mask_hlt: torch.Tensor,
+        cand_const: torch.Tensor,
+        cand_mask: torch.Tensor,
+        cand_feat: torch.Tensor,
+    ) -> torch.Tensor:
+        h = self.hlt_encoder(_const_to_token5(const_hlt), mask_hlt)
+        c_embs = []
+        for i in range(self.num_cands):
+            c_i = self.cand_encoder(_const_to_token5(cand_const[:, i]), cand_mask[:, i])
+            c_embs.append(c_i)
+        c_cat = torch.cat(c_embs, dim=-1)
+        f = self.feat_proj(cand_feat)
+
+        logit_h = self.hlt_head(h).squeeze(-1)
+        cand_x = torch.cat(c_embs + [f], dim=-1)
+        logit_c = self.cand_head(cand_x).squeeze(-1)
+        g = self.gate(torch.cat([h, c_cat, f], dim=-1)).squeeze(-1)
+        return (1.0 - g) * logit_h + g * logit_c
+
+
 class OfflineStageDataset(Dataset):
     def __init__(
         self,
@@ -1140,6 +1291,47 @@ class DualViewCandidateDataset(Dataset):
             "cand_top_mask": self.cand_top_mask[i],
             "cand_bg_const": self.cand_bg_const[i],
             "cand_bg_mask": self.cand_bg_mask[i],
+            "cand_feat": self.cand_feat[i],
+            "label": self.labels[i],
+            "sample_weight": self.sample_weight[i],
+        }
+
+
+class MultiView3CandidateDataset(Dataset):
+    def __init__(
+        self,
+        const_hlt: np.ndarray,
+        mask_hlt: np.ndarray,
+        cand_const: np.ndarray,
+        cand_mask: np.ndarray,
+        cand_feat: np.ndarray,
+        labels: np.ndarray,
+        sample_weight: Optional[np.ndarray] = None,
+    ):
+        self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
+        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+        self.cand_const = torch.tensor(cand_const, dtype=torch.float32)
+        self.cand_mask = torch.tensor(cand_mask, dtype=torch.bool)
+        self.cand_feat = torch.tensor(cand_feat, dtype=torch.float32)
+        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+        n = int(self.labels.shape[0])
+        if sample_weight is None:
+            sw = np.ones((n,), dtype=np.float32)
+        else:
+            sw = np.asarray(sample_weight, dtype=np.float32)
+            if sw.shape[0] != n:
+                raise ValueError(f"sample_weight mismatch: {sw.shape[0]} vs {n}")
+        self.sample_weight = torch.tensor(sw, dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return int(self.labels.shape[0])
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "const_hlt": self.const_hlt[i],
+            "mask_hlt": self.mask_hlt[i],
+            "cand_const": self.cand_const[i],
+            "cand_mask": self.cand_mask[i],
             "cand_feat": self.cand_feat[i],
             "label": self.labels[i],
             "sample_weight": self.sample_weight[i],
@@ -1359,6 +1551,31 @@ def _compute_prior_stats(
         logvars.append(lv)
     mean = torch.stack(means, dim=0).to(device)
     logvar = torch.stack(logvars, dim=0).to(device)
+    return PriorStats(mean=mean, logvar=logvar)
+
+
+def _compute_global_prior_stats(
+    model: OfflineLatentAE,
+    loader: DataLoader,
+    device: torch.device,
+    latent_dim: int,
+) -> PriorStats:
+    model.eval()
+    z_all: List[torch.Tensor] = []
+    with torch.no_grad():
+        for batch in loader:
+            z = model.encode(batch["const_off"].to(device), batch["mask_off"].to(device))
+            z_all.append(z.detach().cpu())
+    if len(z_all) == 0:
+        mu = torch.zeros((latent_dim,), dtype=torch.float32)
+        lv = torch.zeros((latent_dim,), dtype=torch.float32)
+    else:
+        zc = torch.cat(z_all, dim=0)
+        mu = zc.mean(dim=0)
+        var = zc.var(dim=0, unbiased=False).clamp(min=1e-4)
+        lv = torch.log(var)
+    mean = torch.stack([mu, mu], dim=0).to(device)
+    logvar = torch.stack([lv, lv], dim=0).to(device)
     return PriorStats(mean=mean, logvar=logvar)
 
 
@@ -2302,6 +2519,7 @@ def _chunked_search_candidates_split(
     w_count: float,
     w_pt: float,
     w_mass: float,
+    search_cls_values: Tuple[int, ...] = (0, 1),
 ) -> Dict[str, Dict[str, np.ndarray]]:
     proposer.eval()
     ae.eval()
@@ -2316,7 +2534,7 @@ def _chunked_search_candidates_split(
     const_t = torch.tensor(const_hlt, dtype=torch.float32)
     mask_t = torch.tensor(mask_hlt, dtype=torch.bool)
 
-    for cls_val in [0, 1]:
+    for cls_val in list(search_cls_values):
         cand_const_out = np.zeros((n, target_k, max_const, 4), dtype=np.float32)
         cand_mask_out = np.zeros((n, target_k, max_const), dtype=bool)
         resid_total_out = np.full((n, target_k), np.inf, dtype=np.float32)
@@ -2650,6 +2868,65 @@ def _build_selector_arrays(
     }
 
 
+def _build_selector_arrays_global(
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    const_off: np.ndarray,
+    mask_off: np.ndarray,
+    pool: Dict[str, np.ndarray],
+    neg_per_jet: int,
+) -> Dict[str, np.ndarray]:
+    rows_hlt = []
+    rows_hlt_m = []
+    rows_cand = []
+    rows_cand_m = []
+    rows_cls = []
+    rows_resid = []
+    rows_y = []
+
+    n = int(const_hlt.shape[0])
+    for i in range(n):
+        rows_hlt.append(const_hlt[i])
+        rows_hlt_m.append(mask_hlt[i])
+        rows_cand.append(const_off[i])
+        rows_cand_m.append(mask_off[i])
+        rows_cls.append(0)
+        rows_resid.append(0.0)
+        rows_y.append(1.0)
+
+        cands = pool["const"][i]
+        cmsk = pool["mask"][i]
+        cres = pool["res_total"][i]
+        ord_idx = np.argsort(cres)[: int(max(1, neg_per_jet))]
+        for j in ord_idx.tolist():
+            rows_hlt.append(const_hlt[i])
+            rows_hlt_m.append(mask_hlt[i])
+            rows_cand.append(cands[j])
+            rows_cand_m.append(cmsk[j])
+            rows_cls.append(0)
+            rows_resid.append(float(cres[j]))
+            rows_y.append(0.0)
+
+    y = np.asarray(rows_y, dtype=np.float32)
+    pos = max(1, int((y > 0.5).sum()))
+    neg = max(1, int((y <= 0.5).sum()))
+    w_pos = float(0.5 / pos)
+    w_neg = float(0.5 / neg)
+    sw = np.where(y > 0.5, w_pos, w_neg).astype(np.float32)
+    sw = sw / max(1e-8, float(sw.mean()))
+
+    return {
+        "const_hlt": np.asarray(rows_hlt, dtype=np.float32),
+        "mask_hlt": np.asarray(rows_hlt_m, dtype=bool),
+        "cand_const": np.asarray(rows_cand, dtype=np.float32),
+        "cand_mask": np.asarray(rows_cand_m, dtype=bool),
+        "cand_class": np.asarray(rows_cls, dtype=np.int64),
+        "cand_resid": np.asarray(rows_resid, dtype=np.float32),
+        "labels": y,
+        "sample_weight": sw,
+    }
+
+
 def _train_selector(
     model: CandidateRealismSelector,
     train_loader: DataLoader,
@@ -2833,6 +3110,69 @@ def _build_dualview_features(
     }
 
 
+def _build_multiview3_features(
+    pool: Dict[str, np.ndarray],
+    sel_score: np.ndarray,
+    baseline_prob: np.ndarray,
+    score_alpha: float,
+    n_select: int = 3,
+) -> Dict[str, np.ndarray]:
+    n, k, l, _ = pool["const"].shape
+    s = int(max(1, min(int(n_select), int(k))))
+    q = sel_score - float(score_alpha) * pool["res_total"]
+    idx = np.argsort(-q, axis=1)[:, :s]
+    row = np.arange(n)[:, None]
+
+    cand_const = pool["const"][row, idx]
+    cand_mask = pool["mask"][row, idx]
+
+    sel_res = pool["res_total"][row, idx]
+    sel_set = pool["res_set"][row, idx]
+    sel_cnt = pool["res_count"][row, idx]
+    sel_pt = pool["res_pt"][row, idx]
+    sel_mass = pool["res_mass"][row, idx]
+    sel_sc = sel_score[row, idx]
+    sel_q = q[row, idx]
+
+    best_pool = np.min(pool["res_total"], axis=1)
+    mean_pool = np.mean(pool["res_total"], axis=1)
+    std_pool = np.std(pool["res_total"], axis=1)
+    feas_frac = np.mean(pool["feasible"], axis=1)
+    q_best = np.max(q, axis=1)
+    q_gap12 = (sel_q[:, 0] - sel_q[:, 1]) if s >= 2 else np.zeros((n,), dtype=np.float32)
+    q_gap13 = (sel_q[:, 0] - sel_q[:, 2]) if s >= 3 else np.zeros((n,), dtype=np.float32)
+
+    # Fixed-size summary vector.
+    feat_cols = [
+        sel_res[:, 0], sel_set[:, 0], sel_cnt[:, 0], sel_pt[:, 0], sel_mass[:, 0], sel_sc[:, 0], sel_q[:, 0],
+        sel_res[:, 1] if s >= 2 else sel_res[:, 0],
+        sel_set[:, 1] if s >= 2 else sel_set[:, 0],
+        sel_cnt[:, 1] if s >= 2 else sel_cnt[:, 0],
+        sel_pt[:, 1] if s >= 2 else sel_pt[:, 0],
+        sel_mass[:, 1] if s >= 2 else sel_mass[:, 0],
+        sel_sc[:, 1] if s >= 2 else sel_sc[:, 0],
+        sel_q[:, 1] if s >= 2 else sel_q[:, 0],
+        sel_res[:, 2] if s >= 3 else sel_res[:, 0],
+        sel_sc[:, 2] if s >= 3 else sel_sc[:, 0],
+        sel_q[:, 2] if s >= 3 else sel_q[:, 0],
+        q_gap12.astype(np.float32),
+        q_gap13.astype(np.float32),
+        best_pool.astype(np.float32),
+        mean_pool.astype(np.float32),
+        std_pool.astype(np.float32),
+        feas_frac.astype(np.float32),
+        q_best.astype(np.float32),
+        baseline_prob.astype(np.float32),
+    ]
+    feat = np.stack(feat_cols, axis=1).astype(np.float32)
+
+    return {
+        "cand_const": cand_const.astype(np.float32),
+        "cand_mask": cand_mask.astype(bool),
+        "cand_feat": feat,
+    }
+
+
 def _forward_dualview(model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
     return model(
         const_hlt=batch["const_hlt"],
@@ -2841,6 +3181,16 @@ def _forward_dualview(model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch
         cand_top_mask=batch["cand_top_mask"],
         cand_bg_const=batch["cand_bg_const"],
         cand_bg_mask=batch["cand_bg_mask"],
+        cand_feat=batch["cand_feat"],
+    )
+
+
+def _forward_multiview3(model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+    return model(
+        const_hlt=batch["const_hlt"],
+        mask_hlt=batch["mask_hlt"],
+        cand_const=batch["cand_const"],
+        cand_mask=batch["cand_mask"],
         cand_feat=batch["cand_feat"],
     )
 
@@ -2941,12 +3291,108 @@ def _eval_dualview_model(
     return auc, float(fpr50), p_np, y_np, w_np
 
 
+def _train_multiview3_model(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    epochs: int,
+    lr: float,
+    weight_decay: float,
+    patience: int,
+    name: str,
+) -> Tuple[nn.Module, Dict[str, float]]:
+    opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
+    best_state = None
+    best_auc = float("-inf")
+    best_epoch = 0
+    no_imp = 0
+
+    for ep in range(int(epochs)):
+        model.train()
+        tr_loss = 0.0
+        tr_n = 0
+        for batch in train_loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            y = batch["label"]
+            sw = batch["sample_weight"]
+            logit = _forward_multiview3(model, batch)
+            lv = F.binary_cross_entropy_with_logits(logit, y, reduction="none")
+            loss = _weighted_mean(lv, sw)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            opt.step()
+            bs = int(y.shape[0])
+            tr_loss += float(loss.item()) * bs
+            tr_n += bs
+
+        model.eval()
+        vp, vy, vw = [], [], []
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+                y = batch["label"]
+                sw = batch["sample_weight"]
+                p = torch.sigmoid(_forward_multiview3(model, batch))
+                vp.append(p.detach().cpu().numpy().astype(np.float64))
+                vy.append(y.detach().cpu().numpy().astype(np.float64))
+                vw.append(sw.detach().cpu().numpy().astype(np.float64))
+        vp_np = np.concatenate(vp, axis=0) if vp else np.array([], dtype=np.float64)
+        vy_np = np.concatenate(vy, axis=0) if vy else np.array([], dtype=np.float64)
+        vw_np = np.concatenate(vw, axis=0) if vw else None
+        va_auc = float(roc_auc_score(vy_np, vp_np, sample_weight=vw_np)) if len(np.unique(vy_np)) > 1 else 0.0
+
+        if va_auc > best_auc:
+            best_auc = float(va_auc)
+            best_epoch = ep + 1
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_imp = 0
+        else:
+            no_imp += 1
+
+        if (ep + 1) % 2 == 0 or ep == 0:
+            print(f"{name} ep {ep+1:03d}: train_loss={tr_loss/max(1,tr_n):.5f} val_auc={va_auc:.4f} best={best_auc:.4f}@{best_epoch}")
+        if no_imp >= int(patience):
+            print(f"{name} early stop at ep {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model, {"best_val_auc": float(best_auc), "best_epoch": int(best_epoch)}
+
+
+@torch.no_grad()
+def _eval_multiview3_model(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[float, float, np.ndarray, np.ndarray, np.ndarray]:
+    model.eval()
+    pp, yy, ww = [], [], []
+    for batch in loader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        y = batch["label"]
+        sw = batch["sample_weight"]
+        p = torch.sigmoid(_forward_multiview3(model, batch))
+        pp.append(p.detach().cpu().numpy().astype(np.float64))
+        yy.append(y.detach().cpu().numpy().astype(np.float64))
+        ww.append(sw.detach().cpu().numpy().astype(np.float64))
+    p_np = np.concatenate(pp, axis=0) if pp else np.array([], dtype=np.float64)
+    y_np = np.concatenate(yy, axis=0) if yy else np.array([], dtype=np.float64)
+    w_np = np.concatenate(ww, axis=0) if ww else np.array([], dtype=np.float64)
+    auc = float(roc_auc_score(y_np, p_np, sample_weight=w_np)) if len(np.unique(y_np)) > 1 else 0.0
+    fpr, tpr, _ = roc_curve(y_np, p_np, sample_weight=w_np)
+    fpr50 = fpr_at_target_tpr(fpr, tpr, target_tpr=0.50)
+    return auc, float(fpr50), p_np, y_np, w_np
+
+
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="m33 deterministic-feasibility dualview top tagging")
+    p = argparse.ArgumentParser(description="m34 global-candidate multiview top tagging")
 
     p.add_argument("--train_path", type=str, default="./data")
-    p.add_argument("--save_dir", type=str, default="checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model33_detfeas_dualview")
-    p.add_argument("--run_name", type=str, default="model33_k6_detfeas_dualview_150k75k150k_seed0")
+    p.add_argument("--save_dir", type=str, default="checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model34_globalcand_multiview")
+    p.add_argument("--run_name", type=str, default="model34_k12_globalcand_multiview3_150k75k150k_seed0")
 
     p.add_argument("--n_train_jets", type=int, default=375000)
     p.add_argument("--n_train_split", type=int, default=100000)
@@ -3013,14 +3459,14 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--proposer_k0_train", type=int, default=64)
     p.add_argument("--proposer_top_m_train", type=int, default=8)
     p.add_argument("--proposer_k_train", type=int, default=-1, help="Deprecated alias for --proposer_top_m_train.")
-    p.add_argument("--proposer_k_wrong", type=int, default=3)
+    p.add_argument("--proposer_k_wrong", type=int, default=0)
     p.add_argument("--proposer_prescore_w_prior", type=float, default=0.70)
     p.add_argument("--proposer_prescore_w_q", type=float, default=0.30)
     p.add_argument("--proposer_softmin_tau", type=float, default=0.12)
     p.add_argument("--proposer_diversity_tau", type=float, default=1.0)
     p.add_argument("--proposer_lambda_count", type=float, default=0.25)
     p.add_argument("--proposer_lambda_div", type=float, default=0.08)
-    p.add_argument("--proposer_lambda_margin", type=float, default=0.50)
+    p.add_argument("--proposer_lambda_margin", type=float, default=0.00)
     p.add_argument("--proposer_margin", type=float, default=0.20)
     p.add_argument("--proposer_lambda_kl", type=float, default=0.03)
     p.add_argument("--proposer_lambda_hlt_cons", type=float, default=0.05)
@@ -3036,7 +3482,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--infer_refine_lr", type=float, default=0.05)
     p.add_argument("--infer_refine_max_step_norm", type=float, default=0.20)
     p.add_argument("--search_batch_size", type=int, default=48)
-    p.add_argument("--search_target_k", type=int, default=6)
+    p.add_argument("--search_target_k", type=int, default=12)
     p.add_argument("--search_chunk_k0", type=int, default=100)
     p.add_argument("--search_shortlist_m", type=int, default=20)
     p.add_argument("--search_max_rounds", type=int, default=14)
@@ -3061,6 +3507,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--selector_weight_decay", type=float, default=1e-4)
     p.add_argument("--selector_neg_per_class", type=int, default=3)
     p.add_argument("--selector_score_alpha", type=float, default=1.25)
+    p.add_argument("--mv_n_select", type=int, default=3)
 
     p.add_argument("--dual_epochs", type=int, default=60)
     p.add_argument("--dual_patience", type=int, default=12)
@@ -3086,14 +3533,14 @@ def main() -> None:
     top_m_infer = int(args.k_infer) if int(args.k_infer) > 0 else int(args.top_m_infer)
 
     print("=" * 72)
-    print("Model-33 Deterministic Feasibility + DualView Pipeline")
+    print("Model-34 Global-Candidate MultiView Pipeline")
     print(f"Run: {save_root}")
     print(
         f"Shortlist config: train K0={int(args.proposer_k0_train)} -> M={top_m_train}; "
         f"infer K0={int(args.k0_infer)} -> M={top_m_infer}; "
-        f"search(chunk={int(args.search_chunk_k0)}, rounds={int(args.search_max_rounds)}, targetK={int(args.search_target_k)}); "
+        f"search(chunk={int(args.search_chunk_k0)}, rounds={int(args.search_max_rounds)}, targetK={int(args.search_target_k)}, cls=global); "
         f"refine(train,infer)=({int(args.proposer_refine_steps)},{int(args.infer_refine_steps)}); "
-        f"post_refine={int(args.post_accept_refine_steps)}"
+        f"post_refine={int(args.post_accept_refine_steps)}; mv_select={int(args.mv_n_select)}"
     )
     print("=" * 72)
 
@@ -3283,13 +3730,13 @@ def main() -> None:
     ds_prior_tr = OfflineStageDataset(
         const_off=const_off[train_idx],
         mask_off=masks_off[train_idx],
-        labels=labels[train_idx],
+        labels=np.zeros_like(labels[train_idx]),
         sample_weight=w_conf_train,
     )
     ds_prior_va = OfflineStageDataset(
         const_off=const_off[val_idx],
         mask_off=masks_off[val_idx],
-        labels=labels[val_idx],
+        labels=np.zeros_like(labels[val_idx]),
         sample_weight=w_conf_val,
     )
     dl_prior_tr = DataLoader(
@@ -3332,7 +3779,7 @@ def main() -> None:
         unmatched_penalty=float(args.unmatched_penalty),
     )
 
-    prior_stats = _compute_prior_stats(
+    prior_stats = _compute_global_prior_stats(
         model=ae,
         loader=dl_prior_tr,
         device=device,
@@ -3409,7 +3856,7 @@ def main() -> None:
         mask_off=masks_off[train_idx],
         const_hlt=const_hlt[train_idx],
         mask_hlt=mask_hlt[train_idx],
-        labels=labels[train_idx],
+        labels=np.zeros_like(labels[train_idx]),
         sample_weight=w_conf_train,
     )
     ds_prop_va = PairStageDataset(
@@ -3417,7 +3864,7 @@ def main() -> None:
         mask_off=masks_off[val_idx],
         const_hlt=const_hlt[val_idx],
         mask_hlt=mask_hlt[val_idx],
-        labels=labels[val_idx],
+        labels=np.zeros_like(labels[val_idx]),
         sample_weight=w_conf_val,
     )
 
@@ -3533,6 +3980,7 @@ def main() -> None:
         w_count=float(args.search_w_count),
         w_pt=float(args.search_w_pt),
         w_mass=float(args.search_w_mass),
+        search_cls_values=(0,),
     )
     pools_val = _chunked_search_candidates_split(
         proposer=proposer,
@@ -3571,6 +4019,7 @@ def main() -> None:
         w_count=float(args.search_w_count),
         w_pt=float(args.search_w_pt),
         w_mass=float(args.search_w_mass),
+        search_cls_values=(0,),
     )
     pools_test = _chunked_search_candidates_split(
         proposer=proposer,
@@ -3609,34 +4058,35 @@ def main() -> None:
         w_count=float(args.search_w_count),
         w_pt=float(args.search_w_pt),
         w_mass=float(args.search_w_mass),
+        search_cls_values=(0,),
     )
 
     print(
         "Search stats: "
-        f"train(feasC0={pools_train['stats']['class0_mean_feasible']:.2f}, feasC1={pools_train['stats']['class1_mean_feasible']:.2f}) "
-        f"val(feasC0={pools_val['stats']['class0_mean_feasible']:.2f}, feasC1={pools_val['stats']['class1_mean_feasible']:.2f})"
+        f"train(feasGlobal={pools_train['stats']['class0_mean_feasible']:.2f}) "
+        f"val(feasGlobal={pools_val['stats']['class0_mean_feasible']:.2f})"
     )
 
-    # STEP 6: Realism selector (real offline vs generated feasible candidates).
+    # STEP 6: Realism selector (real offline vs generated candidates, global pool).
     print("\n" + "=" * 72)
-    print("STEP 6: Train Realism Selector")
+    print("STEP 6: Train Realism Selector (Global Pool)")
     print("=" * 72)
 
-    sel_tr = _build_selector_arrays(
+    sel_tr = _build_selector_arrays_global(
         const_hlt=const_hlt[train_idx],
         mask_hlt=mask_hlt[train_idx],
         const_off=const_off[train_idx],
         mask_off=masks_off[train_idx],
-        pools=pools_train,
-        neg_per_class=int(args.selector_neg_per_class),
+        pool=pools_train["class0"],
+        neg_per_jet=int(max(1, args.selector_neg_per_class * 2)),
     )
-    sel_va = _build_selector_arrays(
+    sel_va = _build_selector_arrays_global(
         const_hlt=const_hlt[val_idx],
         mask_hlt=mask_hlt[val_idx],
         const_off=const_off[val_idx],
         mask_off=masks_off[val_idx],
-        pools=pools_val,
-        neg_per_class=int(args.selector_neg_per_class),
+        pool=pools_val["class0"],
+        neg_per_jet=int(max(1, args.selector_neg_per_class * 2)),
     )
 
     ds_sel_tr = SelectorDataset(**sel_tr)
@@ -3662,146 +4112,126 @@ def main() -> None:
         patience=int(args.selector_patience),
     )
 
-    # Selector scores on candidate pools.
-    sel_bg_train = _score_selector_candidates(
+    sel_sc_train = _score_selector_candidates(
         selector, const_hlt[train_idx], mask_hlt[train_idx],
         pools_train["class0"]["const"], pools_train["class0"]["mask"], pools_train["class0"]["res_total"],
         cand_class_val=0, batch_size=int(args.batch_size), device=device
     )
-    sel_tp_train = _score_selector_candidates(
-        selector, const_hlt[train_idx], mask_hlt[train_idx],
-        pools_train["class1"]["const"], pools_train["class1"]["mask"], pools_train["class1"]["res_total"],
-        cand_class_val=1, batch_size=int(args.batch_size), device=device
-    )
-    sel_bg_val = _score_selector_candidates(
+    sel_sc_val = _score_selector_candidates(
         selector, const_hlt[val_idx], mask_hlt[val_idx],
         pools_val["class0"]["const"], pools_val["class0"]["mask"], pools_val["class0"]["res_total"],
         cand_class_val=0, batch_size=int(args.batch_size), device=device
     )
-    sel_tp_val = _score_selector_candidates(
-        selector, const_hlt[val_idx], mask_hlt[val_idx],
-        pools_val["class1"]["const"], pools_val["class1"]["mask"], pools_val["class1"]["res_total"],
-        cand_class_val=1, batch_size=int(args.batch_size), device=device
-    )
-    sel_bg_test = _score_selector_candidates(
+    sel_sc_test = _score_selector_candidates(
         selector, const_hlt[test_idx], mask_hlt[test_idx],
         pools_test["class0"]["const"], pools_test["class0"]["mask"], pools_test["class0"]["res_total"],
         cand_class_val=0, batch_size=int(args.batch_size), device=device
     )
-    sel_tp_test = _score_selector_candidates(
-        selector, const_hlt[test_idx], mask_hlt[test_idx],
-        pools_test["class1"]["const"], pools_test["class1"]["mask"], pools_test["class1"]["res_total"],
-        cand_class_val=1, batch_size=int(args.batch_size), device=device
-    )
 
-    # Build dualview candidate features.
-    dv_tr = _build_dualview_features(
-        pools=pools_train,
-        sel_score_bg=sel_bg_train,
-        sel_score_top=sel_tp_train,
+    # Build multi-view (top-3) candidate features from global pool.
+    mv_tr = _build_multiview3_features(
+        pool=pools_train["class0"],
+        sel_score=sel_sc_train,
         baseline_prob=p_base_train,
         score_alpha=float(args.selector_score_alpha),
+        n_select=int(args.mv_n_select),
     )
-    dv_va = _build_dualview_features(
-        pools=pools_val,
-        sel_score_bg=sel_bg_val,
-        sel_score_top=sel_tp_val,
+    mv_va = _build_multiview3_features(
+        pool=pools_val["class0"],
+        sel_score=sel_sc_val,
         baseline_prob=p_base_val,
         score_alpha=float(args.selector_score_alpha),
+        n_select=int(args.mv_n_select),
     )
-    dv_te = _build_dualview_features(
-        pools=pools_test,
-        sel_score_bg=sel_bg_test,
-        sel_score_top=sel_tp_test,
+    mv_te = _build_multiview3_features(
+        pool=pools_test["class0"],
+        sel_score=sel_sc_test,
         baseline_prob=p_base_test,
         score_alpha=float(args.selector_score_alpha),
+        n_select=int(args.mv_n_select),
     )
 
-    # STEP 7: Final dualview classifiers (no-gate and gated).
+    # STEP 7: Final multi-view classifiers (no-gate and gated).
     print("\n" + "=" * 72)
-    print("STEP 7: Final DualView Classifiers (NoGate + Gated)")
+    print("STEP 7: Final MultiView Classifiers (NoGate + Gated)")
     print("=" * 72)
 
-    ds_dv_tr = DualViewCandidateDataset(
+    ds_mv_tr = MultiView3CandidateDataset(
         const_hlt=const_hlt[train_idx],
         mask_hlt=mask_hlt[train_idx],
-        cand_top_const=dv_tr["cand_top_const"],
-        cand_top_mask=dv_tr["cand_top_mask"],
-        cand_bg_const=dv_tr["cand_bg_const"],
-        cand_bg_mask=dv_tr["cand_bg_mask"],
-        cand_feat=dv_tr["cand_feat"],
+        cand_const=mv_tr["cand_const"],
+        cand_mask=mv_tr["cand_mask"],
+        cand_feat=mv_tr["cand_feat"],
         labels=labels[train_idx],
         sample_weight=sw_train,
     )
-    ds_dv_va = DualViewCandidateDataset(
+    ds_mv_va = MultiView3CandidateDataset(
         const_hlt=const_hlt[val_idx],
         mask_hlt=mask_hlt[val_idx],
-        cand_top_const=dv_va["cand_top_const"],
-        cand_top_mask=dv_va["cand_top_mask"],
-        cand_bg_const=dv_va["cand_bg_const"],
-        cand_bg_mask=dv_va["cand_bg_mask"],
-        cand_feat=dv_va["cand_feat"],
+        cand_const=mv_va["cand_const"],
+        cand_mask=mv_va["cand_mask"],
+        cand_feat=mv_va["cand_feat"],
         labels=labels[val_idx],
         sample_weight=sw_val,
     )
-    ds_dv_te = DualViewCandidateDataset(
+    ds_mv_te = MultiView3CandidateDataset(
         const_hlt=const_hlt[test_idx],
         mask_hlt=mask_hlt[test_idx],
-        cand_top_const=dv_te["cand_top_const"],
-        cand_top_mask=dv_te["cand_top_mask"],
-        cand_bg_const=dv_te["cand_bg_const"],
-        cand_bg_mask=dv_te["cand_bg_mask"],
-        cand_feat=dv_te["cand_feat"],
+        cand_const=mv_te["cand_const"],
+        cand_mask=mv_te["cand_mask"],
+        cand_feat=mv_te["cand_feat"],
         labels=labels[test_idx],
         sample_weight=sw_test,
     )
 
-    dl_dv_tr = DataLoader(ds_dv_tr, batch_size=int(args.batch_size), shuffle=True, drop_last=True, num_workers=int(args.num_workers))
-    dl_dv_va = DataLoader(ds_dv_va, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
-    dl_dv_te = DataLoader(ds_dv_te, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
+    dl_mv_tr = DataLoader(ds_mv_tr, batch_size=int(args.batch_size), shuffle=True, drop_last=True, num_workers=int(args.num_workers))
+    dl_mv_va = DataLoader(ds_mv_va, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
+    dl_mv_te = DataLoader(ds_mv_te, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
 
-    dv_nogate = DualViewNoGateClassifier(
-        cand_feat_dim=int(dv_tr["cand_feat"].shape[1]),
+    mv_nogate = MultiView3NoGateClassifier(
+        cand_feat_dim=int(mv_tr["cand_feat"].shape[1]),
         embed_dim=int(args.embed_dim),
         num_heads=int(args.num_heads),
         num_layers=max(2, int(args.num_layers // 2)),
         ff_dim=int(args.ff_dim),
         dropout=float(args.dropout),
+        num_cands=int(args.mv_n_select),
     ).to(device)
-    dv_nogate, dv_nogate_metrics = _train_dualview_model(
-        model=dv_nogate,
-        train_loader=dl_dv_tr,
-        val_loader=dl_dv_va,
+    mv_nogate, mv_nogate_metrics = _train_multiview3_model(
+        model=mv_nogate,
+        train_loader=dl_mv_tr,
+        val_loader=dl_mv_va,
         device=device,
         epochs=int(args.dual_epochs),
         lr=float(args.dual_lr),
         weight_decay=float(args.dual_weight_decay),
         patience=int(args.dual_patience),
-        name="DualViewNoGate",
+        name="MultiView3NoGate",
     )
 
-    dv_gated = DualViewGatedClassifier(
-        cand_feat_dim=int(dv_tr["cand_feat"].shape[1]),
+    mv_gated = MultiView3GatedClassifier(
+        cand_feat_dim=int(mv_tr["cand_feat"].shape[1]),
         embed_dim=int(args.embed_dim),
         num_heads=int(args.num_heads),
         num_layers=max(2, int(args.num_layers // 2)),
         ff_dim=int(args.ff_dim),
         dropout=float(args.dropout),
+        num_cands=int(args.mv_n_select),
     ).to(device)
-    dv_gated, dv_gated_metrics = _train_dualview_model(
-        model=dv_gated,
-        train_loader=dl_dv_tr,
-        val_loader=dl_dv_va,
+    mv_gated, mv_gated_metrics = _train_multiview3_model(
+        model=mv_gated,
+        train_loader=dl_mv_tr,
+        val_loader=dl_mv_va,
         device=device,
         epochs=int(args.dual_epochs),
         lr=float(args.dual_lr),
         weight_decay=float(args.dual_weight_decay),
         patience=int(args.dual_patience),
-        name="DualViewGated",
+        name="MultiView3Gated",
     )
 
-    auc_nog, fpr50_nog, pred_nog, lab_final, w_final = _eval_dualview_model(dv_nogate, dl_dv_te, device)
-    auc_gat, fpr50_gat, pred_gat, _lab2, _w2 = _eval_dualview_model(dv_gated, dl_dv_te, device)
+    auc_nog, fpr50_nog, pred_nog, lab_final, w_final = _eval_multiview3_model(mv_nogate, dl_mv_te, device)
+    auc_gat, fpr50_gat, pred_gat, _lab2, _w2 = _eval_multiview3_model(mv_gated, dl_mv_te, device)
 
     fpr_t, tpr_t, _ = roc_curve(teacher_y_test, teacher_p_test, sample_weight=teacher_w_test)
     fpr_b, tpr_b, _ = roc_curve(baseline_y_test, baseline_p_test, sample_weight=baseline_w_test)
@@ -3814,8 +4244,8 @@ def main() -> None:
     print(
         f"Teacher AUC={teacher_auc_test:.4f} FPR50={fpr50_teacher:.6f} | "
         f"HLT baseline AUC={baseline_auc_test:.4f} FPR50={fpr50_baseline:.6f} | "
-        f"m33 NoGate AUC={auc_nog:.4f} FPR50={fpr50_nog:.6f} | "
-        f"m33 Gated AUC={auc_gat:.4f} FPR50={fpr50_gat:.6f}"
+        f"m34 NoGate AUC={auc_nog:.4f} FPR50={fpr50_nog:.6f} | "
+        f"m34 Gated AUC={auc_gat:.4f} FPR50={fpr50_gat:.6f}"
     )
 
     # Save artifacts.
@@ -3832,25 +4262,25 @@ def main() -> None:
     torch.save({"model": degrader.state_dict(), "metrics": degrader_metrics}, save_root / "degrader.pt")
     torch.save({"model": proposer.state_dict(), "metrics": proposer_metrics}, save_root / "proposer.pt")
     torch.save({"model": selector.state_dict(), "metrics": selector_metrics}, save_root / "selector.pt")
-    torch.save({"model": dv_nogate.state_dict(), "metrics": dv_nogate_metrics}, save_root / "dualview_nogate.pt")
-    torch.save({"model": dv_gated.state_dict(), "metrics": dv_gated_metrics}, save_root / "dualview_gated.pt")
+    torch.save({"model": mv_nogate.state_dict(), "metrics": mv_nogate_metrics}, save_root / "multiview_nogate.pt")
+    torch.save({"model": mv_gated.state_dict(), "metrics": mv_gated_metrics}, save_root / "multiview_gated.pt")
 
     np.savez_compressed(
-        save_root / "m33_test_scores.npz",
+        save_root / "m34_test_scores.npz",
         labels_test=lab_final.astype(np.float32),
-        preds_m33_nogate=pred_nog.astype(np.float32),
-        preds_m33_gated=pred_gat.astype(np.float32),
+        preds_m34_nogate=pred_nog.astype(np.float32),
+        preds_m34_gated=pred_gat.astype(np.float32),
         preds_teacher=np.asarray(teacher_p_test, dtype=np.float32),
         preds_hlt=np.asarray(baseline_p_test, dtype=np.float32),
         sample_weight=np.asarray(w_final, dtype=np.float32),
         auc_teacher=float(teacher_auc_test),
         auc_hlt=float(baseline_auc_test),
-        auc_m33_nogate=float(auc_nog),
-        auc_m33_gated=float(auc_gat),
+        auc_m34_nogate=float(auc_nog),
+        auc_m34_gated=float(auc_gat),
         fpr50_teacher=float(fpr50_teacher),
         fpr50_hlt=float(fpr50_baseline),
-        fpr50_m33_nogate=float(fpr50_nog),
-        fpr50_m33_gated=float(fpr50_gat),
+        fpr50_m34_nogate=float(fpr50_nog),
+        fpr50_m34_gated=float(fpr50_gat),
     )
 
     if bool(args.save_fusion_scores):
@@ -3859,13 +4289,13 @@ def main() -> None:
             labels_test=lab_final.astype(np.float32),
             preds_teacher=np.asarray(teacher_p_test, dtype=np.float32),
             preds_hlt=np.asarray(baseline_p_test, dtype=np.float32),
-            preds_m33_nogate=np.asarray(pred_nog, dtype=np.float32),
-            preds_m33_gated=np.asarray(pred_gat, dtype=np.float32),
+            preds_m34_nogate=np.asarray(pred_nog, dtype=np.float32),
+            preds_m34_gated=np.asarray(pred_gat, dtype=np.float32),
             sample_weight=np.asarray(w_final, dtype=np.float32),
         )
 
     report = {
-        "model": "m33_detfeas_dualview",
+        "model": "m34_globalcand_multiview3",
         "seed": int(args.seed),
         "n_train_jets": int(args.n_train_jets),
         "split": {
@@ -3881,15 +4311,15 @@ def main() -> None:
             "auc_test": float(baseline_auc_test),
             "fpr50_test": float(fpr50_baseline),
         },
-        "m33_nogate": {
+        "m34_nogate": {
             "auc_test": float(auc_nog),
             "fpr50_test": float(fpr50_nog),
-            "metrics": dv_nogate_metrics,
+            "metrics": mv_nogate_metrics,
         },
-        "m33_gated": {
+        "m34_gated": {
             "auc_test": float(auc_gat),
             "fpr50_test": float(fpr50_gat),
-            "metrics": dv_gated_metrics,
+            "metrics": mv_gated_metrics,
         },
         "prior_train_metrics": prior_train_metrics,
         "degrader_metrics": degrader_metrics,
@@ -3900,6 +4330,10 @@ def main() -> None:
             "val": pools_val["stats"],
             "test": pools_test["stats"],
         },
+        "multiview": {
+            "n_select": int(args.mv_n_select),
+            "selector_score_alpha": float(args.selector_score_alpha),
+        },
         "teacher_conf_weights": {
             "train_mean": float(w_conf_train.mean()),
             "train_p95": float(np.quantile(w_conf_train, 0.95)),
@@ -3909,7 +4343,7 @@ def main() -> None:
             "mean_normalized": bool(not args.disable_conf_mean_normalize),
         },
     }
-    with open(save_root / "m33_report.json", "w", encoding="utf-8") as f:
+    with open(save_root / "m34_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     np.savez_compressed(
