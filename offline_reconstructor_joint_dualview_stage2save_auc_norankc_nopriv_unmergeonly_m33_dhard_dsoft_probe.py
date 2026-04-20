@@ -440,6 +440,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cand_e_sigma", type=float, default=0.08)
     p.add_argument("--cand_drop_prob", type=float, default=0.08)
     p.add_argument("--rank_top_m", type=int, default=8)
+    p.add_argument("--rank_eval_batch_size", type=int, default=512)
     p.add_argument("--eps_total", type=float, default=0.20)
     p.add_argument("--eps_count", type=float, default=0.25)
 
@@ -755,48 +756,63 @@ def main() -> None:
     )
 
     b, k, l, _ = cand_c.shape
-    cand_cf = torch.tensor(cand_c.reshape(b * k, l, 4), dtype=torch.float32, device=device)
-    cand_mf = torch.tensor(cand_m.reshape(b * k, l), dtype=torch.bool, device=device)
-    h_tgt_f = torch.tensor(np.repeat(h_tgt, k, axis=0), dtype=torch.float32, device=device)
-    hm_tgt_f = torch.tensor(np.repeat(hm_tgt, k, axis=0), dtype=torch.bool, device=device)
+    cand_flat = cand_c.reshape(b * k, l, 4).astype(np.float32)
+    cand_mask_flat = cand_m.reshape(b * k, l).astype(bool)
+    h_tgt_rep = np.repeat(h_tgt, k, axis=0).astype(np.float32)
+    hm_tgt_rep = np.repeat(hm_tgt, k, axis=0).astype(bool)
     keys_f = np.repeat(k_base, k).astype(np.int64)
 
+    rank_bs = int(max(32, args.rank_eval_batch_size))
+    soft_tot_flat = np.zeros((b * k,), dtype=np.float64)
     with torch.no_grad():
-        ph, pl = degrader(cand_cf, cand_mf)
-        pw = torch.sigmoid(pl)
-        soft = _soft_residual_vec(
-            pred_const=ph,
-            pred_w=pw,
-            tgt_const=h_tgt_f,
-            tgt_mask=hm_tgt_f,
+        for s in range(0, b * k, rank_bs):
+            e = min(b * k, s + rank_bs)
+            cand_cf = torch.tensor(cand_flat[s:e], dtype=torch.float32, device=device)
+            cand_mf = torch.tensor(cand_mask_flat[s:e], dtype=torch.bool, device=device)
+            h_tgt_f = torch.tensor(h_tgt_rep[s:e], dtype=torch.float32, device=device)
+            hm_tgt_f = torch.tensor(hm_tgt_rep[s:e], dtype=torch.bool, device=device)
+            ph, pl = degrader(cand_cf, cand_mf)
+            pw = torch.sigmoid(pl)
+            soft = _soft_residual_vec(
+                pred_const=ph,
+                pred_w=pw,
+                tgt_const=h_tgt_f,
+                tgt_mask=hm_tgt_f,
+                w_chamfer=float(args.res_w_chamfer),
+                w_count=float(args.res_w_count),
+                w_pt=float(args.res_w_pt),
+                w_mass=float(args.res_w_mass),
+                unmatched_penalty=float(args.unmatched_penalty),
+            )
+            soft_tot_flat[s:e] = soft["total"].detach().cpu().numpy().astype(np.float64)
+    soft_tot = soft_tot_flat.reshape(b, k).astype(np.float64)
+
+    h_pred_np, hm_pred_np, _ = m33._apply_hlt_effects_deterministic_keyed(
+        const=cand_flat,
+        mask=cand_mask_flat,
+        cfg=cfg,
+        jet_keys=keys_f,
+        base_seed=int(args.seed + args.dhard_seed_offset),
+    )
+    hard_tot_flat = np.zeros((b * k,), dtype=np.float64)
+    hard_cnt_flat = np.zeros((b * k,), dtype=np.float64)
+    for s in range(0, b * k, rank_bs):
+        e = min(b * k, s + rank_bs)
+        hard = m33._residual_fast_vec(
+            pred_const=torch.tensor(h_pred_np[s:e], dtype=torch.float32, device=device),
+            pred_mask=torch.tensor(hm_pred_np[s:e], dtype=torch.bool, device=device),
+            tgt_const=torch.tensor(h_tgt_rep[s:e], dtype=torch.float32, device=device),
+            tgt_mask=torch.tensor(hm_tgt_rep[s:e], dtype=torch.bool, device=device),
             w_chamfer=float(args.res_w_chamfer),
             w_count=float(args.res_w_count),
             w_pt=float(args.res_w_pt),
             w_mass=float(args.res_w_mass),
             unmatched_penalty=float(args.unmatched_penalty),
         )
-        soft_tot = soft["total"].detach().cpu().numpy().reshape(b, k).astype(np.float64)
-
-    h_pred_np, hm_pred_np, _ = m33._apply_hlt_effects_deterministic_keyed(
-        const=cand_c.reshape(b * k, l, 4),
-        mask=cand_m.reshape(b * k, l),
-        cfg=cfg,
-        jet_keys=keys_f,
-        base_seed=int(args.seed + args.dhard_seed_offset),
-    )
-    hard = m33._residual_fast_vec(
-        pred_const=torch.tensor(h_pred_np, dtype=torch.float32, device=device),
-        pred_mask=torch.tensor(hm_pred_np, dtype=torch.bool, device=device),
-        tgt_const=h_tgt_f,
-        tgt_mask=hm_tgt_f,
-        w_chamfer=float(args.res_w_chamfer),
-        w_count=float(args.res_w_count),
-        w_pt=float(args.res_w_pt),
-        w_mass=float(args.res_w_mass),
-        unmatched_penalty=float(args.unmatched_penalty),
-    )
-    hard_tot = hard["total"].detach().cpu().numpy().reshape(b, k).astype(np.float64)
-    hard_cnt = hard["count"].detach().cpu().numpy().reshape(b, k).astype(np.float64)
+        hard_tot_flat[s:e] = hard["total"].detach().cpu().numpy().astype(np.float64)
+        hard_cnt_flat[s:e] = hard["count"].detach().cpu().numpy().astype(np.float64)
+    hard_tot = hard_tot_flat.reshape(b, k).astype(np.float64)
+    hard_cnt = hard_cnt_flat.reshape(b, k).astype(np.float64)
 
     topm = int(max(1, min(int(args.rank_top_m), k)))
     spear = []

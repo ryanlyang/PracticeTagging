@@ -17,6 +17,7 @@ SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
 BATCH_SIZE="${BATCH_SIZE:-80}"
+RANK_EVAL_BATCH_SIZE="${RANK_EVAL_BATCH_SIZE:-256}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-70000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-20000}"
@@ -60,6 +61,7 @@ CMD=(
   --cand_eval_count 1400
   --cand_per_jet 24
   --rank_top_m 8
+  --rank_eval_batch_size "${RANK_EVAL_BATCH_SIZE}"
   --refine_eval_jets 350
   --refine_selected_k 6
   --refine_steps 6
