@@ -266,7 +266,10 @@ def draw_feature_on_axis(
         x = vals_by_class[cls][feat_idx]
         if x.size == 0:
             continue
-        x_plot = np.clip(x, xlo, xhi)
+        keep = (x >= xlo) & (x <= xhi)
+        x_plot = x[keep]
+        if x_plot.size == 0:
+            continue
         h = ax.hist(
             x_plot,
             bins=bin_edges,
