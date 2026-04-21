@@ -9,10 +9,8 @@
 
 set -euo pipefail
 
-mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
-
 RUN_NAME="${RUN_NAME:-model36_k3_dict1m_retrieval_dualview_150k75k300k_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model36_dictretrieval_dualview}"
+SAVE_DIR="${SAVE_DIR:-}"
 
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
@@ -31,8 +29,16 @@ set +u
 source ~/.bashrc
 set -u
 conda activate atlas_kd
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+if [[ -n "${PROJECT_ROOT:-}" && -d "${PROJECT_ROOT}" ]]; then
+  REPO_ROOT="$(cd "${PROJECT_ROOT}" && pwd)"
+elif [[ -f "${SUBMIT_DIR}/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m36_dictretrieval_dualview.py" ]]; then
+  REPO_ROOT="$(cd "${SUBMIT_DIR}" && pwd)"
+elif [[ -f "${SUBMIT_DIR}/../../offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m36_dictretrieval_dualview.py" ]]; then
+  REPO_ROOT="$(cd "${SUBMIT_DIR}/../.." && pwd)"
+else
+  REPO_ROOT="$(cd "${SUBMIT_DIR}" && pwd)"
+fi
 cd "${REPO_ROOT}"
 
 export OMP_NUM_THREADS=1
@@ -41,6 +47,10 @@ export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export PYTHONHASHSEED="${SEED}"
 
+if [[ -z "${SAVE_DIR}" ]]; then
+  SAVE_DIR="${REPO_ROOT}/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model36_dictretrieval_dualview"
+fi
+mkdir -p "${REPO_ROOT}/offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k"
 mkdir -p "${SAVE_DIR}"
 
 CMD=(
