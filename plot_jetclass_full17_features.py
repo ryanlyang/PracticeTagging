@@ -45,6 +45,16 @@ FEATURE_NAMES_FULL17 = [
     "dzerr",
 ]
 
+DISCRETE_BINARY_FEATURES = {
+    "isChargedHadron",
+    "isNeutralHadron",
+    "isPhoton",
+    "isElectron",
+    "isMuon",
+}
+
+SPIKE_HEAVY_FEATURES = {"d0", "dz"}
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Plot JetClass full-17 feature distributions by class")
@@ -150,6 +160,136 @@ def robust_range(values: np.ndarray, q_low: float, q_high: float) -> Tuple[float
         eps = 1e-3 if abs(lo) < 1.0 else 1e-3 * abs(lo)
         return lo - eps, hi + eps
     return lo, hi
+
+
+def draw_feature_on_axis(
+    ax,
+    feat_name: str,
+    feat_idx: int,
+    vals_by_class: Dict[str, List[np.ndarray]],
+    class_names: List[str],
+    colors: np.ndarray,
+    bins: int,
+    q_low: float,
+    q_high: float,
+    show_class_legend: bool = False,
+    show_charge_legend: bool = False,
+):
+    """Draw one feature on a given axis using continuous/discrete-appropriate style."""
+    if feat_name == "charge":
+        xloc = np.arange(len(class_names), dtype=np.float32)
+        frac_neg, frac_zero, frac_pos = [], [], []
+        for cls in class_names:
+            x = vals_by_class[cls][feat_idx]
+            if x.size == 0:
+                frac_neg.append(0.0)
+                frac_zero.append(0.0)
+                frac_pos.append(0.0)
+                continue
+            q = np.rint(x).astype(np.int32, copy=False)
+            q = np.clip(q, -1, 1)
+            n = float(q.size)
+            frac_neg.append(float(np.sum(q == -1)) / n)
+            frac_zero.append(float(np.sum(q == 0)) / n)
+            frac_pos.append(float(np.sum(q == 1)) / n)
+
+        h1 = ax.bar(xloc, frac_neg, width=0.8, color="#d73027", alpha=0.95, label="q = -1")
+        h2 = ax.bar(xloc, frac_zero, width=0.8, bottom=np.array(frac_neg), color="#bdbdbd", alpha=0.95, label="q = 0")
+        h3 = ax.bar(
+            xloc,
+            frac_pos,
+            width=0.8,
+            bottom=np.array(frac_neg) + np.array(frac_zero),
+            color="#4575b4",
+            alpha=0.95,
+            label="q = +1",
+        )
+        ax.set_ylim(0.0, 1.18)
+        ax.set_ylabel("Fraction of Constituents")
+        ax.set_xticks(xloc)
+        ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=9)
+        ax.grid(alpha=0.25, linestyle="--", linewidth=0.5, axis="y")
+        # Add explicit percentages for charge composition per class.
+        for i in range(len(class_names)):
+            txt = (
+                f"-1: {100.0*frac_neg[i]:.1f}%\n"
+                f" 0: {100.0*frac_zero[i]:.1f}%\n"
+                f"+1: {100.0*frac_pos[i]:.1f}%"
+            )
+            ax.text(
+                xloc[i],
+                1.02,
+                txt,
+                ha="center",
+                va="bottom",
+                fontsize=6,
+                linespacing=0.95,
+            )
+        if show_charge_legend:
+            ax.legend(handles=[h1, h2, h3], frameon=False, fontsize=9, loc="upper right")
+        return [], []
+
+    if feat_name in DISCRETE_BINARY_FEATURES:
+        xloc = np.arange(len(class_names), dtype=np.float32)
+        pos_rate = []
+        for cls in class_names:
+            x = vals_by_class[cls][feat_idx]
+            if x.size == 0:
+                pos_rate.append(0.0)
+                continue
+            pos_rate.append(float(np.mean(x > 0.5)))
+
+        bars = ax.bar(xloc, pos_rate, width=0.8, color=colors, alpha=0.9)
+        ax.set_ylim(0.0, 1.08)
+        ax.set_ylabel("P(feature = 1)")
+        ax.set_xticks(xloc)
+        ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=9)
+        ax.grid(alpha=0.25, linestyle="--", linewidth=0.5, axis="y")
+        # Add percentage labels on top of each class bar.
+        for bar, p in zip(bars, pos_rate):
+            ax.text(
+                bar.get_x() + bar.get_width() * 0.5,
+                min(1.04, p + 0.02),
+                f"{100.0*p:.1f}%",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+            )
+        return [], []
+
+    pooled = np.concatenate([vals_by_class[c][feat_idx] for c in class_names if vals_by_class[c][feat_idx].size > 0], axis=0)
+    xlo, xhi = robust_range(pooled, q_low=q_low, q_high=q_high)
+    bin_edges = np.linspace(xlo, xhi, int(bins) + 1)
+
+    handles, labels = [], []
+    for c_idx, cls in enumerate(class_names):
+        x = vals_by_class[cls][feat_idx]
+        if x.size == 0:
+            continue
+        x_plot = np.clip(x, xlo, xhi)
+        h = ax.hist(
+            x_plot,
+            bins=bin_edges,
+            histtype="step",
+            density=True,
+            linewidth=1.2,
+            color=colors[c_idx],
+            alpha=0.95,
+            label=cls,
+        )
+        if show_class_legend:
+            handles.append(h[2][0])
+            labels.append(cls)
+
+    ax.set_xlim(xlo, xhi)
+    ax.grid(alpha=0.25, linestyle="--", linewidth=0.5)
+    if feat_name in SPIKE_HEAVY_FEATURES:
+        # d0/dz typically have a sharp near-zero spike; log-y reveals tails.
+        ymin, ymax = ax.get_ylim()
+        ax.set_yscale("log")
+        ax.set_ylim(max(ymin, 1e-3), ymax)
+        ax.axvline(0.0, color="k", linestyle=":", linewidth=0.8, alpha=0.7)
+    return handles, labels
 
 
 def write_stats_csv(
@@ -271,42 +411,53 @@ def main() -> None:
     colors = plt.cm.tab10(np.linspace(0, 1, len(class_names)))
     legend_handles = []
     legend_labels = []
+    per_feature_dir = args.output_dir / "per_feature_png"
+    per_feature_dir.mkdir(parents=True, exist_ok=True)
 
     print("Building distribution plots...")
     for j, feat_name in enumerate(FEATURE_NAMES_FULL17):
         ax = axes[j]
-        pooled = np.concatenate([vals_by_class[c][j] for c in class_names if vals_by_class[c][j].size > 0], axis=0)
-        xlo, xhi = robust_range(
-            pooled,
+        handles, labels = draw_feature_on_axis(
+            ax=ax,
+            feat_name=feat_name,
+            feat_idx=j,
+            vals_by_class=vals_by_class,
+            class_names=class_names,
+            colors=colors,
+            bins=int(args.bins),
             q_low=float(args.clip_quantile_low),
             q_high=float(args.clip_quantile_high),
+            show_class_legend=(len(legend_handles) == 0),
+            show_charge_legend=True,
         )
-        bins = np.linspace(xlo, xhi, int(args.bins) + 1)
-
-        for c_idx, cls in enumerate(class_names):
-            x = vals_by_class[cls][j]
-            if x.size == 0:
-                continue
-            x_plot = np.clip(x, xlo, xhi)
-            h = ax.hist(
-                x_plot,
-                bins=bins,
-                histtype="step",
-                density=True,
-                linewidth=1.2,
-                color=colors[c_idx],
-                alpha=0.95,
-                label=cls,
-            )
-            if j == 0:
-                legend_handles.append(h[2][0])
-                legend_labels.append(cls)
+        if handles and labels and len(legend_handles) == 0:
+            legend_handles = handles
+            legend_labels = labels
 
         ax.set_title(feat_name, fontsize=12)
-        ax.grid(alpha=0.25, linestyle="--", linewidth=0.5)
-        ax.set_xlim(xlo, xhi)
-        if feat_name in {"isChargedHadron", "isNeutralHadron", "isPhoton", "isElectron", "isMuon"}:
-            ax.set_xlim(-0.1, 1.1)
+
+        # Save one dedicated PNG per feature (easy for presentations/email).
+        fig_single, ax_single = plt.subplots(figsize=(10.5, 6.0))
+        draw_feature_on_axis(
+            ax=ax_single,
+            feat_name=feat_name,
+            feat_idx=j,
+            vals_by_class=vals_by_class,
+            class_names=class_names,
+            colors=colors,
+            bins=int(args.bins),
+            q_low=float(args.clip_quantile_low),
+            q_high=float(args.clip_quantile_high),
+            show_class_legend=(feat_name not in DISCRETE_BINARY_FEATURES and feat_name != "charge"),
+            show_charge_legend=True,
+        )
+        ax_single.set_title(f"{feat_name} by class", fontsize=13)
+        if feat_name not in DISCRETE_BINARY_FEATURES and feat_name != "charge":
+            ax_single.legend(frameon=False, fontsize=8, ncol=2)
+        fig_single.tight_layout()
+        out_single = per_feature_dir / f"{j + 1:02d}_{feat_name}.png"
+        fig_single.savefig(out_single, dpi=180)
+        plt.close(fig_single)
 
     # Hide unused subplot slot.
     for k in range(n_feat, nrows * ncols):
@@ -321,15 +472,16 @@ def main() -> None:
         ),
         fontsize=14,
     )
-    fig.legend(
-        legend_handles,
-        legend_labels,
-        loc="lower center",
-        ncol=min(5, len(class_names)),
-        frameon=False,
-        fontsize=10,
-        bbox_to_anchor=(0.5, 0.03),
-    )
+    if legend_handles and legend_labels:
+        fig.legend(
+            legend_handles,
+            legend_labels,
+            loc="lower center",
+            ncol=min(5, len(class_names)),
+            frameon=False,
+            fontsize=10,
+            bbox_to_anchor=(0.5, 0.03),
+        )
     fig.tight_layout(rect=[0.02, 0.07, 1.0, 0.95])
 
     out_png = args.output_dir / "full17_feature_distributions_by_class.png"
@@ -362,12 +514,20 @@ def main() -> None:
         "stats_csv": str(stats_csv),
         "plot_png": str(out_png),
         "plot_pdf": str(out_pdf),
+        "per_feature_png_dir": str(per_feature_dir),
     }
     with (args.output_dir / "run_metadata.json").open("w") as f:
         json.dump(meta, f, indent=2)
 
     print("Done.")
-    print(f"Saved:\n- {out_png}\n- {out_pdf}\n- {stats_csv}\n- {args.output_dir / 'run_metadata.json'}")
+    print(
+        "Saved:\n"
+        f"- {out_png}\n"
+        f"- {out_pdf}\n"
+        f"- {stats_csv}\n"
+        f"- {per_feature_dir} (17 per-feature PNGs)\n"
+        f"- {args.output_dir / 'run_metadata.json'}"
+    )
 
 
 if __name__ == "__main__":
