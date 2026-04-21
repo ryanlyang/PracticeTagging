@@ -31,7 +31,9 @@ set +u
 source ~/.bashrc
 set -u
 conda activate atlas_kd
-cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+cd "${REPO_ROOT}"
 
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
