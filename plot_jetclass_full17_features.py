@@ -82,6 +82,7 @@ def parse_args() -> argparse.Namespace:
 
 def choose_split(
     files_by_class: Dict[str, List[Path]],
+    split_files_by_class_fn,
     n_train: int,
     n_val: int,
     n_test: int,
@@ -89,7 +90,7 @@ def choose_split(
     seed: int,
     split_name: str,
 ) -> Dict[str, List[Path]]:
-    tr, va, te = split_files_by_class(
+    tr, va, te = split_files_by_class_fn(
         files_by_class=files_by_class,
         n_train=n_train,
         n_val=n_val,
@@ -221,6 +222,7 @@ def main() -> None:
     files_by_class = collect_files_by_class(args.data_dir)
     split_files = choose_split(
         files_by_class=files_by_class,
+        split_files_by_class_fn=split_files_by_class,
         n_train=int(args.train_files_per_class),
         n_val=int(args.val_files_per_class),
         n_test=int(args.test_files_per_class),
