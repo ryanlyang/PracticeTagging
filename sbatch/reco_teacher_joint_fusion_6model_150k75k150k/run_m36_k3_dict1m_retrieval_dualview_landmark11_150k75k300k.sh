@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=m36dret
+#SBATCH --job-name=m36dlm11
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --mem=96G
 #SBATCH --time=1-00:00:00
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m36_k3_dict1m_retrieval_dualview_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m36_k3_dict1m_retrieval_dualview_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m36_k3_dict1m_retrieval_dualview_landmark11_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m36_k3_dict1m_retrieval_dualview_landmark11_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model36_k3_dict1m_retrieval_dualview_150k75k300k_seed0}"
+RUN_NAME="${RUN_NAME:-model36_k3_dict1m_retrieval_dualview_landmark11_150k75k300k_seed0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model36_dictretrieval_dualview}"
 
 SEED="${SEED:-0}"
@@ -67,6 +67,8 @@ CMD=(
   --retrieval_w_count 0.25
   --retrieval_w_pt 0.12
   --retrieval_w_mass 0.08
+  --retrieval_descriptor_variant landmark11
+  --retrieval_landmarks 8
   --retrieval_index_mode descriptor
   --selector_epochs 45
   --selector_lr 2e-4
@@ -79,7 +81,7 @@ CMD=(
 )
 
 echo "============================================================"
-echo "Model-36 K=3 Dictionary-Retrieval DualView"
+echo "Model-36 K=3 Dictionary-Retrieval DualView (landmark11)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Split: dict=${N_DICT_SPLIT}, train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}"
 echo "============================================================"

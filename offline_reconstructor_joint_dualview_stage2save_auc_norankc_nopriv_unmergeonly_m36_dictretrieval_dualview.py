@@ -25,6 +25,8 @@ from typing import Dict, Tuple
 
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import NearestNeighbors
 from sklearn.metrics import roc_curve
@@ -47,6 +49,24 @@ class RetrievalClassIndex:
     class_val: int
     local_ids: np.ndarray
     nn: NearestNeighbors
+
+
+class RetrievalEmbedder(nn.Module):
+    def __init__(self, input_dim: int, hidden_dim: int, embed_dim: int, dropout: float):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(int(input_dim), int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), int(hidden_dim)),
+            nn.GELU(),
+            nn.Dropout(float(dropout)),
+            nn.Linear(int(hidden_dim), int(embed_dim)),
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        z = self.net(x)
+        return F.normalize(z, dim=-1)
 
 
 def _safe_div(a: np.ndarray, b: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -120,6 +140,209 @@ def _build_retrieval_desc(
     return desc
 
 
+def _select_landmark_indices(desc: np.ndarray, n_landmarks: int, seed: int) -> np.ndarray:
+    n = int(desc.shape[0])
+    k = int(max(1, min(n_landmarks, n)))
+    rng = np.random.default_rng(int(seed))
+    first = int(rng.integers(0, n))
+    ids = [first]
+    min_d2 = np.sum((desc - desc[first:first + 1]) ** 2, axis=1)
+    min_d2[first] = -1.0
+    for _ in range(1, k):
+        nxt = int(np.argmax(min_d2))
+        ids.append(nxt)
+        d2 = np.sum((desc - desc[nxt:nxt + 1]) ** 2, axis=1)
+        min_d2 = np.minimum(min_d2, d2)
+        min_d2[ids] = -1.0
+    return np.asarray(ids, dtype=np.int64)
+
+
+def _build_landmark11_desc(
+    desc: np.ndarray,
+    meta: JetMeta,
+    landmark_desc: np.ndarray,
+    max_constits: int,
+) -> np.ndarray:
+    # 11D = 8 landmark-distance channels + count + log(1+pt) + log(1+mass)
+    # Distances are computed in standardized physics-descriptor space.
+    k = int(landmark_desc.shape[0])
+    diff = desc[:, None, :] - landmark_desc[None, :, :]
+    d = np.sqrt(np.maximum((diff * diff).sum(axis=2), 0.0)).astype(np.float32)
+    if k < 8:
+        d = np.concatenate([d, np.zeros((d.shape[0], 8 - k), dtype=np.float32)], axis=1)
+    elif k > 8:
+        d = d[:, :8]
+    c = (meta.count / float(max_constits)).astype(np.float32)[:, None]
+    p = np.log1p(meta.jet_pt).astype(np.float32)[:, None]
+    m = np.log1p(meta.jet_mass).astype(np.float32)[:, None]
+    return np.concatenate([d, c, p, m], axis=1).astype(np.float32)
+
+
+def _train_retrieval_embedder(
+    desc_train: np.ndarray,
+    meta_train: JetMeta,
+    labels_train: np.ndarray,
+    desc_dict: np.ndarray,
+    meta_dict: JetMeta,
+    dict_labels: np.ndarray,
+    max_constits: int,
+    w_desc: float,
+    w_count: float,
+    w_pt: float,
+    w_mass: float,
+    seed: int,
+    device: torch.device,
+    embed_dim: int,
+    hidden_dim: int,
+    dropout: float,
+    epochs: int,
+    batch_size: int,
+    pool_size: int,
+    train_anchors: int,
+    lr: float,
+    weight_decay: float,
+    margin: float,
+) -> Tuple[RetrievalEmbedder, Dict[str, float]]:
+    rng = np.random.default_rng(int(seed))
+    n_all = int(desc_train.shape[0])
+    n_use = int(min(max(1, train_anchors), n_all))
+    if n_use < n_all:
+        use_idx = rng.choice(n_all, size=n_use, replace=False)
+    else:
+        use_idx = np.arange(n_all, dtype=np.int64)
+
+    dtr = torch.tensor(desc_train[use_idx], dtype=torch.float32, device=device)
+    ytr = torch.tensor(labels_train[use_idx].astype(np.int64), dtype=torch.long, device=device)
+    ctr = torch.tensor(meta_train.count[use_idx], dtype=torch.float32, device=device)
+    ptr = torch.tensor(meta_train.jet_pt[use_idx], dtype=torch.float32, device=device)
+    mtr = torch.tensor(meta_train.jet_mass[use_idx], dtype=torch.float32, device=device)
+
+    dd = torch.tensor(desc_dict, dtype=torch.float32, device=device)
+    cd = torch.tensor(meta_dict.count, dtype=torch.float32, device=device)
+    pd = torch.tensor(meta_dict.jet_pt, dtype=torch.float32, device=device)
+    md = torch.tensor(meta_dict.jet_mass, dtype=torch.float32, device=device)
+
+    class0 = torch.tensor(np.where(dict_labels.astype(np.int64) == 0)[0], dtype=torch.long, device=device)
+    class1 = torch.tensor(np.where(dict_labels.astype(np.int64) == 1)[0], dtype=torch.long, device=device)
+    if int(class0.numel()) == 0 or int(class1.numel()) == 0:
+        raise RuntimeError("Dictionary must have both classes for learned retrieval embedder.")
+
+    model = RetrievalEmbedder(
+        input_dim=int(desc_train.shape[1]),
+        hidden_dim=int(hidden_dim),
+        embed_dim=int(embed_dim),
+        dropout=float(dropout),
+    ).to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
+
+    eps = 1e-6
+    bs = int(max(16, batch_size))
+    psize = int(max(32, pool_size))
+    maxc = float(max(1, max_constits))
+    loss_hist = []
+
+    for ep in range(int(max(1, epochs))):
+        model.train()
+        perm = torch.randperm(dtr.shape[0], device=device)
+        ep_loss = 0.0
+        ep_n = 0
+
+        for s in range(0, int(perm.numel()), bs):
+            idx = perm[s:s + bs]
+            if idx.numel() == 0:
+                continue
+            ad = dtr[idx]
+            ay = ytr[idx]
+            ac = ctr[idx]
+            ap = ptr[idx]
+            am = mtr[idx]
+
+            b = int(idx.numel())
+            cand_idx = torch.empty((b, psize), dtype=torch.long, device=device)
+            is_bg = ay == 0
+            is_tp = ~is_bg
+            if bool(is_bg.any()):
+                nbg = int(is_bg.sum().item())
+                rid = torch.randint(0, int(class0.numel()), (nbg, psize), device=device)
+                cand_idx[is_bg] = class0[rid]
+            if bool(is_tp.any()):
+                ntp = int(is_tp.sum().item())
+                rid = torch.randint(0, int(class1.numel()), (ntp, psize), device=device)
+                cand_idx[is_tp] = class1[rid]
+
+            cd_desc = dd[cand_idx]  # [B, P, D]
+            rs = torch.linalg.norm(cd_desc - ad.unsqueeze(1), dim=-1)
+
+            cc = cd[cand_idx]
+            cp = pd[cand_idx]
+            cm = md[cand_idx]
+            rc = torch.abs(cc - ac.unsqueeze(1)) / maxc
+            rpt = torch.abs(torch.log1p(cp.clamp_min(0.0)) - torch.log1p(ap.clamp_min(0.0).unsqueeze(1)))
+            rms = torch.abs(torch.log1p(cm.clamp_min(0.0)) - torch.log1p(am.clamp_min(0.0).unsqueeze(1)))
+            rt = float(w_desc) * rs + float(w_count) * rc + float(w_pt) * rpt + float(w_mass) * rms
+
+            pos_j = torch.argmin(rt, dim=1)
+            neg_j = torch.argmax(rt, dim=1)
+            row = torch.arange(b, device=device)
+            pos_desc = cd_desc[row, pos_j]
+            neg_desc = cd_desc[row, neg_j]
+
+            z_a = model(ad)
+            z_p = model(pos_desc)
+            z_n = model(neg_desc)
+
+            loss_trip = F.triplet_margin_loss(z_a, z_p, z_n, margin=float(margin), p=2.0, reduction="mean")
+            d_ap = torch.linalg.norm(z_a - z_p, dim=-1)
+            d_an = torch.linalg.norm(z_a - z_n, dim=-1)
+            loss_rank = F.softplus((d_ap - d_an) / 0.1).mean()
+            pos_target = rt[row, pos_j].detach()
+            neg_target = rt[row, neg_j].detach()
+            pos_target = pos_target / (pos_target.mean() + eps)
+            neg_target = neg_target / (neg_target.mean() + eps)
+            loss_scale = 0.5 * F.mse_loss(d_ap, pos_target) + 0.5 * F.mse_loss(d_an, neg_target)
+            loss = loss_trip + 0.25 * loss_rank + 0.10 * loss_scale
+
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            opt.step()
+
+            ep_loss += float(loss.item()) * b
+            ep_n += b
+
+        mean_loss = ep_loss / max(1, ep_n)
+        loss_hist.append(mean_loss)
+        print(f"RetrievalEmbed ep {ep+1:03d}: loss={mean_loss:.6f}")
+
+    metrics = {
+        "epochs": int(max(1, epochs)),
+        "anchor_count": int(n_use),
+        "pool_size": int(psize),
+        "loss_final": float(loss_hist[-1]) if loss_hist else float("nan"),
+        "loss_best": float(min(loss_hist)) if loss_hist else float("nan"),
+    }
+    return model, metrics
+
+
+@torch.no_grad()
+def _encode_retrieval_desc(
+    model: RetrievalEmbedder,
+    desc: np.ndarray,
+    batch_size: int,
+    device: torch.device,
+) -> np.ndarray:
+    model.eval()
+    n = int(desc.shape[0])
+    out = np.zeros((n, model.net[-1].out_features), dtype=np.float32)
+    bs = int(max(64, batch_size))
+    for s in range(0, n, bs):
+        e = min(n, s + bs)
+        x = torch.tensor(desc[s:e], dtype=torch.float32, device=device)
+        z = model(x).detach().cpu().numpy().astype(np.float32)
+        out[s:e] = z
+    return out
+
+
 def _topk_smallest_idx(values: np.ndarray, k: int) -> np.ndarray:
     k = int(max(0, min(k, values.shape[0])))
     if k == 0:
@@ -144,11 +367,13 @@ def _build_class_index(
 
 
 def _retrieve_pool_for_class(
-    query_desc: np.ndarray,
+    query_index_desc: np.ndarray,
+    query_score_desc: np.ndarray,
     query_meta: JetMeta,
     query_const_hlt: np.ndarray,
     query_mask_hlt: np.ndarray,
     class_index: RetrievalClassIndex,
+    dict_score_desc: np.ndarray,
     dict_const_off: np.ndarray,
     dict_mask_off: np.ndarray,
     dict_meta: JetMeta,
@@ -181,12 +406,13 @@ def _retrieve_pool_for_class(
 
     for s in range(0, n, int(batch_size)):
         e = min(n, s + int(batch_size))
-        desc_b = query_desc[s:e]
-        dists_b, local_b = class_index.nn.kneighbors(desc_b, n_neighbors=k_nn, return_distance=True)
+        qidx_b = query_index_desc[s:e]
+        _dists_b, local_b = class_index.nn.kneighbors(qidx_b, n_neighbors=k_nn, return_distance=True)
 
         for i in range(e - s):
-            dists = dists_b[i].astype(np.float32)
             local_ids = class_index.local_ids[local_b[i].astype(np.int64)]
+            qscore = query_score_desc[s + i]
+            cscore = dict_score_desc[local_ids]
 
             q_cnt = float(query_meta.count[s + i])
             q_pt = float(query_meta.jet_pt[s + i])
@@ -196,7 +422,7 @@ def _retrieve_pool_for_class(
             c_pt = dict_meta.jet_pt[local_ids]
             c_mass = dict_meta.jet_mass[local_ids]
 
-            rs = dists
+            rs = np.sqrt(np.sum((cscore - qscore[None, :]) ** 2, axis=1, dtype=np.float32)).astype(np.float32)
             rc = np.abs(c_cnt - q_cnt) / max(1.0, float(max_constits))
             rpt = np.abs(np.log1p(c_pt) - np.log1p(max(q_pt, 0.0)))
             rms = np.abs(np.log1p(c_mass) - np.log1p(max(q_mass, 0.0)))
@@ -269,12 +495,14 @@ def _retrieve_pool_for_class(
 
 
 def _retrieve_pools_split(
-    query_desc: np.ndarray,
+    query_index_desc: np.ndarray,
+    query_score_desc: np.ndarray,
     query_meta: JetMeta,
     query_const_hlt: np.ndarray,
     query_mask_hlt: np.ndarray,
     idx_bg: RetrievalClassIndex,
     idx_top: RetrievalClassIndex,
+    dict_score_desc: np.ndarray,
     dict_const_off: np.ndarray,
     dict_mask_off: np.ndarray,
     dict_meta: JetMeta,
@@ -291,11 +519,13 @@ def _retrieve_pools_split(
     batch_size: int,
 ) -> Dict[str, Dict[str, np.ndarray]]:
     c0 = _retrieve_pool_for_class(
-        query_desc=query_desc,
+        query_index_desc=query_index_desc,
+        query_score_desc=query_score_desc,
         query_meta=query_meta,
         query_const_hlt=query_const_hlt,
         query_mask_hlt=query_mask_hlt,
         class_index=idx_bg,
+        dict_score_desc=dict_score_desc,
         dict_const_off=dict_const_off,
         dict_mask_off=dict_mask_off,
         dict_meta=dict_meta,
@@ -312,11 +542,13 @@ def _retrieve_pools_split(
         batch_size=int(batch_size),
     )
     c1 = _retrieve_pool_for_class(
-        query_desc=query_desc,
+        query_index_desc=query_index_desc,
+        query_score_desc=query_score_desc,
         query_meta=query_meta,
         query_const_hlt=query_const_hlt,
         query_mask_hlt=query_mask_hlt,
         class_index=idx_top,
+        dict_score_desc=dict_score_desc,
         dict_const_off=dict_const_off,
         dict_mask_off=dict_mask_off,
         dict_meta=dict_meta,
@@ -392,6 +624,19 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--retrieval_w_count", type=float, default=0.25)
     p.add_argument("--retrieval_w_pt", type=float, default=0.12)
     p.add_argument("--retrieval_w_mass", type=float, default=0.08)
+    p.add_argument("--retrieval_descriptor_variant", type=str, default="physics", choices=["physics", "landmark11"])
+    p.add_argument("--retrieval_landmarks", type=int, default=8)
+    p.add_argument("--retrieval_index_mode", type=str, default="descriptor", choices=["descriptor", "learned"])
+    p.add_argument("--retrieval_embed_dim", type=int, default=16)
+    p.add_argument("--retrieval_embed_hidden", type=int, default=96)
+    p.add_argument("--retrieval_embed_dropout", type=float, default=0.10)
+    p.add_argument("--retrieval_embed_epochs", type=int, default=6)
+    p.add_argument("--retrieval_embed_batch_size", type=int, default=512)
+    p.add_argument("--retrieval_embed_pool_size", type=int, default=256)
+    p.add_argument("--retrieval_embed_train_anchors", type=int, default=60000)
+    p.add_argument("--retrieval_embed_lr", type=float, default=3e-4)
+    p.add_argument("--retrieval_embed_weight_decay", type=float, default=1e-4)
+    p.add_argument("--retrieval_embed_margin", type=float, default=0.20)
 
     # Selector
     p.add_argument("--embed_dim", type=int, default=256)
@@ -429,7 +674,8 @@ def main() -> None:
     print(f"Run: {save_root}")
     print(
         f"Split dict/train/val/test = {int(args.n_dict_split)}/{int(args.n_train_split)}/{int(args.n_val_split)}/{int(args.n_test_split)} | "
-        f"retrieve per-round={int(args.retrieval_per_round)} rounds={int(args.retrieval_max_rounds)} targetK={int(args.retrieval_target_k)}"
+        f"retrieve per-round={int(args.retrieval_per_round)} rounds={int(args.retrieval_max_rounds)} targetK={int(args.retrieval_target_k)} | "
+        f"desc_variant={str(args.retrieval_descriptor_variant)} index_mode={str(args.retrieval_index_mode)}"
     )
     print("=" * 72)
 
@@ -596,34 +842,6 @@ def main() -> None:
 
     print(f"Teacher test AUC={teacher_auc_test:.4f} | Baseline test AUC={baseline_auc_test:.4f}")
 
-    p_base_train, _ = m33._predict_probs(
-        baseline,
-        feat_hlt_tr,
-        mask_hlt[train_idx],
-        labels[train_idx],
-        batch_size=int(args.batch_size),
-        num_workers=int(args.num_workers),
-        device=device,
-    )
-    p_base_val, _ = m33._predict_probs(
-        baseline,
-        feat_hlt_va,
-        mask_hlt[val_idx],
-        labels[val_idx],
-        batch_size=int(args.batch_size),
-        num_workers=int(args.num_workers),
-        device=device,
-    )
-    p_base_test, _ = m33._predict_probs(
-        baseline,
-        feat_hlt_te,
-        mask_hlt[test_idx],
-        labels[test_idx],
-        batch_size=int(args.batch_size),
-        num_workers=int(args.num_workers),
-        device=device,
-    )
-
     # STEP 2: Build dictionary retrieval index (class-conditional true labels).
     print("\n" + "=" * 72)
     print("STEP 2: Dictionary HLT retrieval index")
@@ -653,10 +871,99 @@ def main() -> None:
     desc_va = ((desc_va_raw - desc_mean) / desc_std).astype(np.float32)
     desc_te = ((desc_te_raw - desc_mean) / desc_std).astype(np.float32)
 
-    idx_bg = _build_class_index(desc_dict, dict_labels, class_val=0)
-    idx_top = _build_class_index(desc_dict, dict_labels, class_val=1)
+    retrieval_variant = str(args.retrieval_descriptor_variant).lower()
+    landmark_ids = np.zeros((0,), dtype=np.int64)
+    landmark_desc = np.zeros((0, desc_dict.shape[1]), dtype=np.float32)
+    landmark_meta: Dict[str, object] = {"variant": retrieval_variant}
+    if retrieval_variant == "landmark11":
+        n_landmarks = int(max(1, args.retrieval_landmarks))
+        landmark_ids = _select_landmark_indices(desc_dict, n_landmarks=n_landmarks, seed=int(args.seed) + 173)
+        landmark_desc = desc_dict[landmark_ids].astype(np.float32)
+        retrieval_score_dict = _build_landmark11_desc(desc_dict, dict_meta, landmark_desc, int(args.max_constits))
+        retrieval_score_tr = _build_landmark11_desc(desc_tr, tr_meta, landmark_desc, int(args.max_constits))
+        retrieval_score_va = _build_landmark11_desc(desc_va, va_meta, landmark_desc, int(args.max_constits))
+        retrieval_score_te = _build_landmark11_desc(desc_te, te_meta, landmark_desc, int(args.max_constits))
+        landmark_meta = {
+            "variant": "landmark11",
+            "n_landmarks": int(landmark_desc.shape[0]),
+            "landmark_ids": landmark_ids.astype(np.int64).tolist(),
+        }
+        print(f"Landmark11 descriptor enabled: n_landmarks={int(landmark_desc.shape[0])}")
+    else:
+        retrieval_score_dict = desc_dict
+        retrieval_score_tr = desc_tr
+        retrieval_score_va = desc_va
+        retrieval_score_te = desc_te
+
+    score_mean = retrieval_score_dict.mean(axis=0, keepdims=True).astype(np.float32)
+    score_std = (retrieval_score_dict.std(axis=0, keepdims=True) + 1e-6).astype(np.float32)
+
+    retrieval_embedder = None
+    retrieval_embed_metrics: Dict[str, object] = {}
+    idx_dict_desc = retrieval_score_dict
+    idx_tr_desc = retrieval_score_tr
+    idx_va_desc = retrieval_score_va
+    idx_te_desc = retrieval_score_te
+
+    if str(args.retrieval_index_mode).lower() == "learned":
+        print("Training learned retrieval embedding index...")
+        retrieval_embedder, retrieval_embed_metrics = _train_retrieval_embedder(
+            desc_train=retrieval_score_tr,
+            meta_train=tr_meta,
+            labels_train=labels[train_idx],
+            desc_dict=retrieval_score_dict,
+            meta_dict=dict_meta,
+            dict_labels=dict_labels,
+            max_constits=int(args.max_constits),
+            w_desc=float(args.retrieval_w_desc),
+            w_count=float(args.retrieval_w_count),
+            w_pt=float(args.retrieval_w_pt),
+            w_mass=float(args.retrieval_w_mass),
+            seed=int(args.seed),
+            device=device,
+            embed_dim=int(args.retrieval_embed_dim),
+            hidden_dim=int(args.retrieval_embed_hidden),
+            dropout=float(args.retrieval_embed_dropout),
+            epochs=int(args.retrieval_embed_epochs),
+            batch_size=int(args.retrieval_embed_batch_size),
+            pool_size=int(args.retrieval_embed_pool_size),
+            train_anchors=int(args.retrieval_embed_train_anchors),
+            lr=float(args.retrieval_embed_lr),
+            weight_decay=float(args.retrieval_embed_weight_decay),
+            margin=float(args.retrieval_embed_margin),
+        )
+        idx_dict_desc = _encode_retrieval_desc(
+            retrieval_embedder,
+            retrieval_score_dict,
+            batch_size=int(args.retrieval_batch_size),
+            device=device,
+        )
+        idx_tr_desc = _encode_retrieval_desc(
+            retrieval_embedder,
+            retrieval_score_tr,
+            batch_size=int(args.retrieval_batch_size),
+            device=device,
+        )
+        idx_va_desc = _encode_retrieval_desc(
+            retrieval_embedder,
+            retrieval_score_va,
+            batch_size=int(args.retrieval_batch_size),
+            device=device,
+        )
+        idx_te_desc = _encode_retrieval_desc(
+            retrieval_embedder,
+            retrieval_score_te,
+            batch_size=int(args.retrieval_batch_size),
+            device=device,
+        )
+    else:
+        retrieval_embed_metrics = {"mode": "descriptor", "epochs": 0, "descriptor_variant": retrieval_variant}
+
+    idx_bg = _build_class_index(idx_dict_desc, dict_labels, class_val=0)
+    idx_top = _build_class_index(idx_dict_desc, dict_labels, class_val=1)
     print(
-        f"Dictionary class sizes: bg={idx_bg.local_ids.shape[0]} top={idx_top.local_ids.shape[0]}"
+        f"Dictionary class sizes: bg={idx_bg.local_ids.shape[0]} top={idx_top.local_ids.shape[0]} "
+        f"| index_dim={idx_dict_desc.shape[1]}"
     )
 
     # STEP 3: Retrieve candidates for train/val.
@@ -665,12 +972,14 @@ def main() -> None:
     print("=" * 72)
 
     pools_train = _retrieve_pools_split(
-        query_desc=desc_tr,
+        query_index_desc=idx_tr_desc,
+        query_score_desc=retrieval_score_tr,
         query_meta=tr_meta,
         query_const_hlt=const_hlt[train_idx],
         query_mask_hlt=mask_hlt[train_idx],
         idx_bg=idx_bg,
         idx_top=idx_top,
+        dict_score_desc=retrieval_score_dict,
         dict_const_off=dict_const_off,
         dict_mask_off=dict_mask_off,
         dict_meta=dict_meta,
@@ -687,12 +996,14 @@ def main() -> None:
         batch_size=int(args.retrieval_batch_size),
     )
     pools_val = _retrieve_pools_split(
-        query_desc=desc_va,
+        query_index_desc=idx_va_desc,
+        query_score_desc=retrieval_score_va,
         query_meta=va_meta,
         query_const_hlt=const_hlt[val_idx],
         query_mask_hlt=mask_hlt[val_idx],
         idx_bg=idx_bg,
         idx_top=idx_top,
+        dict_score_desc=retrieval_score_dict,
         dict_const_off=dict_const_off,
         dict_mask_off=dict_mask_off,
         dict_meta=dict_meta,
@@ -809,14 +1120,14 @@ def main() -> None:
         pools=pools_train,
         sel_score_bg=sel_bg_train,
         sel_score_top=sel_tp_train,
-        baseline_prob=p_base_train,
+        baseline_prob=np.zeros((len(train_idx),), dtype=np.float32),
         score_alpha=float(args.selector_score_alpha),
     )
     dv_va = m33._build_dualview_features(
         pools=pools_val,
         sel_score_bg=sel_bg_val,
         sel_score_top=sel_tp_val,
-        baseline_prob=p_base_val,
+        baseline_prob=np.zeros((len(val_idx),), dtype=np.float32),
         score_alpha=float(args.selector_score_alpha),
     )
 
@@ -897,12 +1208,14 @@ def main() -> None:
     print("=" * 72)
 
     pools_test = _retrieve_pools_split(
-        query_desc=desc_te,
+        query_index_desc=idx_te_desc,
+        query_score_desc=retrieval_score_te,
         query_meta=te_meta,
         query_const_hlt=const_hlt[test_idx],
         query_mask_hlt=mask_hlt[test_idx],
         idx_bg=idx_bg,
         idx_top=idx_top,
+        dict_score_desc=retrieval_score_dict,
         dict_const_off=dict_const_off,
         dict_mask_off=dict_mask_off,
         dict_meta=dict_meta,
@@ -946,7 +1259,7 @@ def main() -> None:
         pools=pools_test,
         sel_score_bg=sel_bg_test,
         sel_score_top=sel_tp_test,
-        baseline_prob=p_base_test,
+        baseline_prob=np.zeros((len(test_idx),), dtype=np.float32),
         score_alpha=float(args.selector_score_alpha),
     )
 
@@ -987,6 +1300,16 @@ def main() -> None:
     torch.save({"model": selector.state_dict(), "metrics": selector_metrics}, save_root / "selector.pt")
     torch.save({"model": dv_nogate.state_dict(), "metrics": dv_nogate_metrics}, save_root / "dualview_nogate.pt")
     torch.save({"model": dv_gated.state_dict(), "metrics": dv_gated_metrics}, save_root / "dualview_gated.pt")
+    if retrieval_embedder is not None:
+        torch.save(
+            {
+                "model": retrieval_embedder.state_dict(),
+                "metrics": retrieval_embed_metrics,
+                "index_mode": str(args.retrieval_index_mode),
+                "descriptor_variant": str(args.retrieval_descriptor_variant),
+            },
+            save_root / "retrieval_embedder.pt",
+        )
 
     np.savez_compressed(
         save_root / "m36_test_scores.npz",
@@ -1047,6 +1370,8 @@ def main() -> None:
         },
         "selector_metrics": selector_metrics,
         "retrieval": {
+            "index_mode": str(args.retrieval_index_mode),
+            "descriptor_variant": str(args.retrieval_descriptor_variant),
             "target_k": int(args.retrieval_target_k),
             "per_round": int(args.retrieval_per_round),
             "max_rounds": int(args.retrieval_max_rounds),
@@ -1065,6 +1390,8 @@ def main() -> None:
                 "bg": int(idx_bg.local_ids.shape[0]),
                 "top": int(idx_top.local_ids.shape[0]),
             },
+            "embedder_metrics": retrieval_embed_metrics,
+            "landmark_meta": landmark_meta,
         },
     }
     with open(save_root / "m36_report.json", "w", encoding="utf-8") as f:
@@ -1080,6 +1407,10 @@ def main() -> None:
         stds=stds.astype(np.float32),
         retrieval_desc_mean=desc_mean.astype(np.float32),
         retrieval_desc_std=desc_std.astype(np.float32),
+        retrieval_score_mean=score_mean.astype(np.float32),
+        retrieval_score_std=score_std.astype(np.float32),
+        retrieval_landmark_ids=landmark_ids.astype(np.int64),
+        retrieval_landmark_desc=landmark_desc.astype(np.float32),
     )
 
     print(f"Saved: {save_root}")
