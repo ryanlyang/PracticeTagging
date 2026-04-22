@@ -421,72 +421,148 @@ def load_split(
     shared_files = sorted({p for paths in split_files.values() for p in paths})
     label_branches = canonical_label_branches_for_classes(classes) if class_assignment == "canonical_labels" else []
 
-    for cls in classes:
-        need = int(quotas[cls])
-        if need <= 0:
-            continue
-        if class_assignment == "canonical_labels":
-            files = shared_files
-        else:
+    if class_assignment == "canonical_labels":
+        # Fast path: scan shared files once and fan out events to all classes at once.
+        if len(shared_files) == 0:
+            raise RuntimeError("No files available for canonical label assignment.")
+
+        got_tok_by_cls: Dict[str, List[np.ndarray]] = {c: [] for c in classes}
+        got_mask_by_cls: Dict[str, List[np.ndarray]] = {c: [] for c in classes}
+        count_by_cls: Dict[str, int] = {c: 0 for c in classes}
+
+        cursor = 0
+        no_progress = 0
+        max_iters = max(len(shared_files) * 120, 2000)
+
+        while any(count_by_cls[c] < int(quotas[c]) for c in classes):
+            file_path = shared_files[cursor % len(shared_files)]
+            cursor += 1
+
+            tree = get_first_tree(file_path)
+            bmap = resolve_branch_map(tree)
+            branches = required_raw_branches(bmap)
+            keys = set(str(k) for k in tree.keys())
+            missing = [b for b in label_branches if b not in keys]
+            if missing:
+                raise RuntimeError(
+                    f"Missing canonical label branches in {file_path.name}: {missing}"
+                )
+            branches = sorted(set(branches + label_branches))
+
+            n_entries = int(tree.num_entries)
+            if n_entries <= 0:
+                if cursor > max_iters:
+                    break
+                continue
+
+            remain_total = int(sum(max(0, int(quotas[c]) - int(count_by_cls[c])) for c in classes))
+            chunk = int(min(max(remain_total * 2, 4096), 20000, n_entries))
+            start = int(rng.randint(0, max(1, n_entries - chunk + 1)))
+            stop = min(n_entries, start + chunk)
+            arr = tree.arrays(branches, entry_start=start, entry_stop=stop, library="ak")
+
+            tok, msk = extract_tokens_from_chunk(arr, bmap, max_constits=max_constits)
+            valid_evt = msk.any(axis=1)
+            progressed = False
+            if valid_evt.any():
+                tok_v = tok[valid_evt]
+                msk_v = msk[valid_evt]
+                y_idx = extract_chunk_class_indices(arr, label_branches)[valid_evt]
+
+                for cls in classes:
+                    need = int(quotas[cls]) - int(count_by_cls[cls])
+                    if need <= 0:
+                        continue
+                    cls_idx = int(class_to_idx[cls])
+                    sel = np.flatnonzero(y_idx == cls_idx)
+                    if sel.size == 0:
+                        continue
+                    take = sel[:need]
+                    got_tok_by_cls[cls].append(tok_v[take])
+                    got_mask_by_cls[cls].append(msk_v[take])
+                    count_by_cls[cls] += int(take.size)
+                    progressed = True
+
+            if progressed:
+                no_progress = 0
+            else:
+                no_progress += 1
+
+            if cursor % 50 == 0:
+                done = int(sum(min(int(count_by_cls[c]), int(quotas[c])) for c in classes))
+                print(f"[load_split:canonical] progress {done}/{n_total} jets (iter={cursor})")
+
+            if no_progress > len(shared_files) * 20 or cursor > max_iters:
+                break
+
+        missing_cls = [c for c in classes if int(count_by_cls[c]) < int(quotas[c])]
+        if missing_cls:
+            detail = ", ".join(
+                f"{c}:{count_by_cls[c]}/{quotas[c]}" for c in missing_cls
+            )
+            raise RuntimeError(
+                "Could not satisfy canonical class quotas during split loading. "
+                f"Missing counts -> {detail}"
+            )
+
+        for cls in classes:
+            need = int(quotas[cls])
+            if need <= 0:
+                continue
+            tok_c = np.concatenate(got_tok_by_cls[cls], axis=0)[:need]
+            msk_c = np.concatenate(got_mask_by_cls[cls], axis=0)[:need]
+            lab_c = np.full((len(tok_c),), int(class_to_idx[cls]), dtype=np.int64)
+            all_tok.append(tok_c)
+            all_mask.append(msk_c)
+            all_lab.append(lab_c)
+    else:
+        for cls in classes:
+            need = int(quotas[cls])
+            if need <= 0:
+                continue
             if cls not in split_files:
                 raise KeyError(
                     f"Class '{cls}' not found in split_files keys: {sorted(split_files.keys())}"
                 )
             files = split_files[cls]
-        if len(files) == 0:
-            raise RuntimeError(f"No files available for class {cls}")
-        got_tok: List[np.ndarray] = []
-        got_mask: List[np.ndarray] = []
-        cursor = 0
-        while sum(len(x) for x in got_tok) < need:
-            file_path = files[cursor % len(files)]
-            cursor += 1
-            tree = get_first_tree(file_path)
-            bmap = resolve_branch_map(tree)
-            branches = required_raw_branches(bmap)
-            if class_assignment == "canonical_labels":
-                keys = set(str(k) for k in tree.keys())
-                missing = [b for b in label_branches if b not in keys]
-                if missing:
-                    raise RuntimeError(
-                        f"Missing canonical label branches in {file_path.name}: {missing}"
-                    )
-                branches = sorted(set(branches + label_branches))
-            n_entries = int(tree.num_entries)
-            if n_entries <= 0:
-                continue
+            if len(files) == 0:
+                raise RuntimeError(f"No files available for class {cls}")
 
-            remain = need - sum(len(x) for x in got_tok)
-            # read a random contiguous chunk; this keeps IO manageable.
-            chunk = int(min(max(remain * 2, 1024), 20000, n_entries))
-            start = int(rng.randint(0, max(1, n_entries - chunk + 1)))
-            stop = min(n_entries, start + chunk)
-            arr = tree.arrays(branches, entry_start=start, entry_stop=stop, library="ak")
-            tok, msk = extract_tokens_from_chunk(arr, bmap, max_constits=max_constits)
-            valid_evt = msk.any(axis=1)
-            if valid_evt.any():
-                tok_v = tok[valid_evt]
-                msk_v = msk[valid_evt]
-                if class_assignment == "canonical_labels":
-                    y_idx = extract_chunk_class_indices(arr, label_branches)[valid_evt]
-                    keep = y_idx == int(class_to_idx[cls])
-                    if keep.any():
-                        got_tok.append(tok_v[keep])
-                        got_mask.append(msk_v[keep])
-                else:
-                    got_tok.append(tok_v)
-                    got_mask.append(msk_v)
-            if cursor > len(files) * 8 and sum(len(x) for x in got_tok) == 0:
-                break
+            got_tok: List[np.ndarray] = []
+            got_mask: List[np.ndarray] = []
+            cursor = 0
+            while sum(len(x) for x in got_tok) < need:
+                file_path = files[cursor % len(files)]
+                cursor += 1
+                tree = get_first_tree(file_path)
+                bmap = resolve_branch_map(tree)
+                branches = required_raw_branches(bmap)
+                n_entries = int(tree.num_entries)
+                if n_entries <= 0:
+                    continue
 
-        if not got_tok:
-            raise RuntimeError(f"Could not load any jets for class {cls}")
-        tok_c = np.concatenate(got_tok, axis=0)[:need]
-        msk_c = np.concatenate(got_mask, axis=0)[:need]
-        lab_c = np.full((len(tok_c),), int(class_to_idx[cls]), dtype=np.int64)
-        all_tok.append(tok_c)
-        all_mask.append(msk_c)
-        all_lab.append(lab_c)
+                remain = need - sum(len(x) for x in got_tok)
+                # read a random contiguous chunk; this keeps IO manageable.
+                chunk = int(min(max(remain * 2, 1024), 20000, n_entries))
+                start = int(rng.randint(0, max(1, n_entries - chunk + 1)))
+                stop = min(n_entries, start + chunk)
+                arr = tree.arrays(branches, entry_start=start, entry_stop=stop, library="ak")
+                tok, msk = extract_tokens_from_chunk(arr, bmap, max_constits=max_constits)
+                valid_evt = msk.any(axis=1)
+                if valid_evt.any():
+                    got_tok.append(tok[valid_evt])
+                    got_mask.append(msk[valid_evt])
+                if cursor > len(files) * 8 and sum(len(x) for x in got_tok) == 0:
+                    break
+
+            if not got_tok:
+                raise RuntimeError(f"Could not load any jets for class {cls}")
+            tok_c = np.concatenate(got_tok, axis=0)[:need]
+            msk_c = np.concatenate(got_mask, axis=0)[:need]
+            lab_c = np.full((len(tok_c),), int(class_to_idx[cls]), dtype=np.int64)
+            all_tok.append(tok_c)
+            all_mask.append(msk_c)
+            all_lab.append(lab_c)
 
     tok = np.concatenate(all_tok, axis=0)
     msk = np.concatenate(all_mask, axis=0)
