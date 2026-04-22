@@ -25,7 +25,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 
-FEATURE_NAMES_FULL17 = [
+FEATURE_NAMES_FULL17_LEGACY = [
     "d_eta",
     "d_phi",
     "log_pt",
@@ -45,6 +45,26 @@ FEATURE_NAMES_FULL17 = [
     "dzerr",
 ]
 
+FEATURE_NAMES_FULL17_CANONICAL = [
+    "part_pt_log",
+    "part_e_log",
+    "part_logptrel",
+    "part_logerel",
+    "part_deltaR",
+    "charge",
+    "isChargedHadron",
+    "isNeutralHadron",
+    "isPhoton",
+    "isElectron",
+    "isMuon",
+    "d0_tanh",
+    "d0err_clip",
+    "dz_tanh",
+    "dzerr_clip",
+    "d_eta",
+    "d_phi",
+]
+
 DISCRETE_BINARY_FEATURES = {
     "isChargedHadron",
     "isNeutralHadron",
@@ -53,7 +73,7 @@ DISCRETE_BINARY_FEATURES = {
     "isMuon",
 }
 
-SPIKE_HEAVY_FEATURES = {"d0", "dz"}
+SPIKE_HEAVY_FEATURES = {"d0", "dz", "d0_tanh", "dz_tanh"}
 
 
 def parse_args() -> argparse.Namespace:
@@ -403,7 +423,7 @@ def main() -> None:
     class_to_idx = {c: i for i, c in enumerate(class_names)}
 
     print(f"Loading split={args.split} with n_jets={args.n_jets} from {args.data_dir}")
-    raw_tok, mask, labels = load_split(
+    raw_tok, mask, jet_labels = load_split(
         split_files=split_files,
         n_total=int(args.n_jets),
         max_constits=int(args.max_constits),
@@ -418,7 +438,12 @@ def main() -> None:
         feature_mode="full",
         feature_preprocessing=str(args.feature_preprocessing),
     )
-    if feat.shape[-1] != len(FEATURE_NAMES_FULL17):
+    feature_names = (
+        FEATURE_NAMES_FULL17_CANONICAL
+        if str(args.feature_preprocessing) == "canonical"
+        else FEATURE_NAMES_FULL17_LEGACY
+    )
+    if feat.shape[-1] != len(feature_names):
         raise RuntimeError(
             f"Expected 17 full features, got {feat.shape[-1]}. "
             "Feature builder may have changed."
@@ -427,7 +452,7 @@ def main() -> None:
     vals_by_class = collect_feature_values_by_class(
         feat=feat,
         mask=mask,
-        labels=labels,
+        labels=jet_labels,
         class_names=class_names,
         max_constits_per_class=int(args.max_constits_per_class),
         seed=int(args.seed),
@@ -435,10 +460,10 @@ def main() -> None:
 
     # Write stats table first so results are useful even if plotting fails.
     stats_csv = args.output_dir / "full17_feature_stats_by_class.csv"
-    write_stats_csv(stats_csv, vals_by_class, FEATURE_NAMES_FULL17)
+    write_stats_csv(stats_csv, vals_by_class, feature_names)
 
     # Plot grid: 17 panels (5x4, last blank)
-    n_feat = len(FEATURE_NAMES_FULL17)
+    n_feat = len(feature_names)
     ncols = 4
     nrows = 5
     fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(22, 22))
@@ -450,9 +475,9 @@ def main() -> None:
     per_feature_dir.mkdir(parents=True, exist_ok=True)
 
     print("Building distribution plots...")
-    for j, feat_name in enumerate(FEATURE_NAMES_FULL17):
+    for j, feat_name in enumerate(feature_names):
         ax = axes[j]
-        handles, labels = draw_feature_on_axis(
+        handles, legend_lbls = draw_feature_on_axis(
             ax=ax,
             feat_name=feat_name,
             feat_idx=j,
@@ -465,9 +490,9 @@ def main() -> None:
             show_class_legend=(len(legend_handles) == 0),
             show_charge_legend=False,
         )
-        if handles and labels and len(legend_handles) == 0:
+        if handles and legend_lbls and len(legend_handles) == 0:
             legend_handles = handles
-            legend_labels = labels
+            legend_labels = legend_lbls
 
         ax.set_title(feat_name, fontsize=12)
 
@@ -545,9 +570,9 @@ def main() -> None:
         "clip_quantile_high": float(args.clip_quantile_high),
         "class_names": class_names,
         "class_jet_counts": {
-            cls: int(np.sum(labels == i)) for i, cls in enumerate(class_names)
+            cls: int(np.sum(jet_labels == i)) for i, cls in enumerate(class_names)
         },
-        "feature_names_full17": FEATURE_NAMES_FULL17,
+        "feature_names_full17": feature_names,
         "stats_csv": str(stats_csv),
         "plot_png": str(out_png),
         "plot_pdf": str(out_pdf),
