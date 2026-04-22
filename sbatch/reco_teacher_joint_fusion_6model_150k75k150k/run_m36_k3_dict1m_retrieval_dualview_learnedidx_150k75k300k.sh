@@ -25,6 +25,10 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-300000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-80}"
+RETRIEVAL_TARGET_K="${RETRIEVAL_TARGET_K:-3}"
+RETRIEVAL_PER_ROUND="${RETRIEVAL_PER_ROUND:-256}"
+RETRIEVAL_MAX_ROUNDS="${RETRIEVAL_MAX_ROUNDS:-10}"
+RETRIEVAL_BATCH_SIZE="${RETRIEVAL_BATCH_SIZE:-256}"
 
 set +u
 source ~/.bashrc
@@ -70,10 +74,10 @@ CMD=(
   --seed "${SEED}"
   --device "${DEVICE}"
   --save_fusion_scores
-  --retrieval_target_k 3
-  --retrieval_per_round 256
-  --retrieval_max_rounds 10
-  --retrieval_batch_size 256
+  --retrieval_target_k "${RETRIEVAL_TARGET_K}"
+  --retrieval_per_round "${RETRIEVAL_PER_ROUND}"
+  --retrieval_max_rounds "${RETRIEVAL_MAX_ROUNDS}"
+  --retrieval_batch_size "${RETRIEVAL_BATCH_SIZE}"
   --retrieval_eps_total 0.90
   --retrieval_eps_count 0.50
   --retrieval_w_desc 1.00
