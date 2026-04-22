@@ -12,6 +12,7 @@ set -euo pipefail
 # Data / plotting controls (override via env var when submitting).
 DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 SPLIT="${SPLIT:-train}"                     # train | val | test
+CLASS_ASSIGNMENT="${CLASS_ASSIGNMENT:-canonical_labels}"  # canonical_labels | filename
 N_JETS="${N_JETS:-30000}"                   # fast default
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 MAX_CONSTITS_PER_CLASS="${MAX_CONSTITS_PER_CLASS:-150000}"
@@ -63,6 +64,7 @@ CMD=(
   --data_dir "${DATA_DIR}"
   --output_dir "${OUTPUT_DIR}"
   --split "${SPLIT}"
+  --class_assignment "${CLASS_ASSIGNMENT}"
   --seed "${SEED}"
   --max_constits "${MAX_CONSTITS}"
   --n_jets "${N_JETS}"
@@ -80,6 +82,7 @@ echo "JetClass Full-17 Feature Plotting Job"
 echo "Job ID: ${SLURM_JOB_ID:-N/A}"
 echo "Node: ${SLURMD_NODENAME:-N/A}"
 echo "Split: ${SPLIT}"
+echo "Class assignment: ${CLASS_ASSIGNMENT}"
 echo "Jets: ${N_JETS}"
 echo "Data dir: ${DATA_DIR}"
 echo "Output dir: ${OUTPUT_DIR}"

@@ -46,6 +46,34 @@ except Exception as exc:  # pragma: no cover
 
 FILE_RE = re.compile(r"^(?P<cls>[A-Za-z0-9]+)_(?P<idx>\d{3})\.root$")
 
+CANONICAL_CLASS_TO_LABEL_BRANCH = {
+    "QCD": "label_QCD",
+    "Hbb": "label_Hbb",
+    "Hcc": "label_Hcc",
+    "Hgg": "label_Hgg",
+    "H4q": "label_H4q",
+    "Hqql": "label_Hqql",
+    "Tbqq": "label_Tbqq",
+    "Tbl": "label_Tbl",
+    "Wqq": "label_Wqq",
+    "Zqq": "label_Zqq",
+}
+CANONICAL_CLASS_ORDER = tuple(CANONICAL_CLASS_TO_LABEL_BRANCH.keys())
+
+# Backward-compatible aliases used by older run scripts in this repo.
+CLASS_NAME_ALIASES = {
+    "HToBB": "Hbb",
+    "HToCC": "Hcc",
+    "HToGG": "Hgg",
+    "HToWW4Q": "H4q",
+    "HToWW2Q1L": "Hqql",
+    "TTBar": "Tbqq",
+    "TTBarLep": "Tbl",
+    "WToQQ": "Wqq",
+    "ZToQQ": "Zqq",
+    "ZJetsToNuNu": "QCD",
+}
+
 
 RAW_DIM = 14
 IDX_PT = 0
@@ -120,6 +148,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_workers", type=int, default=2)
 
     p.add_argument("--feature_mode", type=str, default="full", choices=["kin", "kinpid", "full"])
+    p.add_argument(
+        "--class_assignment",
+        type=str,
+        default="canonical_labels",
+        choices=["filename", "canonical_labels"],
+        help=(
+            "How class labels are assigned to events: "
+            "'filename' uses file-prefix classes, "
+            "'canonical_labels' uses canonical label_* branches."
+        ),
+    )
     p.add_argument("--max_constits", type=int, default=128)
 
     p.add_argument("--train_files_per_class", type=int, default=8)
@@ -258,6 +297,34 @@ def required_raw_branches(branch_map: Dict[str, str | None]) -> List[str]:
     return sorted(set(out))
 
 
+def canonical_label_branches_for_classes(class_names: Sequence[str]) -> List[str]:
+    out = []
+    for cls in class_names:
+        canonical = CLASS_NAME_ALIASES.get(cls, cls)
+        if canonical not in CANONICAL_CLASS_TO_LABEL_BRANCH:
+            raise ValueError(
+                f"Class '{cls}' does not map to canonical JetClass labels. "
+                f"Known canonical classes: {list(CANONICAL_CLASS_ORDER)}"
+            )
+        out.append(CANONICAL_CLASS_TO_LABEL_BRANCH[canonical])
+    return out
+
+
+def extract_chunk_class_indices(arrays, label_branches: Sequence[str]) -> np.ndarray:
+    """
+    Convert per-event canonical one-hot-ish label branches into class indices.
+    Events with no positive label are marked as -1.
+    """
+    if len(label_branches) == 0:
+        return np.zeros((0,), dtype=np.int64)
+    mats = [np.asarray(ak.to_numpy(arrays[b]), dtype=np.float32) for b in label_branches]
+    scores = np.stack(mats, axis=1)
+    idx = np.argmax(scores, axis=1).astype(np.int64)
+    valid = scores.sum(axis=1) > 0.5
+    idx[~valid] = -1
+    return idx
+
+
 def _to_1d_float(arr_evt, n: int) -> np.ndarray:
     x = np.asarray(ak.to_numpy(arr_evt), dtype=np.float32)
     if x.ndim == 0:
@@ -330,19 +397,33 @@ def load_split(
     max_constits: int,
     class_to_idx: Dict[str, int],
     seed: int,
+    class_assignment: str = "filename",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     rng = np.random.RandomState(seed)
-    classes = sorted(split_files.keys())
+    if class_assignment not in {"filename", "canonical_labels"}:
+        raise ValueError(f"Unknown class_assignment={class_assignment}")
+    classes = sorted(class_to_idx.keys(), key=lambda c: int(class_to_idx[c]))
     quotas = class_quota(n_total, classes)
     all_tok: List[np.ndarray] = []
     all_mask: List[np.ndarray] = []
     all_lab: List[np.ndarray] = []
+    shared_files = sorted({p for paths in split_files.values() for p in paths})
+    label_branches = canonical_label_branches_for_classes(classes) if class_assignment == "canonical_labels" else []
 
     for cls in classes:
         need = int(quotas[cls])
         if need <= 0:
             continue
-        files = split_files[cls]
+        if class_assignment == "canonical_labels":
+            files = shared_files
+        else:
+            if cls not in split_files:
+                raise KeyError(
+                    f"Class '{cls}' not found in split_files keys: {sorted(split_files.keys())}"
+                )
+            files = split_files[cls]
+        if len(files) == 0:
+            raise RuntimeError(f"No files available for class {cls}")
         got_tok: List[np.ndarray] = []
         got_mask: List[np.ndarray] = []
         cursor = 0
@@ -352,6 +433,14 @@ def load_split(
             tree = get_first_tree(file_path)
             bmap = resolve_branch_map(tree)
             branches = required_raw_branches(bmap)
+            if class_assignment == "canonical_labels":
+                keys = set(str(k) for k in tree.keys())
+                missing = [b for b in label_branches if b not in keys]
+                if missing:
+                    raise RuntimeError(
+                        f"Missing canonical label branches in {file_path.name}: {missing}"
+                    )
+                branches = sorted(set(branches + label_branches))
             n_entries = int(tree.num_entries)
             if n_entries <= 0:
                 continue
@@ -365,8 +454,17 @@ def load_split(
             tok, msk = extract_tokens_from_chunk(arr, bmap, max_constits=max_constits)
             valid_evt = msk.any(axis=1)
             if valid_evt.any():
-                got_tok.append(tok[valid_evt])
-                got_mask.append(msk[valid_evt])
+                tok_v = tok[valid_evt]
+                msk_v = msk[valid_evt]
+                if class_assignment == "canonical_labels":
+                    y_idx = extract_chunk_class_indices(arr, label_branches)[valid_evt]
+                    keep = y_idx == int(class_to_idx[cls])
+                    if keep.any():
+                        got_tok.append(tok_v[keep])
+                        got_mask.append(msk_v[keep])
+                else:
+                    got_tok.append(tok_v)
+                    got_mask.append(msk_v)
             if cursor > len(files) * 8 and sum(len(x) for x in got_tok) == 0:
                 break
 
@@ -1067,6 +1165,17 @@ def eval_metrics(
     background_class: str,
     target_class: str,
 ) -> Dict[str, float]:
+    class_names = list(class_names)
+
+    def resolve_name(name: str) -> str:
+        if name in class_names:
+            return name
+        alias = CLASS_NAME_ALIASES.get(name, name)
+        return alias if alias in class_names else name
+
+    background_class = resolve_name(background_class)
+    target_class = resolve_name(target_class)
+
     pred = np.argmax(probs, axis=1)
     acc = float((pred == y_true).mean())
     n_classes = probs.shape[1]
@@ -1281,11 +1390,18 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
     print(f"Save dir: {save_dir}")
 
     files_by_class = collect_files_by_class(args.data_dir.resolve())
-    class_names = sorted(files_by_class.keys())
+    if str(args.class_assignment) == "canonical_labels":
+        class_names = list(CANONICAL_CLASS_ORDER)
+    else:
+        class_names = sorted(files_by_class.keys())
     class_to_idx = {c: i for i, c in enumerate(class_names)}
     print("Classes:")
     for c in class_names:
-        print(f"  {c:12s} : {len(files_by_class[c])} files")
+        if c in files_by_class:
+            print(f"  {c:12s} : {len(files_by_class[c])} files")
+        else:
+            # Canonical mode uses shared file pool; files are not grouped by canonical label.
+            print(f"  {c:12s} : label_* branch")
 
     tr_files, va_files, te_files = split_files_by_class(
         files_by_class,
@@ -1298,15 +1414,30 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
 
     print("Loading train split...")
     tr_tok, tr_mask, tr_y = load_split(
-        tr_files, n_total=args.n_train_jets, max_constits=args.max_constits, class_to_idx=class_to_idx, seed=args.seed + 101
+        tr_files,
+        n_total=args.n_train_jets,
+        max_constits=args.max_constits,
+        class_to_idx=class_to_idx,
+        seed=args.seed + 101,
+        class_assignment=args.class_assignment,
     )
     print("Loading val split...")
     va_tok, va_mask, va_y = load_split(
-        va_files, n_total=args.n_val_jets, max_constits=args.max_constits, class_to_idx=class_to_idx, seed=args.seed + 202
+        va_files,
+        n_total=args.n_val_jets,
+        max_constits=args.max_constits,
+        class_to_idx=class_to_idx,
+        seed=args.seed + 202,
+        class_assignment=args.class_assignment,
     )
     print("Loading test split...")
     te_tok, te_mask, te_y = load_split(
-        te_files, n_total=args.n_test_jets, max_constits=args.max_constits, class_to_idx=class_to_idx, seed=args.seed + 303
+        te_files,
+        n_total=args.n_test_jets,
+        max_constits=args.max_constits,
+        class_to_idx=class_to_idx,
+        seed=args.seed + 303,
+        class_assignment=args.class_assignment,
     )
 
     print(
@@ -1451,6 +1582,7 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
         "n_classes": n_classes,
         "split_sizes": {"train": int(len(tr_y)), "val": int(len(va_y)), "test": int(len(te_y))},
         "feature_mode": args.feature_mode,
+        "class_assignment": args.class_assignment,
         "hlt_params": {
             "hlt_pt_threshold": args.hlt_pt_threshold,
             "merge_prob_scale": args.merge_prob_scale,

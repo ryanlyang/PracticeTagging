@@ -61,6 +61,13 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--data_dir", type=Path, default=Path("data/jetclass_part0"))
     p.add_argument("--output_dir", type=Path, default=Path("plots/jetclass_full17_features"))
     p.add_argument("--split", type=str, default="train", choices=["train", "val", "test"])
+    p.add_argument(
+        "--class_assignment",
+        type=str,
+        default="canonical_labels",
+        choices=["filename", "canonical_labels"],
+        help="Use filename classes or canonical label_* branches for class assignment.",
+    )
     p.add_argument("--seed", type=int, default=52)
     p.add_argument("--max_constits", type=int, default=128)
     p.add_argument("--n_jets", type=int, default=50000)
@@ -204,7 +211,8 @@ def draw_feature_on_axis(
             alpha=0.95,
             label="q = +1",
         )
-        ax.set_ylim(0.0, 1.18)
+        # Add headroom so text + legend do not sit on top of bars.
+        ax.set_ylim(0.0, 1.32)
         ax.set_ylabel("Fraction of Constituents")
         ax.set_xticks(xloc)
         ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=9)
@@ -218,7 +226,7 @@ def draw_feature_on_axis(
             )
             ax.text(
                 xloc[i],
-                1.02,
+                1.03,
                 txt,
                 ha="center",
                 va="bottom",
@@ -226,7 +234,14 @@ def draw_feature_on_axis(
                 linespacing=0.95,
             )
         if show_charge_legend:
-            ax.legend(handles=[h1, h2, h3], frameon=False, fontsize=9, loc="upper right")
+            ax.legend(
+                handles=[h1, h2, h3],
+                frameon=False,
+                fontsize=9,
+                loc="upper left",
+                bbox_to_anchor=(1.02, 1.0),
+                borderaxespad=0.9,
+            )
         return [], []
 
     if feat_name in DISCRETE_BINARY_FEATURES:
@@ -358,6 +373,7 @@ def main() -> None:
     # Import lazily so --help works even if awkward/uproot are missing in shell env.
     baseline = importlib.import_module("evaluate_jetclass_hlt_teacher_baseline")
     collect_files_by_class = baseline.collect_files_by_class
+    canonical_class_order = baseline.CANONICAL_CLASS_ORDER
     split_files_by_class = baseline.split_files_by_class
     load_split = baseline.load_split
     compute_features = baseline.compute_features
@@ -373,7 +389,10 @@ def main() -> None:
         seed=int(args.seed),
         split_name=str(args.split),
     )
-    class_names = sorted(split_files.keys())
+    if str(args.class_assignment) == "canonical_labels":
+        class_names = list(canonical_class_order)
+    else:
+        class_names = sorted(split_files.keys())
     class_to_idx = {c: i for i, c in enumerate(class_names)}
 
     print(f"Loading split={args.split} with n_jets={args.n_jets} from {args.data_dir}")
@@ -383,6 +402,7 @@ def main() -> None:
         max_constits=int(args.max_constits),
         class_to_idx=class_to_idx,
         seed=int(args.seed) + 7,
+        class_assignment=str(args.class_assignment),
     )
 
     feat = compute_features(raw_tok, mask, feature_mode="full")
@@ -431,7 +451,7 @@ def main() -> None:
             q_low=float(args.clip_quantile_low),
             q_high=float(args.clip_quantile_high),
             show_class_legend=(len(legend_handles) == 0),
-            show_charge_legend=True,
+            show_charge_legend=False,
         )
         if handles and labels and len(legend_handles) == 0:
             legend_handles = handles
@@ -459,7 +479,7 @@ def main() -> None:
             ax_single.legend(frameon=False, fontsize=8, ncol=2)
         fig_single.tight_layout()
         out_single = per_feature_dir / f"{j + 1:02d}_{feat_name}.png"
-        fig_single.savefig(out_single, dpi=180)
+        fig_single.savefig(out_single, dpi=180, bbox_inches="tight")
         plt.close(fig_single)
 
     # Hide unused subplot slot.
@@ -498,6 +518,7 @@ def main() -> None:
         "data_dir": str(args.data_dir),
         "output_dir": str(args.output_dir),
         "split": str(args.split),
+        "class_assignment": str(args.class_assignment),
         "seed": int(args.seed),
         "n_jets": int(args.n_jets),
         "max_constits": int(args.max_constits),

@@ -35,6 +35,7 @@ from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
 
 from evaluate_jetclass_hlt_teacher_baseline import (
+    CANONICAL_CLASS_ORDER,
     HLTParams,
     JetClassTransformer,
     JetDataset,
@@ -80,6 +81,13 @@ def parse_args() -> argparse.Namespace:
 
     # Data/feature
     p.add_argument("--feature_mode", type=str, default="full", choices=["kin", "kinpid", "full"])
+    p.add_argument(
+        "--class_assignment",
+        type=str,
+        default="canonical_labels",
+        choices=["filename", "canonical_labels"],
+        help="Use filename classes or canonical label_* branches for class assignment.",
+    )
     p.add_argument("--max_constits", type=int, default=128)
     p.add_argument("--train_files_per_class", type=int, default=8)
     p.add_argument("--val_files_per_class", type=int, default=1)
@@ -562,12 +570,18 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
     print(f"Save dir: {save_root}")
 
     files_by_class = collect_files_by_class(args.data_dir.resolve())
-    class_names = sorted(files_by_class.keys())
+    if str(args.class_assignment) == "canonical_labels":
+        class_names = list(CANONICAL_CLASS_ORDER)
+    else:
+        class_names = sorted(files_by_class.keys())
     class_to_idx = {c: i for i, c in enumerate(class_names)}
     n_classes = len(class_names)
     print("Classes:")
     for c in class_names:
-        print(f"  {c:12s} : {len(files_by_class[c])} files")
+        if c in files_by_class:
+            print(f"  {c:12s} : {len(files_by_class[c])} files")
+        else:
+            print(f"  {c:12s} : label_* branch")
 
     tr_files, va_files, te_files = split_files_by_class(
         files_by_class,
@@ -585,6 +599,7 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         max_constits=int(args.max_constits),
         class_to_idx=class_to_idx,
         seed=int(args.seed) + 101,
+        class_assignment=str(args.class_assignment),
     )
     print("Loading val split...")
     va_tok_raw, va_mask_raw, va_y = load_split(
@@ -593,6 +608,7 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         max_constits=int(args.max_constits),
         class_to_idx=class_to_idx,
         seed=int(args.seed) + 202,
+        class_assignment=str(args.class_assignment),
     )
     print("Loading test split...")
     te_tok_raw, te_mask_raw, te_y = load_split(
@@ -601,6 +617,7 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         max_constits=int(args.max_constits),
         class_to_idx=class_to_idx,
         seed=int(args.seed) + 303,
+        class_assignment=str(args.class_assignment),
     )
 
     print(
@@ -996,6 +1013,7 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         "n_classes": int(n_classes),
         "split_sizes": {"train": int(len(tr_y)), "val": int(len(va_y)), "test": int(len(te_y))},
         "feature_mode": str(args.feature_mode),
+        "class_assignment": str(args.class_assignment),
         "hlt_params": {
             "hlt_pt_threshold": float(args.hlt_pt_threshold),
             "merge_prob_scale": float(args.merge_prob_scale),
