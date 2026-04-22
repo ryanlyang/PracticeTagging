@@ -650,6 +650,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--selector_weight_decay", type=float, default=1e-4)
     p.add_argument("--selector_neg_per_class", type=int, default=3)
     p.add_argument("--selector_score_alpha", type=float, default=1.25)
+    p.add_argument("--selector_mode", type=str, default="compat_selector", choices=["compat_selector", "residual_only"])
 
     # Final dualview classifiers
     p.add_argument("--dual_epochs", type=int, default=60)
@@ -1026,95 +1027,111 @@ def main() -> None:
         f"val(feasC0={pools_val['stats']['class0_mean_feasible']:.2f}, feasC1={pools_val['stats']['class1_mean_feasible']:.2f})"
     )
 
-    # STEP 4: Compatibility selector (positive=true pair, negatives=retrieved dictionary candidates).
+    # STEP 4: Candidate compatibility selector (optional).
     print("\n" + "=" * 72)
-    print("STEP 4: Train HLT-candidate compatibility selector")
+    if str(args.selector_mode).lower() == "compat_selector":
+        print("STEP 4: Train HLT-candidate compatibility selector")
+    else:
+        print("STEP 4: Residual-only candidate quality (selector skipped)")
     print("=" * 72)
 
-    sel_tr = m33._build_selector_arrays(
-        const_hlt=const_hlt[train_idx],
-        mask_hlt=mask_hlt[train_idx],
-        const_off=const_off[train_idx],
-        mask_off=masks_off[train_idx],
-        pools=pools_train,
-        neg_per_class=int(args.selector_neg_per_class),
-    )
-    sel_va = m33._build_selector_arrays(
-        const_hlt=const_hlt[val_idx],
-        mask_hlt=mask_hlt[val_idx],
-        const_off=const_off[val_idx],
-        mask_off=masks_off[val_idx],
-        pools=pools_val,
-        neg_per_class=int(args.selector_neg_per_class),
-    )
+    selector = None
+    if str(args.selector_mode).lower() == "compat_selector":
+        sel_tr = m33._build_selector_arrays(
+            const_hlt=const_hlt[train_idx],
+            mask_hlt=mask_hlt[train_idx],
+            const_off=const_off[train_idx],
+            mask_off=masks_off[train_idx],
+            pools=pools_train,
+            neg_per_class=int(args.selector_neg_per_class),
+        )
+        sel_va = m33._build_selector_arrays(
+            const_hlt=const_hlt[val_idx],
+            mask_hlt=mask_hlt[val_idx],
+            const_off=const_off[val_idx],
+            mask_off=masks_off[val_idx],
+            pools=pools_val,
+            neg_per_class=int(args.selector_neg_per_class),
+        )
 
-    ds_sel_tr = m33.SelectorDataset(**sel_tr)
-    ds_sel_va = m33.SelectorDataset(**sel_va)
-    dl_sel_tr = DataLoader(ds_sel_tr, batch_size=int(args.batch_size), shuffle=True, drop_last=True, num_workers=int(args.num_workers))
-    dl_sel_va = DataLoader(ds_sel_va, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
+        ds_sel_tr = m33.SelectorDataset(**sel_tr)
+        ds_sel_va = m33.SelectorDataset(**sel_va)
+        dl_sel_tr = DataLoader(ds_sel_tr, batch_size=int(args.batch_size), shuffle=True, drop_last=True, num_workers=int(args.num_workers))
+        dl_sel_va = DataLoader(ds_sel_va, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
 
-    selector = m33.CandidateRealismSelector(
-        embed_dim=int(args.embed_dim),
-        num_heads=int(args.num_heads),
-        num_layers=max(2, int(args.num_layers // 2)),
-        ff_dim=int(args.ff_dim),
-        dropout=float(args.dropout),
-    ).to(device)
-    selector, selector_metrics = m33._train_selector(
-        model=selector,
-        train_loader=dl_sel_tr,
-        val_loader=dl_sel_va,
-        device=device,
-        epochs=int(args.selector_epochs),
-        lr=float(args.selector_lr),
-        weight_decay=float(args.selector_weight_decay),
-        patience=int(args.selector_patience),
-    )
+        selector = m33.CandidateRealismSelector(
+            embed_dim=int(args.embed_dim),
+            num_heads=int(args.num_heads),
+            num_layers=max(2, int(args.num_layers // 2)),
+            ff_dim=int(args.ff_dim),
+            dropout=float(args.dropout),
+        ).to(device)
+        selector, selector_metrics = m33._train_selector(
+            model=selector,
+            train_loader=dl_sel_tr,
+            val_loader=dl_sel_va,
+            device=device,
+            epochs=int(args.selector_epochs),
+            lr=float(args.selector_lr),
+            weight_decay=float(args.selector_weight_decay),
+            patience=int(args.selector_patience),
+        )
 
-    sel_bg_train = m33._score_selector_candidates(
-        selector,
-        const_hlt[train_idx],
-        mask_hlt[train_idx],
-        pools_train["class0"]["const"],
-        pools_train["class0"]["mask"],
-        pools_train["class0"]["res_total"],
-        cand_class_val=0,
-        batch_size=int(args.batch_size),
-        device=device,
-    )
-    sel_tp_train = m33._score_selector_candidates(
-        selector,
-        const_hlt[train_idx],
-        mask_hlt[train_idx],
-        pools_train["class1"]["const"],
-        pools_train["class1"]["mask"],
-        pools_train["class1"]["res_total"],
-        cand_class_val=1,
-        batch_size=int(args.batch_size),
-        device=device,
-    )
-    sel_bg_val = m33._score_selector_candidates(
-        selector,
-        const_hlt[val_idx],
-        mask_hlt[val_idx],
-        pools_val["class0"]["const"],
-        pools_val["class0"]["mask"],
-        pools_val["class0"]["res_total"],
-        cand_class_val=0,
-        batch_size=int(args.batch_size),
-        device=device,
-    )
-    sel_tp_val = m33._score_selector_candidates(
-        selector,
-        const_hlt[val_idx],
-        mask_hlt[val_idx],
-        pools_val["class1"]["const"],
-        pools_val["class1"]["mask"],
-        pools_val["class1"]["res_total"],
-        cand_class_val=1,
-        batch_size=int(args.batch_size),
-        device=device,
-    )
+        sel_bg_train = m33._score_selector_candidates(
+            selector,
+            const_hlt[train_idx],
+            mask_hlt[train_idx],
+            pools_train["class0"]["const"],
+            pools_train["class0"]["mask"],
+            pools_train["class0"]["res_total"],
+            cand_class_val=0,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+        sel_tp_train = m33._score_selector_candidates(
+            selector,
+            const_hlt[train_idx],
+            mask_hlt[train_idx],
+            pools_train["class1"]["const"],
+            pools_train["class1"]["mask"],
+            pools_train["class1"]["res_total"],
+            cand_class_val=1,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+        sel_bg_val = m33._score_selector_candidates(
+            selector,
+            const_hlt[val_idx],
+            mask_hlt[val_idx],
+            pools_val["class0"]["const"],
+            pools_val["class0"]["mask"],
+            pools_val["class0"]["res_total"],
+            cand_class_val=0,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+        sel_tp_val = m33._score_selector_candidates(
+            selector,
+            const_hlt[val_idx],
+            mask_hlt[val_idx],
+            pools_val["class1"]["const"],
+            pools_val["class1"]["mask"],
+            pools_val["class1"]["res_total"],
+            cand_class_val=1,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+    else:
+        selector_metrics = {
+            "mode": "residual_only",
+            "skipped": 1,
+            "best_val_auc": float("nan"),
+            "best_epoch": 0,
+        }
+        sel_bg_train = np.zeros_like(pools_train["class0"]["res_total"], dtype=np.float32)
+        sel_tp_train = np.zeros_like(pools_train["class1"]["res_total"], dtype=np.float32)
+        sel_bg_val = np.zeros_like(pools_val["class0"]["res_total"], dtype=np.float32)
+        sel_tp_val = np.zeros_like(pools_val["class1"]["res_total"], dtype=np.float32)
 
     dv_tr = m33._build_dualview_features(
         pools=pools_train,
@@ -1232,28 +1249,32 @@ def main() -> None:
         batch_size=int(args.retrieval_batch_size),
     )
 
-    sel_bg_test = m33._score_selector_candidates(
-        selector,
-        const_hlt[test_idx],
-        mask_hlt[test_idx],
-        pools_test["class0"]["const"],
-        pools_test["class0"]["mask"],
-        pools_test["class0"]["res_total"],
-        cand_class_val=0,
-        batch_size=int(args.batch_size),
-        device=device,
-    )
-    sel_tp_test = m33._score_selector_candidates(
-        selector,
-        const_hlt[test_idx],
-        mask_hlt[test_idx],
-        pools_test["class1"]["const"],
-        pools_test["class1"]["mask"],
-        pools_test["class1"]["res_total"],
-        cand_class_val=1,
-        batch_size=int(args.batch_size),
-        device=device,
-    )
+    if selector is not None:
+        sel_bg_test = m33._score_selector_candidates(
+            selector,
+            const_hlt[test_idx],
+            mask_hlt[test_idx],
+            pools_test["class0"]["const"],
+            pools_test["class0"]["mask"],
+            pools_test["class0"]["res_total"],
+            cand_class_val=0,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+        sel_tp_test = m33._score_selector_candidates(
+            selector,
+            const_hlt[test_idx],
+            mask_hlt[test_idx],
+            pools_test["class1"]["const"],
+            pools_test["class1"]["mask"],
+            pools_test["class1"]["res_total"],
+            cand_class_val=1,
+            batch_size=int(args.batch_size),
+            device=device,
+        )
+    else:
+        sel_bg_test = np.zeros_like(pools_test["class0"]["res_total"], dtype=np.float32)
+        sel_tp_test = np.zeros_like(pools_test["class1"]["res_total"], dtype=np.float32)
 
     dv_te = m33._build_dualview_features(
         pools=pools_test,
@@ -1297,7 +1318,8 @@ def main() -> None:
     # Save artifacts.
     torch.save({"model": teacher.state_dict(), "auc_test": float(teacher_auc_test)}, save_root / "teacher.pt")
     torch.save({"model": baseline.state_dict(), "auc_test": float(baseline_auc_test)}, save_root / "baseline_hlt.pt")
-    torch.save({"model": selector.state_dict(), "metrics": selector_metrics}, save_root / "selector.pt")
+    if selector is not None:
+        torch.save({"model": selector.state_dict(), "metrics": selector_metrics}, save_root / "selector.pt")
     torch.save({"model": dv_nogate.state_dict(), "metrics": dv_nogate_metrics}, save_root / "dualview_nogate.pt")
     torch.save({"model": dv_gated.state_dict(), "metrics": dv_gated_metrics}, save_root / "dualview_gated.pt")
     if retrieval_embedder is not None:
@@ -1393,6 +1415,7 @@ def main() -> None:
             "embedder_metrics": retrieval_embed_metrics,
             "landmark_meta": landmark_meta,
         },
+        "selector_mode": str(args.selector_mode),
     }
     with open(save_root / "m36_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)

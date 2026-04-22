@@ -68,6 +68,13 @@ def parse_args() -> argparse.Namespace:
         choices=["filename", "canonical_labels"],
         help="Use filename classes or canonical label_* branches for class assignment.",
     )
+    p.add_argument(
+        "--feature_preprocessing",
+        type=str,
+        default="canonical",
+        choices=["canonical", "legacy"],
+        help="Feature preprocessing style before plotting.",
+    )
     p.add_argument("--seed", type=int, default=52)
     p.add_argument("--max_constits", type=int, default=128)
     p.add_argument("--n_jets", type=int, default=50000)
@@ -405,7 +412,12 @@ def main() -> None:
         class_assignment=str(args.class_assignment),
     )
 
-    feat = compute_features(raw_tok, mask, feature_mode="full")
+    feat = compute_features(
+        raw_tok,
+        mask,
+        feature_mode="full",
+        feature_preprocessing=str(args.feature_preprocessing),
+    )
     if feat.shape[-1] != len(FEATURE_NAMES_FULL17):
         raise RuntimeError(
             f"Expected 17 full features, got {feat.shape[-1]}. "
@@ -519,6 +531,7 @@ def main() -> None:
         "output_dir": str(args.output_dir),
         "split": str(args.split),
         "class_assignment": str(args.class_assignment),
+        "feature_preprocessing": str(args.feature_preprocessing),
         "seed": int(args.seed),
         "n_jets": int(args.n_jets),
         "max_constits": int(args.max_constits),

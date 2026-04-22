@@ -53,10 +53,10 @@ CANONICAL_CLASS_TO_LABEL_BRANCH = {
     "Hgg": "label_Hgg",
     "H4q": "label_H4q",
     "Hqql": "label_Hqql",
+    "Zqq": "label_Zqq",
+    "Wqq": "label_Wqq",
     "Tbqq": "label_Tbqq",
     "Tbl": "label_Tbl",
-    "Wqq": "label_Wqq",
-    "Zqq": "label_Zqq",
 }
 CANONICAL_CLASS_ORDER = tuple(CANONICAL_CLASS_TO_LABEL_BRANCH.keys())
 
@@ -148,6 +148,17 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--num_workers", type=int, default=2)
 
     p.add_argument("--feature_mode", type=str, default="full", choices=["kin", "kinpid", "full"])
+    p.add_argument(
+        "--feature_preprocessing",
+        type=str,
+        default="canonical",
+        choices=["canonical", "legacy"],
+        help=(
+            "Feature preprocessing style. "
+            "'canonical' mirrors JetClass YAML manual preprocessing as closely as possible; "
+            "'legacy' keeps this repo's previous handcrafted feature layout."
+        ),
+    )
     p.add_argument(
         "--class_assignment",
         type=str,
@@ -991,7 +1002,12 @@ def summarize_hlt_diagnostics(per_jet: Dict[str, np.ndarray]) -> Dict[str, float
     }
 
 
-def compute_features(raw_tok: np.ndarray, mask: np.ndarray, feature_mode: str) -> np.ndarray:
+def compute_features(
+    raw_tok: np.ndarray,
+    mask: np.ndarray,
+    feature_mode: str,
+    feature_preprocessing: str = "canonical",
+) -> np.ndarray:
     pt = np.maximum(raw_tok[:, :, IDX_PT], 1e-8)
     eta = np.clip(raw_tok[:, :, IDX_ETA], -5.0, 5.0)
     phi = raw_tok[:, :, IDX_PHI]
@@ -1018,16 +1034,70 @@ def compute_features(raw_tok: np.ndarray, mask: np.ndarray, feature_mode: str) -
     log_e_rel = np.log(ene / (jet_e + 1e-8) + 1e-8)
     d_r = np.sqrt(d_eta * d_eta + d_phi * d_phi)
 
-    core = np.stack([d_eta, d_phi, log_pt, log_e, log_pt_rel, log_e_rel, d_r], axis=-1).astype(np.float32)
-
-    if feature_mode == "kin":
-        feat = core
-    elif feature_mode == "kinpid":
-        aux = raw_tok[:, :, IDX_CHARGE:IDX_PID4 + 1]
-        feat = np.concatenate([core, aux], axis=-1).astype(np.float32)
+    if feature_preprocessing == "legacy":
+        # Historical repo layout:
+        # [d_eta, d_phi, log_pt, log_e, log_pt_rel, log_e_rel, d_r] + auxiliaries.
+        core = np.stack([d_eta, d_phi, log_pt, log_e, log_pt_rel, log_e_rel, d_r], axis=-1).astype(np.float32)
+        if feature_mode == "kin":
+            feat = core
+        elif feature_mode == "kinpid":
+            aux = raw_tok[:, :, IDX_CHARGE:IDX_PID4 + 1]
+            feat = np.concatenate([core, aux], axis=-1).astype(np.float32)
+        else:
+            aux = raw_tok[:, :, IDX_CHARGE:IDX_DZERR + 1]
+            feat = np.concatenate([core, aux], axis=-1).astype(np.float32)
     else:
-        aux = raw_tok[:, :, IDX_CHARGE:IDX_DZERR + 1]
-        feat = np.concatenate([core, aux], axis=-1).astype(np.float32)
+        # Canonical-style preprocessing (JetClass YAML, manual mode):
+        # part_pt_log:   (log_pt - 1.7) * 0.7
+        # part_e_log:    (log_e - 2.0) * 0.7
+        # part_logptrel: (log_pt_rel - (-4.7)) * 0.7
+        # part_logerel:  (log_e_rel - (-4.7)) * 0.7
+        # part_deltaR:   (d_r - 0.2) * 4.0
+        # plus tanh(d0), tanh(dz), and error clips to [0, 1].
+        f_pt_log = np.clip((log_pt - 1.7) * 0.7, -5.0, 5.0)
+        f_e_log = np.clip((log_e - 2.0) * 0.7, -5.0, 5.0)
+        f_logptrel = np.clip((log_pt_rel + 4.7) * 0.7, -5.0, 5.0)
+        f_logerel = np.clip((log_e_rel + 4.7) * 0.7, -5.0, 5.0)
+        f_delta_r = np.clip((d_r - 0.2) * 4.0, -5.0, 5.0)
+        f_d_eta = np.clip(d_eta, -5.0, 5.0)
+        f_d_phi = np.clip(d_phi, -5.0, 5.0)
+
+        charge = np.clip(raw_tok[:, :, IDX_CHARGE], -5.0, 5.0)
+        pid = np.clip(raw_tok[:, :, IDX_PID0:IDX_PID4 + 1], -5.0, 5.0)
+        d0 = np.tanh(raw_tok[:, :, IDX_D0])
+        d0err = np.clip(raw_tok[:, :, IDX_D0ERR], 0.0, 1.0)
+        dz = np.tanh(raw_tok[:, :, IDX_DZ])
+        dzerr = np.clip(raw_tok[:, :, IDX_DZERR], 0.0, 1.0)
+
+        if feature_mode == "kin":
+            feat = np.stack(
+                [f_pt_log, f_e_log, f_logptrel, f_logerel, f_delta_r, f_d_eta, f_d_phi],
+                axis=-1,
+            ).astype(np.float32)
+        elif feature_mode == "kinpid":
+            feat = np.concatenate(
+                [
+                    np.stack([f_pt_log, f_e_log, f_logptrel, f_logerel, f_delta_r], axis=-1),
+                    charge[:, :, None],
+                    pid,
+                    np.stack([f_d_eta, f_d_phi], axis=-1),
+                ],
+                axis=-1,
+            ).astype(np.float32)
+        else:
+            feat = np.concatenate(
+                [
+                    np.stack([f_pt_log, f_e_log, f_logptrel, f_logerel, f_delta_r], axis=-1),
+                    charge[:, :, None],
+                    pid,
+                    d0[:, :, None],
+                    d0err[:, :, None],
+                    dz[:, :, None],
+                    dzerr[:, :, None],
+                    np.stack([f_d_eta, f_d_phi], axis=-1),
+                ],
+                axis=-1,
+            ).astype(np.float32)
 
     feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
     feat[~mask] = 0.0
@@ -1479,22 +1549,60 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
     )
 
     # Features + standardization stats from train offline only (shared transform).
-    tr_feat_off = compute_features(tr_tok, tr_mask, feature_mode=args.feature_mode)
-    va_feat_off = compute_features(va_tok, va_mask, feature_mode=args.feature_mode)
-    te_feat_off = compute_features(te_tok, te_mask, feature_mode=args.feature_mode)
+    tr_feat_off = compute_features(
+        tr_tok,
+        tr_mask,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    va_feat_off = compute_features(
+        va_tok,
+        va_mask,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    te_feat_off = compute_features(
+        te_tok,
+        te_mask,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
 
-    tr_feat_hlt = compute_features(tr_hlt_tok, tr_hlt_mask, feature_mode=args.feature_mode)
-    va_feat_hlt = compute_features(va_hlt_tok, va_hlt_mask, feature_mode=args.feature_mode)
-    te_feat_hlt = compute_features(te_hlt_tok, te_hlt_mask, feature_mode=args.feature_mode)
+    tr_feat_hlt = compute_features(
+        tr_hlt_tok,
+        tr_hlt_mask,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    va_feat_hlt = compute_features(
+        va_hlt_tok,
+        va_hlt_mask,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    te_feat_hlt = compute_features(
+        te_hlt_tok,
+        te_hlt_mask,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
 
     idx_all = np.arange(len(tr_y))
-    mean, std = get_mean_std(tr_feat_off, tr_mask, idx_all)
-    tr_feat_off = standardize(tr_feat_off, tr_mask, mean, std)
-    va_feat_off = standardize(va_feat_off, va_mask, mean, std)
-    te_feat_off = standardize(te_feat_off, te_mask, mean, std)
-    tr_feat_hlt = standardize(tr_feat_hlt, tr_hlt_mask, mean, std)
-    va_feat_hlt = standardize(va_feat_hlt, va_hlt_mask, mean, std)
-    te_feat_hlt = standardize(te_feat_hlt, te_hlt_mask, mean, std)
+    if str(args.feature_preprocessing) == "canonical":
+        # Canonical JetClass preprocessing is manually fixed (YAML transforms), so
+        # we do not apply extra dataset-dependent standardization here.
+        mean = np.zeros((tr_feat_off.shape[-1],), dtype=np.float32)
+        std = np.ones((tr_feat_off.shape[-1],), dtype=np.float32)
+        standardization_mode = "canonical_manual_fixed"
+    else:
+        mean, std = get_mean_std(tr_feat_off, tr_mask, idx_all)
+        tr_feat_off = standardize(tr_feat_off, tr_mask, mean, std)
+        va_feat_off = standardize(va_feat_off, va_mask, mean, std)
+        te_feat_off = standardize(te_feat_off, te_mask, mean, std)
+        tr_feat_hlt = standardize(tr_feat_hlt, tr_hlt_mask, mean, std)
+        va_feat_hlt = standardize(va_feat_hlt, va_hlt_mask, mean, std)
+        te_feat_hlt = standardize(te_feat_hlt, te_hlt_mask, mean, std)
+        standardization_mode = "learned_train_split"
 
     ds_tr_off = JetDataset(tr_feat_off, tr_mask, tr_y)
     ds_va_off = JetDataset(va_feat_off, va_mask, va_y)
@@ -1582,6 +1690,8 @@ def run_experiment(args: argparse.Namespace) -> Dict[str, object]:
         "n_classes": n_classes,
         "split_sizes": {"train": int(len(tr_y)), "val": int(len(va_y)), "test": int(len(te_y))},
         "feature_mode": args.feature_mode,
+        "feature_preprocessing": args.feature_preprocessing,
+        "feature_standardization_mode": standardization_mode,
         "class_assignment": args.class_assignment,
         "hlt_params": {
             "hlt_pt_threshold": args.hlt_pt_threshold,

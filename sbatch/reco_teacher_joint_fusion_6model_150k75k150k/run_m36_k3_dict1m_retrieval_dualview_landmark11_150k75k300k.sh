@@ -15,6 +15,7 @@ SAVE_DIR="${SAVE_DIR:-}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
+SELECTOR_MODE="${SELECTOR_MODE:-residual_only}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-1525000}"
 N_DICT_SPLIT="${N_DICT_SPLIT:-1000000}"
@@ -73,8 +74,8 @@ CMD=(
   --retrieval_per_round 256
   --retrieval_max_rounds 10
   --retrieval_batch_size 256
-  --retrieval_eps_total 0.90
-  --retrieval_eps_count 0.50
+  --retrieval_eps_total 0.60
+  --retrieval_eps_count 0.30
   --retrieval_w_desc 1.00
   --retrieval_w_count 0.25
   --retrieval_w_pt 0.12
@@ -87,6 +88,7 @@ CMD=(
   --selector_patience 10
   --selector_neg_per_class 3
   --selector_score_alpha 1.35
+  --selector_mode "${SELECTOR_MODE}"
   --dual_epochs 80
   --dual_lr 1.2e-4
   --dual_patience 14

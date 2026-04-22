@@ -82,6 +82,13 @@ def parse_args() -> argparse.Namespace:
     # Data/feature
     p.add_argument("--feature_mode", type=str, default="full", choices=["kin", "kinpid", "full"])
     p.add_argument(
+        "--feature_preprocessing",
+        type=str,
+        default="canonical",
+        choices=["canonical", "legacy"],
+        help="Feature preprocessing style used before classifier/reconstructor.",
+    )
+    p.add_argument(
         "--class_assignment",
         type=str,
         default="canonical_labels",
@@ -673,21 +680,57 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
     te_hlt_const4 = te_hlt_tok_raw[:, :, :4].astype(np.float32)
 
     # Features (reconstructor and tagger share the same feature tensor in V1).
-    tr_feat_off = compute_features(tr_tok_raw, tr_mask_raw, feature_mode=args.feature_mode)
-    va_feat_off = compute_features(va_tok_raw, va_mask_raw, feature_mode=args.feature_mode)
-    te_feat_off = compute_features(te_tok_raw, te_mask_raw, feature_mode=args.feature_mode)
-    tr_feat_hlt = compute_features(tr_hlt_tok_raw, tr_hlt_mask_raw, feature_mode=args.feature_mode)
-    va_feat_hlt = compute_features(va_hlt_tok_raw, va_hlt_mask_raw, feature_mode=args.feature_mode)
-    te_feat_hlt = compute_features(te_hlt_tok_raw, te_hlt_mask_raw, feature_mode=args.feature_mode)
+    tr_feat_off = compute_features(
+        tr_tok_raw,
+        tr_mask_raw,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    va_feat_off = compute_features(
+        va_tok_raw,
+        va_mask_raw,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    te_feat_off = compute_features(
+        te_tok_raw,
+        te_mask_raw,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    tr_feat_hlt = compute_features(
+        tr_hlt_tok_raw,
+        tr_hlt_mask_raw,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    va_feat_hlt = compute_features(
+        va_hlt_tok_raw,
+        va_hlt_mask_raw,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
+    te_feat_hlt = compute_features(
+        te_hlt_tok_raw,
+        te_hlt_mask_raw,
+        feature_mode=args.feature_mode,
+        feature_preprocessing=args.feature_preprocessing,
+    )
 
     idx_all = np.arange(len(tr_y))
-    mean, std = get_mean_std(tr_feat_off, tr_mask_raw, idx_all)
-    tr_feat_off = standardize(tr_feat_off, tr_mask_raw, mean, std)
-    va_feat_off = standardize(va_feat_off, va_mask_raw, mean, std)
-    te_feat_off = standardize(te_feat_off, te_mask_raw, mean, std)
-    tr_feat_hlt = standardize(tr_feat_hlt, tr_hlt_mask_raw, mean, std)
-    va_feat_hlt = standardize(va_feat_hlt, va_hlt_mask_raw, mean, std)
-    te_feat_hlt = standardize(te_feat_hlt, te_hlt_mask_raw, mean, std)
+    if str(args.feature_preprocessing) == "canonical":
+        mean = np.zeros((tr_feat_off.shape[-1],), dtype=np.float32)
+        std = np.ones((tr_feat_off.shape[-1],), dtype=np.float32)
+        standardization_mode = "canonical_manual_fixed"
+    else:
+        mean, std = get_mean_std(tr_feat_off, tr_mask_raw, idx_all)
+        tr_feat_off = standardize(tr_feat_off, tr_mask_raw, mean, std)
+        va_feat_off = standardize(va_feat_off, va_mask_raw, mean, std)
+        te_feat_off = standardize(te_feat_off, te_mask_raw, mean, std)
+        tr_feat_hlt = standardize(tr_feat_hlt, tr_hlt_mask_raw, mean, std)
+        va_feat_hlt = standardize(va_feat_hlt, va_hlt_mask_raw, mean, std)
+        te_feat_hlt = standardize(te_feat_hlt, te_hlt_mask_raw, mean, std)
+        standardization_mode = "learned_train_split"
 
     # Non-privileged budget supervision from count gaps.
     added_scale = float(np.clip(float(args.added_target_scale), 0.0, 1.0))
@@ -1013,6 +1056,8 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         "n_classes": int(n_classes),
         "split_sizes": {"train": int(len(tr_y)), "val": int(len(va_y)), "test": int(len(te_y))},
         "feature_mode": str(args.feature_mode),
+        "feature_preprocessing": str(args.feature_preprocessing),
+        "feature_standardization_mode": str(standardization_mode),
         "class_assignment": str(args.class_assignment),
         "hlt_params": {
             "hlt_pt_threshold": float(args.hlt_pt_threshold),
