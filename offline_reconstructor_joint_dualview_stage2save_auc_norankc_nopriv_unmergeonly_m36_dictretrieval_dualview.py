@@ -29,12 +29,12 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import NearestNeighbors
-from sklearn.metrics import roc_curve
+from sklearn.metrics import roc_curve, roc_auc_score
 from torch.utils.data import DataLoader
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly as base
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_detfeas_dualview as m33
-from unmerge_correct_hlt import ParticleTransformer, compute_features, get_stats, standardize
+from unmerge_correct_hlt import ParticleTransformer, DualViewCrossAttnClassifier, compute_features, get_stats, standardize
 
 
 @dataclass
@@ -67,6 +67,287 @@ class RetrievalEmbedder(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         z = self.net(x)
         return F.normalize(z, dim=-1)
+
+
+class DualViewM2Dataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        feat_hlt: np.ndarray,
+        mask_hlt: np.ndarray,
+        feat_cand: np.ndarray,
+        mask_cand: np.ndarray,
+        cand_feat: np.ndarray,
+        labels: np.ndarray,
+        sample_weight: np.ndarray,
+    ):
+        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
+        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+        self.feat_cand = torch.tensor(feat_cand, dtype=torch.float32)
+        self.mask_cand = torch.tensor(mask_cand, dtype=torch.bool)
+        self.cand_feat = torch.tensor(cand_feat, dtype=torch.float32)
+        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+        self.sample_weight = torch.tensor(sample_weight.astype(np.float32), dtype=torch.float32)
+
+    def __len__(self) -> int:
+        return int(self.labels.shape[0])
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "feat_hlt": self.feat_hlt[i],
+            "mask_hlt": self.mask_hlt[i],
+            "feat_cand": self.feat_cand[i],
+            "mask_cand": self.mask_cand[i],
+            "cand_feat": self.cand_feat[i],
+            "label": self.labels[i],
+            "sample_weight": self.sample_weight[i],
+        }
+
+
+def _const_to_token5_np(const: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    pt = np.clip(const[..., 0], 1e-8, None)
+    eta = np.clip(const[..., 1], -5.0, 5.0)
+    phi = const[..., 2]
+    e = np.clip(const[..., 3], 1e-8, None)
+    feat = np.stack(
+        [
+            np.log(pt),
+            eta,
+            np.sin(phi),
+            np.cos(phi),
+            np.log(e),
+        ],
+        axis=-1,
+    ).astype(np.float32)
+    feat[~mask] = 0.0
+    return feat
+
+
+def _build_candidate_dual_tokens(
+    cand_top_const: np.ndarray,
+    cand_top_mask: np.ndarray,
+    cand_bg_const: np.ndarray,
+    cand_bg_mask: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    top5 = _const_to_token5_np(cand_top_const, cand_top_mask)
+    bg5 = _const_to_token5_np(cand_bg_const, cand_bg_mask)
+    top_m = cand_top_mask.astype(np.float32)[..., None]
+    bg_m = cand_bg_mask.astype(np.float32)[..., None]
+    cand_feat = np.concatenate([top5, bg5, top_m, bg_m], axis=-1).astype(np.float32)
+    cand_mask = (cand_top_mask | cand_bg_mask).astype(bool)
+    empty = ~cand_mask.any(axis=1)
+    if np.any(empty):
+        cand_mask[empty, 0] = True
+    cand_feat[~cand_mask] = 0.0
+    return cand_feat.astype(np.float32), cand_mask.astype(bool)
+
+
+class DualViewM2NoGate(nn.Module):
+    def __init__(
+        self,
+        cand_feat_dim: int,
+        embed_dim: int,
+        num_heads: int,
+        num_layers: int,
+        ff_dim: int,
+        dropout: float,
+    ):
+        super().__init__()
+        self.dual = DualViewCrossAttnClassifier(
+            input_dim_a=7,
+            input_dim_b=12,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        self.fuse = nn.Sequential(
+            nn.Linear(int(cand_feat_dim) + 1, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
+        )
+
+    def forward(
+        self,
+        feat_hlt: torch.Tensor,
+        mask_hlt: torch.Tensor,
+        feat_cand: torch.Tensor,
+        mask_cand: torch.Tensor,
+        cand_feat: torch.Tensor,
+    ) -> torch.Tensor:
+        logit_dual = self.dual(feat_hlt, mask_hlt, feat_cand, mask_cand).squeeze(-1)
+        x = torch.cat([logit_dual.unsqueeze(-1), cand_feat], dim=-1)
+        return self.fuse(x).squeeze(-1)
+
+
+class DualViewM2Gated(nn.Module):
+    def __init__(
+        self,
+        cand_feat_dim: int,
+        embed_dim: int,
+        num_heads: int,
+        num_layers: int,
+        ff_dim: int,
+        dropout: float,
+    ):
+        super().__init__()
+        self.hlt = ParticleTransformer(
+            input_dim=7,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        self.dual = DualViewCrossAttnClassifier(
+            input_dim_a=7,
+            input_dim_b=12,
+            embed_dim=embed_dim,
+            num_heads=num_heads,
+            num_layers=num_layers,
+            ff_dim=ff_dim,
+            dropout=dropout,
+        )
+        self.cand_bias = nn.Sequential(
+            nn.Linear(int(cand_feat_dim), 64),
+            nn.LayerNorm(64),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(64, 1),
+        )
+        self.gate = nn.Sequential(
+            nn.Linear(int(cand_feat_dim) + 2, 128),
+            nn.LayerNorm(128),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(128, 1),
+            nn.Sigmoid(),
+        )
+
+    def forward(
+        self,
+        feat_hlt: torch.Tensor,
+        mask_hlt: torch.Tensor,
+        feat_cand: torch.Tensor,
+        mask_cand: torch.Tensor,
+        cand_feat: torch.Tensor,
+    ) -> torch.Tensor:
+        logit_h = self.hlt(feat_hlt, mask_hlt).squeeze(-1)
+        logit_d = self.dual(feat_hlt, mask_hlt, feat_cand, mask_cand).squeeze(-1)
+        bias = self.cand_bias(cand_feat).squeeze(-1)
+        g_in = torch.cat([cand_feat, logit_h.unsqueeze(-1), logit_d.unsqueeze(-1)], dim=-1)
+        g = self.gate(g_in).squeeze(-1)
+        return (1.0 - g) * logit_h + g * (logit_d + bias)
+
+
+def _forward_dual_m2(model: nn.Module, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
+    return model(
+        feat_hlt=batch["feat_hlt"],
+        mask_hlt=batch["mask_hlt"],
+        feat_cand=batch["feat_cand"],
+        mask_cand=batch["mask_cand"],
+        cand_feat=batch["cand_feat"],
+    )
+
+
+def _train_dual_m2_model(
+    model: nn.Module,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    epochs: int,
+    lr: float,
+    weight_decay: float,
+    patience: int,
+    name: str,
+) -> Tuple[nn.Module, Dict[str, float]]:
+    opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
+    best_state = None
+    best_auc = float("-inf")
+    best_epoch = 0
+    no_imp = 0
+
+    for ep in range(int(epochs)):
+        model.train()
+        tr_loss = 0.0
+        tr_n = 0
+        for batch in train_loader:
+            batch = {k: v.to(device) for k, v in batch.items()}
+            y = batch["label"]
+            sw = batch["sample_weight"]
+            logit = _forward_dual_m2(model, batch)
+            lv = F.binary_cross_entropy_with_logits(logit, y, reduction="none")
+            loss = m33._weighted_mean(lv, sw)
+            opt.zero_grad(set_to_none=True)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            opt.step()
+            bs = int(y.shape[0])
+            tr_loss += float(loss.item()) * bs
+            tr_n += bs
+
+        model.eval()
+        vp, vy, vw = [], [], []
+        with torch.no_grad():
+            for batch in val_loader:
+                batch = {k: v.to(device) for k, v in batch.items()}
+                y = batch["label"]
+                sw = batch["sample_weight"]
+                p = torch.sigmoid(_forward_dual_m2(model, batch))
+                vp.append(p.detach().cpu().numpy().astype(np.float64))
+                vy.append(y.detach().cpu().numpy().astype(np.float64))
+                vw.append(sw.detach().cpu().numpy().astype(np.float64))
+        vp_np = np.concatenate(vp, axis=0) if vp else np.array([], dtype=np.float64)
+        vy_np = np.concatenate(vy, axis=0) if vy else np.array([], dtype=np.float64)
+        vw_np = np.concatenate(vw, axis=0) if vw else None
+        va_auc = float(roc_auc_score(vy_np, vp_np, sample_weight=vw_np)) if len(np.unique(vy_np)) > 1 else 0.0
+
+        if va_auc > best_auc:
+            best_auc = float(va_auc)
+            best_epoch = ep + 1
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_imp = 0
+        else:
+            no_imp += 1
+
+        if (ep + 1) % 2 == 0 or ep == 0:
+            print(f"{name} ep {ep+1:03d}: train_loss={tr_loss/max(1,tr_n):.5f} val_auc={va_auc:.4f} best={best_auc:.4f}@{best_epoch}")
+        if no_imp >= int(patience):
+            print(f"{name} early stop at ep {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+    return model, {"best_val_auc": float(best_auc), "best_epoch": int(best_epoch)}
+
+
+@torch.no_grad()
+def _eval_dual_m2_model(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> Tuple[float, float, np.ndarray, np.ndarray, np.ndarray]:
+    model.eval()
+    p_all, y_all, w_all = [], [], []
+    for batch in loader:
+        batch = {k: v.to(device) for k, v in batch.items()}
+        p = torch.sigmoid(_forward_dual_m2(model, batch))
+        p_all.append(p.detach().cpu().numpy().astype(np.float64))
+        y_all.append(batch["label"].detach().cpu().numpy().astype(np.float64))
+        w_all.append(batch["sample_weight"].detach().cpu().numpy().astype(np.float64))
+    p_np = np.concatenate(p_all, axis=0) if p_all else np.array([], dtype=np.float64)
+    y_np = np.concatenate(y_all, axis=0) if y_all else np.array([], dtype=np.float64)
+    w_np = np.concatenate(w_all, axis=0) if w_all else np.ones_like(y_np, dtype=np.float64)
+    auc = float(roc_auc_score(y_np, p_np, sample_weight=w_np)) if len(np.unique(y_np)) > 1 else float("nan")
+    fpr, tpr, _ = roc_curve(y_np, p_np, sample_weight=w_np)
+    fpr50 = float(m33.fpr_at_target_tpr(fpr, tpr, 0.50))
+    return auc, fpr50, p_np.astype(np.float32), y_np.astype(np.float32), w_np.astype(np.float32)
 
 
 def _safe_div(a: np.ndarray, b: np.ndarray, eps: float = 1e-8) -> np.ndarray:
@@ -1148,30 +1429,44 @@ def main() -> None:
         score_alpha=float(args.selector_score_alpha),
     )
 
-    # STEP 5: Final dualview classifiers (no-gate and gated).
+    # STEP 5: Final dualview classifiers (m2-style dualview; HLT view + 2-candidate view + info vector).
     print("\n" + "=" * 72)
-    print("STEP 5: Final DualView Classifiers (NoGate + Gated)")
+    print("STEP 5: Final DualView Classifiers (M2-style NoGate + Gated)")
     print("=" * 72)
 
-    ds_dv_tr = m33.DualViewCandidateDataset(
-        const_hlt=const_hlt[train_idx],
-        mask_hlt=mask_hlt[train_idx],
+    tr_cand_tok, tr_cand_mask = _build_candidate_dual_tokens(
         cand_top_const=dv_tr["cand_top_const"],
         cand_top_mask=dv_tr["cand_top_mask"],
         cand_bg_const=dv_tr["cand_bg_const"],
         cand_bg_mask=dv_tr["cand_bg_mask"],
-        cand_feat=dv_tr["cand_feat"],
-        labels=labels[train_idx],
-        sample_weight=sw_train,
     )
-    ds_dv_va = m33.DualViewCandidateDataset(
-        const_hlt=const_hlt[val_idx],
-        mask_hlt=mask_hlt[val_idx],
+    va_cand_tok, va_cand_mask = _build_candidate_dual_tokens(
         cand_top_const=dv_va["cand_top_const"],
         cand_top_mask=dv_va["cand_top_mask"],
         cand_bg_const=dv_va["cand_bg_const"],
         cand_bg_mask=dv_va["cand_bg_mask"],
-        cand_feat=dv_va["cand_feat"],
+    )
+
+    cand_feat_mean = dv_tr["cand_feat"].mean(axis=0, keepdims=True).astype(np.float32)
+    cand_feat_std = (dv_tr["cand_feat"].std(axis=0, keepdims=True) + 1e-6).astype(np.float32)
+    cand_feat_tr = ((dv_tr["cand_feat"] - cand_feat_mean) / cand_feat_std).astype(np.float32)
+    cand_feat_va = ((dv_va["cand_feat"] - cand_feat_mean) / cand_feat_std).astype(np.float32)
+
+    ds_dv_tr = DualViewM2Dataset(
+        feat_hlt=feat_hlt_tr,
+        mask_hlt=mask_hlt[train_idx],
+        feat_cand=tr_cand_tok,
+        mask_cand=tr_cand_mask,
+        cand_feat=cand_feat_tr,
+        labels=labels[train_idx],
+        sample_weight=sw_train,
+    )
+    ds_dv_va = DualViewM2Dataset(
+        feat_hlt=feat_hlt_va,
+        mask_hlt=mask_hlt[val_idx],
+        feat_cand=va_cand_tok,
+        mask_cand=va_cand_mask,
+        cand_feat=cand_feat_va,
         labels=labels[val_idx],
         sample_weight=sw_val,
     )
@@ -1179,15 +1474,15 @@ def main() -> None:
     dl_dv_tr = DataLoader(ds_dv_tr, batch_size=int(args.batch_size), shuffle=True, drop_last=True, num_workers=int(args.num_workers))
     dl_dv_va = DataLoader(ds_dv_va, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
 
-    dv_nogate = m33.DualViewNoGateClassifier(
-        cand_feat_dim=int(dv_tr["cand_feat"].shape[1]),
+    dv_nogate = DualViewM2NoGate(
+        cand_feat_dim=int(cand_feat_tr.shape[1]),
         embed_dim=int(args.embed_dim),
         num_heads=int(args.num_heads),
-        num_layers=max(2, int(args.num_layers // 2)),
+        num_layers=max(2, int(args.num_layers)),
         ff_dim=int(args.ff_dim),
         dropout=float(args.dropout),
     ).to(device)
-    dv_nogate, dv_nogate_metrics = m33._train_dualview_model(
+    dv_nogate, dv_nogate_metrics = _train_dual_m2_model(
         model=dv_nogate,
         train_loader=dl_dv_tr,
         val_loader=dl_dv_va,
@@ -1199,15 +1494,15 @@ def main() -> None:
         name="DualViewNoGate",
     )
 
-    dv_gated = m33.DualViewGatedClassifier(
-        cand_feat_dim=int(dv_tr["cand_feat"].shape[1]),
+    dv_gated = DualViewM2Gated(
+        cand_feat_dim=int(cand_feat_tr.shape[1]),
         embed_dim=int(args.embed_dim),
         num_heads=int(args.num_heads),
-        num_layers=max(2, int(args.num_layers // 2)),
+        num_layers=max(2, int(args.num_layers)),
         ff_dim=int(args.ff_dim),
         dropout=float(args.dropout),
     ).to(device)
-    dv_gated, dv_gated_metrics = m33._train_dualview_model(
+    dv_gated, dv_gated_metrics = _train_dual_m2_model(
         model=dv_gated,
         train_loader=dl_dv_tr,
         val_loader=dl_dv_va,
@@ -1284,21 +1579,27 @@ def main() -> None:
         score_alpha=float(args.selector_score_alpha),
     )
 
-    ds_dv_te = m33.DualViewCandidateDataset(
-        const_hlt=const_hlt[test_idx],
-        mask_hlt=mask_hlt[test_idx],
+    te_cand_tok, te_cand_mask = _build_candidate_dual_tokens(
         cand_top_const=dv_te["cand_top_const"],
         cand_top_mask=dv_te["cand_top_mask"],
         cand_bg_const=dv_te["cand_bg_const"],
         cand_bg_mask=dv_te["cand_bg_mask"],
-        cand_feat=dv_te["cand_feat"],
+    )
+    cand_feat_te = ((dv_te["cand_feat"] - cand_feat_mean) / cand_feat_std).astype(np.float32)
+
+    ds_dv_te = DualViewM2Dataset(
+        feat_hlt=feat_hlt_te,
+        mask_hlt=mask_hlt[test_idx],
+        feat_cand=te_cand_tok,
+        mask_cand=te_cand_mask,
+        cand_feat=cand_feat_te,
         labels=labels[test_idx],
         sample_weight=sw_test,
     )
     dl_dv_te = DataLoader(ds_dv_te, batch_size=int(args.batch_size), shuffle=False, num_workers=int(args.num_workers))
 
-    auc_nog, fpr50_nog, pred_nog, lab_final, w_final = m33._eval_dualview_model(dv_nogate, dl_dv_te, device)
-    auc_gat, fpr50_gat, pred_gat, _lab2, _w2 = m33._eval_dualview_model(dv_gated, dl_dv_te, device)
+    auc_nog, fpr50_nog, pred_nog, lab_final, w_final = _eval_dual_m2_model(dv_nogate, dl_dv_te, device)
+    auc_gat, fpr50_gat, pred_gat, _lab2, _w2 = _eval_dual_m2_model(dv_gated, dl_dv_te, device)
 
     fpr_t, tpr_t, _ = roc_curve(teacher_y_test, teacher_p_test, sample_weight=teacher_w_test)
     fpr_b, tpr_b, _ = roc_curve(baseline_y_test, baseline_p_test, sample_weight=baseline_w_test)
