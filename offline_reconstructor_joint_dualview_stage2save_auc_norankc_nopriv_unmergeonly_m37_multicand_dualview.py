@@ -1730,10 +1730,14 @@ def main() -> None:
     summary_mean = mv_tr["summary_feat"].mean(axis=0, keepdims=True).astype(np.float32)
     summary_std = (mv_tr["summary_feat"].std(axis=0, keepdims=True) + 1e-6).astype(np.float32)
 
-    mv_tr["cand_meta"] = ((mv_tr["cand_meta"] - meta_mean[None, None, :]) / meta_std[None, None, :]).astype(np.float32)
-    mv_va["cand_meta"] = ((mv_va["cand_meta"] - meta_mean[None, None, :]) / meta_std[None, None, :]).astype(np.float32)
-    mv_tr["summary_feat"] = ((mv_tr["summary_feat"] - summary_mean) / summary_std).astype(np.float32)
-    mv_va["summary_feat"] = ((mv_va["summary_feat"] - summary_mean) / summary_std).astype(np.float32)
+    mm = meta_mean.reshape(1, 1, -1)
+    ms = meta_std.reshape(1, 1, -1)
+    sm = summary_mean.reshape(1, -1)
+    ss = summary_std.reshape(1, -1)
+    mv_tr["cand_meta"] = ((mv_tr["cand_meta"] - mm) / ms).astype(np.float32)
+    mv_va["cand_meta"] = ((mv_va["cand_meta"] - mm) / ms).astype(np.float32)
+    mv_tr["summary_feat"] = ((mv_tr["summary_feat"] - sm) / ss).astype(np.float32)
+    mv_va["summary_feat"] = ((mv_va["summary_feat"] - sm) / ss).astype(np.float32)
 
     ds_dv_tr = DualViewM37Dataset(
         feat_hlt=feat_hlt_tr,
@@ -1869,8 +1873,8 @@ def main() -> None:
         score_alpha=float(args.selector_score_alpha),
         max_rounds=int(args.retrieval_max_rounds),
     )
-    mv_te["cand_meta"] = ((mv_te["cand_meta"] - meta_mean[None, None, :]) / meta_std[None, None, :]).astype(np.float32)
-    mv_te["summary_feat"] = ((mv_te["summary_feat"] - summary_mean) / summary_std).astype(np.float32)
+    mv_te["cand_meta"] = ((mv_te["cand_meta"] - mm) / ms).astype(np.float32)
+    mv_te["summary_feat"] = ((mv_te["summary_feat"] - sm) / ss).astype(np.float32)
 
     ds_dv_te = DualViewM37Dataset(
         feat_hlt=feat_hlt_te,
