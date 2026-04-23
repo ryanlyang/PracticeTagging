@@ -1193,6 +1193,10 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reco_ff_dim", type=int, default=1024)
     p.add_argument("--reco_dropout", type=float, default=0.10)
     p.add_argument("--reco_set_loss_mode", type=str, default="hungarian", choices=["chamfer", "hungarian", "sinkhorn"])
+    p.add_argument("--reco_loss_w_eos", type=float, default=float(m28.LOSS_CFG["w_eos"]))
+    p.add_argument("--reco_loss_w_count", type=float, default=float(m28.LOSS_CFG["w_count"]))
+    p.add_argument("--reco_loss_w_jetpt", type=float, default=float(m28.LOSS_CFG["w_jetpt"]))
+    p.add_argument("--reco_loss_w_4vec", type=float, default=float(m28.LOSS_CFG["w_4vec"]))
 
     # seeded candidate generation
     p.add_argument("--seed_candidate_k", type=int, default=6)
@@ -1513,6 +1517,10 @@ def main() -> None:
     }
     reco_loss_cfg = dict(m28.LOSS_CFG)
     reco_loss_cfg["set_loss_mode"] = str(args.reco_set_loss_mode)
+    reco_loss_cfg["w_eos"] = float(args.reco_loss_w_eos)
+    reco_loss_cfg["w_count"] = float(args.reco_loss_w_count)
+    reco_loss_cfg["w_jetpt"] = float(args.reco_loss_w_jetpt)
+    reco_loss_cfg["w_4vec"] = float(args.reco_loss_w_4vec)
     reco_loss_cfg["winner_mode"] = "reco"
 
     reco_model, reco_metrics = m28.train_reconstructor_seq2seq(

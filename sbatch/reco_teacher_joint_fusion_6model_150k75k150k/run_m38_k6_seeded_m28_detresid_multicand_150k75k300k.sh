@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=96G
-#SBATCH --time=6-00:00:00
+#SBATCH --time=18-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m38_k6_seeded_m28_detresid_multicand_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m38_k6_seeded_m28_detresid_multicand_%j.err
 
@@ -28,6 +28,13 @@ SEED_CANDIDATE_K="${SEED_CANDIDATE_K:-6}"
 SEED_KEEP_M="${SEED_KEEP_M:-3}"
 SEED_MAX_PREFIX="${SEED_MAX_PREFIX:-12}"
 CANDIDATE_GEN_BATCH="${CANDIDATE_GEN_BATCH:-64}"
+
+RECO_SET_LOSS_MODE="${RECO_SET_LOSS_MODE:-chamfer}"
+RECO_LR="${RECO_LR:-1.5e-4}"
+RECO_LOSS_W_EOS="${RECO_LOSS_W_EOS:-0.30}"
+RECO_LOSS_W_COUNT="${RECO_LOSS_W_COUNT:-0.30}"
+RECO_LOSS_W_JETPT="${RECO_LOSS_W_JETPT:-0.12}"
+RECO_LOSS_W_4VEC="${RECO_LOSS_W_4VEC:-0.05}"
 
 set +u
 source ~/.bashrc
@@ -80,9 +87,13 @@ CMD=(
   --reco_epochs 140
   --reco_patience 20
   --reco_min_epochs 35
-  --reco_lr 2e-4
+  --reco_lr "${RECO_LR}"
   --reco_batch_size 96
-  --reco_set_loss_mode hungarian
+  --reco_set_loss_mode "${RECO_SET_LOSS_MODE}"
+  --reco_loss_w_eos "${RECO_LOSS_W_EOS}"
+  --reco_loss_w_count "${RECO_LOSS_W_COUNT}"
+  --reco_loss_w_jetpt "${RECO_LOSS_W_JETPT}"
+  --reco_loss_w_4vec "${RECO_LOSS_W_4VEC}"
   --seed_candidate_k "${SEED_CANDIDATE_K}"
   --seed_keep_m "${SEED_KEEP_M}"
   --seed_max_prefix "${SEED_MAX_PREFIX}"
