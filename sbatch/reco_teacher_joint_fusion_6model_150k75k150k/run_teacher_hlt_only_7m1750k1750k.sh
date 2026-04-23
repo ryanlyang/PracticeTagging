@@ -13,7 +13,7 @@ mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
 RUN_NAME="${RUN_NAME:-teacher_hlt_only_7m1750k1750k_seed0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_7m1750k1750k/teacher_hlt_only}"
-SEED="${SEED:-0}"
+SEED="${SEED:-22}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 
