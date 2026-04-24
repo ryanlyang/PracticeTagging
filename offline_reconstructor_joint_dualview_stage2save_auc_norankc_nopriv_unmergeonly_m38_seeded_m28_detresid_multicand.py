@@ -522,6 +522,42 @@ def _eval_m38_model(model: nn.Module, loader: DataLoader, device: torch.device) 
     return auc, fpr50, p_np.astype(np.float32), y_np.astype(np.float32), w_np.astype(np.float32)
 
 
+def _carry_topk_metrics(
+    prob: np.ndarray,
+    tgt: np.ndarray,
+    mask: np.ndarray,
+    topks: Tuple[int, ...] = (2, 5, 7, 10, 12),
+) -> Dict[str, float]:
+    out: Dict[str, float] = {}
+    n = int(prob.shape[0])
+    for k in topks:
+        k_int = int(max(1, k))
+        rec_sum = 0.0
+        rec_den = 0
+        prec_sum = 0.0
+        prec_den = 0
+        for i in range(n):
+            ids = np.where(mask[i])[0]
+            if ids.size == 0:
+                continue
+            p = prob[i, ids]
+            y = (tgt[i, ids] > 0.5)
+            kk = int(min(k_int, ids.size))
+            if kk <= 0:
+                continue
+            top_loc = np.argpartition(-p, kth=kk - 1)[:kk]
+            tp = int(y[top_loc].sum())
+            prec_sum += float(tp) / float(kk)
+            prec_den += 1
+            pos = int(y.sum())
+            if pos > 0:
+                rec_sum += float(tp) / float(pos)
+                rec_den += 1
+        out[f"precision_at_{k_int}"] = float(prec_sum / max(1, prec_den))
+        out[f"recall_at_{k_int}"] = float(rec_sum / max(1, rec_den))
+    return out
+
+
 def _train_carry_predictor(
     model: CarryoverTokenPredictor,
     train_loader: DataLoader,
@@ -532,12 +568,16 @@ def _train_carry_predictor(
     weight_decay: float,
     patience: int,
     pos_weight: float,
+    lr_decay_start_epoch: int = 0,
+    lr_decay_gamma: float = 1.0,
+    min_lr_ratio: float = 0.30,
 ) -> Tuple[CarryoverTokenPredictor, Dict[str, float]]:
     opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
     pos_w = torch.tensor(float(max(pos_weight, 1e-3)), dtype=torch.float32, device=device)
     best_auc = float("-inf")
     best_state = None
     best_epoch = 0
+    best_topk_metrics: Dict[str, float] = {}
     no_imp = 0
 
     for ep in range(int(epochs)):
@@ -563,6 +603,9 @@ def _train_carry_predictor(
         model.eval()
         p_all: List[np.ndarray] = []
         y_all: List[np.ndarray] = []
+        p_jet: List[np.ndarray] = []
+        y_jet: List[np.ndarray] = []
+        m_jet: List[np.ndarray] = []
         with torch.no_grad():
             for batch in val_loader:
                 feat = batch["feat_hlt"].to(device)
@@ -571,26 +614,42 @@ def _train_carry_predictor(
                 p = torch.sigmoid(model(feat, mask))
                 p_all.append(p[mask].detach().cpu().numpy().astype(np.float64))
                 y_all.append(tgt[mask].detach().cpu().numpy().astype(np.float64))
+                p_jet.append(p.detach().cpu().numpy().astype(np.float32))
+                y_jet.append(tgt.detach().cpu().numpy().astype(np.float32))
+                m_jet.append(mask.detach().cpu().numpy().astype(bool))
 
         p_np = np.concatenate(p_all, axis=0) if p_all else np.array([], dtype=np.float64)
         y_np = np.concatenate(y_all, axis=0) if y_all else np.array([], dtype=np.float64)
+        p_jet_np = np.concatenate(p_jet, axis=0) if p_jet else np.zeros((0, 0), dtype=np.float32)
+        y_jet_np = np.concatenate(y_jet, axis=0) if y_jet else np.zeros((0, 0), dtype=np.float32)
+        m_jet_np = np.concatenate(m_jet, axis=0) if m_jet else np.zeros((0, 0), dtype=bool)
         if len(np.unique(y_np)) > 1:
             va_auc = float(roc_auc_score(y_np, p_np))
         else:
             va_auc = 0.0
+        topk_metrics = _carry_topk_metrics(p_jet_np, y_jet_np, m_jet_np, topks=(2, 5, 7, 10, 12))
 
         if va_auc > best_auc:
             best_auc = float(va_auc)
             best_epoch = ep + 1
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            best_topk_metrics = dict(topk_metrics)
             no_imp = 0
         else:
             no_imp += 1
 
+        if int(lr_decay_start_epoch) > 0 and (ep + 1) >= int(lr_decay_start_epoch) and float(lr_decay_gamma) < 1.0:
+            floor_lr = float(lr) * float(max(min_lr_ratio, 1e-4))
+            for pg in opt.param_groups:
+                pg["lr"] = max(float(pg["lr"]) * float(lr_decay_gamma), floor_lr)
+        curr_lr = float(opt.param_groups[0]["lr"])
+
         if (ep + 1) % 2 == 0 or ep == 0:
             print(
                 f"CarryPredictor ep {ep+1:03d}: train_loss={tr_loss/max(1,tr_n):.5f} "
-                f"val_auc={va_auc:.4f} best={best_auc:.4f}@{best_epoch}"
+                f"val_auc={va_auc:.4f} r@12={topk_metrics.get('recall_at_12', 0.0):.4f} "
+                f"p@12={topk_metrics.get('precision_at_12', 0.0):.4f} "
+                f"best={best_auc:.4f}@{best_epoch} lr={curr_lr:.3e}"
             )
 
         if no_imp >= int(patience):
@@ -603,6 +662,10 @@ def _train_carry_predictor(
     return model, {
         "best_val_auc": float(best_auc),
         "best_epoch": int(best_epoch),
+        "best_topk_metrics": best_topk_metrics,
+        "lr_decay_start_epoch": int(lr_decay_start_epoch),
+        "lr_decay_gamma": float(lr_decay_gamma),
+        "min_lr_ratio": float(min_lr_ratio),
     }
 
 
@@ -1178,6 +1241,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--carry_ff_dim", type=int, default=384)
     p.add_argument("--carry_dropout", type=float, default=0.10)
     p.add_argument("--carry_dist_thresh", type=float, default=0.22)
+    p.add_argument("--carry_lr_decay_start_epoch", type=int, default=0)
+    p.add_argument("--carry_lr_decay_gamma", type=float, default=1.0)
+    p.add_argument("--carry_min_lr_ratio", type=float, default=0.30)
 
     # m28 completer
     p.add_argument("--reco_batch_size", type=int, default=96)
@@ -1450,6 +1516,9 @@ def main() -> None:
         weight_decay=float(args.carry_weight_decay),
         patience=int(args.carry_patience),
         pos_weight=pos_w,
+        lr_decay_start_epoch=int(args.carry_lr_decay_start_epoch),
+        lr_decay_gamma=float(args.carry_lr_decay_gamma),
+        min_lr_ratio=float(args.carry_min_lr_ratio),
     )
 
     # ---------------------------------------------------------------------
