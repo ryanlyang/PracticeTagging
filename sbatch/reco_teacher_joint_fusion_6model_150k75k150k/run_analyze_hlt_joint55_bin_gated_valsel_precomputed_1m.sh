@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
-#SBATCH --time=15-00:00:00
+#SBATCH --time=12-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze55_bingated_precomp_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze55_bingated_precomp_%j.err
 
