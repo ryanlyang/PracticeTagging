@@ -31,6 +31,7 @@ CANDIDATE_GEN_BATCH="${CANDIDATE_GEN_BATCH:-64}"
 
 RECO_SET_LOSS_MODE="${RECO_SET_LOSS_MODE:-chamfer}"
 RECO_LR="${RECO_LR:-1.5e-4}"
+RECO_BATCH_SIZE="${RECO_BATCH_SIZE:-32}"
 RECO_LOSS_W_EOS="${RECO_LOSS_W_EOS:-0.30}"
 RECO_LOSS_W_COUNT="${RECO_LOSS_W_COUNT:-0.30}"
 RECO_LOSS_W_JETPT="${RECO_LOSS_W_JETPT:-0.12}"
@@ -58,6 +59,7 @@ export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export NUMEXPR_NUM_THREADS=1
 export PYTHONHASHSEED="${SEED}"
+export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 if [[ -z "${SAVE_DIR}" ]]; then
   SAVE_DIR="${REPO_ROOT}/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model38_seeded_m28_detresid_multicand"
@@ -88,7 +90,7 @@ CMD=(
   --reco_patience 20
   --reco_min_epochs 35
   --reco_lr "${RECO_LR}"
-  --reco_batch_size 96
+  --reco_batch_size "${RECO_BATCH_SIZE}"
   --reco_set_loss_mode "${RECO_SET_LOSS_MODE}"
   --reco_loss_w_eos "${RECO_LOSS_W_EOS}"
   --reco_loss_w_count "${RECO_LOSS_W_COUNT}"
@@ -114,6 +116,7 @@ echo "============================================================"
 echo "Model-38 K=6 Seeded-m28 + Deterministic-Residual MultiCandidate"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}"
+echo "Reco batch size: ${RECO_BATCH_SIZE}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
