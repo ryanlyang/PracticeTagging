@@ -29,9 +29,29 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd as b
+import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly as m2mod
+
+
+def _build_weighted_sampler(sample_weight: np.ndarray | None) -> WeightedRandomSampler | None:
+    if sample_weight is None:
+        return None
+    w = np.asarray(sample_weight, dtype=np.float64)
+    if w.ndim != 1 or w.size == 0:
+        return None
+    w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+    w = np.clip(w, 0.0, None)
+    if not np.any(w > 0.0):
+        w = np.ones_like(w, dtype=np.float64)
+    else:
+        w = w / max(float(np.mean(w)), 1e-8)
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(w, dtype=torch.double),
+        num_samples=int(w.shape[0]),
+        replacement=True,
+    )
 
 
 def threshold_at_target_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: float) -> Tuple[float, float, float]:
@@ -1076,6 +1096,7 @@ def train_corrected_only_joint_concat(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_path", type=str, default="./data")
+    ap.add_argument("--use_train_weights", action="store_true")
     ap.add_argument("--n_train_jets", type=int, default=250000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
@@ -1182,16 +1203,31 @@ def main() -> None:
 
     max_jets_needed = int(args.offset_jets) + int(args.n_train_jets)
     print("Loading offline constituents...")
-    all_const_full, all_labels_full = b.load_raw_constituents_from_h5(
-        train_files,
-        max_jets=max_jets_needed,
-        max_constits=args.max_constits,
-    )
+    if bool(args.use_train_weights):
+        all_const_full, all_labels_full, all_weights_full = m2mod.load_raw_constituents_labels_weights_from_h5(
+            train_files,
+            max_jets=max_jets_needed,
+            max_constits=args.max_constits,
+            use_train_weights=True,
+        )
+    else:
+        all_const_full, all_labels_full = b.load_raw_constituents_from_h5(
+            train_files,
+            max_jets=max_jets_needed,
+            max_constits=args.max_constits,
+        )
+        all_weights_full = np.ones((all_const_full.shape[0],), dtype=np.float32)
     if all_const_full.shape[0] < max_jets_needed:
         raise RuntimeError(f"Not enough jets: requested {max_jets_needed}, got {all_const_full.shape[0]}")
 
     const_raw = all_const_full[args.offset_jets: args.offset_jets + args.n_train_jets]
     labels = all_labels_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.int64)
+    sample_weight = np.asarray(
+        all_weights_full[args.offset_jets: args.offset_jets + args.n_train_jets],
+        dtype=np.float32,
+    )
+    sample_weight = np.nan_to_num(sample_weight, nan=0.0, posinf=0.0, neginf=0.0)
+    sample_weight = np.clip(sample_weight, 0.0, None)
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
@@ -1265,6 +1301,9 @@ def main() -> None:
         stratify=labels[rem_idx],
     )
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} (custom_counts=True)")
+    sw_train = sample_weight[train_idx].astype(np.float32)
+    sw_val = sample_weight[val_idx].astype(np.float32)
+    sw_test = sample_weight[test_idx].astype(np.float32)
 
     means_off, stds_off = b.get_stats(feat_off, masks_off, train_idx)
     feat_off_std = b.standardize(feat_off, masks_off, means_off, stds_off)
@@ -1281,6 +1320,7 @@ def main() -> None:
         "max_constits": int(args.max_constits),
         "max_concat_constits": int(max_concat_constits),
         "seed": int(args.seed),
+        "use_train_weights": bool(args.use_train_weights),
         "split": {
             "mode": "custom_counts",
             "n_train_split": int(len(train_idx)),
@@ -1315,7 +1355,14 @@ def main() -> None:
     ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
     ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
     ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
-    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=bs_cls, shuffle=True, drop_last=True)
+    hlt_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+    dl_train_hlt = DataLoader(
+        ds_train_hlt,
+        batch_size=bs_cls,
+        shuffle=(hlt_sampler is None),
+        sampler=hlt_sampler,
+        drop_last=True,
+    )
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=bs_cls, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=bs_cls, shuffle=False)
 
@@ -1334,7 +1381,14 @@ def main() -> None:
     ds_train_concat = b.JetDataset(feat_concat_std[train_idx], mask_concat[train_idx], labels[train_idx])
     ds_val_concat = b.JetDataset(feat_concat_std[val_idx], mask_concat[val_idx], labels[val_idx])
     ds_test_concat = b.JetDataset(feat_concat_std[test_idx], mask_concat[test_idx], labels[test_idx])
-    dl_train_concat = DataLoader(ds_train_concat, batch_size=bs_cls, shuffle=True, drop_last=True)
+    concat_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+    dl_train_concat = DataLoader(
+        ds_train_concat,
+        batch_size=bs_cls,
+        shuffle=(concat_sampler is None),
+        sampler=concat_sampler,
+        drop_last=True,
+    )
     dl_val_concat = DataLoader(ds_val_concat, batch_size=bs_cls, shuffle=False)
     dl_test_concat = DataLoader(ds_test_concat, batch_size=bs_cls, shuffle=False)
 
@@ -1390,10 +1444,12 @@ def main() -> None:
         budget_merge_true=budget_merge_true[val_idx],
         budget_eff_true=budget_eff_true[val_idx],
     )
+    reco_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_reco = DataLoader(
         ds_train_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        shuffle=True,
+        shuffle=(reco_sampler is None),
+        sampler=reco_sampler,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
@@ -1490,7 +1546,14 @@ def main() -> None:
     ds_train_corr = b.JetDataset(feat_corr_all[train_idx], mask_corr_all[train_idx], labels[train_idx])
     ds_val_corr = b.JetDataset(feat_corr_all[val_idx], mask_corr_all[val_idx], labels[val_idx])
     ds_test_corr = b.JetDataset(feat_corr_all[test_idx], mask_corr_all[test_idx], labels[test_idx])
-    dl_train_corr = DataLoader(ds_train_corr, batch_size=bs_cls, shuffle=True, drop_last=True)
+    corr_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+    dl_train_corr = DataLoader(
+        ds_train_corr,
+        batch_size=bs_cls,
+        shuffle=(corr_sampler is None),
+        sampler=corr_sampler,
+        drop_last=True,
+    )
     dl_val_corr = DataLoader(ds_val_corr, batch_size=bs_cls, shuffle=False)
     dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
 
@@ -1654,24 +1717,32 @@ def main() -> None:
         const_off[train_idx], masks_off[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
         labels[train_idx],
+        sample_weight_cls=sw_train if bool(args.use_train_weights) else None,
+        sample_weight_reco=sw_train if bool(args.use_train_weights) else None,
     )
     ds_val_joint = b.JointDualDataset(
         feat_hlt_std[val_idx], feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         labels[val_idx],
+        sample_weight_cls=sw_val if bool(args.use_train_weights) else None,
+        sample_weight_reco=sw_val if bool(args.use_train_weights) else None,
     )
     ds_test_joint = b.JointDualDataset(
         feat_hlt_std[test_idx], feat_hlt_std[test_idx], hlt_mask[test_idx], hlt_const[test_idx],
         const_off[test_idx], masks_off[test_idx],
         budget_merge_true[test_idx], budget_eff_true[test_idx],
         labels[test_idx],
+        sample_weight_cls=sw_test if bool(args.use_train_weights) else None,
+        sample_weight_reco=sw_test if bool(args.use_train_weights) else None,
     )
 
+    joint_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_joint = DataLoader(
         ds_train_joint,
         batch_size=bs_cls,
-        shuffle=True,
+        shuffle=(joint_sampler is None),
+        sampler=joint_sampler,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),

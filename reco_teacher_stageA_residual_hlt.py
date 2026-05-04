@@ -33,9 +33,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd as b
+import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly as m2mod
 import reco_teacher_stageA_only_delta_curriculum as sA
 
 _ORIG_TEACHER_GUIDED_RECO_LOSSES = b._compute_teacher_guided_reco_losses
@@ -49,6 +50,25 @@ _RATIO_AWARE_COUNT_CFG: Dict[str, float | bool] = {
     "over_ratio_gamma": 0.7,
     "over_lambda_floor": 0.05,
 }
+
+
+def _build_weighted_sampler(sample_weight: np.ndarray | None) -> WeightedRandomSampler | None:
+    if sample_weight is None:
+        return None
+    w = np.asarray(sample_weight, dtype=np.float64)
+    if w.ndim != 1 or w.size == 0:
+        return None
+    w = np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0)
+    w = np.clip(w, 0.0, None)
+    if not np.any(w > 0.0):
+        w = np.ones_like(w, dtype=np.float64)
+    else:
+        w = w / max(float(np.mean(w)), 1e-8)
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(w, dtype=torch.double),
+        num_samples=int(w.shape[0]),
+        replacement=True,
+    )
 
 
 def _compute_ratio_aware_count_budget_hinge(
@@ -273,6 +293,7 @@ class OfflineDropoutTeacherDataset(Dataset):
         seed: int = 0,
         drop_mode: str = "random",
         num_banks: int = 1,
+        sample_weight: np.ndarray | None = None,
     ):
         self.feat_off = feat_off
         self.mask_off = mask_off
@@ -285,6 +306,14 @@ class OfflineDropoutTeacherDataset(Dataset):
         self.current_bank = 0
         self.base_seed = int(seed)
         self.rng = np.random.default_rng(int(seed))
+        n_all = int(self.feat_off.shape[0])
+        if sample_weight is None:
+            sw = np.ones((n_all,), dtype=np.float32)
+        else:
+            sw = np.asarray(sample_weight, dtype=np.float32)
+            if sw.shape[0] != n_all:
+                raise ValueError(f"sample_weight length mismatch: {sw.shape[0]} vs {n_all}")
+        self.sample_weight = sw
 
     def set_drop_prob(self, p: float) -> None:
         self.drop_prob = float(np.clip(p, 0.0, 1.0))
@@ -340,6 +369,7 @@ class OfflineDropoutTeacherDataset(Dataset):
             "feat_drop": feat_drop,
             "mask_drop": mask_drop.astype(bool),
             "label": np.float32(self.labels[idx]),
+            "sample_weight": np.float32(self.sample_weight[idx]),
         }
 
 
@@ -364,6 +394,7 @@ def train_single_view_teacher_with_offline_dropout(
     drop_num_banks: int,
     drop_bank_cycle_epochs: int,
     seed: int,
+    sample_weight: np.ndarray | None = None,
     name: str = "TeacherDrop",
 ) -> nn.Module:
     epochs = int(train_cfg.get("epochs", 60))
@@ -383,8 +414,17 @@ def train_single_view_teacher_with_offline_dropout(
         seed=int(seed),
         drop_mode=str(drop_mode),
         num_banks=int(max(1, drop_num_banks)),
+        sample_weight=sample_weight,
     )
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True, drop_last=True, num_workers=0)
+    train_sampler = _build_weighted_sampler(sample_weight[train_idx] if sample_weight is not None else None)
+    train_loader = DataLoader(
+        train_ds,
+        batch_size=batch_size,
+        shuffle=(train_sampler is None),
+        sampler=train_sampler,
+        drop_last=True,
+        num_workers=0,
+    )
 
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     sch = b.get_scheduler(opt, int(warmup_epochs), int(epochs))
@@ -1068,6 +1108,7 @@ def parse_alpha_grid(s: str) -> List[float]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_path", type=str, default="./data")
+    ap.add_argument("--use_train_weights", action="store_true")
     ap.add_argument("--n_train_jets", type=int, default=250000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
@@ -1219,16 +1260,31 @@ def main() -> None:
 
     max_jets_needed = int(args.offset_jets) + int(args.n_train_jets)
     print("Loading offline constituents...")
-    all_const_full, all_labels_full = b.load_raw_constituents_from_h5(
-        train_files,
-        max_jets=max_jets_needed,
-        max_constits=args.max_constits,
-    )
+    if bool(args.use_train_weights):
+        all_const_full, all_labels_full, all_weights_full = m2mod.load_raw_constituents_labels_weights_from_h5(
+            train_files,
+            max_jets=max_jets_needed,
+            max_constits=args.max_constits,
+            use_train_weights=True,
+        )
+    else:
+        all_const_full, all_labels_full = b.load_raw_constituents_from_h5(
+            train_files,
+            max_jets=max_jets_needed,
+            max_constits=args.max_constits,
+        )
+        all_weights_full = np.ones((all_const_full.shape[0],), dtype=np.float32)
     if all_const_full.shape[0] < max_jets_needed:
         raise RuntimeError(f"Not enough jets: requested {max_jets_needed}, got {all_const_full.shape[0]}")
 
     const_raw = all_const_full[args.offset_jets: args.offset_jets + args.n_train_jets]
     labels = all_labels_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.int64)
+    sample_weight = np.asarray(
+        all_weights_full[args.offset_jets: args.offset_jets + args.n_train_jets],
+        dtype=np.float32,
+    )
+    sample_weight = np.nan_to_num(sample_weight, nan=0.0, posinf=0.0, neginf=0.0)
+    sample_weight = np.clip(sample_weight, 0.0, None)
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
@@ -1290,6 +1346,9 @@ def main() -> None:
         stratify=labels[rem_idx],
     )
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} (custom_counts=True)")
+    sw_train = sample_weight[train_idx].astype(np.float32)
+    sw_val = sample_weight[val_idx].astype(np.float32)
+    sw_test = sample_weight[test_idx].astype(np.float32)
 
     means, stds = b.get_stats(feat_off, masks_off, train_idx)
     feat_off_std = b.standardize(feat_off, masks_off, means, stds)
@@ -1302,6 +1361,7 @@ def main() -> None:
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
         "seed": int(args.seed),
+        "use_train_weights": bool(args.use_train_weights),
         "split": {
             "mode": "custom_counts",
             "n_train_split": int(len(train_idx)),
@@ -1335,7 +1395,14 @@ def main() -> None:
     ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
     ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
     ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
-    dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
+    off_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+    dl_train_off = DataLoader(
+        ds_train_off,
+        batch_size=BS,
+        shuffle=(off_sampler is None),
+        sampler=off_sampler,
+        drop_last=True,
+    )
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
@@ -1363,6 +1430,7 @@ def main() -> None:
             drop_num_banks=int(args.teacher_drop_num_banks),
             drop_bank_cycle_epochs=int(args.teacher_drop_bank_cycle_epochs),
             seed=int(args.seed),
+            sample_weight=sample_weight if bool(args.use_train_weights) else None,
             name="TeacherDrop",
         )
     else:
@@ -1375,7 +1443,14 @@ def main() -> None:
     ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
     ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
     ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
-    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
+    hlt_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+    dl_train_hlt = DataLoader(
+        ds_train_hlt,
+        batch_size=BS,
+        shuffle=(hlt_sampler is None),
+        sampler=hlt_sampler,
+        drop_last=True,
+    )
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
 
@@ -1412,10 +1487,12 @@ def main() -> None:
         const_off[val_idx], masks_off[val_idx], labels[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
     )
+    reco_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_reco = DataLoader(
         ds_train_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        shuffle=True,
+        shuffle=(reco_sampler is None),
+        sampler=reco_sampler,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
@@ -1547,7 +1624,14 @@ def main() -> None:
         labels[val_idx],
     )
 
-    dl_train_res = DataLoader(ds_train_res, batch_size=BS, shuffle=True, drop_last=True)
+    res_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+    dl_train_res = DataLoader(
+        ds_train_res,
+        batch_size=BS,
+        shuffle=(res_sampler is None),
+        sampler=res_sampler,
+        drop_last=True,
+    )
     dl_val_res = DataLoader(ds_val_res, batch_size=BS, shuffle=False)
 
     residual_head = ResidualHead(input_dim=int(feat_corr_all.shape[-1]), model_cfg=cfg["model"]).to(device)
@@ -1640,10 +1724,12 @@ def main() -> None:
             teacher_logit=teacher_logits_all[val_idx],
         )
 
+        joint_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
         dl_train_joint = DataLoader(
             ds_train_joint,
             batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-            shuffle=True,
+            shuffle=(joint_sampler is None),
+            sampler=joint_sampler,
             drop_last=True,
             num_workers=args.num_workers,
             pin_memory=torch.cuda.is_available(),

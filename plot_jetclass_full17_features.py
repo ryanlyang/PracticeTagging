@@ -121,6 +121,12 @@ def parse_args() -> argparse.Namespace:
         default=99.5,
         help="Upper quantile (percent) used for plotting range per feature",
     )
+    p.add_argument(
+        "--extra_raw_dr_plot",
+        action="store_true",
+        default=False,
+        help="Also save a physics-facing raw nonnegative dR plot by class.",
+    )
     return p.parse_args()
 
 
@@ -181,6 +187,97 @@ def collect_feature_values_by_class(
             vals = downsample(vals, max_constits_per_class, rng)
             out[cls][j] = vals
     return out
+
+
+def collect_raw_dr_by_class(
+    raw_tok: np.ndarray,
+    mask: np.ndarray,
+    labels: np.ndarray,
+    class_names: List[str],
+    max_constits_per_class: int,
+    seed: int,
+) -> Dict[str, np.ndarray]:
+    """Collect raw constituent dR >= 0 with respect to the jet axis."""
+    baseline = importlib.import_module("evaluate_jetclass_hlt_teacher_baseline")
+    pt = np.maximum(raw_tok[:, :, baseline.IDX_PT], 1e-8)
+    eta = np.clip(raw_tok[:, :, baseline.IDX_ETA], -5.0, 5.0)
+    phi = raw_tok[:, :, baseline.IDX_PHI]
+
+    px = pt * np.cos(phi)
+    py = pt * np.sin(phi)
+    pz = pt * np.sinh(eta)
+    w = mask.astype(np.float32)
+    jet_px = (px * w).sum(axis=1, keepdims=True)
+    jet_py = (py * w).sum(axis=1, keepdims=True)
+    jet_pz = (pz * w).sum(axis=1, keepdims=True)
+    jet_p = np.sqrt(jet_px * jet_px + jet_py * jet_py + jet_pz * jet_pz) + 1e-8
+    jet_eta = 0.5 * np.log(np.clip((jet_p + jet_pz) / np.maximum(jet_p - jet_pz, 1e-8), 1e-8, 1e8))
+    jet_phi = np.arctan2(jet_py, jet_px)
+
+    d_eta = eta - jet_eta
+    d_phi = np.arctan2(np.sin(phi - jet_phi), np.cos(phi - jet_phi))
+    d_r = np.sqrt(d_eta * d_eta + d_phi * d_phi).astype(np.float32)
+    d_r[~mask] = np.nan
+
+    rng = np.random.RandomState(seed + 211)
+    out: Dict[str, np.ndarray] = {}
+    for i, cls in enumerate(class_names):
+        vals = d_r[labels == i]
+        vals = vals[np.isfinite(vals)]
+        vals = vals.astype(np.float32, copy=False)
+        vals = downsample(vals, max_constits_per_class, rng)
+        out[cls] = vals
+    return out
+
+
+def draw_raw_dr_plot(
+    out_png: Path,
+    out_pdf: Path,
+    vals_by_class: Dict[str, np.ndarray],
+    class_names: List[str],
+    bins: int,
+    q_high: float,
+) -> None:
+    import matplotlib.pyplot as plt
+
+    pooled = np.concatenate([vals_by_class[c] for c in class_names if vals_by_class[c].size > 0], axis=0)
+    xhi = float(np.percentile(pooled, q_high))
+    xhi = max(xhi, 1e-3)
+    bin_edges = np.linspace(0.0, xhi, int(bins) + 1)
+    colors = plt.cm.tab10(np.linspace(0, 1, len(class_names)))
+
+    fig, ax = plt.subplots(figsize=(10.5, 6.0))
+    legend_handles = []
+    legend_labels = []
+    for c_idx, cls in enumerate(class_names):
+        x = vals_by_class[cls]
+        x = x[(x >= 0.0) & (x <= xhi)]
+        if x.size == 0:
+            continue
+        h = ax.hist(
+            x,
+            bins=bin_edges,
+            histtype="step",
+            density=True,
+            linewidth=1.3,
+            color=colors[c_idx],
+            alpha=0.95,
+            label=cls,
+        )
+        legend_handles.append(h[2][0])
+        legend_labels.append(cls)
+
+    ax.set_xlim(0.0, xhi)
+    ax.set_xlabel("raw dR")
+    ax.set_ylabel("Density")
+    ax.set_title("Raw Nonnegative dR by class")
+    ax.grid(alpha=0.25, linestyle="--", linewidth=0.5)
+    if legend_handles:
+        ax.legend(legend_handles, legend_labels, frameon=False, fontsize=8, ncol=2)
+    fig.tight_layout()
+    fig.savefig(out_png, dpi=180, bbox_inches="tight")
+    fig.savefig(out_pdf, bbox_inches="tight")
+    plt.close(fig)
 
 
 def robust_range(values: np.ndarray, q_low: float, q_high: float) -> Tuple[float, float]:
@@ -550,6 +647,28 @@ def main() -> None:
     fig.savefig(out_pdf)
     plt.close(fig)
 
+    raw_dr_png = None
+    raw_dr_pdf = None
+    if bool(args.extra_raw_dr_plot):
+        raw_dr_vals = collect_raw_dr_by_class(
+            raw_tok=raw_tok,
+            mask=mask,
+            labels=jet_labels,
+            class_names=class_names,
+            max_constits_per_class=int(args.max_constits_per_class),
+            seed=int(args.seed),
+        )
+        raw_dr_png = args.output_dir / "raw_dR_by_class.png"
+        raw_dr_pdf = args.output_dir / "raw_dR_by_class.pdf"
+        draw_raw_dr_plot(
+            out_png=raw_dr_png,
+            out_pdf=raw_dr_pdf,
+            vals_by_class=raw_dr_vals,
+            class_names=class_names,
+            bins=int(args.bins),
+            q_high=float(args.clip_quantile_high),
+        )
+
     # Save metadata for reproducibility.
     meta = {
         "data_dir": str(args.data_dir),
@@ -577,6 +696,8 @@ def main() -> None:
         "plot_png": str(out_png),
         "plot_pdf": str(out_pdf),
         "per_feature_png_dir": str(per_feature_dir),
+        "raw_dr_plot_png": str(raw_dr_png) if raw_dr_png is not None else None,
+        "raw_dr_plot_pdf": str(raw_dr_pdf) if raw_dr_pdf is not None else None,
     }
     with (args.output_dir / "run_metadata.json").open("w") as f:
         json.dump(meta, f, indent=2)
