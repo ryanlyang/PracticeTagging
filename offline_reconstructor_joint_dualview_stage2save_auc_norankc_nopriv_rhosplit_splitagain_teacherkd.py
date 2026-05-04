@@ -33,6 +33,7 @@ import random
 from pathlib import Path
 from typing import Dict, Tuple
 
+import h5py
 import numpy as np
 import torch
 import torch.nn as nn
@@ -99,6 +100,76 @@ def _deepcopy_config() -> Dict:
 
 def _clamp_target_scale(x: float) -> float:
     return float(min(max(float(x), 0.0), 1.0))
+
+
+def load_raw_constituents_labels_weights_from_h5(
+    files: list[Path],
+    max_jets: int,
+    max_constits: int,
+    use_train_weights: bool,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Load raw constituents + labels and (optionally) per-jet training weights.
+    Weight key preference: training_weights, then weights, else ones fallback.
+    """
+    const_list: list[np.ndarray] = []
+    label_list: list[np.ndarray] = []
+    w_list: list[np.ndarray] = []
+    jets_read = 0
+
+    for fname in files:
+        if jets_read >= int(max_jets):
+            break
+        with h5py.File(fname, "r") as f:
+            n_file = int(f["labels"].shape[0])
+            take = min(n_file, int(max_jets) - jets_read)
+
+            pt = f["fjet_clus_pt"][:take, : int(max_constits)].astype(np.float32)
+            eta = f["fjet_clus_eta"][:take, : int(max_constits)].astype(np.float32)
+            phi = f["fjet_clus_phi"][:take, : int(max_constits)].astype(np.float32)
+            ene = f["fjet_clus_E"][:take, : int(max_constits)].astype(np.float32)
+            const = np.stack([pt, eta, phi, ene], axis=-1).astype(np.float32)
+
+            labels = f["labels"][:take]
+            if labels.ndim > 1:
+                if labels.shape[1] == 1:
+                    labels = labels[:, 0]
+                else:
+                    labels = np.argmax(labels, axis=1)
+            labels = labels.astype(np.int64)
+
+            if bool(use_train_weights):
+                if "training_weights" in f:
+                    w = np.asarray(f["training_weights"][:take], dtype=np.float32)
+                elif "weights" in f:
+                    w = np.asarray(f["weights"][:take], dtype=np.float32)
+                    print(f"Info: using 'weights' from {fname} as training weights.")
+                else:
+                    print(f"Warning: missing training weight key in {fname}; using ones.")
+                    w = np.ones((take,), dtype=np.float32)
+            else:
+                w = np.ones((take,), dtype=np.float32)
+
+            if w.ndim > 1:
+                w = w.reshape(w.shape[0], -1)[:, 0]
+            w = np.asarray(w, dtype=np.float32)
+            if w.shape[0] != labels.shape[0]:
+                raise RuntimeError(
+                    f"training_weights length mismatch in {fname}: {w.shape[0]} vs labels {labels.shape[0]}"
+                )
+
+            const_list.append(const)
+            label_list.append(labels)
+            w_list.append(w)
+            jets_read += int(take)
+
+    if len(const_list) == 0:
+        raise RuntimeError("No jets were loaded from input HDF5 files.")
+
+    all_const = np.concatenate(const_list, axis=0)
+    all_labels = np.concatenate(label_list, axis=0)
+    all_w = np.concatenate(w_list, axis=0)
+    return all_const, all_labels, all_w
 
 
 # Conservative split-again controls for corrected-view construction.
