@@ -39,7 +39,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 import matplotlib.pyplot as plt
 from tqdm import tqdm
@@ -250,6 +250,21 @@ def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) 
     sw = sample_weight.float().clamp(min=0.0)
     denom = sw.sum().clamp(min=1e-6)
     return (vec * sw).sum() / denom
+
+
+def _build_weighted_sampler(sample_weight: np.ndarray | None) -> WeightedRandomSampler | None:
+    if sample_weight is None:
+        return None
+    sw = np.asarray(sample_weight, dtype=np.float64).reshape(-1)
+    if sw.size == 0:
+        return None
+    sw = np.clip(sw, 1e-8, None)
+    sw = sw / float(sw.mean())
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sw, dtype=torch.double),
+        num_samples=int(sw.shape[0]),
+        replacement=True,
+    )
 
 
 def stage_scale_local(epoch: int, cfg: Dict) -> float:
@@ -2123,6 +2138,7 @@ def main() -> None:
     parser.add_argument("--num_workers", type=int, default=6)
     parser.add_argument("--skip_save_models", action="store_true")
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
+    parser.add_argument("--use_train_weights", action="store_true")
 
     # HLT controls
     parser.add_argument("--merge_radius", type=float, default=BASE_CONFIG["hlt_effects"]["merge_radius"])
@@ -2284,10 +2300,11 @@ def main() -> None:
 
     max_jets_needed = args.offset_jets + args.n_train_jets
     print("Loading offline constituents...")
-    all_const_full, all_labels_full = load_raw_constituents_from_h5(
+    all_const_full, all_labels_full, all_train_w_full = load_raw_constituents_labels_weights_from_h5(
         train_files,
         max_jets=max_jets_needed,
         max_constits=args.max_constits,
+        use_train_weights=bool(args.use_train_weights),
     )
     if all_const_full.shape[0] < max_jets_needed:
         raise RuntimeError(
@@ -2296,6 +2313,7 @@ def main() -> None:
 
     const_raw = all_const_full[args.offset_jets: args.offset_jets + args.n_train_jets]
     labels = all_labels_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.int64)
+    train_weight = all_train_w_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.float32)
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
@@ -2377,6 +2395,7 @@ def main() -> None:
         f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} "
         f"(custom_counts={custom_split})"
     )
+    train_w_train = train_weight[train_idx].astype(np.float32)
 
     means, stds = get_stats(feat_off, masks_off, train_idx)
     feat_off_std = standardize(feat_off, masks_off, means, stds)
@@ -2390,6 +2409,7 @@ def main() -> None:
         "offset_jets": int(args.offset_jets),
         "max_constits": int(args.max_constits),
         "seed": int(args.seed),
+        "use_train_weights": bool(args.use_train_weights),
         "split": (
             {
                 "mode": "custom_counts",
@@ -2428,7 +2448,13 @@ def main() -> None:
     ds_train_off = JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
     ds_val_off = JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
     ds_test_off = JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
-    dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
+    dl_train_off = DataLoader(
+        ds_train_off,
+        batch_size=BS,
+        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        shuffle=False if bool(args.use_train_weights) else True,
+        drop_last=True,
+    )
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
@@ -2442,7 +2468,13 @@ def main() -> None:
     ds_train_hlt = JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
     ds_val_hlt = JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
     ds_test_hlt = JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
-    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
+    dl_train_hlt = DataLoader(
+        ds_train_hlt,
+        batch_size=BS,
+        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        shuffle=False if bool(args.use_train_weights) else True,
+        drop_last=True,
+    )
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
 
@@ -2477,7 +2509,8 @@ def main() -> None:
         jet_reg_train_loader = DataLoader(
             jet_reg_train_ds,
             batch_size=int(cfg["training"]["batch_size"]),
-            shuffle=True,
+            sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+            shuffle=False if bool(args.use_train_weights) else True,
             drop_last=True,
         )
         jet_reg_val_loader = DataLoader(
@@ -2557,7 +2590,8 @@ def main() -> None:
     dl_train_reco = DataLoader(
         ds_train_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        shuffle=True,
+        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        shuffle=False if bool(args.use_train_weights) else True,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
@@ -2618,7 +2652,11 @@ def main() -> None:
     )
 
     dl_train_joint = DataLoader(
-        ds_train_joint, batch_size=BS, shuffle=True, drop_last=True,
+        ds_train_joint,
+        batch_size=BS,
+        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        shuffle=False if bool(args.use_train_weights) else True,
+        drop_last=True,
         num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),
     )
     dl_val_joint = DataLoader(
@@ -2952,7 +2990,13 @@ def main() -> None:
             feat_off_std[test_idx], masks_off[test_idx],
             labels[test_idx],
         )
-        kd_train_loader = DataLoader(kd_train_ds, batch_size=BS, shuffle=True, drop_last=True)
+        kd_train_loader = DataLoader(
+            kd_train_ds,
+            batch_size=BS,
+            sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+            shuffle=False if bool(args.use_train_weights) else True,
+            drop_last=True,
+        )
         kd_val_loader = DataLoader(kd_val_ds, batch_size=BS, shuffle=False)
         kd_test_loader = DataLoader(kd_test_ds, batch_size=BS, shuffle=False)
 

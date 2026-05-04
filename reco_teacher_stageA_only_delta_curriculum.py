@@ -25,7 +25,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_auc_score, roc_curve
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd as b
 
@@ -40,6 +40,21 @@ def threshold_at_target_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: 
     idx_valid = np.where(valid)[0]
     idx = int(idx_valid[np.argmin(np.abs(tpr[idx_valid] - float(target_tpr)))])
     return float(thr[idx]), float(tpr[idx]), float(fpr[idx])
+
+
+def _build_weighted_sampler(sample_weight: np.ndarray | None) -> WeightedRandomSampler | None:
+    if sample_weight is None:
+        return None
+    sw = np.asarray(sample_weight, dtype=np.float64).reshape(-1)
+    if sw.size == 0:
+        return None
+    sw = np.clip(sw, 1e-8, None)
+    sw = sw / float(sw.mean())
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sw, dtype=torch.double),
+        num_samples=int(sw.shape[0]),
+        replacement=True,
+    )
 
 
 def _teacher_ablation_zero_indices(mode: str) -> List[int]:
@@ -710,6 +725,7 @@ def main() -> None:
     ap.add_argument("--num_workers", type=int, default=6)
     ap.add_argument("--skip_save_models", action="store_true")
     ap.add_argument("--seed", type=int, default=b.RANDOM_SEED)
+    ap.add_argument("--use_train_weights", action="store_true")
 
     ap.add_argument("--teacher_use_anti_overlap", action="store_true")
     ap.add_argument("--teacher_anti_lambda", type=float, default=0.01)
@@ -794,16 +810,18 @@ def main() -> None:
 
     max_jets_needed = int(args.offset_jets) + int(args.n_train_jets)
     print("Loading offline constituents...")
-    all_const_full, all_labels_full = b.load_raw_constituents_from_h5(
+    all_const_full, all_labels_full, all_train_w_full = b.load_raw_constituents_labels_weights_from_h5(
         train_files,
         max_jets=max_jets_needed,
         max_constits=args.max_constits,
+        use_train_weights=bool(args.use_train_weights),
     )
     if all_const_full.shape[0] < max_jets_needed:
         raise RuntimeError(f"Not enough jets: requested {max_jets_needed}, got {all_const_full.shape[0]}")
 
     const_raw = all_const_full[args.offset_jets: args.offset_jets + args.n_train_jets]
     labels = all_labels_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.int64)
+    train_weight = all_train_w_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.float32)
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
@@ -883,6 +901,7 @@ def main() -> None:
         stratify=labels[rem_idx],
     )
     print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} (custom_counts=True)")
+    train_w_train = train_weight[train_idx].astype(np.float32)
 
     means, stds = b.get_stats(feat_off, masks_off, train_idx)
     feat_off_std = b.standardize(feat_off, masks_off, means, stds)
@@ -898,6 +917,7 @@ def main() -> None:
         "max_constits": int(args.max_constits),
         "offline_target_topk_pt": int(topk_target),
         "seed": int(args.seed),
+        "use_train_weights": bool(args.use_train_weights),
         "split": {
             "mode": "custom_counts",
             "n_train_split": int(len(train_idx)),
@@ -930,14 +950,26 @@ def main() -> None:
     ds_train_off = b.JetDataset(feat_off_teacher_std[train_idx], masks_off[train_idx], labels[train_idx])
     ds_val_off = b.JetDataset(feat_off_teacher_std[val_idx], masks_off[val_idx], labels[val_idx])
     ds_test_off = b.JetDataset(feat_off_teacher_std[test_idx], masks_off[test_idx], labels[test_idx])
-    dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
+    dl_train_off = DataLoader(
+        ds_train_off,
+        batch_size=BS,
+        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        shuffle=False if bool(args.use_train_weights) else True,
+        drop_last=True,
+    )
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
     ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
     ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
     ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
-    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
+    dl_train_hlt = DataLoader(
+        ds_train_hlt,
+        batch_size=BS,
+        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        shuffle=False if bool(args.use_train_weights) else True,
+        drop_last=True,
+    )
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
 
@@ -972,7 +1004,13 @@ def main() -> None:
             mask_hlt=hlt_mask[train_idx],
             labels=labels[train_idx],
         )
-        dl_train_teacher_anti = DataLoader(ds_train_teacher_anti, batch_size=BS, shuffle=True, drop_last=True)
+        dl_train_teacher_anti = DataLoader(
+            ds_train_teacher_anti,
+            batch_size=BS,
+            sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+            shuffle=False if bool(args.use_train_weights) else True,
+            drop_last=True,
+        )
         teacher = train_single_view_teacher_anti_overlap(
             model=teacher,
             train_loader=dl_train_teacher_anti,
@@ -1015,7 +1053,8 @@ def main() -> None:
     dl_train_reco = DataLoader(
         ds_train_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        shuffle=True,
+        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        shuffle=False if bool(args.use_train_weights) else True,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
@@ -1127,7 +1166,13 @@ def main() -> None:
         ds_train_corr = b.JetDataset(feat_corr_all[train_idx], mask_corr_all[train_idx], labels[train_idx])
         ds_val_corr = b.JetDataset(feat_corr_all[val_idx], mask_corr_all[val_idx], labels[val_idx])
         ds_test_corr = b.JetDataset(feat_corr_all[test_idx], mask_corr_all[test_idx], labels[test_idx])
-        dl_train_corr = DataLoader(ds_train_corr, batch_size=BS, shuffle=True, drop_last=True)
+        dl_train_corr = DataLoader(
+            ds_train_corr,
+            batch_size=BS,
+            sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+            shuffle=False if bool(args.use_train_weights) else True,
+            drop_last=True,
+        )
         dl_val_corr = DataLoader(ds_val_corr, batch_size=BS, shuffle=False)
         dl_test_corr = DataLoader(ds_test_corr, batch_size=BS, shuffle=False)
 

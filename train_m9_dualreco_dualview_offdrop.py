@@ -224,7 +224,7 @@ def compute_reco_b_losses(
         and float(added_min_frac) <= 0.0
         and float(added_min_hinge_lambda) <= 0.0
     ):
-        return m2mod.compute_reconstruction_losses(
+        return m2mod.compute_reconstruction_losses_weighted(
             out,
             const_hlt,
             mask_hlt,
@@ -233,6 +233,7 @@ def compute_reco_b_losses(
             budget_merge_true,
             budget_eff_true,
             loss_cfg,
+            sample_weight=None,
         )
 
     prof = _reco_b_ablation_profile(m)
