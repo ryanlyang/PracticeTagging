@@ -2,7 +2,7 @@
 #SBATCH --job-name=m4cw
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
-#SBATCH --mem=48G
+#SBATCH --mem=96G
 #SBATCH --time=3-00:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m4_corrected_weighted_500k300k500k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m4_corrected_weighted_500k300k500k_%j.err
