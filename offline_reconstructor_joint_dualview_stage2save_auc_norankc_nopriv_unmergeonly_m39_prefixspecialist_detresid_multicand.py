@@ -1180,6 +1180,65 @@ def _build_carry_targets_np(
     return tgt
 
 
+def _build_carry_targets_fixed_k_np(
+    const_off: np.ndarray,
+    mask_off: np.ndarray,
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    k_target: int,
+    dist_thresh: float,
+    batch_size: int,
+    thresh_gate: bool = False,
+) -> np.ndarray:
+    """
+    Token-level fixed-k target:
+      mark exactly top-k HLT tokens (by nearest Offline-token distance) as carryovers.
+      Optionally apply dist threshold gate before picking top-k.
+    """
+    n, l, _ = const_hlt.shape
+    tgt = np.zeros((n, l), dtype=np.float32)
+    k_target = int(max(0, k_target))
+    if k_target <= 0:
+        return tgt
+
+    off_tok = _const_to_token5_np(const_off, mask_off)
+    hlt_tok = _const_to_token5_np(const_hlt, mask_hlt)
+
+    for s in range(0, n, int(batch_size)):
+        e = min(s + int(batch_size), n)
+        h = torch.tensor(hlt_tok[s:e], dtype=torch.float32)
+        o = torch.tensor(off_tok[s:e], dtype=torch.float32)
+        mh = torch.tensor(mask_hlt[s:e], dtype=torch.bool)
+        mo = torch.tensor(mask_off[s:e], dtype=torch.bool)
+
+        d = torch.cdist(h, o, p=2)  # [B,L,L]
+        valid = mh.unsqueeze(2) & mo.unsqueeze(1)
+        d = torch.where(valid, d, torch.full_like(d, 1e6))
+        md = d.min(dim=2).values.cpu().numpy().astype(np.float32)
+        mh_np = mh.cpu().numpy().astype(bool)
+
+        for bi in range(e - s):
+            ids = np.where(mh_np[bi])[0]
+            if ids.size == 0:
+                continue
+            dvals = md[bi, ids]
+            cand_ids = ids
+            cand_d = dvals
+            if bool(thresh_gate):
+                keep = dvals < float(dist_thresh)
+                if np.any(keep):
+                    cand_ids = ids[keep]
+                    cand_d = dvals[keep]
+            kk = int(min(k_target, cand_ids.size))
+            if kk <= 0:
+                continue
+            pick_local = np.argpartition(cand_d, kk - 1)[:kk]
+            pick_ids = cand_ids[pick_local]
+            tgt[s + bi, pick_ids] = 1.0
+
+    return tgt
+
+
 def _build_prefix_schedule(k: int, max_prefix: int) -> List[int]:
     if k <= 1:
         return [int(max(0, max_prefix))]
@@ -1695,6 +1754,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--carry_ff_dim", type=int, default=384)
     p.add_argument("--carry_dropout", type=float, default=0.10)
     p.add_argument("--carry_dist_thresh", type=float, default=0.22)
+    p.add_argument("--carry_target_mode", type=str, choices=["threshold", "fixed_k"], default="threshold")
+    p.add_argument("--carry_target_k", type=int, default=-1, help="Used in fixed_k mode; -1 => specialist prefix.")
+    p.add_argument("--carry_target_thresh_gate", type=int, default=0, help="If 1 with fixed_k: gate candidates by carry_dist_thresh.")
     p.add_argument("--carry_lr_decay_start_epoch", type=int, default=0)
     p.add_argument("--carry_lr_decay_gamma", type=float, default=1.0)
     p.add_argument("--carry_min_lr_ratio", type=float, default=0.30)
@@ -1941,6 +2003,9 @@ def main() -> None:
 
     print(f"Teacher test AUC={teacher_auc_test:.4f} | Baseline test AUC={baseline_auc_test:.4f}")
 
+    specialist_prefix = int(args.train_specialist_prefix if int(args.train_specialist_prefix) >= 0 else args.seed_max_prefix)
+    specialist_prefix = int(np.clip(specialist_prefix, 0, int(args.max_constits)))
+
     # ---------------------------------------------------------------------
     # STEP 2: Carryover predictor
     # ---------------------------------------------------------------------
@@ -1948,22 +2013,53 @@ def main() -> None:
     print("STEP 2: Carryover token predictor")
     print("=" * 72)
 
-    carry_tgt_tr = _build_carry_targets_np(
-        const_off=const_off[train_idx],
-        mask_off=mask_off[train_idx],
-        const_hlt=const_hlt[train_idx],
-        mask_hlt=mask_hlt[train_idx],
-        dist_thresh=float(args.carry_dist_thresh),
-        batch_size=256,
-    )
-    carry_tgt_va = _build_carry_targets_np(
-        const_off=const_off[val_idx],
-        mask_off=mask_off[val_idx],
-        const_hlt=const_hlt[val_idx],
-        mask_hlt=mask_hlt[val_idx],
-        dist_thresh=float(args.carry_dist_thresh),
-        batch_size=256,
-    )
+    carry_mode = str(args.carry_target_mode).lower()
+    k_carry_effective = -1
+    if carry_mode == "fixed_k":
+        k_carry = int(args.carry_target_k)
+        if k_carry < 0:
+            k_carry = int(specialist_prefix)
+        k_carry = int(np.clip(k_carry, 0, int(args.max_constits)))
+        k_carry_effective = int(k_carry)
+        print(f"Carry target mode: fixed_k (k={k_carry_effective}, thresh_gate={bool(int(args.carry_target_thresh_gate))})")
+        carry_tgt_tr = _build_carry_targets_fixed_k_np(
+            const_off=const_off[train_idx],
+            mask_off=mask_off[train_idx],
+            const_hlt=const_hlt[train_idx],
+            mask_hlt=mask_hlt[train_idx],
+            k_target=int(k_carry_effective),
+            dist_thresh=float(args.carry_dist_thresh),
+            batch_size=256,
+            thresh_gate=bool(int(args.carry_target_thresh_gate)),
+        )
+        carry_tgt_va = _build_carry_targets_fixed_k_np(
+            const_off=const_off[val_idx],
+            mask_off=mask_off[val_idx],
+            const_hlt=const_hlt[val_idx],
+            mask_hlt=mask_hlt[val_idx],
+            k_target=int(k_carry_effective),
+            dist_thresh=float(args.carry_dist_thresh),
+            batch_size=256,
+            thresh_gate=bool(int(args.carry_target_thresh_gate)),
+        )
+    else:
+        print("Carry target mode: threshold")
+        carry_tgt_tr = _build_carry_targets_np(
+            const_off=const_off[train_idx],
+            mask_off=mask_off[train_idx],
+            const_hlt=const_hlt[train_idx],
+            mask_hlt=mask_hlt[train_idx],
+            dist_thresh=float(args.carry_dist_thresh),
+            batch_size=256,
+        )
+        carry_tgt_va = _build_carry_targets_np(
+            const_off=const_off[val_idx],
+            mask_off=mask_off[val_idx],
+            const_hlt=const_hlt[val_idx],
+            mask_hlt=mask_hlt[val_idx],
+            dist_thresh=float(args.carry_dist_thresh),
+            batch_size=256,
+        )
 
     pos_frac = float(carry_tgt_tr[mask_hlt[train_idx]].mean()) if np.any(mask_hlt[train_idx]) else 0.5
     pos_w = float((1.0 - pos_frac) / max(pos_frac, 1e-6))
@@ -2005,8 +2101,6 @@ def main() -> None:
     print("STEP 3: Train m28-style completer (prefix specialist)")
     print("=" * 72)
 
-    specialist_prefix = int(args.train_specialist_prefix if int(args.train_specialist_prefix) >= 0 else args.seed_max_prefix)
-    specialist_prefix = int(np.clip(specialist_prefix, 0, int(args.max_constits)))
     print(f"Specialist prefix length (train-time): {specialist_prefix}")
 
     carry_probs_tr = _predict_carry_probs(
@@ -2410,6 +2504,13 @@ def main() -> None:
             "fpr50_test": float(fpr50_baseline),
         },
         "carry_predictor": carry_metrics,
+        "carry_targeting": {
+            "mode": str(args.carry_target_mode),
+            "k": int(args.carry_target_k),
+            "k_effective": int(k_carry_effective),
+            "dist_thresh": float(args.carry_dist_thresh),
+            "thresh_gate": bool(int(args.carry_target_thresh_gate)),
+        },
         "reco_completer": reco_metrics,
         "candidate_generation": {
             "candidate_k": int(args.seed_candidate_k),
