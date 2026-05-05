@@ -37,7 +37,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from sklearn.metrics import roc_curve, roc_auc_score
 from sklearn.model_selection import train_test_split
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, WeightedRandomSampler
 try:
     from scipy.optimize import linear_sum_assignment  # type: ignore
     _HAS_SCIPY_HUNGARIAN = True
@@ -126,6 +126,21 @@ def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) 
         return vec.mean()
     denom = sample_weight.sum().clamp(min=1e-6)
     return (vec * sample_weight).sum() / denom
+
+
+def _build_weighted_sampler(sample_weight: np.ndarray | None) -> WeightedRandomSampler | None:
+    if sample_weight is None:
+        return None
+    sw = np.asarray(sample_weight, dtype=np.float64).reshape(-1)
+    sw = np.nan_to_num(sw, nan=0.0, posinf=0.0, neginf=0.0)
+    sw = np.clip(sw, 0.0, None)
+    if sw.size == 0 or float(sw.sum()) <= 0.0:
+        return None
+    return WeightedRandomSampler(
+        weights=torch.as_tensor(sw, dtype=torch.double),
+        num_samples=int(sw.shape[0]),
+        replacement=True,
+    )
 
 
 def _parse_h5_path_arg(path_arg: str) -> List[Path]:
@@ -3160,7 +3175,14 @@ def main() -> None:
             labels[test_idx],
             sample_weight=test_weight_ref,
         )
-    dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=True, drop_last=True)
+    off_sampler = _build_weighted_sampler(train_w_train if bool(args.use_train_weights) else None)
+    dl_train_off = DataLoader(
+        ds_train_off,
+        batch_size=BS,
+        sampler=off_sampler,
+        shuffle=False if off_sampler is not None else True,
+        drop_last=True,
+    )
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
@@ -3190,7 +3212,14 @@ def main() -> None:
             labels[test_idx],
             sample_weight=test_weight_ref,
         )
-    dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=True, drop_last=True)
+    hlt_sampler = _build_weighted_sampler(train_w_train if bool(args.use_train_weights) else None)
+    dl_train_hlt = DataLoader(
+        ds_train_hlt,
+        batch_size=BS,
+        sampler=hlt_sampler,
+        shuffle=False if hlt_sampler is not None else True,
+        drop_last=True,
+    )
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
 
@@ -3281,10 +3310,16 @@ def main() -> None:
         return
 
     # Discrepancy weighting vectors (optional), derived from teacher-vs-baseline train/val predictions.
-    sample_weight_reco = np.ones((len(train_idx),), dtype=np.float32)
-    sample_weight_cls = np.ones((len(train_idx),), dtype=np.float32)
-    sample_weight_reco_val = np.ones((len(val_idx),), dtype=np.float32)
-    sample_weight_cls_val = np.ones((len(val_idx),), dtype=np.float32)
+    if bool(args.use_train_weights):
+        sample_weight_reco = train_w_train.astype(np.float32).copy()
+        sample_weight_cls = train_w_train.astype(np.float32).copy()
+        sample_weight_reco_val = train_w_val.astype(np.float32).copy()
+        sample_weight_cls_val = train_w_val.astype(np.float32).copy()
+    else:
+        sample_weight_reco = np.ones((len(train_idx),), dtype=np.float32)
+        sample_weight_cls = np.ones((len(train_idx),), dtype=np.float32)
+        sample_weight_reco_val = np.ones((len(val_idx),), dtype=np.float32)
+        sample_weight_cls_val = np.ones((len(val_idx),), dtype=np.float32)
     discrepancy_reco_summary: Dict[str, float] = {"enabled": False}
     discrepancy_cls_summary: Dict[str, float] = {"enabled": False}
     discrepancy_reco_val_summary: Dict[str, float] = {"enabled": False}
@@ -3471,10 +3506,12 @@ def main() -> None:
 
         jet_reg_train_ds = JetRegressionDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], target_off[train_idx])
         jet_reg_val_ds = JetRegressionDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], target_off[val_idx])
+        jet_reg_sampler = _build_weighted_sampler(train_w_train if bool(args.use_train_weights) else None)
         jet_reg_train_loader = DataLoader(
             jet_reg_train_ds,
             batch_size=int(cfg["training"]["batch_size"]),
-            shuffle=True,
+            sampler=jet_reg_sampler,
+            shuffle=False if jet_reg_sampler is not None else True,
             drop_last=True,
         )
         jet_reg_val_loader = DataLoader(
@@ -3553,10 +3590,12 @@ def main() -> None:
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         sample_weight_reco=sample_weight_reco_val,
     )
+    reco_sampler = _build_weighted_sampler(sample_weight_reco if bool(args.use_train_weights) else None)
     dl_train_reco = DataLoader(
         ds_train_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        shuffle=True,
+        sampler=reco_sampler,
+        shuffle=False if reco_sampler is not None else True,
         drop_last=True,
         num_workers=args.num_workers,
         pin_memory=torch.cuda.is_available(),
@@ -3573,6 +3612,12 @@ def main() -> None:
     reconstructor = wrap_reconstructor_unmerge_only(reconstructor)
     # compute_reconstruction_losses reads BASE_CONFIG["loss"], so sync it to our working config.
     BASE_CONFIG["loss"] = cfg["loss"]
+    use_reco_weighting_all_stages = bool(args.disc_weight_enable or args.use_train_weights)
+    use_cls_weighting_all_stages = bool(args.use_train_weights)
+    if bool(args.disc_weight_enable) and float(args.disc_cls_lambda) > 0.0:
+        use_cls_weighting_all_stages = True
+    use_weighted_val_selection_all_stages = bool(args.disc_weight_enable or args.use_train_weights)
+
     reconstructor, reco_val_metrics = train_reconstructor_weighted(
         reconstructor,
         dl_train_reco,
@@ -3580,7 +3625,7 @@ def main() -> None:
         device,
         cfg["reconstructor_training"],
         cfg["loss"],
-        apply_reco_weight=bool(args.disc_weight_enable),
+        apply_reco_weight=bool(use_reco_weighting_all_stages),
         reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
     )
 
@@ -3622,12 +3667,14 @@ def main() -> None:
         sample_weight_reco=np.ones((len(test_idx),), dtype=np.float32),
     )
 
+    joint_sampler = _build_weighted_sampler(sample_weight_cls if bool(args.use_train_weights) else None)
     dl_train_joint = DataLoader(
-        ds_train_joint, batch_size=BS, shuffle=True, drop_last=True,
+        ds_train_joint, batch_size=BS, sampler=joint_sampler, shuffle=False if joint_sampler is not None else True, drop_last=True,
         num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),
     )
+    stageb_sampler = _build_weighted_sampler(stageb_w_cls if bool(args.use_train_weights) else None)
     dl_train_joint_stageb = DataLoader(
-        ds_train_joint_stageb, batch_size=BS, shuffle=True, drop_last=True,
+        ds_train_joint_stageb, batch_size=BS, sampler=stageb_sampler, shuffle=False if stageb_sampler is not None else True, drop_last=True,
         num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),
     )
     dl_val_joint = DataLoader(
@@ -3667,10 +3714,10 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageB_min_epochs),
         select_metric=selection_metric,
-        apply_cls_weight=bool(args.disc_weight_enable and float(args.disc_cls_lambda) > 0.0),
+        apply_cls_weight=bool(use_cls_weighting_all_stages),
         apply_reco_weight=False,
         val_weight_key="sample_weight_cls",
-        use_weighted_val_selection=bool(args.disc_weight_enable),
+        use_weighted_val_selection=bool(use_weighted_val_selection_all_stages),
         lambda_delta_cls=0.0,
         delta_tau=float(args.stageC_delta_tau),
         delta_lambda_fp=float(args.stageC_delta_lambda_fp),
@@ -3745,10 +3792,10 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageC_min_epochs),
         select_metric=selection_metric,
-        apply_cls_weight=bool(args.disc_weight_enable and bool(args.disc_apply_cls_stagec) and float(args.disc_cls_lambda) > 0.0),
-        apply_reco_weight=bool(args.disc_weight_enable and float(args.disc_reco_lambda) > 0.0),
+        apply_cls_weight=bool(use_cls_weighting_all_stages),
+        apply_reco_weight=bool(use_reco_weighting_all_stages),
         val_weight_key="sample_weight_cls",
-        use_weighted_val_selection=bool(args.disc_weight_enable),
+        use_weighted_val_selection=bool(use_weighted_val_selection_all_stages),
         lambda_delta_cls=float(args.stageC_lambda_delta),
         delta_tau=float(args.stageC_delta_tau),
         delta_lambda_fp=float(args.stageC_delta_lambda_fp),

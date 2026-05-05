@@ -16,6 +16,7 @@ SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/m
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
+TRAIN_PATH="${TRAIN_PATH:-./data/train_quarter.h5}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-600000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-150000}"
@@ -40,6 +41,7 @@ mkdir -p "${SAVE_DIR}"
 
 CMD=(
   python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py
+  --train_path "${TRAIN_PATH}"
   --use_train_weights
   --save_dir "${SAVE_DIR}"
   --run_name "${RUN_NAME}"
