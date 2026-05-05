@@ -1713,6 +1713,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--train_path", type=str, default="./data")
     p.add_argument("--save_dir", type=str, default="checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model39_prefixspecialist_detresid_multicand")
     p.add_argument("--run_name", type=str, default="model39_prefixspecialist_detresid_multicand_150k75k300k_seed0")
+    p.add_argument("--codebook_path", type=str, default="", help="Optional m40 codebook path (provenance hook).")
+    p.add_argument("--codebook_label", type=str, default="", help="Optional m40 codebook label (provenance hook).")
 
     p.add_argument("--n_train_jets", type=int, default=525000)
     p.add_argument("--n_train_split", type=int, default=150000)
@@ -2504,6 +2506,10 @@ def main() -> None:
             "fpr50_test": float(fpr50_baseline),
         },
         "carry_predictor": carry_metrics,
+        "quantization": {
+            "codebook_path": str(args.codebook_path),
+            "codebook_label": str(args.codebook_label),
+        },
         "carry_targeting": {
             "mode": str(args.carry_target_mode),
             "k": int(args.carry_target_k),

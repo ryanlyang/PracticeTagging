@@ -51,6 +51,8 @@ CARRY_TARGET_THRESH_GATE="${CARRY_TARGET_THRESH_GATE:-0}"
 CARRY_LR_DECAY_START="${CARRY_LR_DECAY_START:-20}"
 CARRY_LR_DECAY_GAMMA="${CARRY_LR_DECAY_GAMMA:-0.96}"
 CARRY_MIN_LR_RATIO="${CARRY_MIN_LR_RATIO:-0.35}"
+CODEBOOK_PATH="${CODEBOOK_PATH:-}"
+CODEBOOK_LABEL="${CODEBOOK_LABEL:-}"
 
 set +u
 source ~/.bashrc
@@ -151,6 +153,13 @@ CMD=(
   --dual_lr 1.2e-4
   --dual_patience 16
 )
+
+if [[ -n "${CODEBOOK_PATH}" ]]; then
+  CMD+=(--codebook_path "${CODEBOOK_PATH}")
+fi
+if [[ -n "${CODEBOOK_LABEL}" ]]; then
+  CMD+=(--codebook_label "${CODEBOOK_LABEL}")
+fi
 
 echo "============================================================"
 echo "Model-39 Prefix-Specialist + Deterministic-Residual MultiCandidate"
