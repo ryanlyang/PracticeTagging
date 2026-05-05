@@ -1,0 +1,33 @@
+============================================================
+JetClass Full-17 Feature Plotting Job
+Job ID: 21256055
+Node: skl-a-01
+Split: train
+Class assignment: canonical_labels
+Feature preprocessing: canonical
+Jets: 50000
+Data dir: /home/ryreu/atlas/PracticeTagging/data/jetclass_part0
+Output dir: plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055
+============================================================
+ python -u /home/ryreu/atlas/PracticeTagging/plot_jetclass_full17_features.py --data_dir /home/ryreu/atlas/PracticeTagging/data/jetclass_part0 --output_dir plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055 --split train --class_assignment canonical_labels --feature_preprocessing canonical --seed 52 --max_constits 100 --n_jets 50000 --train_files_per_class 8 --val_files_per_class 1 --test_files_per_class 1 --bins 80 --max_constits_per_class 200000 --clip_quantile_low 0.5 --clip_quantile_high 99.5
+Loading split=train with n_jets=50000 from /home/ryreu/atlas/PracticeTagging/data/jetclass_part0
+[load_split:canonical] progress 35000/50000 jets (iter=50)
+Building distribution plots...
+Done.
+Saved:
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/full17_feature_distributions_by_class.png
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/full17_feature_distributions_by_class.pdf
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/full17_feature_stats_by_class.csv
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/per_feature_png (17 per-feature PNGs)
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/run_metadata.json
+============================================================
+Done.
+Download this folder:
+/home/ryreu/atlas/PracticeTagging/plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055
+Key files:
+ - /home/ryreu/atlas/PracticeTagging/plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/full17_feature_distributions_by_class.png
+ - /home/ryreu/atlas/PracticeTagging/plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/full17_feature_distributions_by_class.pdf
+ - /home/ryreu/atlas/PracticeTagging/plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/full17_feature_stats_by_class.csv
+ - /home/ryreu/atlas/PracticeTagging/plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/per_feature_png/   (17 separate feature PNGs)
+ - /home/ryreu/atlas/PracticeTagging/plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21256055/run_metadata.json
+============================================================

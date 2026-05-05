@@ -1,0 +1,182 @@
+============================================================
+Model-22v2 Seq2Seq Next-Token (Geometry/Residual Focus)
+Run:   checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken_v2/model22v2_seq2seq_geom_50k20k100k_seed0
+Split: train=50000, val=20000, test=100000
+Jets:  n_train_jets=170000, offset=0, max_constits=100
+============================================================
+ python offline_reconstructor_joint_dualview_seq2seq_nexttoken_v2.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken_v2 --run_name model22v2_seq2seq_geom_50k20k100k_seed0 --n_train_jets 170000 --n_train_split 50000 --n_val_split 20000 --n_test_split 100000 --offset_jets 0 --max_constits 100 --num_workers 1 --seed 0 --reco_epochs 180 --reco_batch_size 128 --reco_lr 1.8e-4 --reco_patience 35 --reco_min_epochs 60 --reco_huber_delta 0.10 --beam_size 6 --beam_len_sigma 1.20 --beam_temperature 0.85 --use_coord_residual_param --enable_scale_sensitive_weighting --scale_pt_power 0.90 --scale_weight_cap 6.0 --angle_pt_power 1.0 --loss_w_ar 1.0 --loss_w_set 1.0 --loss_w_eos 0.20 --loss_w_count 0.20 --loss_w_ptr_entropy 0.0015 --loss_w_angle 0.28 --loss_w_jetpt 0.00 --loss_w_jete 0.00 --loss_w_4vec 0.00 --physics_warmup_epochs 16 --response_n_bins 20 --response_min_count 200 --save_fusion_scores --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken_v2/model22v2_seq2seq_geom_50k20k100k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing features...
+Split sizes: Train=50000, Val=20000, Test=100000
+
+========================================================================
+STEP 1: TEACHER (Offline)
+========================================================================
+Teacher ep 5: train_auc=0.9278, val_auc=0.8964, val_fpr50=0.044963, best_auc=0.9129
+Teacher ep 10: train_auc=0.9449, val_auc=0.9417, val_fpr50=0.018129, best_auc=0.9427
+Teacher ep 15: train_auc=0.9496, val_auc=0.9446, val_fpr50=0.014445, best_auc=0.9462
+Teacher ep 20: train_auc=0.9546, val_auc=0.9457, val_fpr50=0.015392, best_auc=0.9471
+Teacher ep 25: train_auc=0.9600, val_auc=0.9456, val_fpr50=0.014956, best_auc=0.9474
+Teacher ep 30: train_auc=0.9650, val_auc=0.9416, val_fpr50=0.018254, best_auc=0.9474
+Teacher ep 35: train_auc=0.9718, val_auc=0.9395, val_fpr50=0.016467, best_auc=0.9474
+Teacher ep 40: train_auc=0.9780, val_auc=0.9337, val_fpr50=0.018665, best_auc=0.9474
+Early stopping Teacher at epoch 41
+
+========================================================================
+STEP 2: BASELINE (HLT)
+========================================================================
+HLT ep 5: train_auc=0.8854, val_auc=0.8728, val_fpr50=0.059302, best_auc=0.8728
+HLT ep 10: train_auc=0.9082, val_auc=0.9124, val_fpr50=0.026459, best_auc=0.9145
+HLT ep 15: train_auc=0.9160, val_auc=0.9104, val_fpr50=0.026110, best_auc=0.9152
+HLT ep 20: train_auc=0.9213, val_auc=0.9144, val_fpr50=0.024414, best_auc=0.9152
+HLT ep 25: train_auc=0.9276, val_auc=0.9154, val_fpr50=0.022746, best_auc=0.9154
+HLT ep 30: train_auc=0.9337, val_auc=0.9088, val_fpr50=0.028368, best_auc=0.9154
+HLT ep 35: train_auc=0.9416, val_auc=0.9079, val_fpr50=0.026989, best_auc=0.9154
+HLT ep 40: train_auc=0.9502, val_auc=0.9041, val_fpr50=0.031191, best_auc=0.9154
+Early stopping HLT at epoch 43
+
+========================================================================
+STEP 3: SEQ2SEQ RECONSTRUCTOR (Continuous AR + Beam Length)
+========================================================================
+Reco ep 001 | phys=0.062 | train total=4.21651 ar=1.06969 set=0.82225 eos=0.07375 cnt=11.53986 ang=0.08210 jpt=0.16698 je=0.16710 j4=0.56393 bset=0.82225 div=0.00000 | val total=3.14323 ar=0.86285 set=0.52849 eos=0.03749 cnt=8.71240 ang=0.07345 jpt=0.07491 je=0.07441 j4=0.31388 bset=0.52849 div=0.00000
+Reco ep 002 | phys=0.125 | train total=2.68890 ar=0.79570 set=0.60543 eos=0.04770 cnt=6.37578 ang=0.07817 jpt=0.07987 je=0.07979 j4=0.33191 bset=0.60543 div=0.00000 | val total=2.67457 ar=0.88841 set=0.66096 eos=0.03826 cnt=5.57171 ang=0.07282 jpt=0.12784 je=0.12708 j4=0.59129 bset=0.66096 div=0.00000
+Reco ep 004 | phys=0.250 | train total=2.39987 ar=0.71022 set=0.55148 eos=0.04598 cnt=5.61572 ang=0.07741 jpt=0.06671 je=0.06676 j4=0.28511 bset=0.55148 div=0.00000 | val total=2.49171 ar=0.63883 set=0.69592 eos=0.05628 cnt=5.70004 ang=0.07061 jpt=0.05882 je=0.05856 j4=0.29601 bset=0.69592 div=0.00000
+Reco ep 006 | phys=0.375 | train total=2.21862 ar=0.64767 set=0.51202 eos=0.03828 cnt=5.21371 ang=0.07651 jpt=0.06207 je=0.06215 j4=0.27186 bset=0.51202 div=0.00000 | val total=2.38437 ar=0.74959 set=0.62700 eos=0.03781 cnt=4.96002 ang=0.06956 jpt=0.07766 je=0.07745 j4=0.39901 bset=0.62700 div=0.00000
+Reco ep 008 | phys=0.500 | train total=2.09635 ar=0.61384 set=0.46015 eos=0.03541 cnt=5.02128 ang=0.07415 jpt=0.05439 je=0.05448 j4=0.24300 bset=0.46015 div=0.00000 | val total=2.00102 ar=0.54709 set=0.42059 eos=0.02912 cnt=5.08490 ang=0.06919 jpt=0.05288 je=0.05271 j4=0.26350 bset=0.42059 div=0.00000
+Reco ep 010 | phys=0.625 | train total=2.02800 ar=0.58842 set=0.42821 eos=0.03365 cnt=4.95593 ang=0.07280 jpt=0.05173 je=0.05181 j4=0.23345 bset=0.42821 div=0.00000 | val total=2.26975 ar=0.61029 set=0.50239 eos=0.03481 cnt=5.68613 ang=0.06768 jpt=0.05357 je=0.05324 j4=0.27484 bset=0.50239 div=0.00000
+Reco ep 012 | phys=0.750 | train total=2.02131 ar=0.58936 set=0.42319 eos=0.03329 cnt=4.93078 ang=0.07267 jpt=0.05151 je=0.05156 j4=0.23282 bset=0.42319 div=0.00000 | val total=1.96133 ar=0.55395 set=0.40394 eos=0.02789 cnt=4.91258 ang=0.06923 jpt=0.05255 je=0.05229 j4=0.28026 bset=0.40394 div=0.00000
+Reco ep 014 | phys=0.875 | train total=1.99727 ar=0.56939 set=0.42036 eos=0.03288 cnt=4.91294 ang=0.07203 jpt=0.04920 je=0.04926 j4=0.22542 bset=0.42036 div=0.00000 | val total=1.96120 ar=0.52315 set=0.41681 eos=0.02767 cnt=4.99098 ang=0.06785 jpt=0.05414 je=0.05389 j4=0.27541 bset=0.41681 div=0.00000
+Reco ep 016 | phys=1.000 | train total=1.96938 ar=0.56182 set=0.41373 eos=0.03089 cnt=4.83402 ang=0.07193 jpt=0.04811 je=0.04817 j4=0.23738 bset=0.41373 div=0.00000 | val total=2.06605 ar=0.54515 set=0.41969 eos=0.02974 cnt=5.37735 ang=0.06722 jpt=0.05560 je=0.05514 j4=0.32303 bset=0.41969 div=0.00000
+Reco ep 018 | phys=1.000 | train total=1.92879 ar=0.53332 set=0.40291 eos=0.03216 cnt=4.82713 ang=0.07148 jpt=0.04519 je=0.04519 j4=0.23737 bset=0.40291 div=0.00000 | val total=1.97904 ar=0.57937 set=0.39528 eos=0.02839 cnt=4.89390 ang=0.06802 jpt=0.06271 je=0.06200 j4=0.36730 bset=0.39528 div=0.00000
+Reco ep 020 | phys=1.000 | train total=1.89296 ar=0.50648 set=0.40649 eos=0.02963 cnt=4.76791 ang=0.07054 jpt=0.04281 je=0.04278 j4=0.23545 bset=0.40649 div=0.00000 | val total=1.96231 ar=0.53736 set=0.43683 eos=0.04857 cnt=4.78820 ang=0.07168 jpt=0.03676 je=0.03670 j4=0.18849 bset=0.43683 div=0.00000
+Reco ep 022 | phys=1.000 | train total=1.89370 ar=0.51454 set=0.39575 eos=0.03130 cnt=4.78312 ang=0.07093 jpt=0.04302 je=0.04302 j4=0.23521 bset=0.39575 div=0.00000 | val total=1.95982 ar=0.55070 set=0.38451 eos=0.02562 cnt=4.99828 ang=0.06795 jpt=0.05454 je=0.05388 j4=0.33423 bset=0.38451 div=0.00000
+Reco ep 024 | phys=1.000 | train total=1.85987 ar=0.48397 set=0.39395 eos=0.02990 cnt=4.77834 ang=0.07000 jpt=0.03898 je=0.03895 j4=0.22521 bset=0.39395 div=0.00000 | val total=1.96755 ar=0.53405 set=0.39069 eos=0.02971 cnt=5.08625 ang=0.06696 jpt=0.04931 je=0.04864 j4=0.32732 bset=0.39069 div=0.00000
+Reco ep 026 | phys=1.000 | train total=1.83869 ar=0.47282 set=0.39145 eos=0.02857 cnt=4.74266 ang=0.06931 jpt=0.03803 je=0.03800 j4=0.22420 bset=0.39145 div=0.00000 | val total=1.90912 ar=0.49201 set=0.38142 eos=0.02614 cnt=5.05370 ang=0.06733 jpt=0.03804 je=0.03761 j4=0.27011 bset=0.38142 div=0.00000
+Reco ep 028 | phys=1.000 | train total=1.85985 ar=0.47691 set=0.41011 eos=0.03183 cnt=4.73145 ang=0.06935 jpt=0.03700 je=0.03697 j4=0.22283 bset=0.41011 div=0.00000 | val total=1.90990 ar=0.44357 set=0.41077 eos=0.02631 cnt=5.15447 ang=0.06550 jpt=0.03746 je=0.03694 j4=0.26210 bset=0.41077 div=0.00000
+Reco ep 030 | phys=1.000 | train total=1.82584 ar=0.45523 set=0.39230 eos=0.02992 cnt=4.76158 ang=0.06878 jpt=0.03618 je=0.03614 j4=0.22551 bset=0.39230 div=0.00000 | val total=1.87206 ar=0.46602 set=0.40548 eos=0.02751 cnt=4.87886 ang=0.06555 jpt=0.04242 je=0.04193 j4=0.29554 bset=0.40548 div=0.00000
+Reco ep 032 | phys=1.000 | train total=1.81489 ar=0.43502 set=0.40587 eos=0.02896 cnt=4.74140 ang=0.06816 jpt=0.03088 je=0.03080 j4=0.21174 bset=0.40587 div=0.00000 | val total=1.75100 ar=0.40558 set=0.36940 eos=0.02274 cnt=4.76063 ang=0.06607 jpt=0.03079 je=0.03043 j4=0.23189 bset=0.36940 div=0.00000
+Reco ep 034 | phys=1.000 | train total=1.79356 ar=0.43466 set=0.39627 eos=0.02699 cnt=4.68681 ang=0.06793 jpt=0.03255 je=0.03246 j4=0.21527 bset=0.39627 div=0.00000 | val total=2.14718 ar=0.60748 set=0.42070 eos=0.02685 cnt=5.47036 ang=0.06647 jpt=0.06513 je=0.06443 j4=0.40848 bset=0.42070 div=0.00000
+Reco ep 036 | phys=1.000 | train total=1.80236 ar=0.44879 set=0.38946 eos=0.02795 cnt=4.69219 ang=0.06917 jpt=0.03021 je=0.03018 j4=0.20617 bset=0.38946 div=0.00000 | val total=1.81807 ar=0.40702 set=0.42870 eos=0.03204 cnt=4.78306 ang=0.06565 jpt=0.03377 je=0.03365 j4=0.20361 bset=0.42870 div=0.00000
+Reco ep 038 | phys=1.000 | train total=1.82282 ar=0.45879 set=0.40040 eos=0.03057 cnt=4.68692 ang=0.06950 jpt=0.03266 je=0.03263 j4=0.21579 bset=0.40040 div=0.00000 | val total=1.84033 ar=0.43728 set=0.36679 eos=0.02482 cnt=5.05962 ang=0.06679 jpt=0.03860 je=0.03818 j4=0.27629 bset=0.36679 div=0.00000
+Reco ep 040 | phys=1.000 | train total=1.78601 ar=0.42964 set=0.39869 eos=0.02774 cnt=4.66105 ang=0.06847 jpt=0.03067 je=0.03062 j4=0.21168 bset=0.39869 div=0.00000 | val total=1.78807 ar=0.39890 set=0.40538 eos=0.02353 cnt=4.79965 ang=0.06466 jpt=0.03236 je=0.03192 j4=0.25054 bset=0.40538 div=0.00000
+Reco ep 042 | phys=1.000 | train total=1.80131 ar=0.43574 set=0.41106 eos=0.02981 cnt=4.64361 ang=0.06801 jpt=0.03103 je=0.03096 j4=0.21467 bset=0.41106 div=0.00000 | val total=1.79724 ar=0.40959 set=0.38671 eos=0.02700 cnt=4.88194 ang=0.06518 jpt=0.03207 je=0.03171 j4=0.25630 bset=0.38671 div=0.00000
+Reco ep 044 | phys=1.000 | train total=1.74848 ar=0.40850 set=0.38601 eos=0.02668 cnt=4.64434 ang=0.06787 jpt=0.02818 je=0.02811 j4=0.20486 bset=0.38601 div=0.00000 | val total=1.74295 ar=0.35722 set=0.36364 eos=0.02339 cnt=4.99056 ang=0.06604 jpt=0.02428 je=0.02415 j4=0.19499 bset=0.36364 div=0.00000
+Reco ep 046 | phys=1.000 | train total=1.76362 ar=0.42292 set=0.38781 eos=0.02933 cnt=4.63527 ang=0.06884 jpt=0.02835 je=0.02831 j4=0.20430 bset=0.38781 div=0.00000 | val total=1.80951 ar=0.47051 set=0.37465 eos=0.02601 cnt=4.69557 ang=0.06927 jpt=0.03394 je=0.03363 j4=0.25478 bset=0.37465 div=0.00000
+Reco ep 048 | phys=1.000 | train total=1.75119 ar=0.41710 set=0.38218 eos=0.02792 cnt=4.63169 ang=0.06895 jpt=0.02727 je=0.02726 j4=0.20091 bset=0.38218 div=0.00000 | val total=1.82602 ar=0.46827 set=0.37763 eos=0.02778 cnt=4.77536 ang=0.06666 jpt=0.03577 je=0.03548 j4=0.27361 bset=0.37763 div=0.00000
+Reco ep 050 | phys=1.000 | train total=1.74500 ar=0.40922 set=0.37831 eos=0.02835 cnt=4.65925 ang=0.06899 jpt=0.02619 je=0.02612 j4=0.19857 bset=0.37831 div=0.00000 | val total=1.73689 ar=0.37250 set=0.36242 eos=0.02535 cnt=4.88866 ang=0.06579 jpt=0.02594 je=0.02572 j4=0.20479 bset=0.36242 div=0.00000
+Reco ep 052 | phys=1.000 | train total=1.77552 ar=0.41366 set=0.40081 eos=0.02789 cnt=4.67746 ang=0.06896 jpt=0.02683 je=0.02678 j4=0.20159 bset=0.40081 div=0.00000 | val total=1.82650 ar=0.43547 set=0.38861 eos=0.03373 cnt=4.88072 ang=0.06778 jpt=0.03836 je=0.03808 j4=0.27319 bset=0.38861 div=0.00000
+Reco ep 054 | phys=1.000 | train total=1.74592 ar=0.39153 set=0.40682 eos=0.02531 cnt=4.61365 ang=0.06826 jpt=0.02471 je=0.02462 j4=0.19353 bset=0.40682 div=0.00000 | val total=1.67883 ar=0.34888 set=0.37281 eos=0.02857 cnt=4.66243 ang=0.06521 jpt=0.02763 je=0.02754 j4=0.19414 bset=0.37281 div=0.00000
+Reco ep 056 | phys=1.000 | train total=1.74618 ar=0.40552 set=0.39080 eos=0.02744 cnt=4.62279 ang=0.06844 jpt=0.02723 je=0.02716 j4=0.20290 bset=0.39080 div=0.00000 | val total=1.67650 ar=0.33850 set=0.36828 eos=0.02312 cnt=4.73077 ang=0.06495 jpt=0.02260 je=0.02256 j4=0.17407 bset=0.36828 div=0.00000
+Reco ep 058 | phys=1.000 | train total=1.73736 ar=0.40258 set=0.38645 eos=0.02601 cnt=4.61651 ang=0.06856 jpt=0.02622 je=0.02615 j4=0.20025 bset=0.38645 div=0.00000 | val total=1.81897 ar=0.37056 set=0.38281 eos=0.02615 cnt=5.20616 ang=0.06577 jpt=0.02623 je=0.02605 j4=0.18985 bset=0.38281 div=0.00000
+Reco ep 060 | phys=1.000 | train total=1.74089 ar=0.41498 set=0.37990 eos=0.02593 cnt=4.60303 ang=0.07043 jpt=0.02683 je=0.02682 j4=0.19907 bset=0.37990 div=0.00000 | val total=1.78471 ar=0.40237 set=0.37692 eos=0.02360 cnt=4.90677 ang=0.06663 jpt=0.02923 je=0.02880 j4=0.23827 bset=0.37692 div=0.00000
+Reco ep 062 | phys=1.000 | train total=1.72046 ar=0.40289 set=0.37824 eos=0.02620 cnt=4.57053 ang=0.06949 jpt=0.02542 je=0.02536 j4=0.19674 bset=0.37824 div=0.00000 | val total=1.73077 ar=0.37420 set=0.37162 eos=0.02531 cnt=4.80328 ang=0.06619 jpt=0.02755 je=0.02719 j4=0.22491 bset=0.37162 div=0.00000
+Reco ep 064 | phys=1.000 | train total=1.74248 ar=0.40987 set=0.38551 eos=0.02525 cnt=4.61027 ang=0.06959 jpt=0.02666 je=0.02660 j4=0.19825 bset=0.38551 div=0.00000 | val total=1.70754 ar=0.34399 set=0.38933 eos=0.02188 cnt=4.75404 ang=0.06547 jpt=0.02180 je=0.02161 j4=0.19505 bset=0.38933 div=0.00000
+Reco ep 066 | phys=1.000 | train total=1.74601 ar=0.40966 set=0.39494 eos=0.02746 cnt=4.58007 ang=0.06933 jpt=0.02678 je=0.02672 j4=0.20300 bset=0.39494 div=0.00000 | val total=1.76287 ar=0.36703 set=0.39191 eos=0.02257 cnt=4.90130 ang=0.06608 jpt=0.02388 je=0.02365 j4=0.20509 bset=0.39191 div=0.00000
+Reco ep 068 | phys=1.000 | train total=1.70768 ar=0.35905 set=0.40968 eos=0.02256 cnt=4.57568 ang=0.06677 jpt=0.02387 je=0.02377 j4=0.19259 bset=0.40968 div=0.00000 | val total=1.73959 ar=0.30970 set=0.38838 eos=0.02063 cnt=5.09365 ang=0.06422 jpt=0.02013 je=0.01994 j4=0.17616 bset=0.38838 div=0.00000
+Reco ep 070 | phys=1.000 | train total=1.70591 ar=0.38832 set=0.38006 eos=0.02618 cnt=4.56204 ang=0.06923 jpt=0.02481 je=0.02472 j4=0.19592 bset=0.38006 div=0.00000 | val total=1.75741 ar=0.35954 set=0.37725 eos=0.02534 cnt=4.98189 ang=0.06623 jpt=0.02463 je=0.02442 j4=0.19731 bset=0.37725 div=0.00000
+Reco ep 072 | phys=1.000 | train total=1.71562 ar=0.39237 set=0.38628 eos=0.02558 cnt=4.55926 ang=0.06984 jpt=0.02474 je=0.02464 j4=0.19566 bset=0.38628 div=0.00000 | val total=1.76947 ar=0.36027 set=0.39595 eos=0.02434 cnt=4.94789 ang=0.06510 jpt=0.03077 je=0.03049 j4=0.23377 bset=0.39595 div=0.00000
+Reco ep 074 | phys=1.000 | train total=1.69600 ar=0.34856 set=0.40976 eos=0.02223 cnt=4.56941 ang=0.06710 jpt=0.02299 je=0.02287 j4=0.19083 bset=0.40976 div=0.00000 | val total=1.69364 ar=0.31502 set=0.38868 eos=0.02004 cnt=4.83646 ang=0.06424 jpt=0.02156 je=0.02134 j4=0.18846 bset=0.38868 div=0.00000
+Reco ep 076 | phys=1.000 | train total=1.75173 ar=0.41749 set=0.39883 eos=0.02724 cnt=4.54933 ang=0.07024 jpt=0.02671 je=0.02665 j4=0.20154 bset=0.39883 div=0.00000 | val total=1.68701 ar=0.34491 set=0.36916 eos=0.02204 cnt=4.74702 ang=0.06647 jpt=0.02489 je=0.02481 j4=0.20198 bset=0.36916 div=0.00000
+Reco ep 078 | phys=1.000 | train total=1.69280 ar=0.36393 set=0.39884 eos=0.02405 cnt=4.52855 ang=0.06781 jpt=0.02389 je=0.02377 j4=0.19431 bset=0.39884 div=0.00000 | val total=1.73429 ar=0.33766 set=0.36442 eos=0.02115 cnt=5.04583 ang=0.06525 jpt=0.03019 je=0.02993 j4=0.23519 bset=0.36442 div=0.00000
+Reco ep 080 | phys=1.000 | train total=1.69431 ar=0.36667 set=0.38879 eos=0.02408 cnt=4.57205 ang=0.06837 jpt=0.02388 je=0.02378 j4=0.19419 bset=0.38879 div=0.00000 | val total=1.67485 ar=0.33362 set=0.37556 eos=0.02046 cnt=4.71459 ang=0.06451 jpt=0.02022 je=0.01994 j4=0.18828 bset=0.37556 div=0.00000
+Reco ep 082 | phys=1.000 | train total=1.71786 ar=0.37966 set=0.40126 eos=0.02396 cnt=4.56255 ang=0.06864 jpt=0.02422 je=0.02415 j4=0.19545 bset=0.40126 div=0.00000 | val total=1.67952 ar=0.31597 set=0.37869 eos=0.02053 cnt=4.81072 ang=0.06450 jpt=0.02271 je=0.02251 j4=0.19998 bset=0.37869 div=0.00000
+Reco ep 084 | phys=1.000 | train total=1.70643 ar=0.37938 set=0.39115 eos=0.02513 cnt=4.55544 ang=0.06922 jpt=0.02341 je=0.02334 j4=0.19295 bset=0.39115 div=0.00000 | val total=1.72009 ar=0.36077 set=0.37169 eos=0.02173 cnt=4.82224 ang=0.06547 jpt=0.03047 je=0.03008 j4=0.24258 bset=0.37169 div=0.00000
+Reco ep 086 | phys=1.000 | train total=1.69634 ar=0.37665 set=0.39195 eos=0.02428 cnt=4.51610 ang=0.06873 jpt=0.02506 je=0.02493 j4=0.19821 bset=0.39195 div=0.00000 | val total=1.74027 ar=0.34339 set=0.39300 eos=0.02099 cnt=4.90261 ang=0.06635 jpt=0.02670 je=0.02639 j4=0.22673 bset=0.39300 div=0.00000
+Reco ep 088 | phys=1.000 | train total=1.70559 ar=0.37853 set=0.39491 eos=0.02395 cnt=4.53838 ang=0.06912 jpt=0.02561 je=0.02556 j4=0.20116 bset=0.39491 div=0.00000 | val total=1.66366 ar=0.31492 set=0.38066 eos=0.02150 cnt=4.72587 ang=0.06481 jpt=0.02266 je=0.02241 j4=0.19875 bset=0.38066 div=0.00000
+Reco ep 090 | phys=1.000 | train total=1.68124 ar=0.35141 set=0.40418 eos=0.02184 cnt=4.51071 ang=0.06696 jpt=0.02395 je=0.02384 j4=0.19444 bset=0.40418 div=0.00000 | val total=1.71749 ar=0.33133 set=0.38995 eos=0.01993 cnt=4.86815 ang=0.06462 jpt=0.03170 je=0.03133 j4=0.24024 bset=0.38995 div=0.00000
+Reco ep 092 | phys=1.000 | train total=1.68144 ar=0.35959 set=0.39949 eos=0.02271 cnt=4.49229 ang=0.06765 jpt=0.02357 je=0.02348 j4=0.19236 bset=0.39949 div=0.00000 | val total=1.74241 ar=0.36722 set=0.38327 eos=0.02419 cnt=4.84165 ang=0.06550 jpt=0.03020 je=0.02981 j4=0.24329 bset=0.38327 div=0.00000
+Reco ep 094 | phys=1.000 | train total=1.68052 ar=0.35652 set=0.39845 eos=0.02216 cnt=4.50877 ang=0.06786 jpt=0.02388 je=0.02375 j4=0.19404 bset=0.39845 div=0.00000 | val total=1.78770 ar=0.34884 set=0.35803 eos=0.02053 cnt=5.28673 ang=0.06793 jpt=0.02202 je=0.02190 j4=0.19061 bset=0.35803 div=0.00000
+Reco ep 096 | phys=1.000 | train total=1.67817 ar=0.34834 set=0.40270 eos=0.02203 cnt=4.51749 ang=0.06740 jpt=0.02346 je=0.02332 j4=0.19367 bset=0.40270 div=0.00000 | val total=1.66872 ar=0.29998 set=0.37569 eos=0.01890 cnt=4.85388 ang=0.06454 jpt=0.02155 je=0.02141 j4=0.18518 bset=0.37569 div=0.00000
+Reco ep 098 | phys=1.000 | train total=1.66482 ar=0.34693 set=0.39882 eos=0.02288 cnt=4.47677 ang=0.06706 jpt=0.02323 je=0.02310 j4=0.19242 bset=0.39882 div=0.00000 | val total=1.69668 ar=0.31451 set=0.40385 eos=0.01904 cnt=4.78095 ang=0.06404 jpt=0.02172 je=0.02178 j4=0.16789 bset=0.40385 div=0.00000
+Reco ep 100 | phys=1.000 | train total=1.65060 ar=0.33588 set=0.39256 eos=0.02141 cnt=4.49413 ang=0.06685 jpt=0.02301 je=0.02287 j4=0.19163 bset=0.39256 div=0.00000 | val total=1.66753 ar=0.30598 set=0.37693 eos=0.01909 cnt=4.81214 ang=0.06447 jpt=0.02239 je=0.02226 j4=0.19607 bset=0.37693 div=0.00000
+Reco ep 102 | phys=1.000 | train total=1.66633 ar=0.34951 set=0.40470 eos=0.02012 cnt=4.44499 ang=0.06698 jpt=0.02412 je=0.02396 j4=0.19672 bset=0.40470 div=0.00000 | val total=1.65876 ar=0.30602 set=0.38094 eos=0.01771 cnt=4.75029 ang=0.06368 jpt=0.02485 je=0.02479 j4=0.20006 bset=0.38094 div=0.00000
+Reco ep 104 | phys=1.000 | train total=1.68135 ar=0.35297 set=0.41027 eos=0.02060 cnt=4.47442 ang=0.06726 jpt=0.02405 je=0.02387 j4=0.19569 bset=0.41027 div=0.00000 | val total=1.77540 ar=0.35515 set=0.44638 eos=0.01906 cnt=4.75839 ang=0.06497 jpt=0.02133 je=0.02150 j4=0.15357 bset=0.44638 div=0.00000
+Reco ep 106 | phys=1.000 | train total=1.66362 ar=0.34048 set=0.40265 eos=0.01986 cnt=4.48791 ang=0.06674 jpt=0.02393 je=0.02373 j4=0.19325 bset=0.40265 div=0.00000 | val total=1.63010 ar=0.28719 set=0.37882 eos=0.01741 cnt=4.71229 ang=0.06377 jpt=0.01921 je=0.01908 j4=0.16735 bset=0.37882 div=0.00000
+Reco ep 108 | phys=1.000 | train total=1.66713 ar=0.34083 set=0.40401 eos=0.02070 cnt=4.49573 ang=0.06708 jpt=0.02402 je=0.02382 j4=0.19425 bset=0.40401 div=0.00000 | val total=1.65035 ar=0.29434 set=0.38196 eos=0.01832 cnt=4.76118 ang=0.06403 jpt=0.02350 je=0.02328 j4=0.19541 bset=0.38196 div=0.00000
+Reco ep 110 | phys=1.000 | train total=1.68681 ar=0.36083 set=0.41094 eos=0.02100 cnt=4.45818 ang=0.06793 jpt=0.02438 je=0.02413 j4=0.19715 bset=0.41094 div=0.00000 | val total=2.08962 ar=0.54718 set=0.51803 eos=0.01966 cnt=5.00377 ang=0.06970 jpt=0.02749 je=0.02727 j4=0.21424 bset=0.51803 div=0.00000
+Reco ep 112 | phys=1.000 | train total=1.65223 ar=0.33697 set=0.40011 eos=0.02078 cnt=4.46087 ang=0.06681 jpt=0.02322 je=0.02306 j4=0.19236 bset=0.40011 div=0.00000 | val total=1.69804 ar=0.29676 set=0.39361 eos=0.01875 cnt=4.92896 ang=0.06413 jpt=0.02141 je=0.02130 j4=0.18118 bset=0.39361 div=0.00000
+Reco ep 114 | phys=1.000 | train total=1.65883 ar=0.34386 set=0.40316 eos=0.02014 cnt=4.44484 ang=0.06690 jpt=0.02488 je=0.02467 j4=0.19640 bset=0.40316 div=0.00000 | val total=1.70752 ar=0.30534 set=0.39025 eos=0.01809 cnt=4.95123 ang=0.06421 jpt=0.02212 je=0.02194 j4=0.18876 bset=0.39025 div=0.00000
+Reco ep 116 | phys=1.000 | train total=1.68158 ar=0.35297 set=0.40547 eos=0.02040 cnt=4.50148 ang=0.06680 jpt=0.02462 je=0.02441 j4=0.20007 bset=0.40547 div=0.00000 | val total=1.69540 ar=0.30519 set=0.40533 eos=0.01935 cnt=4.81528 ang=0.06389 jpt=0.01741 je=0.01732 j4=0.15885 bset=0.40533 div=0.00000
+Reco ep 118 | phys=1.000 | train total=1.67877 ar=0.34880 set=0.40473 eos=0.01985 cnt=4.51180 ang=0.06738 jpt=0.02436 je=0.02416 j4=0.19496 bset=0.40473 div=0.00000 | val total=1.70542 ar=0.34207 set=0.37047 eos=0.01731 cnt=4.85698 ang=0.06422 jpt=0.03197 je=0.03147 j4=0.24438 bset=0.37047 div=0.00000
+Reco ep 120 | phys=1.000 | train total=1.66607 ar=0.33892 set=0.40217 eos=0.01945 cnt=4.50965 ang=0.06833 jpt=0.02465 je=0.02441 j4=0.19068 bset=0.40217 div=0.00000 | val total=1.62970 ar=0.29363 set=0.37453 eos=0.01715 cnt=4.70020 ang=0.06442 jpt=0.02244 je=0.02205 j4=0.17740 bset=0.37453 div=0.00000
+Reco ep 122 | phys=1.000 | train total=1.66009 ar=0.33591 set=0.39885 eos=0.02021 cnt=4.51218 ang=0.06727 jpt=0.02428 je=0.02406 j4=0.19489 bset=0.39885 div=0.00000 | val total=1.66823 ar=0.30022 set=0.37286 eos=0.01751 cnt=4.86743 ang=0.06477 jpt=0.02487 je=0.02455 j4=0.19626 bset=0.37286 div=0.00000
+Reco ep 124 | phys=1.000 | train total=1.67487 ar=0.34459 set=0.40268 eos=0.01930 cnt=4.52130 ang=0.06951 jpt=0.02554 je=0.02530 j4=0.19145 bset=0.40268 div=0.00000 | val total=1.67903 ar=0.32122 set=0.38644 eos=0.01770 cnt=4.74508 ang=0.06710 jpt=0.02918 je=0.02865 j4=0.22284 bset=0.38644 div=0.00000
+Reco ep 126 | phys=1.000 | train total=1.68432 ar=0.34188 set=0.40453 eos=0.01997 cnt=4.57482 ang=0.06766 jpt=0.02625 je=0.02601 j4=0.20551 bset=0.40453 div=0.00000 | val total=1.73704 ar=0.33666 set=0.38573 eos=0.01982 cnt=4.96209 ang=0.06516 jpt=0.02927 je=0.02883 j4=0.23133 bset=0.38573 div=0.00000
+Reco ep 128 | phys=1.000 | train total=1.68232 ar=0.34055 set=0.39720 eos=0.01974 cnt=4.60843 ang=0.06757 jpt=0.02549 je=0.02531 j4=0.19235 bset=0.39720 div=0.00000 | val total=1.63479 ar=0.29657 set=0.36724 eos=0.01708 cnt=4.74776 ang=0.06427 jpt=0.02528 je=0.02499 j4=0.19971 bset=0.36724 div=0.00000
+Reco ep 130 | phys=1.000 | train total=1.69402 ar=0.35069 set=0.40861 eos=0.01979 cnt=4.55734 ang=0.06887 jpt=0.02616 je=0.02593 j4=0.20251 bset=0.40861 div=0.00000 | val total=1.67823 ar=0.31194 set=0.37990 eos=0.01719 cnt=4.82196 ang=0.06622 jpt=0.02403 je=0.02365 j4=0.20495 bset=0.37990 div=0.00000
+Reco ep 132 | phys=1.000 | train total=1.91297 ar=0.48065 set=0.45911 eos=0.02238 cnt=4.73989 ang=0.07409 jpt=0.04519 je=0.04506 j4=0.26583 bset=0.45911 div=0.00000 | val total=1.75774 ar=0.32156 set=0.39146 eos=0.02301 cnt=5.10803 ang=0.06610 jpt=0.03049 je=0.03014 j4=0.23048 bset=0.39146 div=0.00000
+Reco ep 134 | phys=1.000 | train total=4.85558 ar=1.08147 set=1.87624 eos=0.22531 cnt=9.00080 ang=0.18801 jpt=0.10362 je=0.51345 j4=19.96482 bset=1.87624 div=0.00000 | val total=2.12359 ar=0.42436 set=0.45127 eos=0.02501 cnt=6.10807 ang=0.07620 jpt=0.05440 je=0.05435 j4=0.32628 bset=0.45127 div=0.00000
+Reco ep 136 | phys=1.000 | train total=5.40900 ar=1.10521 set=1.85770 eos=0.35859 cnt=11.59120 ang=0.20045 jpt=0.28695 je=0.22646 j4=2.12041 bset=1.85770 div=0.00000 | val total=2.05582 ar=0.46244 set=0.56143 eos=0.02108 cnt=5.03730 ang=0.07232 jpt=0.03549 je=0.03550 j4=0.21790 bset=0.56143 div=0.00000
+Reco ep 138 | phys=1.000 | train total=1.85099 ar=0.42135 set=0.44774 eos=0.02379 cnt=4.78313 ang=0.07325 jpt=0.02996 je=0.02982 j4=0.21776 bset=0.44774 div=0.00000 | val total=1.72418 ar=0.32774 set=0.41017 eos=0.01895 cnt=4.81715 ang=0.06802 jpt=0.02871 je=0.02821 j4=0.22011 bset=0.41017 div=0.00000
+Reco ep 140 | phys=1.000 | train total=1.81167 ar=0.39630 set=0.43735 eos=0.02188 cnt=4.76682 ang=0.07245 jpt=0.03000 je=0.02987 j4=0.21963 bset=0.43735 div=0.00000 | val total=1.76007 ar=0.35353 set=0.40115 eos=0.01959 cnt=4.91028 ang=0.06934 jpt=0.03459 je=0.03434 j4=0.24999 bset=0.40115 div=0.00000
+Reco ep 142 | phys=1.000 | train total=1.77161 ar=0.38177 set=0.42975 eos=0.02076 cnt=4.68081 ang=0.07061 jpt=0.02801 je=0.02787 j4=0.20860 bset=0.42975 div=0.00000 | val total=1.70395 ar=0.32083 set=0.38070 eos=0.01831 cnt=4.90150 ang=0.06588 jpt=0.02325 je=0.02296 j4=0.19399 bset=0.38070 div=0.00000
+Reco ep 144 | phys=1.000 | train total=1.73983 ar=0.35986 set=0.41071 eos=0.02065 cnt=4.72608 ang=0.07112 jpt=0.02667 je=0.02652 j4=0.19582 bset=0.41071 div=0.00000 | val total=1.68625 ar=0.31000 set=0.35607 eos=0.01774 cnt=4.99075 ang=0.06598 jpt=0.02633 je=0.02602 j4=0.21079 bset=0.35607 div=0.00000
+Reco ep 146 | phys=1.000 | train total=1.79740 ar=0.37444 set=0.45083 eos=0.02246 cnt=4.73650 ang=0.07263 jpt=0.02999 je=0.02974 j4=0.22293 bset=0.45083 div=0.00000 | val total=1.75727 ar=0.31101 set=0.39480 eos=0.01844 cnt=5.14461 ang=0.06732 jpt=0.02526 je=0.02497 j4=0.20201 bset=0.39480 div=0.00000
+Reco ep 148 | phys=1.000 | train total=1.75966 ar=0.37343 set=0.41810 eos=0.02578 cnt=4.71324 ang=0.07257 jpt=0.02932 je=0.02912 j4=0.21277 bset=0.41810 div=0.00000 | val total=1.67654 ar=0.31029 set=0.37305 eos=0.01878 cnt=4.85455 ang=0.06621 jpt=0.02725 je=0.02710 j4=0.20944 bset=0.37305 div=0.00000
+Reco ep 150 | phys=1.000 | train total=1.86884 ar=0.42747 set=0.45590 eos=0.02346 cnt=4.79944 ang=0.07459 jpt=0.03598 je=0.03595 j4=0.23721 bset=0.45590 div=0.00000 | val total=1.78085 ar=0.36240 set=0.41995 eos=0.02303 cnt=4.86958 ang=0.07131 jpt=0.03474 je=0.03401 j4=0.25939 bset=0.41995 div=0.00000
+Reco ep 152 | phys=1.000 | train total=1.91861 ar=0.44276 set=0.47410 eos=0.02177 cnt=4.87899 ang=0.07715 jpt=0.04626 je=0.04610 j4=0.26404 bset=0.47410 div=0.00000 | val total=2.36382 ar=0.57345 set=0.76135 eos=0.01996 cnt=5.01619 ang=0.07780 jpt=0.16078 je=0.16027 j4=0.76551 bset=0.76135 div=0.00000
+Reco ep 154 | phys=1.000 | train total=1.92457 ar=0.45030 set=0.47657 eos=0.02263 cnt=4.85670 ang=0.07798 jpt=0.04028 je=0.04017 j4=0.24514 bset=0.47657 div=0.00000 | val total=1.89286 ar=0.43305 set=0.42011 eos=0.02018 cnt=5.07191 ang=0.07600 jpt=0.04590 je=0.04510 j4=0.31071 bset=0.42011 div=0.00000
+Reco ep 156 | phys=1.000 | train total=2.02636 ar=0.53981 set=0.50066 eos=0.02145 cnt=4.79700 ang=0.07929 jpt=0.04097 je=0.04083 j4=0.22606 bset=0.50066 div=0.00000 | val total=1.98362 ar=0.47053 set=0.48323 eos=0.02061 cnt=5.01764 ang=0.07932 jpt=0.04929 je=0.04753 j4=0.30666 bset=0.48323 div=0.00000
+Early stopping reconstructor at epoch 156
+Best reconstructor val metrics:
+  val_total: 1.616408
+  val_ar: 0.294748
+  val_set: 0.371922
+  val_eos: 0.018023
+  val_count: 4.641532
+  val_angle: 0.063597
+  val_jetpt: 0.022021
+  val_jete: 0.021698
+  val_fourvec: 0.188177
+Building reconstructed dataset...
+
+========================================================================
+STEP 5: TAGGERS ON RECONSTRUCTED VIEW
+========================================================================
+RecoOnly ep 5: train_auc=0.8193, val_auc=0.8217, val_fpr50=0.099108, best_auc=0.8217
+RecoOnly ep 10: train_auc=0.8305, val_auc=0.8237, val_fpr50=0.097646, best_auc=0.8237
+RecoOnly ep 15: train_auc=0.8406, val_auc=0.8288, val_fpr50=0.094204, best_auc=0.8288
+RecoOnly ep 20: train_auc=0.8492, val_auc=0.8286, val_fpr50=0.090224, best_auc=0.8326
+RecoOnly ep 25: train_auc=0.8570, val_auc=0.8332, val_fpr50=0.086864, best_auc=0.8360
+RecoOnly ep 30: train_auc=0.8687, val_auc=0.8249, val_fpr50=0.094371, best_auc=0.8360
+RecoOnly ep 35: train_auc=0.8811, val_auc=0.8166, val_fpr50=0.111930, best_auc=0.8360
+Early stopping RecoOnly at epoch 39
+DualView ep 5: train_auc=0.8861, val_auc=0.8669, val_fpr50=0.059426, best_auc=0.8823
+DualView ep 10: train_auc=0.9089, val_auc=0.9089, val_fpr50=0.030111, best_auc=0.9110
+DualView ep 15: train_auc=0.9155, val_auc=0.9027, val_fpr50=0.032436, best_auc=0.9159
+DualView ep 20: train_auc=0.9191, val_auc=0.9112, val_fpr50=0.024118, best_auc=0.9159
+DualView ep 25: train_auc=0.9257, val_auc=0.9089, val_fpr50=0.027358, best_auc=0.9159
+DualView ep 30: train_auc=0.9310, val_auc=0.9121, val_fpr50=0.025711, best_auc=0.9159
+Early stopping DualView at epoch 31
+DualView+Conf ep 5: train_auc=0.8929, val_auc=0.9043, val_fpr50=0.031856, best_auc=0.9043
+DualView+Conf ep 10: train_auc=0.9107, val_auc=0.9076, val_fpr50=0.026403, best_auc=0.9126
+DualView+Conf ep 15: train_auc=0.9154, val_auc=0.9126, val_fpr50=0.025096, best_auc=0.9139
+DualView+Conf ep 20: train_auc=0.9218, val_auc=0.9103, val_fpr50=0.026349, best_auc=0.9152
+DualView+Conf ep 25: train_auc=0.9256, val_auc=0.9103, val_fpr50=0.023890, best_auc=0.9152
+DualView+Conf ep 30: train_auc=0.9318, val_auc=0.8997, val_fpr50=0.036612, best_auc=0.9152
+DualView+Conf ep 35: train_auc=0.9382, val_auc=0.9109, val_fpr50=0.028273, best_auc=0.9152
+Early stopping DualView+Conf at epoch 35
+
+========================================================================
+FINAL TEST EVALUATION
+========================================================================
+Teacher (Offline) AUC: 0.947009
+Baseline (HLT)   AUC: 0.912979
+RecoOnly         AUC: 0.837478
+DualView         AUC: 0.912698
+DualView+Conf    AUC: 0.913159
+
+FPR@30
+  Teacher/HLT/RecoOnly/Dual/Dual+Conf: 0.003620 / 0.007421 / 0.029024 / 0.006922 / 0.007310
+FPR@50
+  Teacher/HLT/RecoOnly/Dual/Dual+Conf: 0.014303 / 0.025849 / 0.082888 / 0.026637 / 0.025925
+
+Jet pT response (test, vs offline truth):
+  HLT  mean/std: 0.828682 / 0.198368 | Reco mean/std: 1.363952 / 0.511698
+Saved fusion score arrays to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken_v2/model22v2_seq2seq_geom_50k20k100k_seed0/fusion_scores_val_test.npz
+
+Saved results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken_v2/model22v2_seq2seq_geom_50k20k100k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken_v2/model22v2_seq2seq_geom_50k20k100k_seed0

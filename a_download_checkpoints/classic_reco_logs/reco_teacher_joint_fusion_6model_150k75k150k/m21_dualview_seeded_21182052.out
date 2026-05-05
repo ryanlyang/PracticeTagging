@@ -1,0 +1,88 @@
+============================================================
+Model-21 Seeded DualView (m6 + m2 Hungarian)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model21_dualview_seeded_m6m2/model21_dualview_seeded_m6m2_multijoint_150k75k150k_seed0
+m6_run_dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected/model6_concat_stagea_corrected_150k75k150k_seed0
+m2_run_dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Joint modes: both,m6_only,m2_only
+============================================================
+ python train_m21_dualview_seeded_m6m2_multijoint.py --m2_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0 --m6_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected/model6_concat_stagea_corrected_150k75k150k_seed0 --m2_reco_ckpt offline_reconstructor_stage2.pt --m6_reco_ckpt offline_reconstructor_stageA.pt --m2_baseline_ckpt baseline.pt --teacher_ckpt teacher.pt --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model21_dualview_seeded_m6m2 --run_name model21_dualview_seeded_m6m2_multijoint_150k75k150k_seed0 --seed 0 --device cuda --num_workers 6 --reco_eval_batch_size 256 --corrected_weight_floor 0.03 --target_tpr 0.50 --frozen_epochs 45 --frozen_patience 12 --frozen_batch_size 256 --frozen_lr 3e-4 --frozen_weight_decay 1e-4 --frozen_warmup_epochs 5 --frozen_lambda_rank 0.2 --frozen_rank_tau 0.05 --joint_modes both\,m6_only\,m2_only --joint_epochs 25 --joint_patience 8 --joint_batch_size 128 --joint_lr_dual 1e-4 --joint_lr_reco_a 2e-6 --joint_lr_reco_b 2e-6 --joint_weight_decay 1e-4 --joint_warmup_epochs 3 --joint_lambda_rank 0.2 --joint_rank_tau 0.05 --joint_lambda_anchor_a 0.02 --joint_lambda_anchor_b 0.02 --joint_unfreeze_phase1_epochs 3 --joint_unfreeze_phase2_epochs 7 --select_metric auc
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model21_dualview_seeded_m6m2/model21_dualview_seeded_m6m2_multijoint_150k75k150k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing standardized HLT features...
+
+======================================================================
+STEP 1: BUILD FROZEN TWO-VIEW TENSORS
+======================================================================
+Building corrected views (train)...
+Building corrected views (val)...
+Building corrected views (test)...
+
+======================================================================
+STEP 2: DUALVIEW PRE-JOINT (RECO A/B FROZEN)
+======================================================================
+DualFrozen ep 5: train_loss=0.42054 (cls=0.35765, rank=0.31443) | val_auc=0.9172, val_fpr50=0.022661, best_sel=0.920469
+DualFrozen ep 10: train_loss=0.41545 (cls=0.35239, rank=0.31528) | val_auc=0.9210, val_fpr50=0.021721, best_sel=0.921340
+DualFrozen ep 15: train_loss=0.41239 (cls=0.34931, rank=0.31542) | val_auc=0.9221, val_fpr50=0.021011, best_sel=0.922176
+DualFrozen ep 20: train_loss=0.40995 (cls=0.34684, rank=0.31555) | val_auc=0.9217, val_fpr50=0.021189, best_sel=0.922273
+DualFrozen ep 25: train_loss=0.40716 (cls=0.34394, rank=0.31609) | val_auc=0.9221, val_fpr50=0.020967, best_sel=0.923411
+DualFrozen ep 30: train_loss=0.40467 (cls=0.34134, rank=0.31667) | val_auc=0.9230, val_fpr50=0.020649, best_sel=0.923665
+DualFrozen ep 35: train_loss=0.40305 (cls=0.33938, rank=0.31834) | val_auc=0.9231, val_fpr50=0.020202, best_sel=0.923665
+DualFrozen ep 40: train_loss=0.40142 (cls=0.33767, rank=0.31876) | val_auc=0.9230, val_fpr50=0.019700, best_sel=0.923665
+Early stopping DualFrozen at epoch 41
+DualPreJoint: val_auc=0.9237, val_fpr50=0.019168 | test_auc=0.9222, test_fpr50=0.020646
+
+======================================================================
+STEP 3: JOINT MODES (RELOAD PRE-JOINT EACH MODE)
+======================================================================
+----------------------------------------------------------------------
+Joint mode: both (unfreeze_m6=True, unfreeze_m2=True)
+----------------------------------------------------------------------
+Joint[both] ep 2: stage=frozen, trainableA=0, trainableB=0, train_loss=0.41399 (cls=0.35062, rank=0.31684, ancA=0.00000, ancB=0.00000) | val_auc=0.9229, val_fpr50=0.020500, best_sel=0.923166
+Joint[both] ep 4: stage=heads, trainableA=240034, trainableB=240034, train_loss=0.41480 (cls=0.35130, rank=0.31750, ancA=0.00000, ancB=0.00000) | val_auc=0.9233, val_fpr50=0.019714, best_sel=0.923393
+Joint[both] ep 6: stage=heads, trainableA=240034, trainableB=240034, train_loss=0.41402 (cls=0.35069, rank=0.31665, ancA=0.00000, ancB=0.00000) | val_auc=0.9234, val_fpr50=0.019937, best_sel=0.923439
+Joint[both] ep 8: stage=heads, trainableA=240034, trainableB=240034, train_loss=0.41389 (cls=0.35049, rank=0.31702, ancA=0.00000, ancB=0.00000) | val_auc=0.9232, val_fpr50=0.020074, best_sel=0.923439
+Joint[both] ep 10: stage=heads, trainableA=240034, trainableB=240034, train_loss=0.41333 (cls=0.34970, rank=0.31816, ancA=0.00000, ancB=0.00000) | val_auc=0.9236, val_fpr50=0.020116, best_sel=0.923643
+Joint[both] ep 12: stage=full, trainableA=7098018, trainableB=7098018, train_loss=0.41122 (cls=0.34770, rank=0.31765, ancA=0.00000, ancB=0.00000) | val_auc=0.9241, val_fpr50=0.020113, best_sel=0.924102
+Joint[both] ep 14: stage=full, trainableA=7098018, trainableB=7098018, train_loss=0.40926 (cls=0.34576, rank=0.31751, ancA=0.00000, ancB=0.00000) | val_auc=0.9247, val_fpr50=0.019423, best_sel=0.924687
+Joint[both] ep 16: stage=full, trainableA=7098018, trainableB=7098018, train_loss=0.40747 (cls=0.34379, rank=0.31840, ancA=0.00000, ancB=0.00000) | val_auc=0.9250, val_fpr50=0.018847, best_sel=0.924974
+Joint[both] ep 18: stage=full, trainableA=7098018, trainableB=7098018, train_loss=0.40673 (cls=0.34304, rank=0.31845, ancA=0.00000, ancB=0.00000) | val_auc=0.9248, val_fpr50=0.018992, best_sel=0.924974
+Joint[both] ep 20: stage=full, trainableA=7098018, trainableB=7098018, train_loss=0.40616 (cls=0.34255, rank=0.31804, ancA=0.00000, ancB=0.00000) | val_auc=0.9245, val_fpr50=0.019150, best_sel=0.924974
+Joint[both] ep 22: stage=full, trainableA=7098018, trainableB=7098018, train_loss=0.40550 (cls=0.34170, rank=0.31899, ancA=0.00000, ancB=0.00000) | val_auc=0.9248, val_fpr50=0.018821, best_sel=0.924974
+Joint[both] ep 24: stage=full, trainableA=7098018, trainableB=7098018, train_loss=0.40538 (cls=0.34165, rank=0.31865, ancA=0.00000, ancB=0.00000) | val_auc=0.9248, val_fpr50=0.018995, best_sel=0.924974
+Early stopping Joint[both] at epoch 24
+Joint[both] final: val_auc=0.9250, val_fpr50=0.018847 | test_auc=0.9235, test_fpr50=0.019714, test_fpr@valthr=0.019341
+----------------------------------------------------------------------
+Joint mode: m6_only (unfreeze_m6=True, unfreeze_m2=False)
+----------------------------------------------------------------------
+Joint[m6_only] ep 2: stage=frozen, trainableA=0, trainableB=0, train_loss=0.41365 (cls=0.35023, rank=0.31709, ancA=0.00000, ancB=0.00000) | val_auc=0.9232, val_fpr50=0.019579, best_sel=0.923539
+Joint[m6_only] ep 4: stage=heads, trainableA=240034, trainableB=0, train_loss=0.41485 (cls=0.35149, rank=0.31681, ancA=0.00000, ancB=0.00000) | val_auc=0.9232, val_fpr50=0.019849, best_sel=0.923539
+Joint[m6_only] ep 6: stage=heads, trainableA=240034, trainableB=0, train_loss=0.41303 (cls=0.34989, rank=0.31571, ancA=0.00000, ancB=0.00000) | val_auc=0.9231, val_fpr50=0.018775, best_sel=0.923539
+Joint[m6_only] ep 8: stage=heads, trainableA=240034, trainableB=0, train_loss=0.41338 (cls=0.34998, rank=0.31700, ancA=0.00000, ancB=0.00000) | val_auc=0.9234, val_fpr50=0.018950, best_sel=0.923539
+Early stopping Joint[m6_only] at epoch 9
+Joint[m6_only] final: val_auc=0.9235, val_fpr50=0.019262 | test_auc=0.9223, test_fpr50=0.020473, test_fpr@valthr=0.020087
+----------------------------------------------------------------------
+Joint mode: m2_only (unfreeze_m6=False, unfreeze_m2=True)
+----------------------------------------------------------------------
+Joint[m2_only] ep 2: stage=frozen, trainableA=0, trainableB=0, train_loss=0.41512 (cls=0.35177, rank=0.31674, ancA=0.00000, ancB=0.00000) | val_auc=0.9227, val_fpr50=0.020291, best_sel=0.923316
+Joint[m2_only] ep 4: stage=heads, trainableA=0, trainableB=240034, train_loss=0.41475 (cls=0.35138, rank=0.31684, ancA=0.00000, ancB=0.00000) | val_auc=0.9234, val_fpr50=0.019363, best_sel=0.923381
+Joint[m2_only] ep 6: stage=heads, trainableA=0, trainableB=240034, train_loss=0.41296 (cls=0.34969, rank=0.31638, ancA=0.00000, ancB=0.00000) | val_auc=0.9226, val_fpr50=0.020460, best_sel=0.923381
+Joint[m2_only] ep 8: stage=heads, trainableA=0, trainableB=240034, train_loss=0.41343 (cls=0.35011, rank=0.31661, ancA=0.00000, ancB=0.00000) | val_auc=0.9233, val_fpr50=0.019939, best_sel=0.923381
+Joint[m2_only] ep 10: stage=heads, trainableA=0, trainableB=240034, train_loss=0.41353 (cls=0.35012, rank=0.31708, ancA=0.00000, ancB=0.00000) | val_auc=0.9228, val_fpr50=0.020203, best_sel=0.923381
+Joint[m2_only] ep 12: stage=full, trainableA=0, trainableB=7098018, train_loss=0.41184 (cls=0.34858, rank=0.31628, ancA=0.00000, ancB=0.00000) | val_auc=0.9234, val_fpr50=0.019481, best_sel=0.923381
+Early stopping Joint[m2_only] at epoch 12
+Joint[m2_only] final: val_auc=0.9234, val_fpr50=0.019363 | test_auc=0.9221, test_fpr50=0.020749, test_fpr@valthr=0.020446
+
+======================================================================
+SUMMARY
+======================================================================
+HLT AUC (val/test): 0.9235 / 0.9214
+Teacher AUC (val/test): 0.9060 / 0.9047
+DualPreJoint AUC (val/test): 0.9237 / 0.9222
+DualJoint[both] AUC (val/test): 0.9250 / 0.9235 | FPR@50(test)=0.019714
+DualJoint[m6_only] AUC (val/test): 0.9235 / 0.9223 | FPR@50(test)=0.020473
+DualJoint[m2_only] AUC (val/test): 0.9234 / 0.9221 | FPR@50(test)=0.020749
+
+Saved model-21 seeded dualview results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model21_dualview_seeded_m6m2/model21_dualview_seeded_m6m2_multijoint_150k75k150k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model21_dualview_seeded_m6m2/model21_dualview_seeded_m6m2_multijoint_150k75k150k_seed0

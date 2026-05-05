@@ -1,0 +1,100 @@
+============================================================
+Model-37 K=3 MultiCandidate Dictionary DualView (landmark11)
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model37_multicand_dualview/model37_k3_dict1m_multicand_dualview_landmark11_150k75k300k_seed0
+Split: dict=1000000, train=150000, val=75000, test=300000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m37_multicand_dualview.py --save_dir /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model37_multicand_dualview --run_name model37_k3_dict1m_multicand_dualview_landmark11_150k75k300k_seed0 --n_train_jets 1525000 --n_dict_split 1000000 --n_train_split 150000 --n_val_split 75000 --n_test_split 300000 --offset_jets 0 --max_constits 100 --batch_size 80 --num_workers 6 --seed 0 --device cuda --save_fusion_scores --retrieval_target_k 3 --retrieval_per_round 5000 --retrieval_max_rounds 1 --retrieval_batch_size 256 --retrieval_eps_total 0.60 --retrieval_eps_count 0.30 --retrieval_w_desc 1.00 --retrieval_w_count 0.25 --retrieval_w_pt 0.12 --retrieval_w_mass 0.08 --retrieval_descriptor_variant landmark11 --retrieval_landmarks 8 --retrieval_index_mode descriptor --selector_epochs 45 --selector_lr 2e-4 --selector_patience 10 --selector_neg_per_class 3 --selector_score_alpha 1.35 --selector_mode residual_only --dual_epochs 80 --dual_lr 1.2e-4 --dual_patience 14
+========================================================================
+Model-37 Dictionary Retrieval + Multi-Candidate DualView Pipeline
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model37_multicand_dualview/model37_k3_dict1m_multicand_dualview_landmark11_150k75k300k_seed0
+Split dict/train/val/test = 1000000/150000/75000/300000 | retrieve per-round=5000 rounds=1 targetK=3 | desc_variant=landmark11 index_mode=descriptor
+========================================================================
+Generating pseudo-HLT (deterministic keyed D_hard)...
+HLT stats: avg_offline=54.27, avg_hlt=29.16, merged=32683578, eff_lost=5610091
+Split sizes: Dict=1000000, Train=150000, Val=75000, Test=300000
+Computing standardized features for teacher/baseline (train/val/test only)...
+
+========================================================================
+STEP 1: Teacher + HLT baseline
+========================================================================
+Teacher ep 5: train_auc=0.9402, val_auc=0.9439, val_fpr50=0.013644, best_auc=0.9475, fpr50@best=0.013056
+Teacher ep 10: train_auc=0.9481, val_auc=0.9496, val_fpr50=0.011186, best_auc=0.9511, fpr50@best=0.010288
+Teacher ep 15: train_auc=0.9519, val_auc=0.9499, val_fpr50=0.011813, best_auc=0.9526, fpr50@best=0.010763
+Teacher ep 20: train_auc=0.9556, val_auc=0.9533, val_fpr50=0.010526, best_auc=0.9552, fpr50@best=0.008841
+Teacher ep 25: train_auc=0.9590, val_auc=0.9520, val_fpr50=0.009735, best_auc=0.9555, fpr50@best=0.009185
+Teacher ep 30: train_auc=0.9623, val_auc=0.9533, val_fpr50=0.009869, best_auc=0.9555, fpr50@best=0.009185
+Teacher ep 35: train_auc=0.9664, val_auc=0.9531, val_fpr50=0.010382, best_auc=0.9555, fpr50@best=0.009185
+Early stopping Teacher at epoch 35
+Baseline ep 5: train_auc=0.9063, val_auc=0.9123, val_fpr50=0.026529, best_auc=0.9123, fpr50@best=0.026529
+Baseline ep 10: train_auc=0.9146, val_auc=0.9157, val_fpr50=0.023993, best_auc=0.9191, fpr50@best=0.021723
+Baseline ep 15: train_auc=0.9186, val_auc=0.9198, val_fpr50=0.021281, best_auc=0.9209, fpr50@best=0.020105
+Baseline ep 20: train_auc=0.9229, val_auc=0.9182, val_fpr50=0.020888, best_auc=0.9209, fpr50@best=0.020105
+Baseline ep 25: train_auc=0.9271, val_auc=0.9205, val_fpr50=0.021759, best_auc=0.9225, fpr50@best=0.018786
+Baseline ep 30: train_auc=0.9315, val_auc=0.9195, val_fpr50=0.020967, best_auc=0.9225, fpr50@best=0.018786
+Early stopping Baseline at epoch 34
+Teacher test AUC=0.9552 | Baseline test AUC=0.9225
+
+========================================================================
+STEP 2: Dictionary HLT retrieval index
+========================================================================
+Landmark11 descriptor enabled: n_landmarks=8
+Dictionary class sizes: bg=500419 top=499581 | index_dim=11
+
+========================================================================
+STEP 3: Retrieve candidates for train/val (no repair)
+========================================================================
+Retrieval stats: train(feasC0=2.95, feasC1=2.89) val(feasC0=2.95, feasC1=2.89)
+
+========================================================================
+STEP 4: Residual-only candidate quality (selector skipped)
+========================================================================
+
+========================================================================
+STEP 5: Final Multi-Candidate DualView Classifiers (NoGate + Gated)
+========================================================================
+M37NoGate ep 001: train_loss=0.45795 val_auc=0.8918 best=0.8918@1
+M37NoGate ep 002: train_loss=0.40545 val_auc=0.9074 best=0.9074@2
+M37NoGate ep 004: train_loss=0.38309 val_auc=0.9140 best=0.9140@4
+M37NoGate ep 006: train_loss=0.37341 val_auc=0.9173 best=0.9173@6
+M37NoGate ep 008: train_loss=0.36877 val_auc=0.9180 best=0.9180@8
+M37NoGate ep 010: train_loss=0.36378 val_auc=0.9179 best=0.9180@8
+M37NoGate ep 012: train_loss=0.35996 val_auc=0.9163 best=0.9180@8
+M37NoGate ep 014: train_loss=0.35611 val_auc=0.9189 best=0.9189@14
+M37NoGate ep 016: train_loss=0.35203 val_auc=0.9197 best=0.9197@16
+M37NoGate ep 018: train_loss=0.34884 val_auc=0.9189 best=0.9197@16
+M37NoGate ep 020: train_loss=0.34461 val_auc=0.9200 best=0.9200@20
+M37NoGate ep 022: train_loss=0.34100 val_auc=0.9199 best=0.9200@20
+M37NoGate ep 024: train_loss=0.33770 val_auc=0.9191 best=0.9200@20
+M37NoGate ep 026: train_loss=0.33308 val_auc=0.9178 best=0.9200@20
+M37NoGate ep 028: train_loss=0.32976 val_auc=0.9177 best=0.9200@20
+M37NoGate ep 030: train_loss=0.32532 val_auc=0.9173 best=0.9200@20
+M37NoGate ep 032: train_loss=0.32259 val_auc=0.9165 best=0.9200@20
+M37NoGate ep 034: train_loss=0.31645 val_auc=0.9153 best=0.9200@20
+M37NoGate early stop at ep 34
+M37Gated ep 001: train_loss=0.45807 val_auc=0.8930 best=0.8930@1
+M37Gated ep 002: train_loss=0.40141 val_auc=0.9100 best=0.9100@2
+M37Gated ep 004: train_loss=0.38116 val_auc=0.9153 best=0.9153@4
+M37Gated ep 006: train_loss=0.37338 val_auc=0.9156 best=0.9167@5
+M37Gated ep 008: train_loss=0.36717 val_auc=0.9182 best=0.9182@8
+M37Gated ep 010: train_loss=0.36328 val_auc=0.9192 best=0.9192@10
+M37Gated ep 012: train_loss=0.35930 val_auc=0.9158 best=0.9192@10
+M37Gated ep 014: train_loss=0.35625 val_auc=0.9174 best=0.9192@10
+M37Gated ep 016: train_loss=0.35158 val_auc=0.9186 best=0.9199@15
+M37Gated ep 018: train_loss=0.34833 val_auc=0.9185 best=0.9199@15
+M37Gated ep 020: train_loss=0.34536 val_auc=0.9179 best=0.9199@15
+M37Gated ep 022: train_loss=0.34187 val_auc=0.9174 best=0.9199@15
+M37Gated ep 024: train_loss=0.33819 val_auc=0.9175 best=0.9199@15
+M37Gated ep 026: train_loss=0.33428 val_auc=0.9162 best=0.9199@15
+M37Gated ep 028: train_loss=0.33136 val_auc=0.9181 best=0.9199@15
+M37Gated early stop at ep 29
+
+========================================================================
+STEP 6: Test retrieval + final evaluation
+========================================================================
+
+========================================================================
+FINAL TEST
+========================================================================
+Teacher AUC=0.9552 FPR50=0.009599 | HLT baseline AUC=0.9225 FPR50=0.020230 | m37 NoGate AUC=0.9205 FPR50=0.021482 | m37 Gated AUC=0.9201 FPR50=0.021768
+Saved: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model37_multicand_dualview/model37_k3_dict1m_multicand_dualview_landmark11_150k75k300k_seed0
+Done: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model37_multicand_dualview/model37_k3_dict1m_multicand_dualview_landmark11_150k75k300k_seed0

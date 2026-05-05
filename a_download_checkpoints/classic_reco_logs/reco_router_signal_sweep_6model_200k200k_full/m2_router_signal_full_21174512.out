@@ -1,0 +1,55 @@
+============================================================
+M2 Router Signal Sweep (FULL signals, 200k analysis + 200k test)
+Run dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Out dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals
+Data split: offset=375000, analysis=200000, test=200000
+Corruptions: pt_noise:0.02,pt_noise:0.04,pt_noise:0.06,eta_phi_jitter:0.015,eta_phi_jitter:0.03,eta_phi_jitter:0.05,dropout:0.03,dropout:0.07,dropout:0.12,merge:0.06,merge:0.12,merge:0.20,global_scale:0.02,global_scale:0.04,global_scale:0.06
+============================================================
+ python analyze_m2_router_signal_sweep.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0 --train_path ./data --router_offset_jets 375000 --router_n_analysis 200000 --router_n_test 200000 --ref_offset_jets 0 --ref_n_jets 375000 --max_constits 100 --seed 0 --hlt_seed 0 --batch_size 384 --device cuda --corrected_weight_floor 1e-4 --corruptions pt_noise:0.02\,pt_noise:0.04\,pt_noise:0.06\,eta_phi_jitter:0.015\,eta_phi_jitter:0.03\,eta_phi_jitter:0.05\,dropout:0.03\,dropout:0.07\,dropout:0.12\,merge:0.06\,merge:0.12\,merge:0.20\,global_scale:0.02\,global_scale:0.04\,global_scale:0.06 --router_cal_frac 0.2 --cost_alpha_neg 4.0 --cost_tau 0.02 --top_pair_signal_k 10 --feature_profile full --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals/router_signal_sweep_report.json
+[corruption] kind=pt_noise severity=0.0200
+[corruption] kind=pt_noise severity=0.0400
+[corruption] kind=pt_noise severity=0.0600
+[corruption] kind=eta_phi_jitter severity=0.0150
+[corruption] kind=eta_phi_jitter severity=0.0300
+[corruption] kind=eta_phi_jitter severity=0.0500
+[corruption] kind=dropout severity=0.0300
+[corruption] kind=dropout severity=0.0700
+[corruption] kind=dropout severity=0.1200
+[corruption] kind=merge severity=0.0600
+[corruption] kind=merge severity=0.1200
+[corruption] kind=merge severity=0.2000
+[corruption] kind=global_scale severity=0.0200
+[corruption] kind=global_scale severity=0.0400
+[corruption] kind=global_scale severity=0.0600
+========================================================================
+Router Signal Sweep
+========================================================================
+Run dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Out dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals
+Feature profile: full
+N analysis/test: 200000 / 200000
+Router features: 108
+Corruptions: 15
+
+Top methods on held-out test (sorted by FPR@50 then AUC):
+  oracle_best_of_two_lowfpr_cost AUC=0.944016 FPR30=0.002035 FPR50=0.010626 harm_neg=0.0004
+  hard_pair_rule               AUC=0.922942 FPR30=0.005268 FPR50=0.019575 harm_neg=0.2174
+  hard_single_rule             AUC=0.923667 FPR30=0.005009 FPR50=0.019655 harm_neg=0.3912
+  joint                        AUC=0.923739 FPR30=0.004869 FPR50=0.019735 harm_neg=0.3932
+  tree_d2_hard                 AUC=0.923739 FPR30=0.004869 FPR50=0.019735 harm_neg=0.3932
+  tree_d3_hard                 AUC=0.923709 FPR30=0.005019 FPR50=0.019735 harm_neg=0.2398
+  tree_d3_softmix              AUC=0.924293 FPR30=0.004959 FPR50=0.019894 harm_neg=0.3932
+  tree_d2_softmix              AUC=0.924243 FPR30=0.005028 FPR50=0.019974 harm_neg=0.3932
+  logreg_softmix               AUC=0.923922 FPR30=0.005168 FPR50=0.020104 harm_neg=0.3931
+  logreg_hard                  AUC=0.923529 FPR30=0.005298 FPR50=0.020234 harm_neg=0.3926
+  legacy_softmix_raw           AUC=0.924036 FPR30=0.004699 FPR50=0.020284 harm_neg=0.3932
+  no_harm_gate                 AUC=0.922832 FPR30=0.005637 FPR50=0.020313 harm_neg=0.0665
+
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals/router_signal_sweep_report.json
+Saved leaderboard CSV: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals/router_leaderboard_test.csv
+Saved signal-rank CSV: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals/router_signal_rank_fit.csv
+
+Done. Outputs:
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals/router_signal_sweep_report.json
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals/router_leaderboard_test.csv
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k_fullsignals/router_signal_rank_fit.csv

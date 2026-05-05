@@ -74,6 +74,23 @@ DISCRETE_BINARY_FEATURES = {
 }
 
 SPIKE_HEAVY_FEATURES = {"d0", "dz", "d0_tanh", "dz_tanh"}
+TOP_KINEMATIC_FEATURES = [
+    "part_pt_log",
+    "part_e_log",
+    "part_logptrel",
+    "part_logerel",
+    "raw_dR",
+    "d_eta",
+    "d_phi",
+]
+TOP_PID_FEATURES = [
+    "charge",
+    "isChargedHadron",
+    "isNeutralHadron",
+    "isPhoton",
+    "isElectron",
+    "isMuon",
+]
 
 
 def parse_args() -> argparse.Namespace:
@@ -126,6 +143,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Also save a physics-facing raw nonnegative dR plot by class.",
+    )
+    p.add_argument(
+        "--top_constituent_only",
+        action="store_true",
+        default=False,
+        help="Also save leading-pT constituent feature plots (one constituent per jet).",
     )
     return p.parse_args()
 
@@ -228,6 +251,67 @@ def collect_raw_dr_by_class(
         vals = downsample(vals, max_constits_per_class, rng)
         out[cls] = vals
     return out
+
+
+def compute_raw_dr(raw_tok: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    """Raw constituent dR >= 0 with respect to the jet axis."""
+    baseline = importlib.import_module("evaluate_jetclass_hlt_teacher_baseline")
+    pt = np.maximum(raw_tok[:, :, baseline.IDX_PT], 1e-8)
+    eta = np.clip(raw_tok[:, :, baseline.IDX_ETA], -5.0, 5.0)
+    phi = raw_tok[:, :, baseline.IDX_PHI]
+
+    px = pt * np.cos(phi)
+    py = pt * np.sin(phi)
+    pz = pt * np.sinh(eta)
+    w = mask.astype(np.float32)
+    jet_px = (px * w).sum(axis=1, keepdims=True)
+    jet_py = (py * w).sum(axis=1, keepdims=True)
+    jet_pz = (pz * w).sum(axis=1, keepdims=True)
+    jet_p = np.sqrt(jet_px * jet_px + jet_py * jet_py + jet_pz * jet_pz) + 1e-8
+    jet_eta = 0.5 * np.log(np.clip((jet_p + jet_pz) / np.maximum(jet_p - jet_pz, 1e-8), 1e-8, 1e8))
+    jet_phi = np.arctan2(jet_py, jet_px)
+
+    d_eta = eta - jet_eta
+    d_phi = np.arctan2(np.sin(phi - jet_phi), np.cos(phi - jet_phi))
+    d_r = np.sqrt(d_eta * d_eta + d_phi * d_phi).astype(np.float32)
+    d_r[~mask] = np.nan
+    return d_r
+
+
+def collect_top_constituent_values_by_class(
+    raw_tok: np.ndarray,
+    feat: np.ndarray,
+    mask: np.ndarray,
+    labels: np.ndarray,
+    class_names: List[str],
+    feature_names: List[str],
+) -> Tuple[Dict[str, List[np.ndarray]], List[str]]:
+    baseline = importlib.import_module("evaluate_jetclass_hlt_teacher_baseline")
+    valid_pt = np.where(mask, raw_tok[:, :, baseline.IDX_PT], -np.inf)
+    top_idx = np.argmax(valid_pt, axis=1)
+    rows = np.arange(raw_tok.shape[0])
+
+    raw_dr = compute_raw_dr(raw_tok, mask)
+    top_feat = feat[rows, top_idx, :].astype(np.float32, copy=False)
+    top_raw_dr = raw_dr[rows, top_idx].astype(np.float32, copy=False)
+
+    top_feature_names = list(feature_names)
+    if "part_deltaR" in top_feature_names:
+        dr_idx = top_feature_names.index("part_deltaR")
+        top_feature_names[dr_idx] = "raw_dR"
+        top_feat[:, dr_idx] = top_raw_dr
+
+    out: Dict[str, List[np.ndarray]] = {
+        cls: [np.zeros((0,), dtype=np.float32) for _ in range(len(top_feature_names))]
+        for cls in class_names
+    }
+    for i, cls in enumerate(class_names):
+        sel = labels == i
+        if not np.any(sel):
+            continue
+        for j in range(len(top_feature_names)):
+            out[cls][j] = top_feat[sel, j]
+    return out, top_feature_names
 
 
 def draw_raw_dr_plot(
@@ -487,6 +571,97 @@ def write_stats_csv(
                 writer.writerow(row)
 
 
+def draw_summary_means_by_class(
+    out_png: Path,
+    out_pdf: Path,
+    vals_by_class: Dict[str, List[np.ndarray]],
+    feature_names: List[str],
+    class_names: List[str],
+) -> None:
+    import matplotlib.pyplot as plt
+
+    n_feat = len(feature_names)
+    ncols = 4
+    nrows = int(np.ceil(n_feat / ncols))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(22, 4.2 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+    colors = plt.cm.tab10(np.linspace(0, 1, len(class_names)))
+
+    for j, feat_name in enumerate(feature_names):
+        ax = axes[j]
+        summary_vals = []
+        ylabel = "Mean"
+        for cls in class_names:
+            x = vals_by_class[cls][j]
+            if x.size == 0:
+                summary_vals.append(0.0)
+            elif feat_name in DISCRETE_BINARY_FEATURES:
+                summary_vals.append(float(np.mean(x > 0.5)))
+                ylabel = "Fraction"
+            else:
+                summary_vals.append(float(np.mean(x)))
+        xpos = np.arange(len(class_names), dtype=np.float32)
+        bars = ax.bar(xpos, summary_vals, color=colors, alpha=0.9)
+        ax.set_title(feat_name, fontsize=12)
+        ax.set_ylabel(ylabel)
+        ax.set_xticks(xpos)
+        ax.set_xticklabels(class_names, rotation=45, ha="right", fontsize=9)
+        ax.grid(alpha=0.25, linestyle="--", linewidth=0.5, axis="y")
+        for bar, v in zip(bars, summary_vals):
+            ax.text(
+                bar.get_x() + 0.5 * bar.get_width(),
+                v,
+                f"{v:.3f}",
+                ha="center",
+                va="bottom",
+                fontsize=7,
+                rotation=90,
+            )
+
+    for k in range(n_feat, nrows * ncols):
+        axes[k].axis("off")
+
+    fig.suptitle("Top-constituent summary statistic by class", fontsize=14)
+    fig.tight_layout(rect=[0.02, 0.03, 1.0, 0.97])
+    fig.savefig(out_png, dpi=180, bbox_inches="tight")
+    fig.savefig(out_pdf, bbox_inches="tight")
+    plt.close(fig)
+
+
+def assemble_feature_panel(
+    feature_dir: Path,
+    feature_names: List[str],
+    selected_features: List[str],
+    out_path: Path,
+    title: str,
+) -> None:
+    import matplotlib.pyplot as plt
+    import matplotlib.image as mpimg
+
+    files = []
+    for idx, name in enumerate(feature_names, start=1):
+        if name in selected_features:
+            files.append((idx, name, feature_dir / f"{idx:02d}_{name}.png"))
+    if not files:
+        return
+
+    n = len(files)
+    ncols = 2 if n > 1 else 1
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(11 * ncols, 6.2 * nrows))
+    axes = np.atleast_1d(axes).flatten()
+    for ax, (_, _, img_path) in zip(axes, files):
+        img = mpimg.imread(img_path)
+        ax.imshow(img)
+        ax.axis("off")
+    for ax in axes[len(files):]:
+        ax.axis("off")
+    fig.suptitle(title, fontsize=15)
+    fig.tight_layout(rect=[0.01, 0.01, 1.0, 0.97])
+    fig.savefig(out_path, dpi=180, bbox_inches="tight")
+    plt.close(fig)
+
+
 def main() -> None:
     args = parse_args()
     import matplotlib.pyplot as plt
@@ -669,6 +844,147 @@ def main() -> None:
             q_high=float(args.clip_quantile_high),
         )
 
+    top_outputs = {}
+    if bool(args.top_constituent_only):
+        top_vals_by_class, top_feature_names = collect_top_constituent_values_by_class(
+            raw_tok=raw_tok,
+            feat=feat,
+            mask=mask,
+            labels=jet_labels,
+            class_names=class_names,
+            feature_names=feature_names,
+        )
+
+        top_stats_csv = args.output_dir / "topconst_feature_stats_by_class.csv"
+        write_stats_csv(top_stats_csv, top_vals_by_class, top_feature_names)
+
+        top_per_feature_dir = args.output_dir / "topconst_per_feature_png"
+        top_per_feature_dir.mkdir(parents=True, exist_ok=True)
+        top_plot_png = args.output_dir / "topconst_feature_distributions_by_class.png"
+        top_plot_pdf = args.output_dir / "topconst_feature_distributions_by_class.pdf"
+        top_summary_png = args.output_dir / "topconst_summary_mean_by_class.png"
+        top_summary_pdf = args.output_dir / "topconst_summary_mean_by_class.pdf"
+        top_raw_dr_png = args.output_dir / "topconst_raw_dR_by_class.png"
+        top_raw_dr_pdf = args.output_dir / "topconst_raw_dR_by_class.pdf"
+
+        top_fig, top_axes = plt.subplots(nrows=nrows, ncols=ncols, figsize=(22, 22))
+        top_axes = top_axes.flatten()
+        top_legend_handles = []
+        top_legend_labels = []
+        for j, feat_name in enumerate(top_feature_names):
+            ax = top_axes[j]
+            handles, legend_lbls = draw_feature_on_axis(
+                ax=ax,
+                feat_name=feat_name,
+                feat_idx=j,
+                vals_by_class=top_vals_by_class,
+                class_names=class_names,
+                colors=colors,
+                bins=int(args.bins),
+                q_low=float(args.clip_quantile_low),
+                q_high=float(args.clip_quantile_high),
+                show_class_legend=(len(top_legend_handles) == 0),
+                show_charge_legend=False,
+            )
+            if handles and legend_lbls and len(top_legend_handles) == 0:
+                top_legend_handles = handles
+                top_legend_labels = legend_lbls
+            ax.set_title(feat_name, fontsize=12)
+
+            fig_single, ax_single = plt.subplots(figsize=(10.5, 6.0))
+            draw_feature_on_axis(
+                ax=ax_single,
+                feat_name=feat_name,
+                feat_idx=j,
+                vals_by_class=top_vals_by_class,
+                class_names=class_names,
+                colors=colors,
+                bins=int(args.bins),
+                q_low=float(args.clip_quantile_low),
+                q_high=float(args.clip_quantile_high),
+                show_class_legend=(feat_name not in DISCRETE_BINARY_FEATURES and feat_name != "charge"),
+                show_charge_legend=True,
+            )
+            ax_single.set_title(f"Top-constituent {feat_name} by class", fontsize=13)
+            if feat_name not in DISCRETE_BINARY_FEATURES and feat_name != "charge":
+                ax_single.legend(frameon=False, fontsize=8, ncol=2)
+            fig_single.tight_layout()
+            out_single = top_per_feature_dir / f"{j + 1:02d}_{feat_name}.png"
+            fig_single.savefig(out_single, dpi=180, bbox_inches="tight")
+            plt.close(fig_single)
+
+        for k in range(len(top_feature_names), nrows * ncols):
+            top_axes[k].axis("off")
+
+        top_fig.suptitle(
+            (
+                f"JetClass Top-Constituent Feature Distributions by Class\n"
+                f"leading-pT constituent only, split={args.split}, jets={args.n_jets}"
+            ),
+            fontsize=14,
+        )
+        if top_legend_handles and top_legend_labels:
+            top_fig.legend(
+                top_legend_handles,
+                top_legend_labels,
+                loc="lower center",
+                ncol=min(5, len(class_names)),
+                frameon=False,
+                fontsize=10,
+                bbox_to_anchor=(0.5, 0.03),
+            )
+        top_fig.tight_layout(rect=[0.02, 0.07, 1.0, 0.95])
+        top_fig.savefig(top_plot_png, dpi=180)
+        top_fig.savefig(top_plot_pdf)
+        plt.close(top_fig)
+
+        draw_summary_means_by_class(
+            out_png=top_summary_png,
+            out_pdf=top_summary_pdf,
+            vals_by_class=top_vals_by_class,
+            feature_names=top_feature_names,
+            class_names=class_names,
+        )
+        draw_raw_dr_plot(
+            out_png=top_raw_dr_png,
+            out_pdf=top_raw_dr_pdf,
+            vals_by_class={cls: top_vals_by_class[cls][top_feature_names.index("raw_dR")] for cls in class_names},
+            class_names=class_names,
+            bins=int(args.bins),
+            q_high=float(args.clip_quantile_high),
+        )
+
+        top_kin_panel = args.output_dir / "topconst_kinematic_panel.png"
+        top_pid_panel = args.output_dir / "topconst_particleid_panel.png"
+        assemble_feature_panel(
+            feature_dir=top_per_feature_dir,
+            feature_names=top_feature_names,
+            selected_features=TOP_KINEMATIC_FEATURES,
+            out_path=top_kin_panel,
+            title="Top-constituent kinematic features by class",
+        )
+        assemble_feature_panel(
+            feature_dir=top_per_feature_dir,
+            feature_names=top_feature_names,
+            selected_features=TOP_PID_FEATURES,
+            out_path=top_pid_panel,
+            title="Top-constituent particle-ID features by class",
+        )
+
+        top_outputs = {
+            "top_plot_png": str(top_plot_png),
+            "top_plot_pdf": str(top_plot_pdf),
+            "top_stats_csv": str(top_stats_csv),
+            "top_per_feature_png_dir": str(top_per_feature_dir),
+            "top_summary_png": str(top_summary_png),
+            "top_summary_pdf": str(top_summary_pdf),
+            "top_raw_dr_png": str(top_raw_dr_png),
+            "top_raw_dr_pdf": str(top_raw_dr_pdf),
+            "top_kinematic_panel_png": str(top_kin_panel),
+            "top_particleid_panel_png": str(top_pid_panel),
+            "top_feature_names": top_feature_names,
+        }
+
     # Save metadata for reproducibility.
     meta = {
         "data_dir": str(args.data_dir),
@@ -698,7 +1014,9 @@ def main() -> None:
         "per_feature_png_dir": str(per_feature_dir),
         "raw_dr_plot_png": str(raw_dr_png) if raw_dr_png is not None else None,
         "raw_dr_plot_pdf": str(raw_dr_pdf) if raw_dr_pdf is not None else None,
+        "top_constituent_only": bool(args.top_constituent_only),
     }
+    meta.update(top_outputs)
     with (args.output_dir / "run_metadata.json").open("w") as f:
         json.dump(meta, f, indent=2)
 

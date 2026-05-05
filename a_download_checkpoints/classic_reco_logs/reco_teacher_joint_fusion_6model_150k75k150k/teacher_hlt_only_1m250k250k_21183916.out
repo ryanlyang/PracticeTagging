@@ -1,0 +1,23 @@
+============================================================
+Teacher + HLT Baseline Only (1M/250k/250k split, real train/test H5, weighted)
+Run: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed0
+Train path: ./data/train_quarter.h5
+Test path:  ./data/test.h5
+Data: n_train_jets=1250000, split=1000000/250000/250000, offset=0, test_offset=0
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py --train_path ./data/train_quarter.h5 --test_path ./data/test.h5 --test_offset_jets 0 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only --run_name teacher_hlt_only_1m250k250k_seed0 --n_train_jets 1250000 --n_train_split 1000000 --n_val_split 250000 --n_test_split 250000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --selection_metric auc --step1_only --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed0
+Loading offline constituents...
+Warning: missing 'training_weights' in data/train_quarter.h5; using ones.
+Generating pseudo-HLT...
+Non-priv target setup: added_target_scale=1.000, mean_true_added_raw=25.099, mean_target_added=25.099
+Computing features...
+Split sizes: Train=1000000, Val=250000, Test(external)=250000 (custom_counts=True)
+Stage-B train subset: N=1000000 / 1000000 (frac=1.000, seed=0)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Loading external test constituents...
+Warning: missing 'training_weights' in data/test.h5; using ones.

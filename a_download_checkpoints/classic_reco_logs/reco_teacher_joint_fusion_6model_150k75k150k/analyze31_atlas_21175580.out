@@ -1,0 +1,30 @@
+============================================================
+31-Model Specialization Atlas
+Fusion json: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json
+Train path:  ./data
+TPRs:        0.50,0.30
+Anchor:      joint_delta
+Greedy:      max_add=12, w_step=0.01, cal=iso
+============================================================
+ python analyze_hlt_joint31_specialization_atlas.py --fusion_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json --train_path ./data --target_tprs 0.50\,0.30 --anchor_model joint_delta --quantile_bins 10 --count_edges 0\,10\,20\,30\,40\,60\,80\,100\,200 --min_bin_neg 200 --greedy_max_add 12 --greedy_w_step 0.01 --greedy_calibration iso --hlt_seed 0 --max_constits 100
+========================================================================
+31-Model Specialization Atlas
+========================================================================
+Fusion json: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json
+Out dir:     /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/specialization_atlas_31
+Models:      31
+Val/Test:    75000 / 150000
+Anchor:      joint_delta
+Target TPRs: 0.500,0.300
+Jet feats:   Loaded raw-jet descriptors from data_splits + pseudo-HLT generation.
+
+Best single model by test FPR (per target TPR):
+  TPR=0.5000: joint_delta000 FPR=0.018315 AUC=0.924545
+  TPR=0.3000: joint_delta020 FPR=0.004529 AUC=0.924599
+
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/specialization_atlas_31/specialization_atlas_report.json
+Saved global metrics: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/specialization_atlas_31/atlas_model_global_metrics.csv
+Saved pairwise metrics: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/specialization_atlas_31/atlas_pairwise_overlap_rescue.csv
+Saved bin metrics: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/specialization_atlas_31/atlas_bin_specialization_metrics.csv
+Saved top-bin summary: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/specialization_atlas_31/atlas_top_specialization_bins.csv
+Saved greedy curve: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/specialization_atlas_31/atlas_greedy_marginal_curve.csv

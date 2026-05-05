@@ -1,0 +1,41 @@
+============================================================
+Model-6 Concat-teacher StageA + corrected-only/dual pre+post joint
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k/model6_concat_stagea_corrected_weighted_150k150k300k_seed0
+Train path: ./data/train_quarter.h5 (weighted)
+Split: train=150000, val=150000, test=300000
+============================================================
+ python reco_concat_teacher_stageA_then_corrected.py --train_path ./data/train_quarter.h5 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k --run_name model6_concat_stagea_corrected_weighted_150k150k300k_seed0 --n_train_jets 600000 --n_train_split 150000 --n_val_split 150000 --n_test_split 300000 --offset_jets 0 --max_constits 100 --max_concat_constits 200 --num_workers 6 --seed 0 --stageA_epochs 90 --stageA_patience 18 --stageA_kd_temp 2.5 --stageA_lambda_kd 1.0 --stageA_lambda_emb 1.2 --stageA_lambda_tok 0.6 --stageA_lambda_phys 0.2 --stageA_lambda_budget_hinge 0.03 --stageA_budget_eps 0.015 --stageA_budget_weight_floor 1e-4 --stageA_target_tpr 0.50 --stageA_lambda_delta 0.00 --stageA_delta_tau 0.05 --stageA_delta_lambda_fp 3.0 --stageA_loss_norm_ema_decay 0.98 --stageA_loss_norm_eps 1e-6 --added_target_scale 0.90 --report_target_tpr 0.50 --combo_weight_step 0.01 --joint_select_metric auc --stageB_epochs 45 --stageB_patience 12 --stageB_min_epochs 12 --stageB_lr_dual 4e-4 --stageB_lambda_rank 0.0 --stageB_lambda_cons 0.0 --stageC_epochs 65 --stageC_patience 14 --stageC_min_epochs 25 --stageC_lr_dual 2e-4 --stageC_lr_reco 1e-4 --stageC_lambda_reco 0.4 --stageC_lambda_rank 0.0 --stageC_lambda_cons 0.06 --stop_after_corrected_only --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k/model6_concat_stagea_corrected_weighted_150k150k300k_seed0
+Loading offline constituents...
+Info: using 'weights' from data/train_quarter.h5 as training weights.
+Generating pseudo-HLT...
+Non-priv rho split setup: rho=0.900, mean_true_added_raw=25.090, mean_target_merge=22.581, mean_target_eff=2.509
+Computing features...
+Split sizes: Train=150000, Val=150000, Test=300000 (custom_counts=True)
+
+======================================================================
+STEP 1: HLT BASELINE + CONCAT TEACHER
+======================================================================
+Baseline-HLT ep 5: train_auc=0.8906, val_auc=0.8951, val_fpr50=0.033758, best_auc=0.8969, fpr50@best=0.038130
+Baseline-HLT ep 10: train_auc=0.9026, val_auc=0.9019, val_fpr50=0.030188, best_auc=0.9090, fpr50@best=0.025066
+Baseline-HLT ep 15: train_auc=0.9105, val_auc=0.8988, val_fpr50=0.030083, best_auc=0.9104, fpr50@best=0.027097
+Baseline-HLT ep 20: train_auc=0.9191, val_auc=0.9042, val_fpr50=0.028364, best_auc=0.9104, fpr50@best=0.027097
+Baseline-HLT ep 25: train_auc=0.9262, val_auc=0.9019, val_fpr50=0.027334, best_auc=0.9104, fpr50@best=0.027097
+Early stopping Baseline-HLT at epoch 29
+ConcatTeacher ep 5: train_auc=0.9242, val_auc=0.9135, val_fpr50=0.027611, best_auc=0.9250, fpr50@best=0.026039
+ConcatTeacher ep 10: train_auc=0.9356, val_auc=0.9318, val_fpr50=0.018814, best_auc=0.9347, fpr50@best=0.016925
+ConcatTeacher ep 15: train_auc=0.9432, val_auc=0.9393, val_fpr50=0.013596, best_auc=0.9393, fpr50@best=0.013596
+ConcatTeacher ep 20: train_auc=0.9506, val_auc=0.9284, val_fpr50=0.018872, best_auc=0.9393, fpr50@best=0.013596
+ConcatTeacher ep 25: train_auc=0.9593, val_auc=0.9322, val_fpr50=0.015000, best_auc=0.9393, fpr50@best=0.013596
+ConcatTeacher ep 30: train_auc=0.9678, val_auc=0.9283, val_fpr50=0.017535, best_auc=0.9393, fpr50@best=0.013596
+Early stopping ConcatTeacher at epoch 30
+StageA delta HLT reference @TPR=0.50: threshold_prob=0.846712, val_tpr=0.500013, val_fpr=0.027102
+
+======================================================================
+STEP 2: STAGE A (CONCAT-TEACHER-GUIDED RECONSTRUCTOR PRETRAIN)
+======================================================================
+----------------------------------------------------------------------
+Stage-A curriculum: phase_035 | epochs [1,20] | stage_scale=0.35
+----------------------------------------------------------------------
+Ep 5 [phase_035]: train_total=3.0291, val_total=7.1451, train_teacher_auc=0.8847, val_teacher_auc=0.7748, val_teacher_fpr50=0.142023, best_global_auc=0.7748 | kd=5.0548, emb=0.2617, tok=3.9703, phys=0.3397, budget_hinge=39999.6688, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35

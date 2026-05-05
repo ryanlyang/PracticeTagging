@@ -1,0 +1,47 @@
+============================================================
+Model-25 K=1 StrictTF+Sched+FreeRun
+Run:   checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model25_strictsched/model25_k1_strictsched_50k20k100k_seed0
+Split: train=50000, val=20000, test=100000
+============================================================
+ python offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model25_strictsched --run_name model25_k1_strictsched_50k20k100k_seed0 --n_train_jets 170000 --n_train_split 50000 --n_val_split 20000 --n_test_split 100000 --offset_jets 0 --max_constits 100 --num_workers 1 --seed 0 --reco_epochs 175 --reco_batch_size 112 --reco_lr 1.8e-4 --reco_patience 30 --reco_min_epochs 45 --reco_huber_delta 0.12 --beam_size 4 --beam_len_sigma 1.35 --beam_temperature 0.9 --num_hypotheses 1 --joint_epochs 0 --set_loss_mode hungarian --ar_use_hungarian_target --loss_w_ar 1.0 --loss_w_set 1.0 --loss_w_eos 0.20 --loss_w_count 0.20 --loss_w_ptr_entropy 0.002 --loss_w_conf_rank 0.20 --loss_w_conf_prefix 0.12 --conf_margin 0.06 --conf_prefix_tau 16.0 --loss_w_jetpt 0.08 --loss_w_4vec 0.03 --loss_w_jete 0.00 --loss_w_angle 0.00 --physics_warmup_epochs 12 --phase1_end_epoch 15 --phase2_end_epoch 75 --phase3_end_epoch 127 --phase2_alpha_fr_end 0.70 --phase3_alpha_fr_end 0.95 --phase4_alpha_fr 0.95 --phase2_ss_end 0.60 --phase3_ss_end 0.90 --phase4_ss 0.90 --phase2_free_run_every_n 2 --phase3_free_run_every_n 1 --phase4_free_run_every_n 1 --fr_train_subbatch 32 --phase_lr_decay 0.80 --save_fusion_scores --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model25_strictsched/model25_k1_strictsched_50k20k100k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing features...
+Split sizes: Train=50000, Val=20000, Test=100000
+
+========================================================================
+STEP 1: TEACHER (Offline)
+========================================================================
+Teacher ep 5: train_auc=0.9278, val_auc=0.8964, val_fpr50=0.044963, best_auc=0.9129
+Teacher ep 10: train_auc=0.9449, val_auc=0.9417, val_fpr50=0.018129, best_auc=0.9427
+Teacher ep 15: train_auc=0.9496, val_auc=0.9446, val_fpr50=0.014445, best_auc=0.9462
+Teacher ep 20: train_auc=0.9546, val_auc=0.9457, val_fpr50=0.015392, best_auc=0.9471
+Teacher ep 25: train_auc=0.9600, val_auc=0.9456, val_fpr50=0.014956, best_auc=0.9474
+Teacher ep 30: train_auc=0.9650, val_auc=0.9416, val_fpr50=0.018254, best_auc=0.9474
+Teacher ep 35: train_auc=0.9718, val_auc=0.9395, val_fpr50=0.016467, best_auc=0.9474
+Teacher ep 40: train_auc=0.9780, val_auc=0.9337, val_fpr50=0.018665, best_auc=0.9474
+Early stopping Teacher at epoch 41
+
+========================================================================
+STEP 2: BASELINE (HLT)
+========================================================================
+HLT ep 5: train_auc=0.8854, val_auc=0.8728, val_fpr50=0.059302, best_auc=0.8728
+HLT ep 10: train_auc=0.9082, val_auc=0.9124, val_fpr50=0.026459, best_auc=0.9145
+HLT ep 15: train_auc=0.9160, val_auc=0.9104, val_fpr50=0.026110, best_auc=0.9152
+HLT ep 20: train_auc=0.9213, val_auc=0.9144, val_fpr50=0.024414, best_auc=0.9152
+HLT ep 25: train_auc=0.9276, val_auc=0.9154, val_fpr50=0.022746, best_auc=0.9154
+HLT ep 30: train_auc=0.9337, val_auc=0.9088, val_fpr50=0.028368, best_auc=0.9154
+HLT ep 35: train_auc=0.9416, val_auc=0.9079, val_fpr50=0.026989, best_auc=0.9154
+HLT ep 40: train_auc=0.9502, val_auc=0.9041, val_fpr50=0.031191, best_auc=0.9154
+Early stopping HLT at epoch 43
+
+========================================================================
+STEP 3: SEQ2SEQ RECONSTRUCTOR (Continuous AR + Beam Length)
+========================================================================
+Entering phase 1 (stabilize) at epoch 1
+Reco ep 001 | t=00:09:19 eta=27:02:14 | phase=1:stabilize phys=0.083 tf=strict ss=0.00 mixFR=0.00@0 | train total=7.25537 ar=2.29500 set=2.52847 eos=0.15532 cnt=10.75653 ang=0.08298 jpt=0.95882 je=0.95976 j4=0.72639 crk=0.21428 cpre=1.65323 bset=2.52847 div=0.00000 fr=0.00000 | valTF total=6.20530 ar=2.27699 set=2.53051 eos=0.09598 cnt=5.99327 ang=0.07717 jpt=1.13441 je=1.13456 j4=0.76504 crk=0.01875 cpre=1.38927 bset=2.53051 div=0.00000 | valFR total=6.92036 ar=2.27698 set=2.53050 eos=3.67181 cnt=5.99327 ang=0.07717 jpt=1.13441 je=1.13456 j4=0.76504 crk=0.01869 cpre=1.38855 bset=2.53050 div=0.00000
+Reco ep 002 | t=00:09:16 eta=26:48:45 | phase=1:stabilize phys=0.167 tf=strict ss=0.00 mixFR=0.00@0 | train total=6.03208 ar=2.15812 set=2.37939 eos=0.09602 cnt=6.37816 ang=0.08644 jpt=0.69571 je=0.69717 j4=1.88391 crk=0.04957 cpre=1.42585 bset=2.37939 div=0.00000 fr=0.00000 | valTF total=5.11460 ar=1.77741 set=1.89478 eos=0.14723 cnt=5.63991 ang=0.06679 jpt=0.17238 je=0.17152 j4=0.67351 crk=0.12469 cpre=2.11716 bset=1.89478 div=0.00000 | valFR total=6.29193 ar=1.80251 set=1.92129 eos=5.76155 cnt=5.63991 ang=0.06670 jpt=0.17532 je=0.17447 j4=0.68707 crk=0.12411 cpre=2.14225 bset=1.92129 div=0.00000
+Reco ep 003 | t=00:09:07 eta=26:29:01 | phase=1:stabilize phys=0.250 tf=strict ss=0.00 mixFR=0.00@0 | train total=3.74927 ar=1.06747 set=1.27870 eos=0.08269 cnt=6.09078 ang=0.06373 jpt=0.13461 je=0.13483 j4=0.38896 crk=0.09443 cpre=1.19871 bset=1.27870 div=0.00000 fr=0.00000 | valTF total=4.56644 ar=1.38791 set=1.75696 eos=0.13280 cnt=5.85223 ang=0.06474 jpt=0.06189 je=0.06174 j4=0.23060 crk=0.10608 cpre=1.66898 bset=1.75696 div=0.00000 | valFR total=5.32372 ar=1.38859 set=1.75790 eos=3.91194 cnt=5.85223 ang=0.06471 jpt=0.06126 je=0.06116 j4=0.22937 crk=0.10602 cpre=1.66763 bset=1.75790 div=0.00000
+Reco ep 004 | t=00:09:02 eta=26:11:33 | phase=1:stabilize phys=0.333 tf=strict ss=0.00 mixFR=0.00@0 | train total=3.39252 ar=0.91288 set=1.12171 eos=0.07363 cnt=5.95487 ang=0.06239 jpt=0.10419 je=0.10429 j4=0.34901 crk=0.08155 cpre=1.08014 bset=1.12171 div=0.00000 fr=0.00000 | valTF total=3.54670 ar=1.07989 set=1.20822 eos=0.07641 cnt=5.48637 ang=0.06583 jpt=0.05679 je=0.05663 j4=0.19829 crk=0.13222 cpre=0.96706 bset=1.20822 div=0.00000 | valFR total=4.18994 ar=1.07796 set=1.20500 eos=3.32171 cnt=5.48637 ang=0.06589 jpt=0.05613 je=0.05599 j4=0.19692 crk=0.13175 cpre=0.96252 bset=1.20500 div=0.00000

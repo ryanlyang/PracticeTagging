@@ -1,0 +1,49 @@
+============================================================
+Model-26 K=1 Sinkhorn4 NoMicro FR (Batch80)
+Run:   checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model26_sinkhorn4/model26_k1_sinkhorn4_bs80_50k20k100k_seed0
+Split: train=50000, val=20000, test=100000
+============================================================
+ python offline_reconstructor_joint_dualview_seq2seq_nexttoken_m26_sinkhorn4.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model26_sinkhorn4 --run_name model26_k1_sinkhorn4_bs80_50k20k100k_seed0 --n_train_jets 170000 --n_train_split 50000 --n_val_split 20000 --n_test_split 100000 --offset_jets 0 --max_constits 100 --num_workers 1 --seed 0 --reco_epochs 60 --reco_batch_size 80 --reco_lr 1.8e-4 --reco_patience 30 --reco_min_epochs 45 --reco_huber_delta 0.12 --beam_size 4 --beam_len_sigma 1.35 --beam_temperature 0.9 --num_hypotheses 1 --joint_epochs 0 --set_loss_mode hungarian --hungarian_shortlist_k 2 --ar_use_hungarian_target --use_sinkhorn_set --use_sinkhorn_ar --sinkhorn_tau 0.08 --sinkhorn_iters 20 --loss_w_ar 1.0 --loss_w_set 1.0 --loss_w_eos 0.20 --loss_w_count 0.20 --loss_w_ptr_entropy 0.002 --loss_w_conf_rank 0.20 --loss_w_conf_prefix 0.12 --conf_margin 0.06 --conf_prefix_tau 16.0 --loss_w_jetpt 0.08 --loss_w_4vec 0.03 --loss_w_jete 0.00 --loss_w_angle 0.00 --physics_warmup_epochs 12 --phase1_end_epoch 15 --phase2_end_epoch 75 --phase3_end_epoch 127 --phase2_alpha_fr_end 0.70 --phase3_alpha_fr_end 0.95 --phase4_alpha_fr 0.95 --phase2_ss_end 0.60 --phase3_ss_end 0.90 --phase4_ss 0.90 --phase2_free_run_every_n 2 --phase3_free_run_every_n 1 --phase4_free_run_every_n 1 --fr_train_subbatch 0 --phase_lr_decay 0.80 --save_fusion_scores --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model26_sinkhorn4/model26_k1_sinkhorn4_bs80_50k20k100k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing features...
+Split sizes: Train=50000, Val=20000, Test=100000
+
+========================================================================
+STEP 1: TEACHER (Offline)
+========================================================================
+Teacher ep 5: train_auc=0.9278, val_auc=0.8964, val_fpr50=0.044963, best_auc=0.9129
+Teacher ep 10: train_auc=0.9449, val_auc=0.9417, val_fpr50=0.018129, best_auc=0.9427
+Teacher ep 15: train_auc=0.9496, val_auc=0.9446, val_fpr50=0.014445, best_auc=0.9462
+Teacher ep 20: train_auc=0.9546, val_auc=0.9457, val_fpr50=0.015392, best_auc=0.9471
+Teacher ep 25: train_auc=0.9600, val_auc=0.9456, val_fpr50=0.014956, best_auc=0.9474
+Teacher ep 30: train_auc=0.9650, val_auc=0.9416, val_fpr50=0.018254, best_auc=0.9474
+Teacher ep 35: train_auc=0.9718, val_auc=0.9395, val_fpr50=0.016467, best_auc=0.9474
+Teacher ep 40: train_auc=0.9780, val_auc=0.9337, val_fpr50=0.018665, best_auc=0.9474
+Early stopping Teacher at epoch 41
+
+========================================================================
+STEP 2: BASELINE (HLT)
+========================================================================
+HLT ep 5: train_auc=0.8854, val_auc=0.8728, val_fpr50=0.059302, best_auc=0.8728
+HLT ep 10: train_auc=0.9082, val_auc=0.9124, val_fpr50=0.026459, best_auc=0.9145
+HLT ep 15: train_auc=0.9160, val_auc=0.9104, val_fpr50=0.026110, best_auc=0.9152
+HLT ep 20: train_auc=0.9213, val_auc=0.9144, val_fpr50=0.024414, best_auc=0.9152
+HLT ep 25: train_auc=0.9276, val_auc=0.9154, val_fpr50=0.022746, best_auc=0.9154
+HLT ep 30: train_auc=0.9337, val_auc=0.9088, val_fpr50=0.028368, best_auc=0.9154
+HLT ep 35: train_auc=0.9416, val_auc=0.9079, val_fpr50=0.026989, best_auc=0.9154
+HLT ep 40: train_auc=0.9502, val_auc=0.9041, val_fpr50=0.031191, best_auc=0.9154
+Early stopping HLT at epoch 43
+
+========================================================================
+STEP 3: SEQ2SEQ RECONSTRUCTOR (Continuous AR + Beam Length)
+========================================================================
+Entering phase 1 (stabilize) at epoch 1
+Reco ep 001 | t=00:15:56 eta=15:40:17 | phase=1:stabilize phys=0.083 tf=strict ss=0.00 mixFR=0.00@0 | train total=5.60564 ar=0.69425 set=2.53196 eos=0.12056 cnt=9.97034 ang=0.07640 jpt=0.88053 je=0.88086 j4=0.71145 crk=0.24834 cpre=2.53240 bset=2.53196 div=0.00000 fr=0.00000 | valTF total=5.02511 ar=0.52541 set=2.52618 eos=0.03888 cnt=8.22288 ang=0.10330 jpt=0.72337 je=0.72591 j4=0.67450 crk=0.05627 cpre=2.52819 bset=2.52618 div=0.00000 | valFR total=5.24535 ar=0.52552 set=2.52615 eos=1.13970 cnt=8.22288 ang=0.10330 jpt=0.72334 je=0.72589 j4=0.67450 crk=0.05624 cpre=2.52819 bset=2.52615 div=0.00000
+Reco ep 002 | t=00:15:32 eta=15:12:55 | phase=1:stabilize phys=0.167 tf=strict ss=0.00 mixFR=0.00@0 | train total=4.82995 ar=0.61942 set=2.52011 eos=0.09153 cnt=6.67837 ang=0.07966 jpt=0.87781 je=0.88090 j4=1.09808 crk=0.08398 cpre=2.52039 bset=2.52011 div=0.00000 fr=0.00000 | valTF total=4.52409 ar=0.49185 set=2.50843 eos=0.03329 cnt=5.95356 ang=0.05613 jpt=0.81619 je=0.81893 j4=0.69619 crk=0.05524 cpre=2.50858 bset=2.50843 div=0.00000 | valFR total=4.64799 ar=0.49185 set=2.50844 eos=0.65237 cnt=5.95356 ang=0.05613 jpt=0.81619 je=0.81893 j4=0.69619 crk=0.05562 cpre=2.50860 bset=2.50844 div=0.00000
+Reco ep 003 | t=00:15:33 eta=14:53:35 | phase=1:stabilize phys=0.250 tf=strict ss=0.00 mixFR=0.00@0 | train total=5.21920 ar=0.68763 set=2.55213 eos=0.12805 cnt=6.38031 ang=0.07227 jpt=0.92701 je=0.93014 j4=44.18763 crk=0.10785 cpre=2.55202 bset=2.55213 div=0.00000 fr=0.00000 | valTF total=4.80891 ar=0.73264 set=2.58526 eos=0.14309 cnt=5.49844 ang=0.10349 jpt=1.10670 je=1.10952 j4=0.76162 crk=0.12305 cpre=2.58538 bset=2.58526 div=0.00000 | valFR total=5.91884 ar=0.73272 set=2.58526 eos=5.69397 cnt=5.49844 ang=0.10349 jpt=1.10670 je=1.10952 j4=0.76162 crk=0.12143 cpre=2.58540 bset=2.58526 div=0.00000
+Reco ep 004 | t=00:15:34 eta=14:36:26 | phase=1:stabilize phys=0.333 tf=strict ss=0.00 mixFR=0.00@0 | train total=4.74040 ar=0.61572 set=2.52233 eos=0.07969 cnt=6.16461 ang=0.06848 jpt=0.87907 je=0.88260 j4=0.70828 crk=0.10132 cpre=2.52243 bset=2.52233 div=0.00000 fr=0.00000 | valTF total=4.53744 ar=0.52798 set=2.54835 eos=0.04295 cnt=5.56662 ang=0.06656 jpt=0.67134 je=0.67554 j4=0.65082 crk=0.04489 cpre=2.54838 bset=2.54835 div=0.00000 | valFR total=4.70204 ar=0.52800 set=2.54834 eos=0.86598 cnt=5.56662 ang=0.06656 jpt=0.67134 je=0.67554 j4=0.65082 crk=0.04476 cpre=2.54838 bset=2.54834 div=0.00000
+Reco ep 005 | t=00:15:33 eta=14:19:46 | phase=1:stabilize phys=0.417 tf=strict ss=0.00 mixFR=0.00@0 | train total=4.69069 ar=0.58152 set=2.54441 eos=0.08070 cnt=5.93806 ang=0.08684 jpt=0.78125 je=0.78304 j4=0.70175 crk=0.10435 cpre=2.54437 bset=2.54441 div=0.00000 fr=0.00000 | valTF total=4.44544 ar=0.51151 set=2.52734 eos=0.03647 cnt=5.27612 ang=0.08590 jpt=0.73295 je=0.73523 j4=0.66674 crk=0.04007 cpre=2.52734 bset=2.52734 div=0.00000 | valFR total=4.57412 ar=0.51152 set=2.52734 eos=0.67989 cnt=5.27612 ang=0.08590 jpt=0.73295 je=0.73523 j4=0.66674 crk=0.04002 cpre=2.52734 bset=2.52734 div=0.00000
+Reco ep 006 | t=00:15:34 eta=14:03:36 | phase=1:stabilize phys=0.500 tf=strict ss=0.00 mixFR=0.00@0 | train total=4.66556 ar=0.55749 set=2.52646 eos=0.08729 cnt=5.99567 ang=0.07797 jpt=0.78593 je=0.78714 j4=0.76213 crk=0.09483 cpre=2.52649 bset=2.52646 div=0.00000 fr=0.00000 | valTF total=4.71920 ar=0.65420 set=2.59979 eos=0.05447 cnt=5.49078 ang=0.08821 jpt=0.65307 je=0.64736 j4=0.63319 crk=0.04282 cpre=2.59981 bset=2.59979 div=0.00000 | valFR total=4.95900 ar=0.65419 set=2.59979 eos=1.25291 cnt=5.49078 ang=0.08821 jpt=0.65307 je=0.64736 j4=0.63319 crk=0.04343 cpre=2.59981 bset=2.59979 div=0.00000

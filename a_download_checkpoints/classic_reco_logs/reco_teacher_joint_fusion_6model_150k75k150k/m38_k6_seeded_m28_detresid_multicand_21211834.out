@@ -1,0 +1,60 @@
+============================================================
+Model-38 K=6 Seeded-m28 + Deterministic-Residual MultiCandidate
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model38_seeded_m28_detresid_multicand/model38_k6_seeded_m28_detresid_multicand_150k75k300k_seed0
+Split: train=150000, val=75000, test=300000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m38_seeded_m28_detresid_multicand.py --save_dir /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model38_seeded_m28_detresid_multicand --run_name model38_k6_seeded_m28_detresid_multicand_150k75k300k_seed0 --n_train_jets 525000 --n_train_split 150000 --n_val_split 75000 --n_test_split 300000 --offset_jets 0 --max_constits 100 --batch_size 80 --num_workers 1 --seed 0 --device cuda --save_fusion_scores --carry_epochs 24 --carry_patience 6 --carry_lr 2e-4 --carry_dist_thresh 0.22 --reco_epochs 140 --reco_patience 20 --reco_min_epochs 35 --reco_lr 2e-4 --reco_batch_size 96 --reco_set_loss_mode hungarian --seed_candidate_k 6 --seed_keep_m 3 --seed_max_prefix 12 --seed_temp 0.35 --candidate_gen_batch 64 --search_eps_total 0.60 --search_eps_count 0.30 --search_w_chamfer 1.00 --search_w_count 0.25 --search_w_pt 0.12 --search_w_mass 0.08 --dual_epochs 90 --dual_lr 1.2e-4 --dual_patience 16
+========================================================================
+Model-38 Seeded m28 + Deterministic Residual MultiCandidate DualView
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model38_seeded_m28_detresid_multicand/model38_k6_seeded_m28_detresid_multicand_150k75k300k_seed0
+Split train/val/test = 150000/75000/300000 | K=6 keepM=3 max_prefix=12
+========================================================================
+Generating pseudo-HLT (deterministic keyed D_hard)...
+HLT stats: avg_offline=54.30, avg_hlt=29.19, merged=11253158, eff_lost=1932286
+Split sizes: Train=150000, Val=75000, Test=300000
+Computing standardized features for train/val/test...
+
+========================================================================
+STEP 1: Teacher + HLT baseline
+========================================================================
+Teacher ep 5: train_auc=0.9403, val_auc=0.9465, val_fpr50=0.013965, best_auc=0.9465, fpr50@best=0.013965
+Teacher ep 10: train_auc=0.9471, val_auc=0.9502, val_fpr50=0.011174, best_auc=0.9502, fpr50@best=0.011174
+Teacher ep 15: train_auc=0.9512, val_auc=0.9524, val_fpr50=0.010509, best_auc=0.9524, fpr50@best=0.010509
+Teacher ep 20: train_auc=0.9551, val_auc=0.9532, val_fpr50=0.010313, best_auc=0.9540, fpr50@best=0.009981
+Teacher ep 25: train_auc=0.9584, val_auc=0.9504, val_fpr50=0.011955, best_auc=0.9540, fpr50@best=0.009981
+Teacher ep 30: train_auc=0.9626, val_auc=0.9520, val_fpr50=0.012392, best_auc=0.9540, fpr50@best=0.009981
+Early stopping Teacher at epoch 31
+Baseline ep 5: train_auc=0.9069, val_auc=0.9081, val_fpr50=0.027806, best_auc=0.9127, fpr50@best=0.026643
+Baseline ep 10: train_auc=0.9148, val_auc=0.9196, val_fpr50=0.022747, best_auc=0.9196, fpr50@best=0.022747
+Baseline ep 15: train_auc=0.9193, val_auc=0.9187, val_fpr50=0.020994, best_auc=0.9210, fpr50@best=0.021338
+Baseline ep 20: train_auc=0.9235, val_auc=0.9204, val_fpr50=0.019966, best_auc=0.9217, fpr50@best=0.020745
+Baseline ep 25: train_auc=0.9274, val_auc=0.9219, val_fpr50=0.019875, best_auc=0.9219, fpr50@best=0.019875
+Baseline ep 30: train_auc=0.9317, val_auc=0.9196, val_fpr50=0.020819, best_auc=0.9219, fpr50@best=0.019875
+Baseline ep 35: train_auc=0.9365, val_auc=0.9202, val_fpr50=0.020769, best_auc=0.9219, fpr50@best=0.019875
+Early stopping Baseline at epoch 37
+Teacher test AUC=0.9542 | Baseline test AUC=0.9217
+
+========================================================================
+STEP 2: Carryover token predictor
+========================================================================
+CarryPredictor ep 001: train_loss=0.12900 val_auc=0.8416 best=0.8416@1
+CarryPredictor ep 002: train_loss=0.11839 val_auc=0.8803 best=0.8803@2
+CarryPredictor ep 004: train_loss=0.10511 val_auc=0.9050 best=0.9050@4
+CarryPredictor ep 006: train_loss=0.09968 val_auc=0.9125 best=0.9125@6
+CarryPredictor ep 008: train_loss=0.09661 val_auc=0.9170 best=0.9170@8
+CarryPredictor ep 010: train_loss=0.09474 val_auc=0.9196 best=0.9198@9
+CarryPredictor ep 012: train_loss=0.09309 val_auc=0.9222 best=0.9222@12
+CarryPredictor ep 014: train_loss=0.09196 val_auc=0.9243 best=0.9243@14
+CarryPredictor ep 016: train_loss=0.09089 val_auc=0.9244 best=0.9244@15
+CarryPredictor ep 018: train_loss=0.09017 val_auc=0.9241 best=0.9246@17
+CarryPredictor ep 020: train_loss=0.08933 val_auc=0.9261 best=0.9261@20
+CarryPredictor ep 022: train_loss=0.08883 val_auc=0.9269 best=0.9278@21
+CarryPredictor ep 024: train_loss=0.08824 val_auc=0.9270 best=0.9278@21
+
+========================================================================
+STEP 3: Train m28-style completer
+========================================================================
+Entering phase 1 (stabilize) at epoch 1
+Reco ep 001 | t=01:45:31 eta=244:28:33 | phase=1:stabilize phys=0.083 tf=strict ss=0.00 mixFR=0.00@0 | train total=7.01262 ar=0.00000 set=2.15599 eos=0.21613 cnt=6.55059 ang=0.07536 jpt=0.69869 je=0.69775 j4=2.03491 crk=0.15956 cpre=1.55837 bset=2.15599 div=0.99677 fr=0.00000 | valTF total=5.01016 ar=0.00000 set=1.57316 eos=0.18405 cnt=4.00558 ang=0.07480 jpt=0.39727 je=0.39777 j4=0.74146 crk=0.06694 cpre=1.45580 bset=1.57316 div=0.98947 | valFR total=3.75493 ar=0.00000 set=1.56713 eos=6.13992 cnt=4.00558 ang=0.07537 jpt=0.38916 je=0.38972 j4=0.71809 crk=0.06752 cpre=1.44112 bset=1.56713 div=0.00000
+Reco ep 002 | t=01:46:26 eta=243:45:24 | phase=1:stabilize phys=0.167 tf=strict ss=0.00 mixFR=0.00@0 | train total=6.64150 ar=0.00000 set=1.89728 eos=0.43850 cnt=7.66318 ang=0.07198 jpt=0.48649 je=0.48619 j4=2.04002 crk=0.24672 cpre=1.44810 bset=1.89728 div=0.99305 fr=0.00000 | valTF total=20.20242 ar=0.00000 set=7.23890 eos=0.97935 cnt=5.82349 ang=0.06954 jpt=1.95214 je=1.95003 j4=13.77076 crk=0.04934 cpre=5.62619 bset=7.23890 div=0.99556 | valFR total=13.63181 ar=0.00000 set=7.23438 eos=22.83207 cnt=5.82349 ang=0.06945 jpt=1.95077 je=1.94866 j4=13.74548 crk=0.04933 cpre=5.64115 bset=7.23438 div=0.00000
+Reco ep 003 | t=01:45:39 eta=241:44:45 | phase=1:stabilize phys=0.250 tf=strict ss=0.00 mixFR=0.00@0 | train total=6.14098 ar=0.00000 set=1.77433 eos=0.39733 cnt=6.68102 ang=0.07672 jpt=0.37748 je=0.37745 j4=1.54553 crk=0.38908 cpre=1.32347 bset=1.77433 div=0.99521 fr=0.00000 | valTF total=14.19500 ar=0.00000 set=5.06206 eos=0.35502 cnt=5.01499 ang=0.07190 jpt=0.83755 je=0.83614 j4=3.92523 crk=0.06022 cpre=3.30918 bset=5.06206 div=0.99613 | valFR total=9.86529 ar=0.00000 set=5.04417 eos=17.17343 cnt=5.01499 ang=0.07190 jpt=0.82984 je=0.82844 j4=3.86224 crk=0.05565 cpre=3.29518 bset=5.04417 div=0.00000

@@ -1,0 +1,10 @@
+Loading split=train with n_jets=50000 from /home/ryreu/atlas/PracticeTagging/data/jetclass_part0
+[load_split:canonical] progress 35000/50000 jets (iter=50)
+Building distribution plots...
+Done.
+Saved:
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21259272/full17_feature_distributions_by_class.png
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21259272/full17_feature_distributions_by_class.pdf
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21259272/full17_feature_stats_by_class.csv
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21259272/per_feature_png (17 per-feature PNGs)
+- plots/jetclass_full17_features/train50k_pct_v2_canonical_fix1_rawdr_job21259272/run_metadata.json

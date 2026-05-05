@@ -1,0 +1,124 @@
+============================================================
+Model-19 dual-reco dualview basic (s01 Reco-A + m2 Reco-B, no residual head)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model19_dualreco_dualview_basic/model19_dualreco_dualview_basic_150k75k150k_seed0
+teacher: standard offline teacher
+recoA: s01-style StageA (val-AUC selection via --select_metric auc for dual stages)
+recoB: strict m2-style unmerge-only + plain budget (no ratio-aware replacement)
+============================================================
+ python train_m9_dualreco_dualview_offdrop.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model19_dualreco_dualview_basic --run_name model19_dualreco_dualview_basic_150k75k150k_seed0 --n_train_jets 375000 --n_train_split 150000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --target_mode offdrop --stageA_epochs 90 --stageA_patience 18 --stageA_kd_temp 2.5 --stageA_lambda_kd 1.0 --stageA_lambda_emb 1.2 --stageA_lambda_tok 0.6 --stageA_lambda_phys 0.2 --stageA_lambda_budget_hinge 0.03 --stageA_budget_eps 0.015 --stageA_budget_weight_floor 1e-4 --stageA_target_tpr 0.50 --stageA_lambda_delta 0.00 --stageA_delta_tau 0.05 --stageA_delta_lambda_fp 3.0 --stageA_loss_norm_ema_decay 0.98 --stageA_loss_norm_eps 1e-6 --added_target_scale 0.90 --target_drop_prob_max 0.0 --target_drop_num_banks 1 --target_drop_bank_cycle_epochs 1 --recoB_epochs 90 --recoB_patience 18 --recoB_lr 3e-4 --recoB_weight_decay 1e-4 --recoB_warmup_epochs 5 --recoB_stage1_epochs 20 --recoB_stage2_epochs 55 --recoB_min_full_scale_epochs 5 --disable_recoB_ratio_budget --recoB_strict_m2_mode --corrected_weight_floor 0.03 --reco_eval_batch_size 256 --select_metric auc --dual_frozen_epochs 45 --dual_frozen_patience 12 --dual_frozen_batch_size 256 --dual_frozen_lr 3e-4 --dual_frozen_weight_decay 1e-4 --dual_frozen_warmup_epochs 5 --dual_frozen_lambda_rank 0.2 --dual_frozen_rank_tau 0.05 --dual_joint_epochs 12 --dual_joint_patience 6 --dual_joint_batch_size 128 --dual_joint_lr_dual 1e-4 --dual_joint_lr_reco_a 2e-6 --dual_joint_lr_reco_b 2e-6 --dual_joint_weight_decay 1e-4 --dual_joint_warmup_epochs 3 --dual_joint_lambda_rank 0.2 --dual_joint_rank_tau 0.05 --dual_joint_lambda_anchor_a 0.02 --dual_joint_lambda_anchor_b 0.02 --report_target_tpr 0.50 --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model19_dualreco_dualview_basic/model19_dualreco_dualview_basic_150k75k150k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Non-priv rho split setup: rho=0.900, mean_true_added_raw(target)=25.116, mean_target_merge=22.604, mean_target_eff=2.512
+Computing features...
+Split sizes: Train=150000, Val=75000, Test=150000 (custom_counts=True)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Baseline ep 5: train_auc=0.9099, val_auc=0.9165, val_fpr50=0.023651, best_auc=0.9165, fpr50@best=0.023651
+Baseline ep 10: train_auc=0.9181, val_auc=0.9202, val_fpr50=0.020420, best_auc=0.9202, fpr50@best=0.020420
+Baseline ep 15: train_auc=0.9223, val_auc=0.9213, val_fpr50=0.019709, best_auc=0.9213, fpr50@best=0.019709
+Baseline ep 20: train_auc=0.9257, val_auc=0.9205, val_fpr50=0.021832, best_auc=0.9232, fpr50@best=0.019650
+Baseline ep 25: train_auc=0.9296, val_auc=0.9197, val_fpr50=0.020986, best_auc=0.9232, fpr50@best=0.020139
+Baseline ep 30: train_auc=0.9348, val_auc=0.9208, val_fpr50=0.021230, best_auc=0.9232, fpr50@best=0.020139
+Baseline ep 35: train_auc=0.9401, val_auc=0.9169, val_fpr50=0.022684, best_auc=0.9232, fpr50@best=0.020139
+Early stopping Baseline at epoch 37
+StageA delta HLT reference @TPR=0.50: threshold_prob=0.886276, val_tpr=0.500013, val_fpr=0.020140
+Teacher ep 5: train_auc=0.9436, val_auc=0.9480, val_fpr50=0.014140, best_auc=0.9480, fpr50@best=0.014140
+Teacher ep 10: train_auc=0.9510, val_auc=0.9446, val_fpr50=0.015858, best_auc=0.9508, fpr50@best=0.011886
+Teacher ep 15: train_auc=0.9550, val_auc=0.9535, val_fpr50=0.010162, best_auc=0.9544, fpr50@best=0.009286
+Teacher ep 20: train_auc=0.9581, val_auc=0.9529, val_fpr50=0.010310, best_auc=0.9544, fpr50@best=0.009286
+Teacher ep 25: train_auc=0.9612, val_auc=0.9534, val_fpr50=0.009721, best_auc=0.9544, fpr50@best=0.009286
+Early stopping Teacher at epoch 29
+
+======================================================================
+STEP 2: TRAIN RECO-A (TEACHER-GUIDED STAGE-A)
+======================================================================
+----------------------------------------------------------------------
+Stage-A curriculum: phase_035 | epochs [1,20] | stage_scale=0.35
+----------------------------------------------------------------------
+Ep 5 [phase_035]: train_total=3.0273, val_total=8.4436, train_teacher_auc=0.9079, val_teacher_auc=0.7792, val_teacher_fpr50=0.143638, best_global_auc=0.7925 | kd=4.4733, emb=0.1087, tok=3.5949, phys=0.2802, budget_hinge=34707.6313, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Ep 10 [phase_035]: train_total=3.0304, val_total=8.6904, train_teacher_auc=0.9154, val_teacher_auc=0.7382, val_teacher_fpr50=0.161754, best_global_auc=0.8043 | kd=4.4642, emb=0.1050, tok=3.6577, phys=0.2648, budget_hinge=35071.8969, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Ep 15 [phase_035]: train_total=3.0297, val_total=9.8973, train_teacher_auc=0.9180, val_teacher_auc=0.7684, val_teacher_fpr50=0.131718, best_global_auc=0.8043 | kd=4.6518, emb=0.1129, tok=3.6361, phys=0.2581, budget_hinge=34954.2205, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Ep 20 [phase_035]: train_total=3.0297, val_total=11.2378, train_teacher_auc=0.9197, val_teacher_auc=0.7984, val_teacher_fpr50=0.105150, best_global_auc=0.8105 | kd=4.8188, emb=0.1268, tok=3.6367, phys=0.2580, budget_hinge=35009.1115, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Reloaded best checkpoint for phase_035 (epoch=18, val_auc=0.8105)
+----------------------------------------------------------------------
+Stage-A curriculum: phase_070 | epochs [21,55] | stage_scale=0.70
+----------------------------------------------------------------------
+Ep 25 [phase_070]: train_total=3.0292, val_total=3.6838, train_teacher_auc=0.9207, val_teacher_auc=0.9077, val_teacher_fpr50=0.030291, best_global_auc=0.9077 | kd=3.4371, emb=0.0253, tok=3.4892, phys=0.2428, budget_hinge=33420.3803, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Ep 30 [phase_070]: train_total=3.0288, val_total=4.1472, train_teacher_auc=0.9221, val_teacher_auc=0.8995, val_teacher_fpr50=0.034213, best_global_auc=0.9077 | kd=3.5183, emb=0.0294, tok=3.4867, phys=0.2423, budget_hinge=33387.4883, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Ep 35 [phase_070]: train_total=3.0285, val_total=4.0051, train_teacher_auc=0.9242, val_teacher_auc=0.9019, val_teacher_fpr50=0.032666, best_global_auc=0.9077 | kd=3.4881, emb=0.0279, tok=3.4811, phys=0.2416, budget_hinge=33524.8401, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Ep 40 [phase_070]: train_total=3.0382, val_total=4.4265, train_teacher_auc=0.9202, val_teacher_auc=0.8920, val_teacher_fpr50=0.037268, best_global_auc=0.9077 | kd=3.5821, emb=0.0437, tok=3.5170, phys=0.2483, budget_hinge=33325.4025, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Early stop within phase_070 at epoch 43 (no_improve=18)
+Reloaded best checkpoint for phase_070 (epoch=25, val_auc=0.9077)
+----------------------------------------------------------------------
+Stage-A curriculum: phase_100 | epochs [56,90] | stage_scale=1.00
+----------------------------------------------------------------------
+Ep 60 [phase_100]: train_total=3.0286, val_total=3.0707, train_teacher_auc=0.9220, val_teacher_auc=0.9204, val_teacher_fpr50=0.021791, best_global_auc=0.9204 | kd=3.3666, emb=0.0163, tok=3.4487, phys=0.2348, budget_hinge=32353.3474, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 65 [phase_100]: train_total=3.0287, val_total=3.1069, train_teacher_auc=0.9237, val_teacher_auc=0.9184, val_teacher_fpr50=0.024954, best_global_auc=0.9205 | kd=3.3627, emb=0.0165, tok=3.4591, phys=0.2357, budget_hinge=32627.9195, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 70 [phase_100]: train_total=3.0359, val_total=3.0056, train_teacher_auc=0.9106, val_teacher_auc=0.9103, val_teacher_fpr50=0.028930, best_global_auc=0.9205 | kd=3.4328, emb=0.0247, tok=3.4805, phys=0.2408, budget_hinge=32518.9072, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 75 [phase_100]: train_total=3.0258, val_total=3.0369, train_teacher_auc=0.9144, val_teacher_auc=0.9155, val_teacher_fpr50=0.024873, best_global_auc=0.9205 | kd=3.3916, emb=0.0211, tok=3.5198, phys=0.2345, budget_hinge=33257.6810, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 80 [phase_100]: train_total=3.0326, val_total=3.1007, train_teacher_auc=0.9146, val_teacher_auc=0.9084, val_teacher_fpr50=0.033599, best_global_auc=0.9205 | kd=3.4146, emb=0.0227, tok=3.4966, phys=0.2352, budget_hinge=32709.4891, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Early stop within phase_100 at epoch 82 (no_improve=18)
+Reloaded best checkpoint for phase_100 (epoch=64, val_auc=0.9205)
+
+======================================================================
+STEP 3: TRAIN RECO-B (STRICT M2 MODE: UNMERGE-ONLY + PLAIN BUDGET)
+======================================================================
+RecoB ep 5: train_total=26.35275, val_total=28.46855, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=25.93979, stage_best=25.93979
+RecoB ep 10: train_total=25.24584, val_total=28.42212, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=24.60329, stage_best=24.60329
+RecoB ep 15: train_total=24.77269, val_total=25.01379, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=24.48745, stage_best=24.48745
+RecoB ep 20: train_total=24.43138, val_total=28.17454, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=24.36388, stage_best=24.36388
+Reloaded best RecoB checkpoint at stage boundary epoch=20 (stage_best_epoch=19, stage_best_val=24.36388)
+RecoB ep 25: train_total=22.53322, val_total=24.94497, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.96862, stage_best=22.96862
+RecoB ep 30: train_total=22.34415, val_total=23.02044, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.57328, stage_best=22.57328
+RecoB ep 35: train_total=22.17343, val_total=24.03745, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.49250, stage_best=22.49250
+RecoB ep 40: train_total=22.02694, val_total=22.69418, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.36192, stage_best=22.36192
+RecoB ep 45: train_total=21.85452, val_total=22.06065, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.06065, stage_best=22.06065
+RecoB ep 50: train_total=21.67735, val_total=22.61170, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.06065, stage_best=22.06065
+RecoB ep 55: train_total=21.45196, val_total=22.85360, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.06065, stage_best=22.06065
+Reloaded best RecoB checkpoint at stage boundary epoch=55 (stage_best_epoch=45, stage_best_val=22.06065)
+RecoB ep 60: train_total=21.11872, val_total=22.04652, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=22.03812, stage_best=22.03812
+RecoB ep 65: train_total=20.88729, val_total=21.96606, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=21.77010, stage_best=21.77010
+RecoB ep 70: train_total=20.64198, val_total=21.76708, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=21.76708, stage_best=21.76708
+RecoB ep 75: train_total=20.43317, val_total=22.20039, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=21.76708, stage_best=21.76708
+RecoB ep 80: train_total=20.23451, val_total=22.01131, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=21.76708, stage_best=21.76708
+RecoB ep 85: train_total=20.15848, val_total=22.03428, train_budget_asym=0.00000, val_budget_asym=0.00000, bank=0, best_val=21.76708, stage_best=21.76708
+Early stopping RecoB at epoch 88
+
+======================================================================
+STEP 4: DUALVIEW TAGGER (FROZEN RECO-A + RECO-B)
+======================================================================
+DualFrozen ep 5: train_loss=0.42529 (cls=0.36241, rank=0.31436) | val_auc=0.9186, val_fpr50=0.023242, best_sel=0.918559
+DualFrozen ep 10: train_loss=0.41452 (cls=0.35152, rank=0.31498) | val_auc=0.9194, val_fpr50=0.022591, best_sel=0.921188
+DualFrozen ep 15: train_loss=0.41033 (cls=0.34715, rank=0.31592) | val_auc=0.9211, val_fpr50=0.022798, best_sel=0.921339
+DualFrozen ep 20: train_loss=0.40577 (cls=0.34242, rank=0.31676) | val_auc=0.9230, val_fpr50=0.020850, best_sel=0.922987
+DualFrozen ep 25: train_loss=0.40093 (cls=0.33753, rank=0.31704) | val_auc=0.9227, val_fpr50=0.020882, best_sel=0.922987
+DualFrozen ep 30: train_loss=0.39450 (cls=0.33080, rank=0.31848) | val_auc=0.9222, val_fpr50=0.021732, best_sel=0.922987
+Early stopping DualFrozen at epoch 32
+DualFrozen: val_auc=0.9230, val_fpr50=0.020850 | test_auc=0.9214, test_fpr50=0.021459
+
+======================================================================
+STEP 5: DUALVIEW JOINT FINETUNE (UNFREEZE RECO-A + RECO-B)
+======================================================================
+DualJoint ep 2: train_loss=18.92833 (cls=0.36938, rank=0.31541, anchorA=904.30745, anchorB=20.48567) | val_auc=0.9145, val_fpr50=0.026435, best_sel=0.921182
+DualJoint ep 4: train_loss=18.48547 (cls=0.36993, rank=0.31687, anchorA=882.16270, anchorB=20.44557) | val_auc=0.9193, val_fpr50=0.022336, best_sel=0.921182
+DualJoint ep 6: train_loss=18.43491 (cls=0.36171, rank=0.31676, anchorA=880.05434, anchorB=20.43788) | val_auc=0.9215, val_fpr50=0.021671, best_sel=0.921507
+DualJoint ep 8: train_loss=18.41673 (cls=0.35599, rank=0.31733, anchorA=879.43842, anchorB=20.42524) | val_auc=0.9219, val_fpr50=0.021601, best_sel=0.921892
+DualJoint ep 10: train_loss=18.40664 (cls=0.35190, rank=0.31765, anchorA=879.11927, anchorB=20.44144) | val_auc=0.9232, val_fpr50=0.020664, best_sel=0.923245
+DualJoint ep 12: train_loss=18.40583 (cls=0.35028, rank=0.31840, anchorA=879.16897, anchorB=20.42457) | val_auc=0.9234, val_fpr50=0.020693, best_sel=0.923445
+DualJoint: val_auc=0.9234, val_fpr50=0.020693 | test_auc=0.9222, test_fpr50=0.021392
+
+======================================================================
+SUMMARY
+======================================================================
+HLT AUC (val/test): 0.9232 / 0.9218
+Teacher AUC (val/test): 0.9544 / 0.9540
+DualFrozen AUC (val/test): 0.9230 / 0.9214
+DualJoint AUC (val/test): 0.9234 / 0.9222
+FPR@50 HLT / Teacher / DualFrozen / DualJoint (test): 0.021369 / 0.010114 / 0.021459 / 0.021392
+
+Saved dual-reco dualview results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model19_dualreco_dualview_basic/model19_dualreco_dualview_basic_150k75k150k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model19_dualreco_dualview_basic/model19_dualreco_dualview_basic_150k75k150k_seed0

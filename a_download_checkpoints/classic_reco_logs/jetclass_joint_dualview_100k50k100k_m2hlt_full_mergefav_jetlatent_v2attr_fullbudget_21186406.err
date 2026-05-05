@@ -1,0 +1,113 @@
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+Reconstructor:   0%|          | 0/90 [00:00<?, ?it/s]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+Reconstructor:   1%|          | 1/90 [00:56<1:23:08, 56.06s/it]Reconstructor:   2%|▏         | 2/90 [01:49<1:20:06, 54.62s/it]Reconstructor:   3%|▎         | 3/90 [02:43<1:18:34, 54.19s/it]Reconstructor:   4%|▍         | 4/90 [03:39<1:18:59, 55.11s/it]Reconstructor:   6%|▌         | 5/90 [04:36<1:18:48, 55.63s/it]Reconstructor:   7%|▋         | 6/90 [05:33<1:18:22, 55.98s/it]Reconstructor:   8%|▊         | 7/90 [06:29<1:17:46, 56.22s/it]Reconstructor:   9%|▉         | 8/90 [07:26<1:16:55, 56.28s/it]Reconstructor:  10%|█         | 9/90 [08:23<1:16:13, 56.46s/it]Reconstructor:  11%|█         | 10/90 [09:20<1:15:50, 56.88s/it]Reconstructor:  12%|█▏        | 11/90 [10:17<1:14:47, 56.80s/it]Reconstructor:  13%|█▎        | 12/90 [11:14<1:13:47, 56.76s/it]Reconstructor:  14%|█▍        | 13/90 [12:10<1:12:48, 56.74s/it]Reconstructor:  16%|█▌        | 14/90 [13:07<1:11:48, 56.69s/it]Reconstructor:  17%|█▋        | 15/90 [14:03<1:10:48, 56.64s/it]Reconstructor:  18%|█▊        | 16/90 [15:00<1:09:51, 56.64s/it]Reconstructor:  19%|█▉        | 17/90 [15:57<1:08:49, 56.57s/it]Reconstructor:  20%|██        | 18/90 [16:53<1:07:58, 56.65s/it]Reconstructor:  21%|██        | 19/90 [17:50<1:06:59, 56.61s/it]Reconstructor:  22%|██▏       | 20/90 [18:47<1:06:04, 56.64s/it]Reconstructor:  23%|██▎       | 21/90 [19:43<1:05:06, 56.62s/it]Reconstructor:  24%|██▍       | 22/90 [20:40<1:04:11, 56.64s/it]Reconstructor:  26%|██▌       | 23/90 [21:38<1:03:46, 57.12s/it]Reconstructor:  27%|██▋       | 24/90 [22:35<1:02:36, 56.92s/it]Reconstructor:  28%|██▊       | 25/90 [23:31<1:01:38, 56.89s/it]Reconstructor:  29%|██▉       | 26/90 [24:28<1:00:41, 56.90s/it]Reconstructor:  30%|███       | 27/90 [25:25<59:41, 56.85s/it]  Reconstructor:  31%|███       | 28/90 [26:22<58:47, 56.90s/it]Reconstructor:  32%|███▏      | 29/90 [27:19<57:53, 56.93s/it]Reconstructor:  33%|███▎      | 30/90 [28:16<56:50, 56.84s/it]Reconstructor:  34%|███▍      | 31/90 [29:13<55:54, 56.86s/it]Reconstructor:  36%|███▌      | 32/90 [30:09<54:55, 56.82s/it]Reconstructor:  37%|███▋      | 33/90 [31:06<53:55, 56.77s/it]Reconstructor:  38%|███▊      | 34/90 [32:03<52:57, 56.75s/it]Reconstructor:  39%|███▉      | 35/90 [32:59<51:55, 56.64s/it]Reconstructor:  40%|████      | 36/90 [33:56<50:59, 56.66s/it]Reconstructor:  41%|████      | 37/90 [34:53<50:06, 56.72s/it]Reconstructor:  42%|████▏     | 38/90 [35:49<49:06, 56.66s/it]Reconstructor:  43%|████▎     | 39/90 [36:46<48:09, 56.66s/it]Reconstructor:  44%|████▍     | 40/90 [37:42<47:12, 56.65s/it]Reconstructor:  46%|████▌     | 41/90 [38:39<46:16, 56.66s/it]Reconstructor:  47%|████▋     | 42/90 [39:36<45:24, 56.76s/it]Reconstructor:  48%|████▊     | 43/90 [40:33<44:34, 56.91s/it]Reconstructor:  49%|████▉     | 44/90 [41:30<43:36, 56.88s/it]Reconstructor:  50%|█████     | 45/90 [42:30<43:21, 57.82s/it]Reconstructor:  51%|█████     | 46/90 [43:27<42:09, 57.48s/it]Reconstructor:  52%|█████▏    | 47/90 [44:23<40:53, 57.05s/it]Reconstructor:  53%|█████▎    | 48/90 [45:18<39:31, 56.48s/it]Reconstructor:  54%|█████▍    | 49/90 [46:12<38:07, 55.80s/it]Reconstructor:  56%|█████▌    | 50/90 [47:07<36:55, 55.39s/it]Reconstructor:  57%|█████▋    | 51/90 [48:01<35:44, 55.00s/it]Reconstructor:  58%|█████▊    | 52/90 [48:54<34:34, 54.59s/it]Reconstructor:  59%|█████▉    | 53/90 [49:48<33:33, 54.42s/it]Reconstructor:  60%|██████    | 54/90 [50:42<32:31, 54.22s/it]Reconstructor:  61%|██████    | 55/90 [51:36<31:35, 54.17s/it]Reconstructor:  62%|██████▏   | 56/90 [52:30<30:36, 54.02s/it]Reconstructor:  63%|██████▎   | 57/90 [53:24<29:41, 54.00s/it]Reconstructor:  64%|██████▍   | 58/90 [54:18<28:48, 54.01s/it]Reconstructor:  66%|██████▌   | 59/90 [55:13<28:01, 54.24s/it]Reconstructor:  67%|██████▋   | 60/90 [56:07<27:09, 54.31s/it]Reconstructor:  68%|██████▊   | 61/90 [57:01<26:14, 54.29s/it]Reconstructor:  69%|██████▉   | 62/90 [57:55<25:16, 54.15s/it]Reconstructor:  70%|███████   | 63/90 [58:49<24:22, 54.16s/it]Reconstructor:  71%|███████   | 64/90 [59:44<23:28, 54.16s/it]Reconstructor:  72%|███████▏  | 65/90 [1:00:43<23:16, 55.84s/it]Reconstructor:  73%|███████▎  | 66/90 [1:01:39<22:16, 55.67s/it]Reconstructor:  74%|███████▍  | 67/90 [1:02:33<21:13, 55.36s/it]Reconstructor:  76%|███████▌  | 68/90 [1:03:28<20:11, 55.09s/it]Reconstructor:  77%|███████▋  | 69/90 [1:04:22<19:09, 54.74s/it]Reconstructor:  78%|███████▊  | 70/90 [1:05:17<18:20, 55.01s/it]Reconstructor:  79%|███████▉  | 71/90 [1:06:12<17:24, 54.95s/it]Reconstructor:  80%|████████  | 72/90 [1:07:08<16:33, 55.20s/it]Reconstructor:  81%|████████  | 73/90 [1:08:05<15:47, 55.71s/it]Reconstructor:  82%|████████▏ | 74/90 [1:09:02<14:56, 56.05s/it]Reconstructor:  83%|████████▎ | 75/90 [1:09:57<13:59, 55.95s/it]Reconstructor:  84%|████████▍ | 76/90 [1:10:53<13:03, 55.97s/it]Reconstructor:  86%|████████▌ | 77/90 [1:11:50<12:09, 56.12s/it]Reconstructor:  87%|████████▋ | 78/90 [1:12:46<11:15, 56.26s/it]Reconstructor:  88%|████████▊ | 79/90 [1:13:41<10:13, 55.79s/it]Reconstructor:  89%|████████▉ | 80/90 [1:14:35<09:12, 55.26s/it]Reconstructor:  90%|█████████ | 81/90 [1:15:29<08:14, 54.95s/it]Reconstructor:  91%|█████████ | 82/90 [1:16:23<07:16, 54.54s/it]Reconstructor:  92%|█████████▏| 83/90 [1:17:17<06:21, 54.46s/it]Reconstructor:  93%|█████████▎| 84/90 [1:18:11<05:26, 54.34s/it]Reconstructor:  94%|█████████▍| 85/90 [1:19:05<04:30, 54.12s/it]Reconstructor:  96%|█████████▌| 86/90 [1:20:00<03:37, 54.49s/it]Reconstructor:  97%|█████████▋| 87/90 [1:20:57<02:45, 55.07s/it]Reconstructor:  98%|█████████▊| 88/90 [1:21:51<01:49, 54.72s/it]Reconstructor:  99%|█████████▉| 89/90 [1:22:45<00:54, 54.52s/it]Reconstructor: 100%|██████████| 90/90 [1:23:38<00:00, 54.30s/it]Reconstructor: 100%|██████████| 90/90 [1:23:38<00:00, 55.76s/it]
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+StageB-DualPretrain:   0%|          | 0/35 [00:00<?, ?it/s]StageB-DualPretrain:   3%|▎         | 1/35 [00:43<24:44, 43.66s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:   6%|▌         | 2/35 [01:27<24:00, 43.67s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:   9%|▊         | 3/35 [02:11<23:17, 43.69s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  11%|█▏        | 4/35 [02:54<22:35, 43.71s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  14%|█▍        | 5/35 [03:38<21:49, 43.66s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  17%|█▋        | 6/35 [04:21<21:04, 43.60s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  20%|██        | 7/35 [05:05<20:19, 43.55s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  23%|██▎       | 8/35 [05:48<19:35, 43.52s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  26%|██▌       | 9/35 [06:31<18:49, 43.44s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  29%|██▊       | 10/35 [07:15<18:06, 43.45s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  31%|███▏      | 11/35 [07:59<17:24, 43.50s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  34%|███▍      | 12/35 [08:42<16:39, 43.48s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  37%|███▋      | 13/35 [09:25<15:55, 43.45s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  40%|████      | 14/35 [10:09<15:12, 43.46s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  43%|████▎     | 15/35 [10:52<14:28, 43.41s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  46%|████▌     | 16/35 [11:36<13:44, 43.40s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  49%|████▊     | 17/35 [12:19<13:00, 43.34s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  51%|█████▏    | 18/35 [13:02<12:16, 43.32s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  54%|█████▍    | 19/35 [13:45<11:32, 43.28s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  57%|█████▋    | 20/35 [14:29<10:49, 43.32s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  60%|██████    | 21/35 [15:12<10:06, 43.34s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  63%|██████▎   | 22/35 [15:56<09:24, 43.40s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  66%|██████▌   | 23/35 [16:39<08:40, 43.36s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  69%|██████▊   | 24/35 [17:22<07:56, 43.32s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  71%|███████▏  | 25/35 [18:05<07:13, 43.34s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  74%|███████▍  | 26/35 [18:49<06:29, 43.29s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  77%|███████▋  | 27/35 [19:32<05:46, 43.26s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  80%|████████  | 28/35 [20:15<05:03, 43.33s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  83%|████████▎ | 29/35 [20:59<04:19, 43.32s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  86%|████████▌ | 30/35 [21:42<03:36, 43.31s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageB-DualPretrain:  86%|████████▌ | 30/35 [22:25<03:44, 44.85s/it]
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:   0%|          | 0/45 [00:00<?, ?it/s]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:   2%|▏         | 1/45 [01:06<48:47, 66.53s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:   4%|▍         | 2/45 [02:12<47:37, 66.45s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:   7%|▋         | 3/45 [03:19<46:31, 66.46s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:   9%|▉         | 4/45 [04:25<45:23, 66.42s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  11%|█         | 5/45 [05:32<44:19, 66.48s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  13%|█▎        | 6/45 [06:38<43:11, 66.45s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  16%|█▌        | 7/45 [07:45<42:06, 66.49s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  18%|█▊        | 8/45 [08:51<41:01, 66.53s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  20%|██        | 9/45 [09:58<39:53, 66.49s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  22%|██▏       | 10/45 [11:04<38:48, 66.52s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  24%|██▍       | 11/45 [12:11<37:42, 66.53s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  27%|██▋       | 12/45 [13:18<36:36, 66.55s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  29%|██▉       | 13/45 [14:24<35:30, 66.59s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  31%|███       | 14/45 [15:31<34:24, 66.60s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  33%|███▎      | 15/45 [16:37<33:17, 66.58s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  36%|███▌      | 16/45 [17:44<32:11, 66.60s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  38%|███▊      | 17/45 [18:51<31:04, 66.60s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  40%|████      | 18/45 [19:57<29:59, 66.64s/it]/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(
+StageC-Joint:  40%|████      | 18/45 [21:04<31:37, 70.26s/it]
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
+  warnings.warn(

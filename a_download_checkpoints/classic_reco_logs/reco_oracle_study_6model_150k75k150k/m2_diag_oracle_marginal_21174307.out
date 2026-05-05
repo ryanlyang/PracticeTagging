@@ -1,0 +1,42 @@
+============================================================
+M2 Oracle-Study Marginal Signal Diagnostic
+Variant:      D
+Run dir:      checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0
+Split:        test
+Target TPRs:  0.30,0.50
+Out dir:      checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal
+============================================================
+ python analyze_m2_joint_baseline_marginal_signal.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0 --split test --target_tprs 0.30\,0.50 --n_conf_bins 10 --n_disagree_bins 10 --gate_c 0.2 --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_marginal_signal_report_oracle_D.json --save_per_jet_npz
+============================================================
+Marginal Signal Report
+============================================================
+scores_npz: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/fusion_scores_val_test.npz
+split: test
+n_jets: 150000
+help/hurt/tie frac: 0.5403 / 0.4597 / 0.0000
+mean delta BCE (joint-hlt): -0.006861 (help mean=0.109264, hurt mean=0.113519)
+[hlt] AUC=0.921389
+  FPR@TPR30: 0.005528
+  FPR@TPR50: 0.021592
+[joint] AUC=0.924829
+  FPR@TPR30: 0.004862
+  FPR@TPR50: 0.019327
+[oracle_best_of_two] AUC=0.944979
+  FPR@TPR30: 0.002171
+  FPR@TPR50: 0.010296
+[learned_gate_hard] AUC=0.924327
+  FPR@TPR30: 0.005328
+  FPR@TPR50: 0.020087
+[learned_gate_softmix] AUC=0.924952
+  FPR@TPR30: 0.004848
+  FPR@TPR50: 0.019807
+Saved:
+  /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_marginal_signal_report_oracle_D.json
+  /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_by_hlt_confidence.csv
+  /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_by_hlt_joint_disagreement.csv
+
+Done. Outputs:
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_marginal_signal_report_oracle_D.json
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_by_hlt_confidence.csv
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_by_hlt_joint_disagreement.csv
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_study/model2_joint_delta005_fulltrain_prog_unfreeze_oracle_D_150k75k150k_seed0/marginal_signal/test_marginal_signal_perjet.npz

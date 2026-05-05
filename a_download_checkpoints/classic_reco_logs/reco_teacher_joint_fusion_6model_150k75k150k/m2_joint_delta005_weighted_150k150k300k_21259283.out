@@ -1,0 +1,6 @@
+============================================================
+Model-2 Joint weighted (L_delta=0.05)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0
+Split: train=150000, val=150000, test=300000, n_train_jets=600000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k --run_name model2_joint_delta005_weighted_150k150k300k_seed0 --n_train_jets 600000 --n_train_split 150000 --n_val_split 150000 --n_test_split 300000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --selection_metric auc --stageB_lambda_rank 0.0 --stageB_lambda_cons 0.0 --stageC_lr_dual 1e-5 --stageC_lr_reco 5e-6 --lambda_reco 0.4 --lambda_cons 0.06 --stageC_lambda_delta 0.05 --stageC_delta_tau 0.05 --stageC_delta_lambda_fp 3.0 --stageC_delta_warmup_epochs 8 --added_target_scale 0.90 --save_fusion_scores --disable_final_kd --device cuda

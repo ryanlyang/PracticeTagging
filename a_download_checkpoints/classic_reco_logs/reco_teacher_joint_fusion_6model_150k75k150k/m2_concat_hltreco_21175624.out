@@ -1,0 +1,32 @@
+============================================================
+M2 Concat(HLT + Reco) from Stage2 Reconstructor
+Source run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Save dir:   checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_concat_hltreco_stage2/model2_concat_hltreco_stage2_150k75k150k_seed0
+Pretrain/Joint epochs: 45/25
+============================================================
+ python train_m2_concat_hltreco_stage2_frozen_then_joint.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0 --train_path ./data --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_concat_hltreco_stage2 --run_name model2_concat_hltreco_stage2_150k75k150k_seed0 --device cuda --num_workers 6 --batch_size 512 --seed 0 --max_constits 100 --corrected_weight_floor 1e-4 --pretrain_epochs 45 --pretrain_patience 10 --joint_epochs 25 --joint_patience 8 --joint_min_epochs 8 --joint_lr_model 2e-4 --joint_lr_reco 1e-4 --joint_weight_decay 1e-4 --joint_warmup_epochs 3 --joint_lambda_reco 0.4 --joint_lambda_rank 0.0 --joint_lambda_cons 0.06 --selection_metric auc --save_fusion_scores
+Device: cuda
+Save dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_concat_hltreco_stage2/model2_concat_hltreco_stage2_150k75k150k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing features...
+
+======================================================================
+STEP 1: BASELINE HLT EVAL
+======================================================================
+
+======================================================================
+STEP 2: PRE-JOINT CONCAT TAGGER (FROZEN STAGE2 RECO)
+======================================================================
+ConcatHLTReco-PreJoint ep 5: train_auc=0.9091, val_auc=0.9129, val_fpr50=0.026806, best_auc=0.9129, fpr50@best=0.026806
+ConcatHLTReco-PreJoint ep 10: train_auc=0.9175, val_auc=0.9209, val_fpr50=0.020676, best_auc=0.9209, fpr50@best=0.020676
+ConcatHLTReco-PreJoint ep 15: train_auc=0.9221, val_auc=0.9203, val_fpr50=0.020320, best_auc=0.9216, fpr50@best=0.020364
+ConcatHLTReco-PreJoint ep 20: train_auc=0.9250, val_auc=0.9193, val_fpr50=0.022059, best_auc=0.9244, fpr50@best=0.018702
+ConcatHLTReco-PreJoint ep 25: train_auc=0.9295, val_auc=0.9240, val_fpr50=0.019563, best_auc=0.9244, fpr50@best=0.018702
+ConcatHLTReco-PreJoint ep 30: train_auc=0.9339, val_auc=0.9238, val_fpr50=0.018817, best_auc=0.9251, fpr50@best=0.018504
+ConcatHLTReco-PreJoint ep 35: train_auc=0.9379, val_auc=0.9238, val_fpr50=0.020294, best_auc=0.9251, fpr50@best=0.018504
+Early stopping ConcatHLTReco-PreJoint at epoch 38
+
+======================================================================
+STEP 3: JOINT FINETUNE CONCAT (UNFREEZE RECO + CONCAT TAGGER)
+======================================================================

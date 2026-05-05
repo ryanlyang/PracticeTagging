@@ -1,0 +1,41 @@
+============================================================
+m33 prior probe (larger debug stress-test)
+Run:   checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0
+Split: train=50000, val=20000, test=30000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_prior_probe.py --save_dir checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe --run_name m33_prior_probe_debug_seed0 --n_train_jets 120000 --n_train_split 50000 --n_val_split 20000 --n_test_split 30000 --offset_jets 0 --max_constits 100 --num_workers 1 --batch_size 80 --seed 0 --device cuda --teacher_epochs 20 --teacher_patience 6 --prior_epochs 60 --prior_patience 14 --critic_epochs 20 --n_prior_samples_per_class 4000 --roundtrip_eval_count 5000
+========================================================================
+m33 Prior Probe
+Run: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0
+========================================================================
+Split sizes: train=50000 val=20000 test=30000
+ProbeTeacher ep 5: train_auc=0.9330, val_auc=0.9404, val_fpr50=0.020813, best_auc=0.9412, fpr50@best=0.018686
+ProbeTeacher ep 10: train_auc=0.9446, val_auc=0.9398, val_fpr50=0.015238, best_auc=0.9453, fpr50@best=0.015923
+ProbeTeacher ep 15: train_auc=0.9535, val_auc=0.9481, val_fpr50=0.014406, best_auc=0.9488, fpr50@best=0.014508
+ProbeTeacher ep 20: train_auc=0.9584, val_auc=0.9485, val_fpr50=0.013631, best_auc=0.9488, fpr50@best=0.013727
+ProbeTeacher test AUC=0.9496
+OfflinePrior ep 001: train=20.58377 set=2.90100 cnt=17.68276 val=18.48655 best=18.48655@1
+OfflinePrior ep 002: train=17.57466 set=1.61967 cnt=15.95498 val=20.24817 best=18.48655@1
+OfflinePrior ep 004: train=10.43085 set=1.41627 cnt=9.01457 val=25.20593 best=18.48655@1
+OfflinePrior ep 006: train=7.56315 set=1.24427 cnt=6.31887 val=18.29338 best=18.29338@6
+OfflinePrior ep 008: train=6.73845 set=1.20508 cnt=5.53336 val=23.97282 best=17.93399@7
+OfflinePrior ep 010: train=6.24721 set=1.18014 cnt=5.06706 val=19.29494 best=17.93399@7
+OfflinePrior ep 012: train=5.56875 set=1.16892 cnt=4.39981 val=29.99386 best=17.93399@7
+OfflinePrior ep 014: train=5.45835 set=1.15249 cnt=4.30585 val=22.66999 best=17.93399@7
+OfflinePrior ep 016: train=5.10278 set=1.14565 cnt=3.95710 val=39.48435 best=17.93399@7
+OfflinePrior ep 018: train=4.73064 set=1.15037 cnt=3.58025 val=46.49359 best=17.93399@7
+OfflinePrior ep 020: train=4.34902 set=1.14290 cnt=3.20610 val=47.22574 best=17.93399@7
+OfflinePrior early stop at ep 21
+========================================================================
+m33 Prior Probe Summary
+========================================================================
+Overall status: FAIL
+Teacher AUC(test): 0.9496
+AE val set/count: 1.8886 / 16.0454
+Overfit ratios set/count: 1.002 / 0.990
+Critic val AUC(real-vs-gen): 1.0000
+Class sanity separation(top-bg): 0.0000
+Roundtrip total mean/p90: 7.5887 / 8.7565
+Gates: {'best_epoch_not_too_early': 'PASS', 'overfit_set_ratio': 'PASS', 'overfit_count_ratio': 'PASS', 'critic_real_vs_gen_auc': 'FAIL', 'class_sanity_separation': 'FAIL', 'roundtrip_total_mean': 'FAIL'}
+Saved: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0
+Done: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0

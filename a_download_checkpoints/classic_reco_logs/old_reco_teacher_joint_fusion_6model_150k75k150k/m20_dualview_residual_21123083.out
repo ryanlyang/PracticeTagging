@@ -1,0 +1,49 @@
+============================================================
+Model-20 Dualview Residual (m6 reco + m2 pre-joint reco)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model20_dualview_residual_m2m6/model20_dualview_residual_m2m6_150k75k150k_seed0
+m2_run_dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0
+m6_run_dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected/model6_concat_stagea_corrected_150k75k150k_seed0
+Selection metric: val_auc
+============================================================
+ python train_m20_dualview_residual_m2m6.py --m2_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0 --m6_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected/model6_concat_stagea_corrected_150k75k150k_seed0 --m2_reco_ckpt offline_reconstructor_stage2.pt --m6_reco_ckpt offline_reconstructor_stageA.pt --m2_baseline_ckpt baseline.pt --teacher_ckpt teacher.pt --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model20_dualview_residual_m2m6 --run_name model20_dualview_residual_m2m6_150k75k150k_seed0 --seed 0 --device cuda --num_workers 6 --reco_eval_batch_size 256 --corrected_weight_floor 0.03 --target_tpr 0.50 --frozen_epochs 45 --frozen_patience 12 --frozen_batch_size 256 --frozen_lr 3e-4 --frozen_weight_decay 1e-4 --frozen_warmup_epochs 5 --joint_epochs 12 --joint_patience 6 --joint_batch_size 128 --joint_lr_model 1e-4 --joint_lr_reco_a 2e-6 --joint_lr_reco_b 2e-6 --joint_weight_decay 1e-4 --joint_warmup_epochs 3 --lambda_cls 1.0 --lambda_kd 0.10 --lambda_residual 0.05 --lambda_gate 0.01 --lambda_anchor_a 0.02 --lambda_anchor_b 0.02 --kd_temp 2.5 --select_metric auc
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model20_dualview_residual_m2m6/model20_dualview_residual_m2m6_150k75k150k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing standardized HLT features...
+
+======================================================================
+STEP 1: BUILD FROZEN TWO-VIEW TENSORS
+======================================================================
+Building corrected views (train)...
+Building corrected views (val)...
+Building corrected views (test)...
+
+======================================================================
+STEP 2: TRAIN FROZEN DUALVIEW RESIDUAL (LABEL-FIRST)
+======================================================================
+Frozen ep 5: train_total=0.68373 (cls=0.31953, kd=3.27767, res=0.70268, gate=0.12994) | val_auc=0.9238, val_fpr50=0.019492, best_sel=0.924310
+Frozen ep 10: train_total=0.68132 (cls=0.31997, kd=3.26885, res=0.67089, gate=0.09156) | val_auc=0.9240, val_fpr50=0.018896, best_sel=0.924311
+Frozen ep 15: train_total=0.67926 (cls=0.31933, kd=3.26413, res=0.65535, gate=0.07558) | val_auc=0.9239, val_fpr50=0.019304, best_sel=0.924620
+Frozen ep 20: train_total=0.67843 (cls=0.31946, kd=3.26123, res=0.64395, gate=0.06522) | val_auc=0.9243, val_fpr50=0.018780, best_sel=0.924620
+Early stopping Frozen at epoch 23
+FrozenResidual: val_auc=0.9246, val_fpr50=0.019055 | test_auc=0.9226, test_fpr50=0.020475
+
+======================================================================
+STEP 3: LIGHT JOINT FINETUNE (RECO-A + RECO-B + RESIDUAL)
+======================================================================
+Joint ep 5: train_total=0.67893 (cls=0.31993, kd=3.26045, res=0.64226, gate=0.08440, ancA=0.00000, ancB=0.00000) | val_auc=0.9242, val_fpr50=0.019052, best_sel=0.924529
+Joint ep 10: train_total=0.67711 (cls=0.31990, kd=3.25441, res=0.61890, gate=0.08222, ancA=0.00000, ancB=0.00000) | val_auc=0.9245, val_fpr50=0.018696, best_sel=0.924555
+JointResidual: val_auc=0.9246, val_fpr50=0.018883 | test_auc=0.9226, test_fpr50=0.020539
+
+======================================================================
+SUMMARY
+======================================================================
+HLT AUC (val/test): 0.9235 / 0.9214
+Teacher AUC (val/test): 0.9060 / 0.9047
+ResidualFrozen AUC (val/test): 0.9246 / 0.9226
+ResidualJoint AUC (val/test): 0.9246 / 0.9226
+FPR@50 HLT / Teacher / ResidualFrozen / ResidualJoint (test): 0.021587 / 0.029226 / 0.020475 / 0.020539
+
+Saved model-20 dualview residual results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model20_dualview_residual_m2m6/model20_dualview_residual_m2m6_150k75k150k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model20_dualview_residual_m2m6/model20_dualview_residual_m2m6_150k75k150k_seed0

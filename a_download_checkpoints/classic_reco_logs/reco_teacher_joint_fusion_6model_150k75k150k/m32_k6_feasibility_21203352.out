@@ -1,0 +1,98 @@
+============================================================
+Model-32 Feasibility Pipeline (K0=64 -> top8 shortlist)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility/model32_k6_feasibility_150k75k150k_seed0
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m32_feasibility.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility --run_name model32_k6_feasibility_150k75k150k_seed0 --n_train_jets 375000 --n_train_split 100000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --batch_size 80 --num_workers 6 --seed 0 --device cuda --save_fusion_scores --proposer_k0_train 64 --proposer_top_m_train 8 --k0_infer 64 --top_m_infer 8
+========================================================================
+Model-32 Feasibility Pipeline
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility/model32_k6_feasibility_150k75k150k_seed0
+Shortlist config: train K0=64 -> M=8; infer K0=64 -> M=8; refine(train,infer)=(0,0)
+========================================================================
+Generating pseudo-HLT...
+HLT stats: avg_offline=54.30, avg_hlt=29.18, merged=8037303, eff_lost=1381226
+Computing features for teacher/baseline...
+Split sizes: Train=100000, Val=75000, Test=150000
+
+========================================================================
+STEP 1: Teacher + HLT baseline
+========================================================================
+Teacher ep 5: train_auc=0.9387, val_auc=0.9464, val_fpr50=0.013430, best_auc=0.9464, fpr50@best=0.013430
+Teacher ep 10: train_auc=0.9461, val_auc=0.9474, val_fpr50=0.012625, best_auc=0.9479, fpr50@best=0.012690
+Teacher ep 15: train_auc=0.9513, val_auc=0.9516, val_fpr50=0.010234, best_auc=0.9516, fpr50@best=0.010234
+Teacher ep 20: train_auc=0.9548, val_auc=0.9520, val_fpr50=0.010496, best_auc=0.9530, fpr50@best=0.009736
+Teacher ep 25: train_auc=0.9585, val_auc=0.9514, val_fpr50=0.010371, best_auc=0.9532, fpr50@best=0.008861
+Teacher ep 30: train_auc=0.9638, val_auc=0.9509, val_fpr50=0.011349, best_auc=0.9532, fpr50@best=0.008861
+Teacher ep 35: train_auc=0.9685, val_auc=0.9466, val_fpr50=0.012864, best_auc=0.9532, fpr50@best=0.008861
+Early stopping Teacher at epoch 36
+Baseline ep 5: train_auc=0.9041, val_auc=0.9138, val_fpr50=0.023889, best_auc=0.9138, fpr50@best=0.023889
+Baseline ep 10: train_auc=0.9131, val_auc=0.9152, val_fpr50=0.025304, best_auc=0.9182, fpr50@best=0.022503
+Baseline ep 15: train_auc=0.9180, val_auc=0.9185, val_fpr50=0.022204, best_auc=0.9206, fpr50@best=0.021442
+Baseline ep 20: train_auc=0.9227, val_auc=0.9200, val_fpr50=0.021592, best_auc=0.9209, fpr50@best=0.021472
+Baseline ep 25: train_auc=0.9278, val_auc=0.9203, val_fpr50=0.020425, best_auc=0.9213, fpr50@best=0.020128
+Baseline ep 30: train_auc=0.9331, val_auc=0.9146, val_fpr50=0.023101, best_auc=0.9213, fpr50@best=0.020128
+Baseline ep 35: train_auc=0.9385, val_auc=0.9192, val_fpr50=0.020480, best_auc=0.9213, fpr50@best=0.020128
+Early stopping Baseline at epoch 35
+Teacher test AUC=0.9516 | Baseline test AUC=0.9194
+Confidence weights: train_mean=1.0000, val_mean=1.0000, train_p95=1.276
+
+========================================================================
+STEP 2: Offline latent AE + class priors
+========================================================================
+OfflinePrior ep 001: train=6.25484 set=1.60882 cnt=15.48664 val=10.29051 best=10.29051@1
+OfflinePrior ep 002: train=4.40776 set=1.20825 cnt=10.66488 val=13.95155 best=10.29051@1
+OfflinePrior ep 004: train=3.31006 set=1.17386 cnt=7.12041 val=15.11170 best=10.29051@1
+OfflinePrior ep 006: train=2.23494 set=1.22412 cnt=3.36917 val=15.39152 best=10.29051@1
+OfflinePrior ep 008: train=2.55181 set=1.27397 cnt=4.25923 val=14.18951 best=10.29051@1
+OfflinePrior ep 010: train=2.17114 set=1.26619 cnt=3.01621 val=15.09316 best=10.29051@1
+OfflinePrior ep 012: train=1.90841 set=1.20948 cnt=2.32941 val=15.59027 best=10.29051@1
+OfflinePrior ep 014: train=1.84543 set=1.20580 cnt=2.13174 val=15.09537 best=10.29051@1
+OfflinePrior early stop at ep 15
+
+========================================================================
+STEP 3: Offline->HLT degrader
+========================================================================
+Degrader ep 001: train=4.64120 set=2.12849 cnt=8.37570 val=8.15088 best=8.15088@1
+Degrader ep 002: train=3.44435 set=1.67493 cnt=5.89808 val=8.57904 best=8.15088@1
+Degrader ep 004: train=3.12810 set=1.63180 cnt=4.98767 val=9.07072 best=8.15088@1
+Degrader ep 006: train=2.92147 set=1.61892 cnt=4.34183 val=8.60040 best=8.15088@1
+Degrader ep 008: train=2.78428 set=1.60686 cnt=3.92472 val=9.25087 best=8.15088@1
+Degrader ep 010: train=2.69711 set=1.59466 cnt=3.67483 val=8.81084 best=8.15088@1
+Degrader ep 012: train=2.62588 set=1.58989 cnt=3.45329 val=8.29104 best=8.15088@1
+Degrader early stop at ep 13
+
+========================================================================
+STEP 4: HLT->latent proposer (best-of-K)
+========================================================================
+Proposer ep 001: train=12.58277 val=10.40246 best=10.40246@1 | best_set=2.30507 prescore=-111.62051 count=24.93311 div=0.00022 margin=0.19928 kl=96.51647 hlt=2.99789
+Proposer ep 002: train=10.53231 val=10.39744 best=10.39744@2 | best_set=2.07836 prescore=-148.42282 count=24.91555 div=0.00034 margin=0.19918 kl=37.89376 hlt=2.82465
+Proposer ep 004: train=10.42034 val=10.75332 best=10.39744@2 | best_set=2.05726 prescore=-147.60738 count=24.34000 div=0.00035 margin=0.20043 kl=39.78850 hlt=2.81195
+Proposer ep 006: train=10.37401 val=11.09847 best=10.39744@2 | best_set=2.04622 prescore=-147.10946 count=24.09542 div=0.00035 margin=0.19909 kl=40.77353 hlt=2.80329
+Proposer ep 008: train=10.36305 val=11.36046 best=10.39744@2 | best_set=2.04401 prescore=-146.77633 count=24.01001 div=0.00033 margin=0.19877 kl=41.22665 hlt=2.80094
+Proposer ep 010: train=10.34467 val=11.23714 best=10.39744@2 | best_set=2.03887 prescore=-146.72957 count=23.93481 div=0.00033 margin=0.19774 kl=41.43515 hlt=2.80042
+Proposer ep 012: train=10.33627 val=11.40062 best=10.39744@2 | best_set=2.03565 prescore=-146.66098 count=23.89560 div=0.00033 margin=0.19894 kl=41.55957 hlt=2.80125
+Proposer ep 014: train=10.33175 val=11.16958 best=10.39744@2 | best_set=2.03400 prescore=-146.58035 count=23.84965 div=0.00033 margin=0.19927 kl=41.85767 hlt=2.79986
+Proposer ep 016: train=10.32722 val=11.52038 best=10.39744@2 | best_set=2.03228 prescore=-146.45321 count=23.81826 div=0.00033 margin=0.19755 kl=42.08890 hlt=2.79688
+Proposer ep 018: train=10.31930 val=11.67915 best=10.39744@2 | best_set=2.02907 prescore=-146.42281 count=23.79463 div=0.00033 margin=0.19710 kl=42.14459 hlt=2.79617
+Proposer early stop at ep 18
+
+========================================================================
+STEP 5: Feasibility features + final classifier
+========================================================================
+FinalClf ep 001: train_loss=0.58805 train_auc=0.7364 val_auc=0.9109 best_auc=0.9109@1
+FinalClf ep 002: train_loss=0.39798 train_auc=0.8993 val_auc=0.9170 best_auc=0.9170@2
+FinalClf ep 004: train_loss=0.36720 train_auc=0.9145 val_auc=0.9188 best_auc=0.9188@4
+FinalClf ep 006: train_loss=0.35990 train_auc=0.9185 val_auc=0.9204 best_auc=0.9204@6
+FinalClf ep 008: train_loss=0.35024 train_auc=0.9237 val_auc=0.9203 best_auc=0.9204@6
+FinalClf ep 010: train_loss=0.34834 train_auc=0.9246 val_auc=0.9199 best_auc=0.9204@6
+FinalClf ep 012: train_loss=0.34505 train_auc=0.9262 val_auc=0.9204 best_auc=0.9204@6
+FinalClf ep 014: train_loss=0.34353 train_auc=0.9272 val_auc=0.9200 best_auc=0.9204@6
+FinalClf ep 016: train_loss=0.34509 train_auc=0.9265 val_auc=0.9202 best_auc=0.9204@6
+FinalClf ep 018: train_loss=0.34439 train_auc=0.9268 val_auc=0.9203 best_auc=0.9204@6
+FinalClf early stop at ep 18
+
+========================================================================
+FINAL TEST
+========================================================================
+Teacher AUC=0.9516 FPR50=0.010669 | HLT baseline AUC=0.9194 FPR50=0.021872 | m32 feasibility AUC=0.9184 FPR50=0.022058
+Saved: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility/model32_k6_feasibility_150k75k150k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility/model32_k6_feasibility_150k75k150k_seed0

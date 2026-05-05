@@ -1,0 +1,17 @@
+============================================================
+m33 D_hard / D_soft probe v2 (debug)
+Run:   checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_dsoft_probe_v2/m33_dhard_dsoft_probe_v2_debug_seed0
+Split: train=20000, val=8000, test=12000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_dhard_dsoft_probe_v2.py --save_dir checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_dsoft_probe_v2 --run_name m33_dhard_dsoft_probe_v2_debug_seed0 --n_train_jets 70000 --n_train_split 20000 --n_val_split 8000 --n_test_split 12000 --offset_jets 0 --max_constits 100 --num_workers 1 --batch_size 80 --seed 0 --device cuda --degrader_epochs 32 --degrader_patience 6 --degrader_loss_w_count 0.30 --degrader_loss_w_pt 0.18 --degrader_loss_w_mass 0.10 --degrader_aug_prob 0.80 --degrader_aug_pt_sigma 0.08 --degrader_aug_eta_sigma 0.05 --degrader_aug_phi_sigma 0.05 --degrader_aug_e_sigma 0.08 --degrader_aug_drop_prob 0.08 --degrader_rank_k 6 --degrader_rank_every 1 --degrader_rank_loss_w 0.30 --degrader_rank_temp 0.25 --degrader_rank_feas_w 0.10 --degrader_rank_feas_temp 0.08 --det_eval_count 2500 --pert_eval_count 2000 --cand_eval_count 1400 --cand_per_jet 24 --rank_top_m 8 --rank_eval_batch_size 256 --refine_eval_jets 350 --refine_selected_k 6 --refine_steps 6 --refine_lr 0.03
+========================================================================
+m33 D_hard / D_soft probe v2
+Run: checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_dsoft_probe_v2/m33_dhard_dsoft_probe_v2_debug_seed0
+========================================================================
+Split sizes: train=20000 val=8000 test=12000
+Building deterministic HLT from offline...
+HLT stats: avg_offline=54.22, avg_hlt=29.11
+Training D_soft surrogate (degrader v2)...
+DsoftV2 ep 001: train=226940.40814 rec=7.47772 rank=756443.08311 set=2.90837 cnt=14.49793 pt=0.80528 mass=0.75021 val=7.94172 best=7.94172@1
+DsoftV2 ep 002: train=6447.19396 rec=6.00234 rank=21470.63746 set=1.49655 cnt=14.37098 pt=0.75923 mass=0.57837 val=7.40437 best=7.40437@2
+DsoftV2 ep 004: train=51571.35569 rec=5.50762 rank=171886.15463 set=1.40947 cnt=13.02378 pt=0.71128 mass=0.62992 val=5.58280 best=5.58280@4

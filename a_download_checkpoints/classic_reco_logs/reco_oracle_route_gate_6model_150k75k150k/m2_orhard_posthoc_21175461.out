@@ -1,0 +1,10 @@
+============================================================
+M2 Oracle-Route Posthoc Hard-Route Analysis
+Run dir:  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_route_gate_moe/model2_oracle_route_gate_moe_150k75k150k_seed0
+Scores:   checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_route_gate_moe/model2_oracle_route_gate_moe_150k75k150k_seed0/router_gate_scores_val_test.npz
+Objective:fpr50
+Directions:both
+Threshold grid:2001
+Out dir:  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_route_gate_moe/model2_oracle_route_gate_moe_150k75k150k_seed0/router_gate_posthoc_hardroute
+============================================================
+ python analyze_m2_oracle_route_gate_posthoc_hardroute.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_route_gate_moe/model2_oracle_route_gate_moe_150k75k150k_seed0 --scores_npz checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_route_gate_moe/model2_oracle_route_gate_moe_150k75k150k_seed0/router_gate_scores_val_test.npz --objective fpr50 --directions both --num_thresholds 2001 --topk_sweep_rows 200 --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_route_gate_moe/model2_oracle_route_gate_moe_150k75k150k_seed0/router_gate_posthoc_hardroute --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_route_gate_moe/model2_oracle_route_gate_moe_150k75k150k_seed0/router_gate_posthoc_hardroute/hardroute_posthoc_report.json

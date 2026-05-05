@@ -1,0 +1,20 @@
+============================================================
+m33 D_hard / D_soft probe (debug)
+Run:   checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_dsoft_probe/m33_dhard_dsoft_probe_debug_seed0
+Split: train=20000, val=8000, test=12000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_dhard_dsoft_probe.py --save_dir checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_dsoft_probe --run_name m33_dhard_dsoft_probe_debug_seed0 --n_train_jets 70000 --n_train_split 20000 --n_val_split 8000 --n_test_split 12000 --offset_jets 0 --max_constits 100 --num_workers 1 --batch_size 80 --seed 0 --device cuda --degrader_epochs 32 --degrader_patience 6 --det_eval_count 2500 --pert_eval_count 2000 --cand_eval_count 1400 --cand_per_jet 24 --rank_top_m 8 --refine_eval_jets 350 --refine_selected_k 6 --refine_steps 6 --refine_lr 0.03
+========================================================================
+m33 D_hard / D_soft probe
+Run: checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_dsoft_probe/m33_dhard_dsoft_probe_debug_seed0
+========================================================================
+Split sizes: train=20000 val=8000 test=12000
+Building deterministic HLT from offline...
+HLT stats: avg_offline=54.22, avg_hlt=29.11
+Training D_soft surrogate (degrader)...
+Degrader ep 001: train=7.11590 set=3.56205 cnt=11.84619 val=6.19236 best=6.19236@1
+Degrader ep 002: train=4.90133 set=1.92558 cnt=9.91915 val=6.11152 best=6.11152@2
+Degrader ep 004: train=3.79447 set=1.74184 cnt=6.84211 val=6.56679 best=6.11152@2
+Degrader ep 006: train=3.51245 set=1.68849 cnt=6.07988 val=7.85030 best=6.11152@2
+Degrader ep 008: train=3.43150 set=1.67211 cnt=5.86462 val=8.57340 best=6.11152@2
+Degrader early stop at ep 8

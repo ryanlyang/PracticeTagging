@@ -1,0 +1,151 @@
+============================================================
+JetClass Joint Dual-View V1 (m2-style HLT, dominant-token merge copy)
+Job ID: 21174962
+Node: skl-a-32
+Run: checkpoints/jetclass_joint_dualview/jetclass_joint_v1_100k50k100k_m2hlt
+Split: train=100000, val=50000, test=100000
+============================================================
+ python -u train_jetclass_joint_dualview_stage2_unmergeonly_m2hlt.py --data_dir /home/ryreu/atlas/PracticeTagging/data/jetclass_part0 --save_dir checkpoints/jetclass_joint_dualview --run_name jetclass_joint_v1_100k50k100k_m2hlt --seed 52 --device cuda --num_workers 2 --feature_mode full --max_constits 128 --train_files_per_class 8 --val_files_per_class 1 --test_files_per_class 1 --n_train_jets 100000 --n_val_jets 50000 --n_test_jets 100000 --batch_size 512 --epochs 30 --patience 8 --lr 7e-4 --weight_decay 1e-5 --warmup_epochs 3 --embed_dim 128 --num_heads 8 --num_layers 6 --ff_dim 512 --dropout 0.1 --target_class HToBB --background_class ZJetsToNuNu --hlt_pt_threshold 1.5 --merge_prob_scale 1.00 --reassign_scale 1.00 --smear_scale 1.00 --eff_plateau_barrel 0.98 --eff_plateau_endcap 0.94 --eff_turnon_pt 1.6 --eff_width_pt 0.20 --reco_batch_size 96 --stageA_epochs 90 --stageA_patience 18 --stageA_lr 2e-4 --stageA_weight_decay 1e-5 --stageA_warmup_epochs 5 --stageA_stage1_epochs 20 --stageA_stage2_epochs 55 --stageA_min_full_scale_epochs 5 --loss_set_mode hungarian --loss_w_set 1.0 --loss_w_phys 0.0 --loss_w_pt_ratio 0.0 --loss_w_m_ratio 0.0 --loss_w_e_ratio 0.0 --loss_w_budget 0.65 --loss_w_sparse 0.02 --loss_w_local 0.05 --stageB_epochs 35 --stageB_patience 10 --stageB_min_epochs 10 --stageB_lr_dual 4e-4 --stageC_epochs 45 --stageC_patience 12 --stageC_min_epochs 15 --stageC_lr_dual 2e-4 --stageC_lr_reco 1e-4 --lambda_reco 0.4 --lambda_cons 0.06 --added_target_scale 0.90
+Device: cuda
+Save dir: /home/ryreu/atlas/PracticeTagging/checkpoints/jetclass_joint_dualview/jetclass_joint_v1_100k50k100k_m2hlt
+Classes:
+  HToBB        : 10 files
+  HToCC        : 10 files
+  HToGG        : 10 files
+  HToWW2Q1L    : 10 files
+  HToWW4Q      : 10 files
+  TTBar        : 10 files
+  TTBarLep     : 10 files
+  WToQQ        : 10 files
+  ZJetsToNuNu  : 10 files
+  ZToQQ        : 10 files
+Loading train split...
+Loading val split...
+Loading test split...
+Loaded jets: train=100000, val=50000, test=100000 | mean constituents train=39.37
+Building HLT-like corrupted splits...
+Constituent means | offline/hlt: train=39.37/26.11 val=39.34/26.09 test=39.34/26.09
+HLT drop decomposition (train): eff=0.388, thr=0.305, merge=0.307, mean_merges/jet=4.077
+Non-priv target setup: added_target_scale=0.900, mean_true_added_raw(train)=13.262, mean_target_added(train)=11.936
+
+======================================================================
+STEP 1: TEACHER + BASELINE (JETCLASS TRANSFORMER)
+======================================================================
+teacher_offline ep 1: train(loss/acc/auc)=1.4439/0.4777/0.8748 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1639/0.5768/0.9143/0.026200/0.009200 best=0.9143
+teacher_offline ep 2: train(loss/acc/auc)=1.1536/0.5802/0.9154 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0590/0.6236/0.9307/0.025600/0.007000 best=0.9307
+teacher_offline ep 3: train(loss/acc/auc)=1.0424/0.6249/0.9297 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0258/0.6262/0.9359/0.017800/0.006600 best=0.9359
+teacher_offline ep 4: train(loss/acc/auc)=0.9949/0.6387/0.9354 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.9695/0.6483/0.9405/0.015400/0.006000 best=0.9405
+teacher_offline ep 5: train(loss/acc/auc)=0.9661/0.6502/0.9388 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0654/0.6058/0.9314/0.018200/0.008000 best=0.9405
+teacher_offline ep 6: train(loss/acc/auc)=0.9420/0.6573/0.9416 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.9711/0.6489/0.9391/0.017000/0.007200 best=0.9405
+teacher_offline ep 7: train(loss/acc/auc)=0.9287/0.6615/0.9428 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.9471/0.6550/0.9428/0.015800/0.006200 best=0.9428
+teacher_offline ep 8: train(loss/acc/auc)=0.9142/0.6677/0.9443 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.9245/0.6656/0.9448/0.014000/0.005600 best=0.9448
+teacher_offline ep 9: train(loss/acc/auc)=0.9020/0.6720/0.9456 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.9482/0.6617/0.9454/0.017000/0.005000 best=0.9454
+teacher_offline ep 10: train(loss/acc/auc)=0.8913/0.6755/0.9467 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8983/0.6765/0.9477/0.014000/0.004400 best=0.9477
+teacher_offline ep 11: train(loss/acc/auc)=0.8769/0.6819/0.9482 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8941/0.6757/0.9473/0.014800/0.004800 best=0.9477
+teacher_offline ep 12: train(loss/acc/auc)=0.8664/0.6838/0.9492 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8903/0.6788/0.9477/0.013000/0.004800 best=0.9477
+teacher_offline ep 13: train(loss/acc/auc)=0.8578/0.6873/0.9501 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8703/0.6870/0.9494/0.013800/0.005800 best=0.9494
+teacher_offline ep 14: train(loss/acc/auc)=0.8458/0.6922/0.9513 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8848/0.6810/0.9492/0.013000/0.003800 best=0.9494
+teacher_offline ep 15: train(loss/acc/auc)=0.8388/0.6948/0.9521 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8896/0.6811/0.9481/0.015000/0.006600 best=0.9494
+teacher_offline ep 16: train(loss/acc/auc)=0.8258/0.6987/0.9533 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8614/0.6898/0.9503/0.012400/0.004400 best=0.9503
+teacher_offline ep 17: train(loss/acc/auc)=0.8143/0.7029/0.9544 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8936/0.6804/0.9495/0.011400/0.003800 best=0.9503
+teacher_offline ep 18: train(loss/acc/auc)=0.8038/0.7064/0.9555 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8538/0.6940/0.9512/0.013400/0.004200 best=0.9512
+teacher_offline ep 19: train(loss/acc/auc)=0.7970/0.7092/0.9560 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8586/0.6920/0.9513/0.011600/0.004000 best=0.9513
+teacher_offline ep 20: train(loss/acc/auc)=0.7845/0.7134/0.9572 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8685/0.6887/0.9509/0.012600/0.003800 best=0.9513
+teacher_offline ep 21: train(loss/acc/auc)=0.7744/0.7169/0.9582 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8641/0.6928/0.9510/0.014200/0.004400 best=0.9513
+teacher_offline ep 22: train(loss/acc/auc)=0.7651/0.7192/0.9591 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8695/0.6928/0.9513/0.013000/0.003600 best=0.9513
+teacher_offline ep 23: train(loss/acc/auc)=0.7584/0.7239/0.9597 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8498/0.6990/0.9521/0.012800/0.003800 best=0.9521
+teacher_offline ep 24: train(loss/acc/auc)=0.7480/0.7274/0.9607 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8732/0.6901/0.9507/0.013200/0.004200 best=0.9521
+teacher_offline ep 25: train(loss/acc/auc)=0.7383/0.7309/0.9616 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8735/0.6906/0.9510/0.013200/0.005000 best=0.9521
+teacher_offline ep 26: train(loss/acc/auc)=0.7342/0.7322/0.9619 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8631/0.6941/0.9516/0.013400/0.003200 best=0.9521
+teacher_offline ep 27: train(loss/acc/auc)=0.7269/0.7348/0.9626 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8635/0.6948/0.9516/0.012400/0.004000 best=0.9521
+teacher_offline ep 28: train(loss/acc/auc)=0.7236/0.7369/0.9629 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8642/0.6953/0.9516/0.013000/0.004400 best=0.9521
+teacher_offline ep 29: train(loss/acc/auc)=0.7208/0.7365/0.9632 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8643/0.6944/0.9516/0.012800/0.004400 best=0.9521
+teacher_offline ep 30: train(loss/acc/auc)=0.7175/0.7379/0.9635 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=0.8650/0.6945/0.9517/0.012600/0.004200 best=0.9521
+baseline_hlt ep 1: train(loss/acc/auc)=1.5936/0.4279/0.8424 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.3583/0.5100/0.8840/0.037200/0.017600 best=0.8840
+baseline_hlt ep 2: train(loss/acc/auc)=1.3431/0.5152/0.8850 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.2498/0.5485/0.9027/0.032000/0.017200 best=0.9027
+baseline_hlt ep 3: train(loss/acc/auc)=1.2505/0.5501/0.8998 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.2218/0.5557/0.9073/0.025800/0.013400 best=0.9073
+baseline_hlt ep 4: train(loss/acc/auc)=1.1957/0.5682/0.9076 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.2082/0.5628/0.9091/0.023600/0.014400 best=0.9091
+baseline_hlt ep 5: train(loss/acc/auc)=1.1707/0.5766/0.9112 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1594/0.5812/0.9147/0.024800/0.013800 best=0.9147
+baseline_hlt ep 6: train(loss/acc/auc)=1.1504/0.5845/0.9141 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1604/0.5824/0.9146/0.022400/0.013200 best=0.9147
+baseline_hlt ep 7: train(loss/acc/auc)=1.1335/0.5894/0.9164 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1325/0.5879/0.9177/0.022400/0.012400 best=0.9177
+baseline_hlt ep 8: train(loss/acc/auc)=1.1195/0.5940/0.9181 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1222/0.5982/0.9194/0.021400/0.011400 best=0.9194
+baseline_hlt ep 9: train(loss/acc/auc)=1.1027/0.6009/0.9204 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1049/0.6012/0.9205/0.018400/0.010200 best=0.9205
+baseline_hlt ep 10: train(loss/acc/auc)=1.0943/0.6047/0.9213 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1080/0.6007/0.9208/0.021400/0.010600 best=0.9208
+baseline_hlt ep 11: train(loss/acc/auc)=1.0865/0.6071/0.9224 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1155/0.5977/0.9209/0.021200/0.011400 best=0.9209
+baseline_hlt ep 12: train(loss/acc/auc)=1.0739/0.6104/0.9240 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0946/0.6028/0.9218/0.022000/0.011400 best=0.9218
+baseline_hlt ep 13: train(loss/acc/auc)=1.0646/0.6140/0.9249 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1160/0.5984/0.9207/0.021200/0.012400 best=0.9218
+baseline_hlt ep 14: train(loss/acc/auc)=1.0563/0.6169/0.9261 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1074/0.5998/0.9214/0.021800/0.013400 best=0.9218
+baseline_hlt ep 15: train(loss/acc/auc)=1.0463/0.6204/0.9274 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0865/0.6078/0.9238/0.023400/0.011000 best=0.9238
+baseline_hlt ep 16: train(loss/acc/auc)=1.0346/0.6256/0.9288 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0828/0.6089/0.9239/0.019000/0.009200 best=0.9239
+baseline_hlt ep 17: train(loss/acc/auc)=1.0245/0.6280/0.9300 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0765/0.6101/0.9245/0.022000/0.011800 best=0.9245
+baseline_hlt ep 18: train(loss/acc/auc)=1.0147/0.6310/0.9314 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1140/0.5985/0.9222/0.020400/0.012000 best=0.9245
+baseline_hlt ep 19: train(loss/acc/auc)=1.0070/0.6331/0.9322 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0821/0.6097/0.9235/0.022000/0.012400 best=0.9245
+baseline_hlt ep 20: train(loss/acc/auc)=0.9967/0.6368/0.9335 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0836/0.6104/0.9237/0.022000/0.012200 best=0.9245
+baseline_hlt ep 21: train(loss/acc/auc)=0.9859/0.6412/0.9347 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1456/0.5936/0.9185/0.025800/0.013800 best=0.9245
+baseline_hlt ep 22: train(loss/acc/auc)=0.9757/0.6448/0.9358 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0905/0.6105/0.9238/0.023600/0.012200 best=0.9245
+baseline_hlt ep 23: train(loss/acc/auc)=0.9681/0.6474/0.9367 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0910/0.6114/0.9239/0.021600/0.012000 best=0.9245
+baseline_hlt ep 24: train(loss/acc/auc)=0.9606/0.6492/0.9376 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0875/0.6112/0.9240/0.023200/0.012000 best=0.9245
+baseline_hlt ep 25: train(loss/acc/auc)=0.9498/0.6532/0.9389 val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1019/0.6077/0.9231/0.023000/0.012800 best=0.9245
+Early stopping baseline_hlt at epoch 25
+
+======================================================================
+STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)
+======================================================================
+Ep 5: train_total=16.2895, val_total_unw=16.0597, val_total_w=16.0597, select=unweighted, best_sel=15.8061 | set_unw=0.3768, phys_unw=0.2309, budget_unw=24.1251, fp_mass_unw=0.0444, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.35
+Ep 10: train_total=15.8693, val_total_unw=16.2095, val_total_w=16.2095, select=unweighted, best_sel=15.7062 | set_unw=0.3485, phys_unw=0.2914, budget_unw=24.3996, fp_mass_unw=0.0431, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.35
+Ep 15: train_total=15.6261, val_total_unw=16.5611, val_total_w=16.5611, select=unweighted, best_sel=15.5304 | set_unw=0.3311, phys_unw=0.3096, budget_unw=24.9674, fp_mass_unw=0.0437, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.35
+Ep 20: train_total=15.4109, val_total_unw=15.3062, val_total_w=15.3062, select=unweighted, best_sel=15.3062 | set_unw=0.3206, phys_unw=0.2995, budget_unw=23.0532, fp_mass_unw=0.0415, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.35
+Stage-A transition -> reloaded best from phase_035 (epoch=20, val_total=15.3062)
+Ep 25: train_total=14.5115, val_total_unw=14.5940, val_total_w=14.5940, select=unweighted, best_sel=14.5940 | set_unw=0.3042, phys_unw=0.1908, budget_unw=21.9827, fp_mass_unw=0.0391, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.70
+Ep 30: train_total=14.3266, val_total_unw=14.8457, val_total_w=14.8457, select=unweighted, best_sel=14.5940 | set_unw=0.3033, phys_unw=0.2064, budget_unw=22.3714, fp_mass_unw=0.0385, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.70
+Ep 35: train_total=14.1369, val_total_unw=14.7068, val_total_w=14.7068, select=unweighted, best_sel=14.5776 | set_unw=0.3032, phys_unw=0.1984, budget_unw=22.1578, fp_mass_unw=0.0394, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.70
+Ep 40: train_total=13.9101, val_total_unw=14.8664, val_total_w=14.8664, select=unweighted, best_sel=14.5776 | set_unw=0.3012, phys_unw=0.2009, budget_unw=22.4065, fp_mass_unw=0.0402, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.70
+Ep 45: train_total=13.6631, val_total_unw=14.7972, val_total_w=14.7972, select=unweighted, best_sel=14.5776 | set_unw=0.3009, phys_unw=0.2027, budget_unw=22.3004, fp_mass_unw=0.0398, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.70
+Ep 50: train_total=13.3716, val_total_unw=15.0227, val_total_w=15.0227, select=unweighted, best_sel=14.5776 | set_unw=0.3008, phys_unw=0.2040, budget_unw=22.6475, fp_mass_unw=0.0410, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.70
+Ep 55: train_total=13.0415, val_total_unw=15.0352, val_total_w=15.0352, select=unweighted, best_sel=14.5776 | set_unw=0.2997, phys_unw=0.2033, budget_unw=22.6685, fp_mass_unw=0.0387, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=0.70
+Stage-A transition -> reloaded best from phase_070 (epoch=32, val_total=14.5776)
+Ep 60: train_total=13.9060, val_total_unw=14.7393, val_total_w=14.7393, select=unweighted, best_sel=14.5258 | set_unw=0.3028, phys_unw=0.1676, budget_unw=22.2085, fp_mass_unw=0.0388, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=1.00
+Ep 65: train_total=13.6986, val_total_unw=14.6315, val_total_w=14.6315, select=unweighted, best_sel=14.5258 | set_unw=0.3020, phys_unw=0.1727, budget_unw=22.0439, fp_mass_unw=0.0409, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=1.00
+Ep 70: train_total=13.3965, val_total_unw=14.6663, val_total_w=14.6663, select=unweighted, best_sel=14.5258 | set_unw=0.3008, phys_unw=0.1722, budget_unw=22.0992, fp_mass_unw=0.0383, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=1.00
+Ep 75: train_total=13.0917, val_total_unw=14.8201, val_total_w=14.8201, select=unweighted, best_sel=14.5258 | set_unw=0.2991, phys_unw=0.1715, budget_unw=22.3385, fp_mass_unw=0.0396, w_set=1.000, w_budget=0.650, w_pt=0.000, w_local=0.050, stage_scale=1.00
+Early stopping reconstructor at epoch 75
+
+======================================================================
+STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECONSTRUCTOR)
+======================================================================
+StageB-DualPretrain ep 5: train(total/cls/reco/cons)=1.1841/1.1841/0.0000/0.0487 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1586/0.5823/0.9147/0.024800/0.012600 best_metric=0.9147
+StageB-DualPretrain ep 10: train(total/cls/reco/cons)=1.0971/1.0971/0.0000/0.0487 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1248/0.5925/0.9198/0.022400/0.010800 best_metric=0.9198
+StageB-DualPretrain ep 15: train(total/cls/reco/cons)=1.0468/1.0468/0.0000/0.0487 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0804/0.6111/0.9239/0.021000/0.011800 best_metric=0.9239
+StageB-DualPretrain ep 20: train(total/cls/reco/cons)=1.0054/1.0054/0.0000/0.0487 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0851/0.6090/0.9232/0.018800/0.010600 best_metric=0.9247
+StageB-DualPretrain ep 25: train(total/cls/reco/cons)=0.9655/0.9655/0.0000/0.0487 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0791/0.6148/0.9247/0.020600/0.010400 best_metric=0.9247
+Early stopping StageB-DualPretrain at epoch 29
+
+======================================================================
+STEP 4: STAGE C (JOINT FINETUNE)
+======================================================================
+StageC-Joint ep 1: train(total/cls/reco/cons)=6.4675/0.9887/13.6899/0.0483 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0751/0.6136/0.9250/0.019200/0.010200 best_metric=0.9250
+StageC-Joint ep 2: train(total/cls/reco/cons)=6.4585/0.9914/13.6606/0.0483 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0718/0.6165/0.9251/0.021000/0.010800 best_metric=0.9251
+StageC-Joint ep 3: train(total/cls/reco/cons)=6.4544/0.9967/13.6369/0.0483 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0790/0.6130/0.9243/0.021400/0.010000 best_metric=0.9251
+StageC-Joint ep 4: train(total/cls/reco/cons)=6.4387/0.9921/13.6092/0.0483 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0783/0.6149/0.9245/0.022600/0.009800 best_metric=0.9251
+StageC-Joint ep 5: train(total/cls/reco/cons)=6.4275/0.9885/13.5903/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0955/0.6091/0.9225/0.022800/0.011400 best_metric=0.9251
+StageC-Joint ep 6: train(total/cls/reco/cons)=6.4098/0.9825/13.5611/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1008/0.6082/0.9220/0.021200/0.009800 best_metric=0.9251
+StageC-Joint ep 7: train(total/cls/reco/cons)=6.3891/0.9769/13.5232/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0881/0.6120/0.9237/0.021400/0.010600 best_metric=0.9251
+StageC-Joint ep 8: train(total/cls/reco/cons)=6.3791/0.9722/13.5099/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1044/0.6083/0.9225/0.024200/0.011600 best_metric=0.9251
+StageC-Joint ep 9: train(total/cls/reco/cons)=6.3562/0.9672/13.4655/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1016/0.6080/0.9224/0.021600/0.011000 best_metric=0.9251
+StageC-Joint ep 10: train(total/cls/reco/cons)=6.3384/0.9591/13.4409/0.0483 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0995/0.6106/0.9228/0.022200/0.012800 best_metric=0.9251
+StageC-Joint ep 11: train(total/cls/reco/cons)=6.3203/0.9534/13.4099/0.0483 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1217/0.6036/0.9205/0.022800/0.012600 best_metric=0.9251
+StageC-Joint ep 12: train(total/cls/reco/cons)=6.2980/0.9454/13.3744/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.0983/0.6099/0.9229/0.024600/0.012200 best_metric=0.9251
+StageC-Joint ep 13: train(total/cls/reco/cons)=6.2829/0.9416/13.3461/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1153/0.6054/0.9216/0.023200/0.012400 best_metric=0.9251
+StageC-Joint ep 14: train(total/cls/reco/cons)=6.2603/0.9337/13.3093/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1057/0.6081/0.9220/0.024400/0.011800 best_metric=0.9251
+StageC-Joint ep 15: train(total/cls/reco/cons)=6.2419/0.9250/13.2850/0.0484 | val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)=1.1238/0.6054/0.9206/0.022800/0.011200 best_metric=0.9251
+Early stopping StageC-Joint at epoch 15
+
+======================================================================
+FINAL TEST EVALUATION
+======================================================================
+Teacher (Offline): acc=0.6971, auc_macro=0.9519, fpr50(sig-vs-bg)=0.011700, fpr50(HToBB/(HToBB+ZJetsToNuNu))=0.003000
+Baseline (HLT):   acc=0.6097, auc_macro=0.9243, fpr50(sig-vs-bg)=0.022200, fpr50(HToBB/(HToBB+ZJetsToNuNu))=0.010000
+Stage2 (PreJoint): acc=0.6125, auc_macro=0.9241, fpr50(sig-vs-bg)=0.023400, fpr50(HToBB/(HToBB+ZJetsToNuNu))=0.010600
+Joint (StageC):    acc=0.6148, auc_macro=0.9245, fpr50(sig-vs-bg)=0.023700, fpr50(HToBB/(HToBB+ZJetsToNuNu))=0.009700
+Saved outputs to: /home/ryreu/atlas/PracticeTagging/checkpoints/jetclass_joint_dualview/jetclass_joint_v1_100k50k100k_m2hlt
+Done: checkpoints/jetclass_joint_dualview/jetclass_joint_v1_100k50k100k_m2hlt

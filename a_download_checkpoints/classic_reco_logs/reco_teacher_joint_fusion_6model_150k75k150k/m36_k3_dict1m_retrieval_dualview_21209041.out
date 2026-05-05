@@ -1,0 +1,63 @@
+============================================================
+Model-36 K=3 Dictionary-Retrieval DualView
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model36_dictretrieval_dualview/model36_k3_dict1m_retrieval_dualview_150k75k300k_seed0
+Split: dict=1000000, train=150000, val=75000, test=300000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m36_dictretrieval_dualview.py --save_dir /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model36_dictretrieval_dualview --run_name model36_k3_dict1m_retrieval_dualview_150k75k300k_seed0 --n_train_jets 1525000 --n_dict_split 1000000 --n_train_split 150000 --n_val_split 75000 --n_test_split 300000 --offset_jets 0 --max_constits 100 --batch_size 80 --num_workers 6 --seed 0 --device cuda --save_fusion_scores --retrieval_target_k 3 --retrieval_per_round 5000 --retrieval_max_rounds 1 --retrieval_batch_size 256 --retrieval_eps_total 0.60 --retrieval_eps_count 0.30 --retrieval_w_desc 1.00 --retrieval_w_count 0.25 --retrieval_w_pt 0.12 --retrieval_w_mass 0.08 --retrieval_index_mode descriptor --selector_epochs 45 --selector_lr 2e-4 --selector_patience 10 --selector_neg_per_class 3 --selector_score_alpha 1.35 --selector_mode residual_only --dual_epochs 80 --dual_lr 1.2e-4 --dual_patience 14
+========================================================================
+Model-36 Dictionary Retrieval + DualView Pipeline
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model36_dictretrieval_dualview/model36_k3_dict1m_retrieval_dualview_150k75k300k_seed0
+Split dict/train/val/test = 1000000/150000/75000/300000 | retrieve per-round=5000 rounds=1 targetK=3 | desc_variant=physics index_mode=descriptor
+========================================================================
+Generating pseudo-HLT (deterministic keyed D_hard)...
+HLT stats: avg_offline=54.27, avg_hlt=29.16, merged=32683578, eff_lost=5610091
+Split sizes: Dict=1000000, Train=150000, Val=75000, Test=300000
+Computing standardized features for teacher/baseline (train/val/test only)...
+
+========================================================================
+STEP 1: Teacher + HLT baseline
+========================================================================
+Teacher ep 5: train_auc=0.9402, val_auc=0.9439, val_fpr50=0.013644, best_auc=0.9475, fpr50@best=0.013056
+Teacher ep 10: train_auc=0.9481, val_auc=0.9496, val_fpr50=0.011186, best_auc=0.9511, fpr50@best=0.010288
+Teacher ep 15: train_auc=0.9519, val_auc=0.9499, val_fpr50=0.011813, best_auc=0.9526, fpr50@best=0.010763
+Teacher ep 20: train_auc=0.9556, val_auc=0.9533, val_fpr50=0.010526, best_auc=0.9552, fpr50@best=0.008841
+Teacher ep 25: train_auc=0.9590, val_auc=0.9520, val_fpr50=0.009735, best_auc=0.9555, fpr50@best=0.009185
+Teacher ep 30: train_auc=0.9623, val_auc=0.9533, val_fpr50=0.009869, best_auc=0.9555, fpr50@best=0.009185
+Teacher ep 35: train_auc=0.9664, val_auc=0.9531, val_fpr50=0.010382, best_auc=0.9555, fpr50@best=0.009185
+Early stopping Teacher at epoch 35
+Baseline ep 5: train_auc=0.9063, val_auc=0.9123, val_fpr50=0.026529, best_auc=0.9123, fpr50@best=0.026529
+Baseline ep 10: train_auc=0.9146, val_auc=0.9157, val_fpr50=0.023993, best_auc=0.9191, fpr50@best=0.021723
+Baseline ep 15: train_auc=0.9186, val_auc=0.9198, val_fpr50=0.021281, best_auc=0.9209, fpr50@best=0.020105
+Baseline ep 20: train_auc=0.9229, val_auc=0.9182, val_fpr50=0.020888, best_auc=0.9209, fpr50@best=0.020105
+Baseline ep 25: train_auc=0.9271, val_auc=0.9205, val_fpr50=0.021759, best_auc=0.9225, fpr50@best=0.018786
+Baseline ep 30: train_auc=0.9315, val_auc=0.9195, val_fpr50=0.020967, best_auc=0.9225, fpr50@best=0.018786
+Early stopping Baseline at epoch 34
+Teacher test AUC=0.9552 | Baseline test AUC=0.9225
+
+========================================================================
+STEP 2: Dictionary HLT retrieval index
+========================================================================
+Dictionary class sizes: bg=500419 top=499581 | index_dim=8
+
+========================================================================
+STEP 3: Retrieve candidates for train/val (no repair)
+========================================================================
+Retrieval stats: train(feasC0=2.65, feasC1=2.65) val(feasC0=2.64, feasC1=2.65)
+
+========================================================================
+STEP 4: Residual-only candidate quality (selector skipped)
+========================================================================
+
+========================================================================
+STEP 5: Final DualView Classifiers (NoGate + Gated)
+========================================================================
+DualViewNoGate ep 001: train_loss=0.55813 val_auc=0.8000 best=0.8000@1
+DualViewNoGate ep 002: train_loss=0.54756 val_auc=0.8011 best=0.8011@2
+DualViewNoGate ep 004: train_loss=0.54154 val_auc=0.8096 best=0.8096@4
+DualViewNoGate ep 006: train_loss=0.53145 val_auc=0.8173 best=0.8173@6
+DualViewNoGate ep 008: train_loss=0.52748 val_auc=0.8183 best=0.8183@8
+DualViewNoGate ep 010: train_loss=0.52469 val_auc=0.8147 best=0.8183@8
+DualViewNoGate ep 012: train_loss=0.52344 val_auc=0.8178 best=0.8183@8
+DualViewNoGate ep 014: train_loss=0.51865 val_auc=0.8211 best=0.8211@14
+DualViewNoGate ep 016: train_loss=0.51634 val_auc=0.8203 best=0.8211@14
+DualViewNoGate ep 018: train_loss=0.51384 val_auc=0.8152 best=0.8211@14

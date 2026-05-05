@@ -1,0 +1,26 @@
+============================================================
+JetClass Joint Dual-View V2 Attr (m2hlt mergefav + jetlatent set2set, full in/out)
+Job ID: 21184086
+Node: skl-a-48
+Run: checkpoints/jetclass_joint_dualview/jetclass_joint_v2attr_100k50k100k_m2hlt_full_mergefav_jetlatent_fullbudget
+Split: train=100000, val=50000, test=100000
+============================================================
+ python -u /home/ryreu/atlas/PracticeTagging/train_jetclass_joint_dualview_stage2_unmergeonly_m2hlt_jetlatent_set2set_v2_attr.py --data_dir /home/ryreu/atlas/PracticeTagging/data/jetclass_part0 --save_dir checkpoints/jetclass_joint_dualview --run_name jetclass_joint_v2attr_100k50k100k_m2hlt_full_mergefav_jetlatent_fullbudget --seed 52 --device cuda --num_workers 1 --feature_mode full --max_constits 100 --train_files_per_class 8 --val_files_per_class 1 --test_files_per_class 1 --n_train_jets 100000 --n_val_jets 50000 --n_test_jets 100000 --batch_size 512 --epochs 30 --patience 8 --lr 7e-4 --weight_decay 1e-5 --warmup_epochs 3 --embed_dim 128 --num_heads 8 --num_layers 6 --ff_dim 512 --dropout 0.1 --target_class HToBB --background_class ZJetsToNuNu --hlt_pt_threshold 1.3 --merge_prob_scale 1.35 --reassign_scale 1.00 --smear_scale 1.00 --eff_plateau_barrel 0.99 --eff_plateau_endcap 0.97 --eff_turnon_pt 1.4 --eff_width_pt 0.20 --reco_batch_size 96 --stageA_epochs 90 --stageA_patience 18 --stageA_lr 2e-4 --stageA_weight_decay 1e-5 --stageA_warmup_epochs 5 --stageA_stage1_epochs 20 --stageA_stage2_epochs 55 --stageA_min_full_scale_epochs 5 --reco_max_generated_tokens 32 --loss_set_mode hungarian --loss_w_set 1.0 --loss_w_phys 0.0 --loss_w_pt_ratio 0.0 --loss_w_m_ratio 0.0 --loss_w_e_ratio 0.0 --loss_w_budget 0.65 --loss_w_sparse 0.02 --loss_w_local 0.10 --loss_gen_local_radius 0.08 --stageB_epochs 35 --stageB_patience 10 --stageB_min_epochs 10 --stageB_lr_dual 4e-4 --stageC_epochs 45 --stageC_patience 12 --stageC_min_epochs 15 --stageC_lr_dual 1e-5 --stageC_lr_reco 5e-6 --lambda_reco 0.4 --lambda_cons 0.03 --added_target_scale 1.0 --v2_attr_hidden_dim 128 --v2_attr_slots 2 --v2_mode_none_weight 0.20 --v2_mode_label_smoothing 0.0 --v2_track_weight 1.0 --stageA_attr_epochs 12 --stageA_attr_patience 4 --stageA_attr_lr 2e-4 --stageA_attr_weight_decay 1e-5 --lambda_attr_mode 0.10 --lambda_attr_type 0.15 --lambda_attr_charge 0.03 --lambda_attr_track 0.03
+Device: cuda
+Save dir: /home/ryreu/atlas/PracticeTagging/checkpoints/jetclass_joint_dualview/jetclass_joint_v2attr_100k50k100k_m2hlt_full_mergefav_jetlatent_fullbudget
+Classes:
+  HToBB        : 10 files
+  HToCC        : 10 files
+  HToGG        : 10 files
+  HToWW2Q1L    : 10 files
+  HToWW4Q      : 10 files
+  TTBar        : 10 files
+  TTBarLep     : 10 files
+  WToQQ        : 10 files
+  ZJetsToNuNu  : 10 files
+  ZToQQ        : 10 files
+Loading train split...
+Loading val split...
+Loading test split...
+Loaded jets: train=100000, val=50000, test=100000 | mean constituents train=39.37
+Building HLT-like corrupted splits...

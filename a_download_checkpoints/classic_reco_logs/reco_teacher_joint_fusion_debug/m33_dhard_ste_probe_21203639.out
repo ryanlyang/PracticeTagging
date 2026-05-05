@@ -1,0 +1,22 @@
+============================================================
+m33 D_hard STE probe (debug)
+Run:   checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_ste_probe/m33_dhard_ste_probe_debug_seed0
+Split: train=20000, val=8000, test=12000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_dhard_ste_probe.py --save_dir checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_ste_probe --run_name m33_dhard_ste_probe_debug_seed0 --n_train_jets 70000 --n_train_split 20000 --n_val_split 8000 --n_test_split 12000 --offset_jets 0 --max_constits 100 --batch_size 80 --seed 0 --device cuda --cand_eval_count 1400 --cand_per_jet 24 --rank_top_m 8 --refine_eval_jets 350 --refine_selected_k 6 --refine_steps 8 --refine_lr 0.03 --tau_thr 0.08 --tau_eff 0.06 --tau_merge 0.02 --tau_post 0.08 --tau_eta_break 0.08 --merge_alpha 0.75 --merge_gain 0.45
+========================================================================
+m33 D_hard STE probe
+Run: checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_ste_probe/m33_dhard_ste_probe_debug_seed0
+========================================================================
+Split sizes: train=20000 val=8000 test=12000
+Building deterministic HLT from offline...
+HLT stats: avg_offline=54.22, avg_hlt=29.11
+========================================================================
+m33 D_hard STE probe summary
+========================================================================
+STE hard-forward exact: True (max const diff=0.000e+00, max w diff=0.000e+00)
+Grad sanity mean/p90/nonzero: nan / nan / 0.047
+Ranking Spearman/top1/hard-in-topM: -0.2272 / 0.0021 / 0.0143
+Refine delta mean=67.64077, improve_frac=0.0000
+Saved: checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_ste_probe/m33_dhard_ste_probe_debug_seed0
+Done: checkpoints/reco_teacher_joint_fusion_debug/m33_dhard_ste_probe/m33_dhard_ste_probe_debug_seed0

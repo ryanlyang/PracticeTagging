@@ -1,0 +1,34 @@
+============================================================
+31-Model Rolling-Chunk Greedy Fusion (Precomputed Dev Pool)
+Fusion json:         checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json
+Precomputed npz:     checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_devpool.npz
+Precomputed manifest:checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_manifest.json
+Target TPR:          0.50
+Anchor:              joint_delta
+Val pool size/offset:1000000/0
+Chunks:              5
+Greedy:              topk=31, max_steps=20, w_step=0.01
+Acceptance gains:    fit>=1e-6, cal>=1e-6, cum>=1e-6
+Calibration:         raw
+============================================================
+ python analyze_hlt_joint31_rolling_chunk_greedy.py --fusion_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json --precomputed_scores_npz checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_devpool.npz --precomputed_manifest_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_manifest.json --target_tpr 0.50 --anchor_model joint_delta --candidate_topk_fit 31 --val_pool_size 1000000 --val_pool_offset 0 --n_chunks 5 --max_steps 20 --patience 5 --w_step 0.01 --calibration raw --min_fit_gain 1e-6 --min_cal_gain 1e-6 --min_cum_cal_gain 1e-6 --topk_diagnostic 10 --seed 0
+========================================================================
+31-Model Rolling-Chunk Greedy Fusion
+========================================================================
+Fusion json: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json
+Out dir:     /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/rolling_chunk_greedy_31
+Val avail:   1000000
+Val pool:    offset=0, size=1000000
+Chunks:      5 (cyclic fit/cal)
+Target TPR:  0.500
+Anchor:      joint_delta
+Candidates:  30
+Calibration: raw (fit-once on chunk0)
+
+Anchor      AUC_test=0.924567 FPR_test=0.018528 (ref_fpr=0.018793)
+Rolling final AUC_test=0.927308 FPR_test=0.018488 (ref_fpr=0.017492)
+Best cum    AUC_test=0.927308 FPR_test=0.018488 (step=12)
+Selected final: joint_delta,dual_m15_offdrop_high,corrected_k60,dual_m17_antioverlap,dual_m15_offdrop_low,offdrop_mid
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/rolling_chunk_greedy_31/rolling_chunk_greedy_report.json
+Saved summary: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/rolling_chunk_greedy_31/rolling_summary.csv
+Saved step log: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/rolling_chunk_greedy_31/rolling_step_log.csv

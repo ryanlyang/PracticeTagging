@@ -1,0 +1,37 @@
+============================================================
+m33 prior probe v2 (CVAE + class-GMM debug)
+Run:   checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe_v2/m33_prior_probe_v2_debug_seed0
+Split: train=100000, val=25000, test=35000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_prior_probe_v2.py --save_dir checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe_v2 --run_name m33_prior_probe_v2_debug_seed0 --n_train_jets 180000 --n_train_split 100000 --n_val_split 25000 --n_test_split 35000 --offset_jets 0 --max_constits 100 --num_workers 1 --batch_size 80 --seed 0 --device cuda --teacher_epochs 20 --teacher_patience 6 --prior_epochs 70 --prior_patience 12 --prior_kl_beta_max 0.05 --prior_kl_warmup_epochs 12 --prior_loss_w_count 0.55 --prior_loss_w_exist 0.35 --prior_loss_w_pt 0.10 --prior_loss_w_mass 0.06 --prior_loss_w_cls 0.25 --prior_loss_w_sep 0.04 --gmm_components 16 --gmm_reg_covar 1e-4 --critic_epochs 20 --n_prior_samples_per_class 5000 --roundtrip_eval_count 6000
+========================================================================
+m33 Prior Probe v2
+Run: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe_v2/m33_prior_probe_v2_debug_seed0
+========================================================================
+Split sizes: train=100000 val=25000 test=35000
+ProbeTeacherV2 ep 5: train_auc=0.9383, val_auc=0.9434, val_fpr50=0.016150, best_auc=0.9434, fpr50@best=0.016150
+ProbeTeacherV2 ep 10: train_auc=0.9473, val_auc=0.9485, val_fpr50=0.012724, best_auc=0.9485, fpr50@best=0.012724
+ProbeTeacherV2 ep 15: train_auc=0.9551, val_auc=0.9506, val_fpr50=0.011887, best_auc=0.9510, fpr50@best=0.012321
+ProbeTeacherV2 ep 20: train_auc=0.9599, val_auc=0.9519, val_fpr50=0.011447, best_auc=0.9521, fpr50@best=0.011438
+ProbeTeacher test AUC=0.9521
+PriorV2 ep 001: train=11.20809 set=2.08648 cnt=15.56557 kl=46.08878 cls=0.07659 sep=0.00340 beta=0.004 val=19.36211 best=19.36211@1
+PriorV2 ep 002: train=7.73318 set=1.34350 cnt=10.45954 kl=39.16076 cls=0.02753 sep=0.00927 beta=0.008 val=25.19182 best=19.36211@1
+PriorV2 ep 004: train=5.56636 set=1.29858 cnt=6.47175 kl=24.46793 cls=0.04004 sep=0.01481 beta=0.017 val=27.57672 best=19.36211@1
+PriorV2 ep 006: train=4.58290 set=1.24720 cnt=4.79189 kl=16.18902 cls=0.03985 sep=0.02471 beta=0.025 val=27.73721 best=19.36211@1
+PriorV2 ep 008: train=4.04520 set=1.24522 cnt=3.76780 kl=13.14912 cls=0.02520 sep=0.03981 beta=0.033 val=27.45665 best=19.36211@1
+PriorV2 ep 010: train=3.89042 set=1.24299 cnt=3.39899 kl=11.73726 cls=0.02652 sep=0.04358 beta=0.042 val=27.96710 best=19.36211@1
+PriorV2 ep 012: train=3.77072 set=1.25079 cnt=3.06061 kl=10.94381 cls=0.03195 sep=0.04458 beta=0.050 val=27.24074 best=19.36211@1
+PriorV2 early stop at ep 13
+========================================================================
+m33 Prior Probe v2 Summary
+========================================================================
+Overall status: FAIL
+Teacher AUC(test): 0.9521
+PriorV2 val set/count: 1.9874 / 34.3307
+Overfit ratios set/count: 0.999 / 1.004
+Critic val AUC(real-vs-gen): 1.0000
+Class sanity separation(top-bg): 0.0003
+Roundtrip total mean/p90: 7.6730 / 9.2654
+Gates: {'best_epoch_not_too_early': 'WARN', 'overfit_set_ratio': 'PASS', 'overfit_count_ratio': 'PASS', 'critic_real_vs_gen_auc': 'FAIL', 'class_sanity_separation': 'FAIL', 'roundtrip_total_mean': 'FAIL'}
+Saved: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe_v2/m33_prior_probe_v2_debug_seed0
+Done: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe_v2/m33_prior_probe_v2_debug_seed0

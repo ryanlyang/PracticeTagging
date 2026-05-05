@@ -1,0 +1,8 @@
+============================================================
+Teacher + HLT Baseline Only (7M/1.75M/1.75M split, real train/test H5, weighted)
+Run: checkpoints/reco_teacher_joint_fusion_6model_7m1750k1750k/teacher_hlt_only/teacher_hlt_only_7m1750k1750k_seed3
+Train path: ./data/train_quarter.h5
+Test path:  ./data/test.h5
+Data: n_train_jets=10500000, split=7000000/1750000/1750000, offset=0, test_offset=0
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py --train_path ./data/train_quarter.h5 --test_path ./data/test.h5 --test_offset_jets 0 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_7m1750k1750k/teacher_hlt_only --run_name teacher_hlt_only_7m1750k1750k_seed3 --n_train_jets 10500000 --n_train_split 7000000 --n_val_split 1750000 --n_test_split 1750000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 3 --selection_metric auc --step1_only --device cuda

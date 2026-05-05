@@ -1,0 +1,146 @@
+============================================================
+Model-2 Joint (Chamfer top-k target-weighted + pT-ratio + sparse + local)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_chamfer_ptratio_sparse_local_topkset/model2_joint_chamfer_ptratio_sparse_local_topkset_150k75k150k_seed0
+Split: train=150000, val=75000, test=150000
+Top-k chamfer target weighting: k=20, weight=2.5 (mean-renorm on)
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_chamfer_ptratio_sparse_local_topkset --run_name model2_joint_chamfer_ptratio_sparse_local_topkset_150k75k150k_seed0 --n_train_jets 375000 --n_train_split 150000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --selection_metric auc --stageB_lambda_rank 0.0 --stageB_lambda_cons 0.0 --stageC_lr_dual 1e-5 --stageC_lr_reco 5e-6 --lambda_reco 0.4 --lambda_cons 0.0 --stageC_lambda_delta 0.05 --stageC_delta_tau 0.05 --stageC_delta_lambda_fp 3.0 --stageC_delta_warmup_epochs 8 --added_target_scale 0.90 --loss_set_mode chamfer --loss_set_chamfer_topk_target_weighted --loss_set_chamfer_topk_k 20 --loss_set_chamfer_topk_weight 2.5 --loss_w_phys 0.0 --loss_w_pt_ratio 0.70 --loss_w_m_ratio 0.0 --loss_w_e_ratio 0.0 --loss_w_radial_profile 0.0 --loss_w_budget 0.0 --loss_w_sparse 0.02 --loss_w_local 0.05 --save_fusion_scores --disable_final_kd --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_chamfer_ptratio_sparse_local_topkset/model2_joint_chamfer_ptratio_sparse_local_topkset_150k75k150k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Non-priv target setup: added_target_scale=0.900, mean_true_added_raw=25.116, mean_target_added=22.604
+Computing features...
+Split sizes: Train=150000, Val=75000, Test=150000 (custom_counts=True)
+Stage-B train subset: N=150000 / 150000 (frac=1.000, seed=0)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Teacher ep 5: train_auc=0.9439, val_auc=0.9469, val_fpr50=0.012873, best_auc=0.9469, fpr50@best=0.012873
+Teacher ep 10: train_auc=0.9509, val_auc=0.9526, val_fpr50=0.010285, best_auc=0.9526, fpr50@best=0.010285
+Teacher ep 15: train_auc=0.9549, val_auc=0.9522, val_fpr50=0.011025, best_auc=0.9529, fpr50@best=0.010068
+Teacher ep 20: train_auc=0.9577, val_auc=0.9480, val_fpr50=0.013272, best_auc=0.9529, fpr50@best=0.010068
+Teacher ep 25: train_auc=0.9610, val_auc=0.9513, val_fpr50=0.010954, best_auc=0.9539, fpr50@best=0.009423
+Teacher ep 30: train_auc=0.9652, val_auc=0.9503, val_fpr50=0.011826, best_auc=0.9539, fpr50@best=0.009423
+Teacher ep 35: train_auc=0.9696, val_auc=0.9496, val_fpr50=0.011791, best_auc=0.9539, fpr50@best=0.009423
+Early stopping Teacher at epoch 37
+Baseline ep 5: train_auc=0.9099, val_auc=0.9027, val_fpr50=0.028200, best_auc=0.9096, fpr50@best=0.027649
+Baseline ep 10: train_auc=0.9173, val_auc=0.9176, val_fpr50=0.023106, best_auc=0.9185, fpr50@best=0.021131
+Baseline ep 15: train_auc=0.9211, val_auc=0.9199, val_fpr50=0.021754, best_auc=0.9207, fpr50@best=0.019859
+Baseline ep 20: train_auc=0.9251, val_auc=0.9232, val_fpr50=0.020238, best_auc=0.9232, fpr50@best=0.020238
+Baseline ep 25: train_auc=0.9291, val_auc=0.9231, val_fpr50=0.020397, best_auc=0.9232, fpr50@best=0.020238
+Baseline ep 30: train_auc=0.9336, val_auc=0.9194, val_fpr50=0.023387, best_auc=0.9235, fpr50@best=0.020215
+Baseline ep 35: train_auc=0.9383, val_auc=0.9220, val_fpr50=0.021137, best_auc=0.9235, fpr50@best=0.020215
+Baseline ep 40: train_auc=0.9435, val_auc=0.9181, val_fpr50=0.023374, best_auc=0.9235, fpr50@best=0.020215
+Early stopping Baseline at epoch 41
+StageC weak-delta HLT reference @TPR=0.50: threshold_prob=0.920016, val_auc_hlt=0.9235
+
+======================================================================
+STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)
+======================================================================
+Ep 5: train_total=0.4636, val_total_unw=0.4597, val_total_w=0.4597, select=unweighted, best_sel=0.4597 | set_unw=0.3661, phys_unw=0.4800, budget_unw=380.0872, stage_scale=0.35
+Ep 10: train_total=0.4562, val_total_unw=0.4551, val_total_w=0.4551, select=unweighted, best_sel=0.4545 | set_unw=0.3630, phys_unw=0.4742, budget_unw=901.2455, stage_scale=0.35
+Ep 15: train_total=0.4545, val_total_unw=0.4550, val_total_w=0.4550, select=unweighted, best_sel=0.4536 | set_unw=0.3605, phys_unw=0.4819, budget_unw=694.5824, stage_scale=0.35
+Ep 20: train_total=0.4523, val_total_unw=0.4532, val_total_w=0.4532, select=unweighted, best_sel=0.4522 | set_unw=0.3598, phys_unw=0.4758, budget_unw=688.8948, stage_scale=0.35
+Stage-A transition -> reloaded best from phase_035 (epoch=16, val_total=0.4522)
+Ep 25: train_total=0.4407, val_total_unw=0.4410, val_total_w=0.4410, select=unweighted, best_sel=0.4382 | set_unw=0.3549, phys_unw=0.4487, budget_unw=672.0233, stage_scale=0.70
+Ep 30: train_total=0.4396, val_total_unw=0.4380, val_total_w=0.4380, select=unweighted, best_sel=0.4360 | set_unw=0.3536, phys_unw=0.4415, budget_unw=657.9211, stage_scale=0.70
+Ep 35: train_total=0.4375, val_total_unw=0.4370, val_total_w=0.4370, select=unweighted, best_sel=0.4360 | set_unw=0.3523, phys_unw=0.4442, budget_unw=626.2410, stage_scale=0.70
+Ep 40: train_total=0.4360, val_total_unw=0.4357, val_total_w=0.4357, select=unweighted, best_sel=0.4345 | set_unw=0.3501, phys_unw=0.4473, budget_unw=600.8821, stage_scale=0.70
+Ep 45: train_total=0.4348, val_total_unw=0.4335, val_total_w=0.4335, select=unweighted, best_sel=0.4331 | set_unw=0.3477, phys_unw=0.4471, budget_unw=598.7988, stage_scale=0.70
+Ep 50: train_total=0.4339, val_total_unw=0.4323, val_total_w=0.4323, select=unweighted, best_sel=0.4323 | set_unw=0.3471, phys_unw=0.4451, budget_unw=610.7619, stage_scale=0.70
+Ep 55: train_total=0.4325, val_total_unw=0.4322, val_total_w=0.4322, select=unweighted, best_sel=0.4319 | set_unw=0.3473, phys_unw=0.4422, budget_unw=612.3989, stage_scale=0.70
+Stage-A transition -> reloaded best from phase_070 (epoch=53, val_total=0.4319)
+Ep 60: train_total=0.4284, val_total_unw=0.4255, val_total_w=0.4255, select=unweighted, best_sel=0.4254 | set_unw=0.3415, phys_unw=0.4403, budget_unw=508.6046, stage_scale=1.00
+Ep 65: train_total=0.4276, val_total_unw=0.4250, val_total_w=0.4250, select=unweighted, best_sel=0.4248 | set_unw=0.3414, phys_unw=0.4378, budget_unw=561.2110, stage_scale=1.00
+Ep 70: train_total=0.4268, val_total_unw=0.4241, val_total_w=0.4241, select=unweighted, best_sel=0.4236 | set_unw=0.3420, phys_unw=0.4323, budget_unw=640.6572, stage_scale=1.00
+Ep 75: train_total=0.4258, val_total_unw=0.4230, val_total_w=0.4230, select=unweighted, best_sel=0.4227 | set_unw=0.3393, phys_unw=0.4381, budget_unw=623.5413, stage_scale=1.00
+Ep 80: train_total=0.4251, val_total_unw=0.4219, val_total_w=0.4219, select=unweighted, best_sel=0.4219 | set_unw=0.3382, phys_unw=0.4380, budget_unw=616.1621, stage_scale=1.00
+Ep 85: train_total=0.4246, val_total_unw=0.4217, val_total_w=0.4217, select=unweighted, best_sel=0.4217 | set_unw=0.3382, phys_unw=0.4372, budget_unw=633.4012, stage_scale=1.00
+Ep 90: train_total=0.4243, val_total_unw=0.4215, val_total_w=0.4215, select=unweighted, best_sel=0.4215 | set_unw=0.3381, phys_unw=0.4371, budget_unw=634.1816, stage_scale=1.00
+
+======================================================================
+STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECONSTRUCTOR)
+======================================================================
+StageB-DualPretrain ep 5: train_loss=0.3774 (cls=0.3774, rank=0.3038, reco=0.0000, cons=0.1408, delta=0.0000, d_gain=0.0000, d_cost=0.0000, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9136, val_fpr50_unw=0.026284, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.913630, unfreeze=frozen, reco_trainable=0, dual_frozen=False, dual_trainable=2812673
+StageB-DualPretrain ep 10: train_loss=0.3622 (cls=0.3622, rank=0.3029, reco=0.0000, cons=0.1408, delta=0.0000, d_gain=0.0000, d_cost=0.0000, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9203, val_fpr50_unw=0.021324, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.920467, unfreeze=frozen, reco_trainable=0, dual_frozen=False, dual_trainable=2812673
+StageB-DualPretrain ep 15: train_loss=0.3523 (cls=0.3523, rank=0.3028, reco=0.0000, cons=0.1408, delta=0.0000, d_gain=0.0000, d_cost=0.0000, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9217, val_fpr50_unw=0.020168, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.921654, unfreeze=frozen, reco_trainable=0, dual_frozen=False, dual_trainable=2812673
+StageB-DualPretrain ep 20: train_loss=0.3439 (cls=0.3439, rank=0.3018, reco=0.0000, cons=0.1408, delta=0.0000, d_gain=0.0000, d_cost=0.0000, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9221, val_fpr50_unw=0.020863, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.922893, unfreeze=frozen, reco_trainable=0, dual_frozen=False, dual_trainable=2812673
+StageB-DualPretrain ep 25: train_loss=0.3352 (cls=0.3352, rank=0.3021, reco=0.0000, cons=0.1408, delta=0.0000, d_gain=0.0000, d_cost=0.0000, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9230, val_fpr50_unw=0.020432, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.924633, unfreeze=frozen, reco_trainable=0, dual_frozen=False, dual_trainable=2812673
+StageB-DualPretrain ep 30: train_loss=0.3228 (cls=0.3228, rank=0.3038, reco=0.0000, cons=0.1408, delta=0.0000, d_gain=0.0000, d_cost=0.0000, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9233, val_fpr50_unw=0.020227, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.924633, unfreeze=frozen, reco_trainable=0, dual_frozen=False, dual_trainable=2812673
+StageB-DualPretrain ep 35: train_loss=0.3134 (cls=0.3134, rank=0.3059, reco=0.0000, cons=0.1408, delta=0.0000, d_gain=0.0000, d_cost=0.0000, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9222, val_fpr50_unw=0.020751, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.924633, unfreeze=frozen, reco_trainable=0, dual_frozen=False, dual_trainable=2812673
+Early stopping StageB-DualPretrain at epoch 35
+
+======================================================================
+STEP 4: STAGE C (JOINT FINETUNE)
+======================================================================
+StageC-Joint ep 1: train_loss=0.5020 (cls=0.3315, rank=0.3013, reco=0.4244, cons=0.1403, delta=0.1116, d_gain=0.1924, d_cost=0.1014, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9255, val_fpr50_unw=0.018500, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925476, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 2: train_loss=0.5001 (cls=0.3291, rank=0.3022, reco=0.4244, cons=0.1405, delta=0.1026, d_gain=0.1914, d_cost=0.0980, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9257, val_fpr50_unw=0.018233, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925670, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 3: train_loss=0.4986 (cls=0.3270, rank=0.3031, reco=0.4244, cons=0.1390, delta=0.0958, d_gain=0.1911, d_cost=0.0956, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9258, val_fpr50_unw=0.018293, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925842, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 4: train_loss=0.4986 (cls=0.3265, rank=0.3050, reco=0.4244, cons=0.1389, delta=0.0922, d_gain=0.1914, d_cost=0.0945, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9258, val_fpr50_unw=0.018672, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925842, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 5: train_loss=0.4986 (cls=0.3260, rank=0.3048, reco=0.4244, cons=0.1395, delta=0.0897, d_gain=0.1916, d_cost=0.0937, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9259, val_fpr50_unw=0.018472, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925920, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 6: train_loss=0.4990 (cls=0.3259, rank=0.3045, reco=0.4245, cons=0.1392, delta=0.0885, d_gain=0.1913, d_cost=0.0933, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9259, val_fpr50_unw=0.018585, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 7: train_loss=0.4995 (cls=0.3260, rank=0.3052, reco=0.4244, cons=0.1396, delta=0.0855, d_gain=0.1908, d_cost=0.0921, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9257, val_fpr50_unw=0.018701, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 8: train_loss=0.4979 (cls=0.3240, rank=0.3054, reco=0.4244, cons=0.1394, delta=0.0833, d_gain=0.1915, d_cost=0.0916, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9259, val_fpr50_unw=0.018565, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 9: train_loss=0.4991 (cls=0.3252, rank=0.3057, reco=0.4244, cons=0.1400, delta=0.0822, d_gain=0.1910, d_cost=0.0911, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9258, val_fpr50_unw=0.018540, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 10: train_loss=0.4984 (cls=0.3245, rank=0.3053, reco=0.4244, cons=0.1401, delta=0.0825, d_gain=0.1915, d_cost=0.0913, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9258, val_fpr50_unw=0.018557, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 11: train_loss=0.4980 (cls=0.3242, rank=0.3051, reco=0.4244, cons=0.1396, delta=0.0815, d_gain=0.1912, d_cost=0.0909, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9258, val_fpr50_unw=0.018595, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 12: train_loss=0.4980 (cls=0.3243, rank=0.3057, reco=0.4243, cons=0.1407, delta=0.0804, d_gain=0.1912, d_cost=0.0905, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9257, val_fpr50_unw=0.018510, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 13: train_loss=0.4976 (cls=0.3238, rank=0.3051, reco=0.4245, cons=0.1404, delta=0.0811, d_gain=0.1913, d_cost=0.0908, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9256, val_fpr50_unw=0.018565, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 14: train_loss=0.4982 (cls=0.3244, rank=0.3057, reco=0.4244, cons=0.1396, delta=0.0807, d_gain=0.1913, d_cost=0.0907, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9254, val_fpr50_unw=0.018978, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 15: train_loss=0.4971 (cls=0.3234, rank=0.3049, reco=0.4244, cons=0.1405, delta=0.0804, d_gain=0.1916, d_cost=0.0907, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9256, val_fpr50_unw=0.018751, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 16: train_loss=0.4972 (cls=0.3235, rank=0.3054, reco=0.4244, cons=0.1405, delta=0.0796, d_gain=0.1914, d_cost=0.0903, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9253, val_fpr50_unw=0.018970, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 17: train_loss=0.4965 (cls=0.3228, rank=0.3060, reco=0.4244, cons=0.1397, delta=0.0788, d_gain=0.1918, d_cost=0.0902, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9254, val_fpr50_unw=0.018744, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 18: train_loss=0.4971 (cls=0.3234, rank=0.3056, reco=0.4244, cons=0.1398, delta=0.0794, d_gain=0.1916, d_cost=0.0903, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9255, val_fpr50_unw=0.018907, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 19: train_loss=0.4960 (cls=0.3224, rank=0.3056, reco=0.4243, cons=0.1395, delta=0.0780, d_gain=0.1917, d_cost=0.0899, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9255, val_fpr50_unw=0.019010, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 20: train_loss=0.4958 (cls=0.3221, rank=0.3054, reco=0.4244, cons=0.1390, delta=0.0779, d_gain=0.1918, d_cost=0.0899, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9255, val_fpr50_unw=0.019154, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 21: train_loss=0.4957 (cls=0.3220, rank=0.3061, reco=0.4244, cons=0.1389, delta=0.0783, d_gain=0.1920, d_cost=0.0901, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9255, val_fpr50_unw=0.019052, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 22: train_loss=0.4953 (cls=0.3217, rank=0.3057, reco=0.4243, cons=0.1394, delta=0.0776, d_gain=0.1919, d_cost=0.0898, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9253, val_fpr50_unw=0.018603, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 23: train_loss=0.4963 (cls=0.3227, rank=0.3054, reco=0.4243, cons=0.1396, delta=0.0779, d_gain=0.1917, d_cost=0.0899, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9253, val_fpr50_unw=0.019212, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 24: train_loss=0.4949 (cls=0.3213, rank=0.3050, reco=0.4244, cons=0.1387, delta=0.0768, d_gain=0.1916, d_cost=0.0895, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9253, val_fpr50_unw=0.019026, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+StageC-Joint ep 25: train_loss=0.4952 (cls=0.3216, rank=0.3060, reco=0.4243, cons=0.1390, delta=0.0772, d_gain=0.1922, d_cost=0.0898, anc_p=0.0000, anc_o=0.0000) | val_auc_unw=0.9253, val_fpr50_unw=0.019058, val_auc_w=nan, val_fpr50_w=nan, val_metric_source=unweighted, select=auc, best_sel=0.925926, unfreeze=all, reco_trainable=7098018, dual_frozen=False, dual_trainable=2812673
+Early stopping StageC-Joint at epoch 25
+
+======================================================================
+STEP 5: RECONSTRUCTION DIAGNOSTICS
+======================================================================
+
+Jet pT response/resolution by truth pT bin (test split):
+  pT_low - pT_high | N | HLT resp | HLT reso | Corrected resp | Corrected reso
+  172739.4 - 504068.9 | 18750 | 0.8681 | 0.1516 | 0.0282 | 0.0399
+  504068.9 - 773424.6 | 18750 | 0.8445 | 0.1720 | 0.0217 | 0.0392
+  773424.6 - 1093714.0 | 18750 | 0.8330 | 0.1869 | 0.0197 | 0.0434
+  1093714.0 - 1365805.0 | 18750 | 0.8218 | 0.2022 | 0.0192 | 0.0467
+  1365805.0 - 1711763.0 | 18750 | 0.8203 | 0.2056 | 0.0184 | 0.0484
+  1711763.0 - 2155283.2 | 18750 | 0.8155 | 0.2123 | 0.0185 | 0.0505
+  2155283.2 - 2633962.7 | 18750 | 0.8110 | 0.2225 | 0.0207 | 0.0564
+  2633962.7 - 4355157.0 | 18750 | 0.7996 | 0.2295 | 0.0203 | 0.0573
+
+Constituent-count diagnostics:
+  Means: offline=54.297, hlt=29.181, reco=1.000
+  MAE vs offline: hlt=25.116, reco=53.297
+
+Budget diagnostics (test split):
+  MAE: merge=186.660, eff=0.000, total=186.660
+  Bias: merge=186.660, eff=0.000, total=186.660
+
+======================================================================
+FINAL TEST EVALUATION
+======================================================================
+Teacher (Offline) AUC: 0.9533
+Baseline (HLT)   AUC: 0.9214
+Stage2 (PreJoint) AUC: 0.9224
+Stage2 (BestValFPR50) AUC: 0.9226
+Joint Dual-View  AUC: 0.9239
+Joint Dual-View (BestValFPR50) AUC: 0.9237
+
+FPR@30 Teacher/Baseline/Stage2/Joint: 0.002131 / 0.005524 / 0.005235 / 0.004963
+FPR@30 Stage2BestFPR / JointBestFPR: 0.004955 / 0.004901
+FPR@50 Teacher/Baseline/Stage2/Joint: 0.009940 / 0.021587 / 0.020303 / 0.019564
+FPR@50 Stage2BestFPR / JointBestFPR: 0.019942 / 0.019560
+Saving val/test score arrays for fusion analysis...
+Saved fusion score arrays to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_chamfer_ptratio_sparse_local_topkset/model2_joint_chamfer_ptratio_sparse_local_topkset_150k75k150k_seed0/fusion_scores_val_test.npz
+
+Saved joint results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_chamfer_ptratio_sparse_local_topkset/model2_joint_chamfer_ptratio_sparse_local_topkset_150k75k150k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_chamfer_ptratio_sparse_local_topkset/model2_joint_chamfer_ptratio_sparse_local_topkset_150k75k150k_seed0

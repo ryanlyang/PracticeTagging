@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/PracticeTagging/analyze_m2_oracle_route_gate_posthoc_hardroute.py", line 252, in <module>
+    main()
+  File "/home/ryreu/atlas/PracticeTagging/analyze_m2_oracle_route_gate_posthoc_hardroute.py", line 210, in main
+    "joint_route_frac_val": float(np.mean(m_val_best)),
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/numpy/core/fromnumeric.py", line 3504, in mean
+    return _methods._mean(a, axis=axis, dtype=dtype,
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/numpy/core/_methods.py", line 131, in _mean
+    ret = ret / rcount
+TypeError: unsupported operand type(s) for /: 'dict' and 'int'

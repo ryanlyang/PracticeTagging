@@ -1,0 +1,29 @@
+============================================================
+Model-22 Joint Seq2Seq Next-Token Reconstructor + DualView
+Run:   checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken/model22_joint_seq2seq_nexttoken_100k50k100k_seed0
+Split: train=100000, val=50000, test=100000
+Jets:  n_train_jets=250000, offset=0, max_constits=100
+============================================================
+ python offline_reconstructor_joint_dualview_seq2seq_nexttoken.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken --run_name model22_joint_seq2seq_nexttoken_100k50k100k_seed0 --n_train_jets 250000 --n_train_split 100000 --n_val_split 50000 --n_test_split 100000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --reco_epochs 140 --reco_batch_size 128 --reco_lr 2e-4 --reco_patience 30 --reco_min_epochs 45 --reco_huber_delta 0.12 --beam_size 4 --beam_len_sigma 1.35 --beam_temperature 0.9 --loss_w_ar 1.0 --loss_w_set 0.90 --loss_w_eos 0.22 --loss_w_count 0.22 --loss_w_ptr_entropy 0.002 --save_fusion_scores --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken/model22_joint_seq2seq_nexttoken_100k50k100k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing features...
+Split sizes: Train=100000, Val=50000, Test=100000
+
+========================================================================
+STEP 1: TEACHER (Offline)
+========================================================================
+Teacher ep 5: train_auc=0.9397, val_auc=0.9402, val_fpr50=0.016399, best_fpr50=0.016399, auc@best=0.9402
+Teacher ep 10: train_auc=0.9489, val_auc=0.9443, val_fpr50=0.014465, best_fpr50=0.012568, auc@best=0.9471
+Teacher ep 15: train_auc=0.9531, val_auc=0.9458, val_fpr50=0.016711, best_fpr50=0.010084, auc@best=0.9515
+Teacher ep 20: train_auc=0.9570, val_auc=0.9513, val_fpr50=0.010018, best_fpr50=0.010018, auc@best=0.9513
+Teacher ep 25: train_auc=0.9607, val_auc=0.9510, val_fpr50=0.010536, best_fpr50=0.010018, auc@best=0.9513
+Teacher ep 30: train_auc=0.9652, val_auc=0.9481, val_fpr50=0.013289, best_fpr50=0.010018, auc@best=0.9513
+Teacher ep 35: train_auc=0.9710, val_auc=0.9460, val_fpr50=0.016466, best_fpr50=0.010018, auc@best=0.9513
+Early stopping Teacher at epoch 38
+
+========================================================================
+STEP 2: BASELINE (HLT)
+========================================================================

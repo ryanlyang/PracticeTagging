@@ -24,6 +24,7 @@ SEED="${SEED:-52}"
 BINS="${BINS:-80}"
 CLIP_Q_LOW="${CLIP_Q_LOW:-0.5}"
 CLIP_Q_HIGH="${CLIP_Q_HIGH:-99.5}"
+EXTRA_ARGS="${EXTRA_ARGS:-}"
 
 OUTPUT_ROOT="${OUTPUT_ROOT:-plots/jetclass_full17_features}"
 RUN_TAG="${RUN_TAG:-${SPLIT}_${N_JETS}j}"
@@ -78,6 +79,12 @@ CMD=(
   --clip_quantile_low "${CLIP_Q_LOW}"
   --clip_quantile_high "${CLIP_Q_HIGH}"
 )
+
+if [[ -n "${EXTRA_ARGS}" ]]; then
+  # shellcheck disable=SC2206
+  EXTRA_ARR=( ${EXTRA_ARGS} )
+  CMD+=( "${EXTRA_ARR[@]}" )
+fi
 
 echo "============================================================"
 echo "JetClass Full-17 Feature Plotting Job"

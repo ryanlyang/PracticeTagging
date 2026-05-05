@@ -1,0 +1,10 @@
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint31_rolling_chunk_greedy.py", line 640, in <module>
+    main()
+  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint31_rolling_chunk_greedy.py", line 211, in main
+    y_val_full, y_test, scores_val_full, scores_test, score_files, _run_dirs, model_order = atlas._load_scores_from_fusion_json(
+  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint31_specialization_atlas.py", line 423, in _load_scores_from_fusion_json
+    z = base._load_npz(npz_path)
+  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint18_recoteacher_fusion.py", line 377, in _load_npz
+    raise FileNotFoundError(f"Missing score file: {path}")
+FileNotFoundError: Missing score file: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_stagec_prog_unfreeze/model2_joint_delta005_stagec_prog_unfreeze_150k75k150k_seed0/fusion_scores_val_test.npz

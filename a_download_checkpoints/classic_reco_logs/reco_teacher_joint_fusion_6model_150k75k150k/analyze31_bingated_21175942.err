@@ -1,0 +1,6 @@
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint31_bin_gated_fusion.py", line 1046, in <module>
+    main()
+  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint31_bin_gated_fusion.py", line 889, in main
+    joint_score=cal_map_raw[str(args.anchor_model)],
+NameError: name 'cal_map_raw' is not defined. Did you mean: 'fit_map_raw'?

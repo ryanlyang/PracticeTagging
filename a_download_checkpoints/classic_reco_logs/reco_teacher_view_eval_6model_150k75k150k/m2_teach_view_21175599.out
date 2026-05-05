@@ -1,0 +1,25 @@
+============================================================
+M2 Teacher-On-HLT vs Teacher-On-Reco(Stage2)
+Run dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Out dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/teacher_hlt_vs_reco_stage2_eval
+============================================================
+ python analyze_m2_teacher_hlt_vs_reco.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0 --train_path ./data --max_constits 100 --batch_size 512 --device cuda --corrected_weight_floor 1e-4 --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/teacher_hlt_vs_reco_stage2_eval --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/teacher_hlt_vs_reco_stage2_eval/teacher_hlt_vs_reco_report.json
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing/standardizing HLT features...
+Running teacher on HLT and reconstructed views...
+========================================================================
+Teacher-On-HLT vs Teacher-On-Reco(Stage2)
+========================================================================
+Run dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Teacher ckpt: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/teacher.pt
+Reco ckpt: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/offline_reconstructor_stage2.pt
+
+Val/Test metrics (thresholds from val positives):
+  Teacher on HLT        AUC(val/test)=0.906048/0.904745 FPR30(val/test)=0.006740/0.007925 FPR50(val/test)=0.027520/0.028611
+  Teacher on RecoStage2 AUC(val/test)=0.535787/0.531421 FPR30(val/test)=0.263020/0.264815 FPR50(val/test)=0.433226/0.434019
+
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/teacher_hlt_vs_reco_stage2_eval/teacher_hlt_vs_reco_report.json
+
+Done. Outputs:
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/teacher_hlt_vs_reco_stage2_eval/teacher_hlt_vs_reco_report.json

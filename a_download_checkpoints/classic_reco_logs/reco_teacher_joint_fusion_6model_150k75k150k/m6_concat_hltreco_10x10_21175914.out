@@ -1,0 +1,127 @@
+============================================================
+Model-6 concat(HLT+reco): short Stage-A curriculum 10/10
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_hltreco_stagea_concatjoint/model6_concat_hltreco_stagea_concatjoint_150k75k150k_seed0_phase10_10
+Split: train=150000, val=75000, test=150000
+============================================================
+ python train_m6_concatteacher_hltreco_stagea_then_concatjoint.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_hltreco_stagea_concatjoint --run_name model6_concat_hltreco_stagea_concatjoint_150k75k150k_seed0_phase10_10 --n_train_jets 375000 --n_train_split 150000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --max_concat_constits 200 --num_workers 6 --batch_size 512 --seed 0 --stageA_epochs 115 --stageA_patience 18 --stageA_phase035_epochs 10 --stageA_phase070_epochs 10 --stageA_kd_temp 2.5 --stageA_lambda_kd 1.0 --stageA_lambda_emb 1.2 --stageA_lambda_tok 0.6 --stageA_lambda_phys 0.2 --stageA_lambda_budget_hinge 0.03 --stageA_budget_eps 0.015 --stageA_budget_weight_floor 1e-4 --stageA_target_tpr 0.50 --stageA_lambda_delta 0.00 --stageA_delta_tau 0.05 --stageA_delta_lambda_fp 3.0 --stageA_loss_norm_ema_decay 0.98 --stageA_loss_norm_eps 1e-6 --added_target_scale 0.90 --reco_weight_threshold 0.03 --reco_eval_batch_size 256 --report_target_tpr 0.50 --combo_weight_step 0.01 --joint_select_metric auc --stageC_epochs 65 --stageC_patience 14 --stageC_min_epochs 25 --stageC_lr_model 2e-4 --stageC_lr_reco 1e-4 --stageC_weight_decay 1e-4 --stageC_warmup_epochs 3 --stageC_lambda_reco 0.4 --stageC_lambda_rank 0.0 --stageC_lambda_cons 0.06 --save_fusion_scores --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_hltreco_stagea_concatjoint/model6_concat_hltreco_stagea_concatjoint_150k75k150k_seed0_phase10_10
+Loading offline constituents...
+Generating pseudo-HLT...
+Non-priv rho split setup: rho=0.900, mean_true_added_raw=25.116, mean_target_merge=22.604, mean_target_eff=2.512
+Computing features...
+Split sizes: Train=150000, Val=75000, Test=150000 (custom_counts=True)
+
+======================================================================
+STEP 1: HLT BASELINE + CONCAT TEACHER
+======================================================================
+Baseline-HLT ep 5: train_auc=0.9099, val_auc=0.9165, val_fpr50=0.023651, best_auc=0.9165, fpr50@best=0.023651
+Baseline-HLT ep 10: train_auc=0.9181, val_auc=0.9202, val_fpr50=0.020420, best_auc=0.9202, fpr50@best=0.020420
+Baseline-HLT ep 15: train_auc=0.9223, val_auc=0.9213, val_fpr50=0.019709, best_auc=0.9213, fpr50@best=0.019709
+Baseline-HLT ep 20: train_auc=0.9257, val_auc=0.9205, val_fpr50=0.021832, best_auc=0.9232, fpr50@best=0.019650
+Baseline-HLT ep 25: train_auc=0.9296, val_auc=0.9197, val_fpr50=0.020986, best_auc=0.9232, fpr50@best=0.020139
+Baseline-HLT ep 30: train_auc=0.9348, val_auc=0.9208, val_fpr50=0.021230, best_auc=0.9232, fpr50@best=0.020139
+Baseline-HLT ep 35: train_auc=0.9401, val_auc=0.9169, val_fpr50=0.022684, best_auc=0.9232, fpr50@best=0.020139
+Early stopping Baseline-HLT at epoch 37
+ConcatTeacher ep 5: train_auc=0.9408, val_auc=0.9460, val_fpr50=0.014245, best_auc=0.9460, fpr50@best=0.014245
+ConcatTeacher ep 10: train_auc=0.9486, val_auc=0.9288, val_fpr50=0.023478, best_auc=0.9485, fpr50@best=0.011972
+ConcatTeacher ep 15: train_auc=0.9526, val_auc=0.9506, val_fpr50=0.011458, best_auc=0.9506, fpr50@best=0.011458
+ConcatTeacher ep 20: train_auc=0.9562, val_auc=0.9510, val_fpr50=0.011944, best_auc=0.9510, fpr50@best=0.011944
+ConcatTeacher ep 25: train_auc=0.9594, val_auc=0.9509, val_fpr50=0.010748, best_auc=0.9510, fpr50@best=0.011242
+ConcatTeacher ep 30: train_auc=0.9643, val_auc=0.9465, val_fpr50=0.015047, best_auc=0.9512, fpr50@best=0.010923
+ConcatTeacher ep 35: train_auc=0.9694, val_auc=0.9437, val_fpr50=0.015007, best_auc=0.9512, fpr50@best=0.010923
+ConcatTeacher ep 40: train_auc=0.9748, val_auc=0.9399, val_fpr50=0.016589, best_auc=0.9512, fpr50@best=0.010923
+Early stopping ConcatTeacher at epoch 41
+StageA delta HLT reference @TPR=0.50: threshold_prob=0.886276, val_tpr=0.500013, val_fpr=0.020140
+
+======================================================================
+STEP 2: STAGE A (CONCAT-TEACHER-GUIDED RECONSTRUCTOR PRETRAIN)
+======================================================================
+----------------------------------------------------------------------
+Stage-A curriculum: phase_035 | epochs [1,10] | stage_scale=0.35
+----------------------------------------------------------------------
+Ep 5 [phase_035]: train_total=3.0294, val_total=5.4613, train_teacher_auc=0.9138, val_teacher_auc=0.8540, val_teacher_fpr50=0.053434, best_global_auc=0.8667 | kd=3.7483, emb=0.0606, tok=2.4531, phys=0.2476, budget_hinge=33274.2293, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Ep 10 [phase_035]: train_total=3.0282, val_total=5.7516, train_teacher_auc=0.9200, val_teacher_auc=0.8574, val_teacher_fpr50=0.053041, best_global_auc=0.8667 | kd=3.7718, emb=0.0568, tok=2.5465, phys=0.2467, budget_hinge=35763.3924, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Reloaded best checkpoint for phase_035 (epoch=4, val_auc=0.8667)
+----------------------------------------------------------------------
+Stage-A curriculum: phase_070 | epochs [11,20] | stage_scale=0.70
+----------------------------------------------------------------------
+Ep 15 [phase_070]: train_total=3.0296, val_total=3.2431, train_teacher_auc=0.9190, val_teacher_auc=0.9083, val_teacher_fpr50=0.028107, best_global_auc=0.9083 | kd=3.2750, emb=0.0221, tok=2.3571, phys=0.2341, budget_hinge=34371.6555, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Ep 20 [phase_070]: train_total=3.0300, val_total=3.1952, train_teacher_auc=0.9215, val_teacher_auc=0.9114, val_teacher_fpr50=0.026266, best_global_auc=0.9119 | kd=3.2640, emb=0.0204, tok=2.3395, phys=0.2300, budget_hinge=34568.3284, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Reloaded best checkpoint for phase_070 (epoch=19, val_auc=0.9119)
+----------------------------------------------------------------------
+Stage-A curriculum: phase_100 | epochs [21,115] | stage_scale=1.00
+----------------------------------------------------------------------
+Ep 25 [phase_100]: train_total=3.0304, val_total=3.0133, train_teacher_auc=0.9229, val_teacher_auc=0.9163, val_teacher_fpr50=0.023303, best_global_auc=0.9169 | kd=3.2242, emb=0.0173, tok=2.3108, phys=0.2265, budget_hinge=34211.7720, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 30 [phase_100]: train_total=3.0312, val_total=2.9965, train_teacher_auc=0.9240, val_teacher_auc=0.9177, val_teacher_fpr50=0.022056, best_global_auc=0.9177 | kd=3.2181, emb=0.0168, tok=2.3106, phys=0.2281, budget_hinge=34355.3733, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 35 [phase_100]: train_total=3.0277, val_total=3.0155, train_teacher_auc=0.9255, val_teacher_auc=0.9175, val_teacher_fpr50=0.023032, best_global_auc=0.9177 | kd=3.2157, emb=0.0162, tok=2.3045, phys=0.2262, budget_hinge=33860.5133, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 40 [phase_100]: train_total=3.0317, val_total=3.0216, train_teacher_auc=0.9265, val_teacher_auc=0.9185, val_teacher_fpr50=0.022588, best_global_auc=0.9186 | kd=3.2074, emb=0.0161, tok=2.3038, phys=0.2277, budget_hinge=33878.9148, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 45 [phase_100]: train_total=3.0287, val_total=3.0549, train_teacher_auc=0.9277, val_teacher_auc=0.9185, val_teacher_fpr50=0.022596, best_global_auc=0.9190 | kd=3.2076, emb=0.0157, tok=2.3053, phys=0.2284, budget_hinge=34246.1039, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 50 [phase_100]: train_total=3.0297, val_total=3.0496, train_teacher_auc=0.9291, val_teacher_auc=0.9192, val_teacher_fpr50=0.022802, best_global_auc=0.9192 | kd=3.2019, emb=0.0155, tok=2.3088, phys=0.2241, budget_hinge=33714.7200, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 55 [phase_100]: train_total=3.0276, val_total=3.1170, train_teacher_auc=0.9306, val_teacher_auc=0.9194, val_teacher_fpr50=0.021764, best_global_auc=0.9200 | kd=3.2000, emb=0.0153, tok=2.3000, phys=0.2251, budget_hinge=34022.0904, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 60 [phase_100]: train_total=3.0298, val_total=3.0906, train_teacher_auc=0.9316, val_teacher_auc=0.9193, val_teacher_fpr50=0.022647, best_global_auc=0.9200 | kd=3.1989, emb=0.0151, tok=2.3083, phys=0.2212, budget_hinge=33888.2091, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 65 [phase_100]: train_total=3.0297, val_total=3.1586, train_teacher_auc=0.9335, val_teacher_auc=0.9197, val_teacher_fpr50=0.021787, best_global_auc=0.9200 | kd=3.1991, emb=0.0151, tok=2.3052, phys=0.2228, budget_hinge=34077.4199, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 70 [phase_100]: train_total=3.0278, val_total=3.2220, train_teacher_auc=0.9348, val_teacher_auc=0.9197, val_teacher_fpr50=0.021073, best_global_auc=0.9200 | kd=3.1988, emb=0.0150, tok=2.3028, phys=0.2214, budget_hinge=34102.0270, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Early stop within phase_100 at epoch 70 (no_improve=18)
+Reloaded best checkpoint for phase_100 (epoch=52, val_auc=0.9200)
+
+======================================================================
+STEP 3: CONCAT-TEACHER ON CONCAT(HLT + RECO) VIEW
+======================================================================
+
+======================================================================
+STEP 4: CONCAT(HLT + RECO) TAGGER (FROZEN STAGE-A RECO)
+======================================================================
+ConcatHLTReco-PostStageA ep 5: train_auc=0.9127, val_auc=0.9083, val_fpr50=0.030884, best_auc=0.9114, fpr50@best=0.028309
+ConcatHLTReco-PostStageA ep 10: train_auc=0.9211, val_auc=0.9165, val_fpr50=0.026409, best_auc=0.9185, fpr50@best=0.022639
+ConcatHLTReco-PostStageA ep 15: train_auc=0.9247, val_auc=0.9188, val_fpr50=0.021312, best_auc=0.9200, fpr50@best=0.021771
+ConcatHLTReco-PostStageA ep 20: train_auc=0.9283, val_auc=0.9193, val_fpr50=0.023308, best_auc=0.9214, fpr50@best=0.020408
+ConcatHLTReco-PostStageA ep 25: train_auc=0.9320, val_auc=0.9165, val_fpr50=0.024620, best_auc=0.9214, fpr50@best=0.020408
+ConcatHLTReco-PostStageA ep 30: train_auc=0.9370, val_auc=0.9192, val_fpr50=0.023329, best_auc=0.9214, fpr50@best=0.020408
+Early stopping ConcatHLTReco-PostStageA at epoch 31
+
+======================================================================
+STEP 5: CONCAT(HLT + RECO) JOINT FINETUNE (PRE->POST)
+======================================================================
+StageC-ConcatHLTRecoJoint ep 1: train_loss=59.3600 (cls=0.3670, rank=0.3032, reco=147.4358, cons=0.3110) | val_auc=0.9177, val_fpr50=0.023926, select=auc, best_sel=0.917688
+StageC-ConcatHLTRecoJoint ep 2: train_loss=33.7787 (cls=0.3632, rank=0.3024, reco=83.4986, cons=0.2681) | val_auc=0.9189, val_fpr50=0.023356, select=auc, best_sel=0.918906
+StageC-ConcatHLTRecoJoint ep 3: train_loss=33.6259 (cls=0.3596, rank=0.3017, reco=83.1263, cons=0.2634) | val_auc=0.9196, val_fpr50=0.021875, select=auc, best_sel=0.919628
+StageC-ConcatHLTRecoJoint ep 4: train_loss=32.8957 (cls=0.3575, rank=0.3026, reco=81.3030, cons=0.2839) | val_auc=0.9175, val_fpr50=0.023765, select=auc, best_sel=0.919628
+StageC-ConcatHLTRecoJoint ep 5: train_loss=28.1265 (cls=0.3555, rank=0.3013, reco=69.3640, cons=0.4229) | val_auc=0.9158, val_fpr50=0.024332, select=auc, best_sel=0.919628
+StageC-ConcatHLTRecoJoint ep 6: train_loss=27.6621 (cls=0.3531, rank=0.3017, reco=68.2208, cons=0.3450) | val_auc=0.9214, val_fpr50=0.019800, select=auc, best_sel=0.921429
+StageC-ConcatHLTRecoJoint ep 7: train_loss=27.4672 (cls=0.3501, rank=0.3021, reco=67.7462, cons=0.3096) | val_auc=0.9218, val_fpr50=0.020756, select=auc, best_sel=0.921755
+StageC-ConcatHLTRecoJoint ep 8: train_loss=27.4117 (cls=0.3486, rank=0.3024, reco=67.6116, cons=0.3077) | val_auc=0.9217, val_fpr50=0.021246, select=auc, best_sel=0.921755
+StageC-ConcatHLTRecoJoint ep 9: train_loss=27.3735 (cls=0.3464, rank=0.3021, reco=67.5217, cons=0.3072) | val_auc=0.9214, val_fpr50=0.020416, select=auc, best_sel=0.921755
+StageC-ConcatHLTRecoJoint ep 10: train_loss=27.3443 (cls=0.3459, rank=0.3023, reco=67.4502, cons=0.3056) | val_auc=0.9233, val_fpr50=0.020213, select=auc, best_sel=0.923286
+StageC-ConcatHLTRecoJoint ep 11: train_loss=27.3269 (cls=0.3430, rank=0.3026, reco=67.4139, cons=0.3062) | val_auc=0.9224, val_fpr50=0.021046, select=auc, best_sel=0.923286
+StageC-ConcatHLTRecoJoint ep 12: train_loss=27.3041 (cls=0.3428, rank=0.3017, reco=67.3572, cons=0.3064) | val_auc=0.9203, val_fpr50=0.021082, select=auc, best_sel=0.923286
+StageC-ConcatHLTRecoJoint ep 13: train_loss=27.2871 (cls=0.3399, rank=0.3020, reco=67.3221, cons=0.3065) | val_auc=0.9235, val_fpr50=0.020446, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 14: train_loss=27.2543 (cls=0.3385, rank=0.3025, reco=67.2438, cons=0.3057) | val_auc=0.9211, val_fpr50=0.021516, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 15: train_loss=27.2534 (cls=0.3376, rank=0.3020, reco=67.2438, cons=0.3052) | val_auc=0.9206, val_fpr50=0.021339, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 16: train_loss=27.2398 (cls=0.3363, rank=0.3016, reco=67.2128, cons=0.3057) | val_auc=0.9212, val_fpr50=0.022874, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 17: train_loss=27.2210 (cls=0.3346, rank=0.3031, reco=67.1702, cons=0.3056) | val_auc=0.9235, val_fpr50=0.020413, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 18: train_loss=27.2064 (cls=0.3324, rank=0.3028, reco=67.1390, cons=0.3055) | val_auc=0.9231, val_fpr50=0.019494, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 19: train_loss=27.1964 (cls=0.3314, rank=0.3023, reco=67.1168, cons=0.3054) | val_auc=0.9225, val_fpr50=0.020411, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 20: train_loss=27.1709 (cls=0.3286, rank=0.3025, reco=67.0600, cons=0.3060) | val_auc=0.9187, val_fpr50=0.023563, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 21: train_loss=27.1548 (cls=0.3275, rank=0.3028, reco=67.0223, cons=0.3059) | val_auc=0.9193, val_fpr50=0.023736, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 22: train_loss=27.1354 (cls=0.3257, rank=0.3031, reco=66.9785, cons=0.3052) | val_auc=0.9212, val_fpr50=0.022282, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 23: train_loss=27.1163 (cls=0.3233, rank=0.3033, reco=66.9367, cons=0.3062) | val_auc=0.9210, val_fpr50=0.021379, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 24: train_loss=27.1009 (cls=0.3215, rank=0.3045, reco=66.9028, cons=0.3050) | val_auc=0.9212, val_fpr50=0.020573, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 25: train_loss=27.0822 (cls=0.3210, rank=0.3043, reco=66.8572, cons=0.3054) | val_auc=0.9211, val_fpr50=0.021388, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 26: train_loss=27.0662 (cls=0.3178, rank=0.3042, reco=66.8252, cons=0.3051) | val_auc=0.9201, val_fpr50=0.022218, select=auc, best_sel=0.923531
+StageC-ConcatHLTRecoJoint ep 27: train_loss=27.0395 (cls=0.3158, rank=0.3053, reco=66.7636, cons=0.3052) | val_auc=0.9173, val_fpr50=0.022088, select=auc, best_sel=0.923531
+Early stopping StageC-ConcatHLTRecoJoint at epoch 27
+
+======================================================================
+FINAL EVALUATION
+======================================================================
+HLT baseline AUC (val/test): 0.9232 / 0.9218
+ConcatTeacher AUC (val/test): 0.9512 / 0.9508
+RecoTeacherConcatSoft AUC (val/test): 0.9200 / 0.9179
+ConcatHLTReco pre-joint AUC (val/test): 0.9214 / 0.9193
+ConcatHLTReco post-joint AUC (val/test): 0.9235 / 0.9221
+FPR@50 HLT / ConcatTeacher / RecoTeacherConcatSoft / ConcatHLTReco(pre) / ConcatHLTReco(post): 0.021369 / 0.010841 / 0.024002 / 0.022086 / 0.020965
+Saved fusion score arrays to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_hltreco_stagea_concatjoint/model6_concat_hltreco_stagea_concatjoint_150k75k150k_seed0_phase10_10/fusion_scores_val_test.npz
+
+Saved results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_hltreco_stagea_concatjoint/model6_concat_hltreco_stagea_concatjoint_150k75k150k_seed0_phase10_10
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_hltreco_stagea_concatjoint/model6_concat_hltreco_stagea_concatjoint_150k75k150k_seed0_phase10_10

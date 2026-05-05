@@ -1,0 +1,8 @@
+============================================================
+SharedEncoder Unsmear Repro (undetached delta fusion)
+Data path: test.h5
+Run: TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42
+Split counts: train=140000, val=50000, test=300000
+Seed: 42
+============================================================
+ python TaggingNew/pure_unsmear/joint_new/run_unsmear_sharedencoder_delta_gate_split140k50k300k.py --data_path test.h5 --run_name unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42 --output_root TaggingNew/pure_unsmear/joint_new/runs --shared_baseline_dir TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines --seed 42 --max_particles 100 --feature_kind 7d --train_count 140000 --val_count 50000 --test_count 300000 --batch_size 256 --epochs 50 --lr 5e-4 --weight_decay 1e-5 --warmup_epochs 3 --patience 8 --early_stop_metric val_auc_weighted --load_shared_baselines false --load_joint_model false --resmear_each_epoch_baselines true --resmear_each_epoch_joint true --kd_temperature 2.0 --kd_alpha 0.5 --kd_alpha_attn 0.0 --joint_unsmear_weight 1.6 --joint_cls_weight 0.8 --joint_phys_weight 0.0 --cls_use_delta_fusion true --cls_detach_delta_for_cls false --cls_gate_hidden_dim 128 --cls_gate_init_bias -2.0 --cls_alpha_init 0.05 --num_workers 6 --device cuda

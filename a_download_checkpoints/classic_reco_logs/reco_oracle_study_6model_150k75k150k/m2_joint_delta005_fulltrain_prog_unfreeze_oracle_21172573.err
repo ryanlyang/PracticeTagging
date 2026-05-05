@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_oracle_study.py", line 4629, in <module>
+    main()
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_oracle_study.py", line 3328, in main
+    hlt_const, hlt_mask, hlt_stats, budget_truth = apply_hlt_effects_realistic_with_oracle_tracking(
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_oracle_study.py", line 426, in apply_hlt_effects_realistic_with_oracle_tracking
+    density_j = _compute_local_density_np(
+NameError: name '_compute_local_density_np' is not defined

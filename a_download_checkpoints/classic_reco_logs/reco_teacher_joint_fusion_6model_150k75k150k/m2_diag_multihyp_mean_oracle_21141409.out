@@ -1,0 +1,43 @@
+============================================================
+MultiHyp Mean Oracle Diagnostic
+Run dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0
+Split: test
+Temps: 0.85,1.00
+Aggregation: mean
+Device: cuda
+Out dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0/multihyp_oracle
+============================================================
+
+--- Stage2 diagnostic ---
+ python analyze_multihyp_mean_oracle_diagnostic.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0 --split test --batch_size 512 --num_workers 6 --max_batches -1 --device cuda --multihyp_temps 0.85\,1.00 --multihyp_agg mean --stage stage2 --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0/multihyp_oracle/stage2_test_multihyp_mean_oracle.json
+============================================================
+MultiHyp Mean Oracle Diagnostic
+============================================================
+run_dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0
+stage/split: stage2/test
+n_jets: 150000
+hyp_temps: [0.85, 1.0], agg=mean
+aggregated: AUC=0.9220, FPR50=0.020832
+oracle_per_jet: AUC=0.5210, FPR50=0.458535
+best_single_hyp_by_fpr50: h=0, AUC=0.9220, FPR50=0.020852
+hyp_diversity: mean_abs_diff_prob=0.006755, mean_corr_prob=0.999688
+Saved report json: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0/multihyp_oracle/stage2_test_multihyp_mean_oracle.json
+
+--- Joint diagnostic ---
+ python analyze_multihyp_mean_oracle_diagnostic.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0 --split test --batch_size 512 --num_workers 6 --max_batches -1 --device cuda --multihyp_temps 0.85\,1.00 --multihyp_agg mean --stage joint --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0/multihyp_oracle/joint_test_multihyp_mean_oracle.json
+============================================================
+MultiHyp Mean Oracle Diagnostic
+============================================================
+run_dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0
+stage/split: joint/test
+n_jets: 150000
+hyp_temps: [0.85, 1.0], agg=mean
+aggregated: AUC=0.9223, FPR50=0.020788
+oracle_per_jet: AUC=0.5075, FPR50=0.484988
+best_single_hyp_by_fpr50: h=0, AUC=0.9224, FPR50=0.020776
+hyp_diversity: mean_abs_diff_prob=0.006573, mean_corr_prob=0.999701
+Saved report json: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0/multihyp_oracle/joint_test_multihyp_mean_oracle.json
+
+Done. Reports:
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0/multihyp_oracle/stage2_test_multihyp_mean_oracle.json
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean/model2_joint_delta005_fulltrain_prog_unfreeze_multihyp_mean_150k75k150k_seed0/multihyp_oracle/joint_test_multihyp_mean_oracle.json

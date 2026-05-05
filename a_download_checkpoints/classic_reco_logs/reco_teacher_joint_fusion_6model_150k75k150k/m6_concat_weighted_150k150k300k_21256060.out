@@ -1,0 +1,87 @@
+============================================================
+Model-6 Concat-teacher StageA + corrected-only/dual pre+post joint
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k/model6_concat_stagea_corrected_weighted_150k150k300k_seed0
+Train path: ./data/train_quarter.h5 (weighted)
+Split: train=150000, val=150000, test=300000
+============================================================
+ python reco_concat_teacher_stageA_then_corrected.py --train_path ./data/train_quarter.h5 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k --run_name model6_concat_stagea_corrected_weighted_150k150k300k_seed0 --n_train_jets 600000 --n_train_split 150000 --n_val_split 150000 --n_test_split 300000 --offset_jets 0 --max_constits 100 --max_concat_constits 200 --num_workers 6 --seed 0 --stageA_epochs 90 --stageA_patience 18 --stageA_kd_temp 2.5 --stageA_lambda_kd 1.0 --stageA_lambda_emb 1.2 --stageA_lambda_tok 0.6 --stageA_lambda_phys 0.2 --stageA_lambda_budget_hinge 0.03 --stageA_budget_eps 0.015 --stageA_budget_weight_floor 1e-4 --stageA_target_tpr 0.50 --stageA_lambda_delta 0.00 --stageA_delta_tau 0.05 --stageA_delta_lambda_fp 3.0 --stageA_loss_norm_ema_decay 0.98 --stageA_loss_norm_eps 1e-6 --added_target_scale 0.90 --report_target_tpr 0.50 --combo_weight_step 0.01 --joint_select_metric auc --stageB_epochs 45 --stageB_patience 12 --stageB_min_epochs 12 --stageB_lr_dual 4e-4 --stageB_lambda_rank 0.0 --stageB_lambda_cons 0.0 --stageC_epochs 65 --stageC_patience 14 --stageC_min_epochs 25 --stageC_lr_dual 2e-4 --stageC_lr_reco 1e-4 --stageC_lambda_reco 0.4 --stageC_lambda_rank 0.0 --stageC_lambda_cons 0.06 --stop_after_corrected_only --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k/model6_concat_stagea_corrected_weighted_150k150k300k_seed0
+Loading offline constituents...
+Info: using 'weights' from data/train_quarter.h5 as training weights.
+Generating pseudo-HLT...
+Non-priv rho split setup: rho=0.900, mean_true_added_raw=25.090, mean_target_merge=22.581, mean_target_eff=2.509
+Computing features...
+Split sizes: Train=150000, Val=150000, Test=300000 (custom_counts=True)
+
+======================================================================
+STEP 1: HLT BASELINE + CONCAT TEACHER
+======================================================================
+Baseline-HLT ep 5: train_auc=0.8906, val_auc=0.8951, val_fpr50=0.033758, best_auc=0.8969, fpr50@best=0.038130
+Baseline-HLT ep 10: train_auc=0.9026, val_auc=0.9019, val_fpr50=0.030188, best_auc=0.9090, fpr50@best=0.025066
+Baseline-HLT ep 15: train_auc=0.9105, val_auc=0.8988, val_fpr50=0.030083, best_auc=0.9104, fpr50@best=0.027097
+Baseline-HLT ep 20: train_auc=0.9191, val_auc=0.9042, val_fpr50=0.028364, best_auc=0.9104, fpr50@best=0.027097
+Baseline-HLT ep 25: train_auc=0.9262, val_auc=0.9019, val_fpr50=0.027334, best_auc=0.9104, fpr50@best=0.027097
+Early stopping Baseline-HLT at epoch 29
+ConcatTeacher ep 5: train_auc=0.9242, val_auc=0.9136, val_fpr50=0.027584, best_auc=0.9250, fpr50@best=0.026028
+ConcatTeacher ep 10: train_auc=0.9356, val_auc=0.9319, val_fpr50=0.018784, best_auc=0.9347, fpr50@best=0.016934
+ConcatTeacher ep 15: train_auc=0.9432, val_auc=0.9393, val_fpr50=0.013613, best_auc=0.9393, fpr50@best=0.014780
+ConcatTeacher ep 20: train_auc=0.9506, val_auc=0.9284, val_fpr50=0.018859, best_auc=0.9393, fpr50@best=0.014780
+ConcatTeacher ep 25: train_auc=0.9593, val_auc=0.9322, val_fpr50=0.014986, best_auc=0.9393, fpr50@best=0.014780
+Early stopping ConcatTeacher at epoch 29
+StageA delta HLT reference @TPR=0.50: threshold_prob=0.846712, val_tpr=0.500013, val_fpr=0.027102
+
+======================================================================
+STEP 2: STAGE A (CONCAT-TEACHER-GUIDED RECONSTRUCTOR PRETRAIN)
+======================================================================
+----------------------------------------------------------------------
+Stage-A curriculum: phase_035 | epochs [1,20] | stage_scale=0.35
+----------------------------------------------------------------------
+Ep 5 [phase_035]: train_total=3.0282, val_total=8.7137, train_teacher_auc=0.8765, val_teacher_auc=0.5816, val_teacher_fpr50=0.403025, best_global_auc=0.6507 | kd=5.7810, emb=0.3442, tok=4.0949, phys=0.3538, budget_hinge=39997.6189, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Ep 10 [phase_035]: train_total=3.0286, val_total=8.5349, train_teacher_auc=0.8870, val_teacher_auc=0.7451, val_teacher_fpr50=0.161136, best_global_auc=0.7451 | kd=5.3486, emb=0.2969, tok=4.0978, phys=0.3081, budget_hinge=39847.8780, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Ep 15 [phase_035]: train_total=3.0298, val_total=9.4594, train_teacher_auc=0.8913, val_teacher_auc=0.6679, val_teacher_fpr50=0.261239, best_global_auc=0.7451 | kd=5.4628, emb=0.3212, tok=4.1871, phys=0.3039, budget_hinge=40269.9898, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Ep 20 [phase_035]: train_total=3.0307, val_total=9.0919, train_teacher_auc=0.8935, val_teacher_auc=0.6966, val_teacher_fpr50=0.220062, best_global_auc=0.7451 | kd=5.3862, emb=0.2997, tok=4.1835, phys=0.3002, budget_hinge=40152.9158, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.35
+Reloaded best checkpoint for phase_035 (epoch=10, val_auc=0.7451)
+----------------------------------------------------------------------
+Stage-A curriculum: phase_070 | epochs [21,55] | stage_scale=0.70
+----------------------------------------------------------------------
+Ep 25 [phase_070]: train_total=3.0283, val_total=3.0297, train_teacher_auc=0.4518, val_teacher_auc=0.4577, val_teacher_fpr50=0.556721, best_global_auc=0.7451 | kd=6.6369, emb=0.4329, tok=4.0463, phys=0.9186, budget_hinge=36115.8074, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Ep 30 [phase_070]: train_total=3.0297, val_total=2.9702, train_teacher_auc=0.4032, val_teacher_auc=0.4615, val_teacher_fpr50=0.550098, best_global_auc=0.7451 | kd=6.6620, emb=0.4413, tok=4.0643, phys=0.9186, budget_hinge=36115.8070, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Ep 35 [phase_070]: train_total=3.0294, val_total=2.9968, train_teacher_auc=0.4046, val_teacher_auc=0.4583, val_teacher_fpr50=0.557325, best_global_auc=0.7451 | kd=6.6605, emb=0.4407, tok=4.0638, phys=0.9186, budget_hinge=36115.8075, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Ep 40 [phase_070]: train_total=3.0308, val_total=2.9733, train_teacher_auc=0.4039, val_teacher_auc=0.4612, val_teacher_fpr50=0.553459, best_global_auc=0.7451 | kd=6.6627, emb=0.4416, tok=4.0645, phys=0.9186, budget_hinge=36115.8074, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=0.70
+Early stop within phase_070 at epoch 40 (no_improve=18)
+Reloaded best checkpoint for phase_070 (epoch=22, val_auc=0.4864)
+----------------------------------------------------------------------
+Stage-A curriculum: phase_100 | epochs [56,90] | stage_scale=1.00
+----------------------------------------------------------------------
+Ep 60 [phase_100]: train_total=3.0274, val_total=2.9873, train_teacher_auc=0.4466, val_teacher_auc=0.4597, val_teacher_fpr50=0.553831, best_global_auc=0.7451 | kd=6.6610, emb=0.4406, tok=4.0633, phys=0.9186, budget_hinge=36115.8074, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 65 [phase_100]: train_total=3.0302, val_total=2.9872, train_teacher_auc=0.4046, val_teacher_auc=0.4592, val_teacher_fpr50=0.551825, best_global_auc=0.7451 | kd=6.6629, emb=0.4416, tok=4.0638, phys=0.9186, budget_hinge=36115.8070, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Ep 70 [phase_100]: train_total=3.0295, val_total=2.9964, train_teacher_auc=0.4025, val_teacher_auc=0.4593, val_teacher_fpr50=0.554823, best_global_auc=0.7451 | kd=6.6631, emb=0.4415, tok=4.0637, phys=0.9186, budget_hinge=36115.8071, delta=0.0000, delta_gain=0.0000, delta_cost=0.0000, stage_scale=1.00
+Early stop within phase_100 at epoch 74 (no_improve=18)
+Reloaded best checkpoint for phase_100 (epoch=56, val_auc=0.4823)
+
+======================================================================
+STEP 3: CONCAT-TEACHER ON SOFT RECONSTRUCTED VIEW
+======================================================================
+
+======================================================================
+STEP 4: CORRECTED-ONLY TAGGER (FROZEN STAGE-A RECONSTRUCTOR)
+======================================================================
+CorrectedOnly-PostStageA ep 5: train_auc=0.8909, val_auc=0.8952, val_fpr50=0.035485, best_auc=0.8952, fpr50@best=0.035485
+CorrectedOnly-PostStageA ep 10: train_auc=0.8948, val_auc=0.8938, val_fpr50=0.035965, best_auc=0.8964, fpr50@best=0.035185
+CorrectedOnly-PostStageA ep 15: train_auc=0.8998, val_auc=0.8933, val_fpr50=0.034257, best_auc=0.8985, fpr50@best=0.032862
+CorrectedOnly-PostStageA ep 20: train_auc=0.9033, val_auc=0.8953, val_fpr50=0.035371, best_auc=0.8985, fpr50@best=0.032862
+CorrectedOnly-PostStageA ep 25: train_auc=0.9087, val_auc=0.8918, val_fpr50=0.038680, best_auc=0.8985, fpr50@best=0.032862
+Early stopping CorrectedOnly-PostStageA at epoch 27
+
+======================================================================
+FINAL EVALUATION (STOP AFTER CORRECTED-ONLY)
+======================================================================
+HLT baseline AUC (val/test): 0.9104 / 0.9088
+ConcatTeacher AUC (val/test): 0.9393 / 0.9388
+RecoTeacherSoft AUC (val/test): 0.7451 / 0.7423
+CorrectedOnly AUC (val/test): 0.8985 / 0.8967
+FPR@50 HLT / ConcatTeacher / RecoTeacherSoft / CorrectedOnly: 0.027155 / 0.015746 / 0.164627 / 0.034402
+
+Saved concat-teacher Stage-A + corrected-only results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k/model6_concat_stagea_corrected_weighted_150k150k300k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_150k150k300k/model6_concat_stagea_corrected_weighted_150k150k300k_seed0

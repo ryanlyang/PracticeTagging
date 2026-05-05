@@ -1,0 +1,175 @@
+============================================================
+SharedEncoder Unsmear Repro (undetached delta fusion)
+Repo root: /home/ryreu/atlas/PracticeTagging
+Data path: /home/ryreu/atlas/PracticeTagging/data/test.h5
+Run: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42
+Split counts: train=140000, val=50000, test=300000
+Seed: 42
+============================================================
+ python /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/run_unsmear_sharedencoder_delta_gate_split140k50k300k.py --data_path /home/ryreu/atlas/PracticeTagging/data/test.h5 --run_name unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42 --output_root /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs --shared_baseline_dir /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines --seed 42 --max_particles 100 --feature_kind 7d --train_count 140000 --val_count 50000 --test_count 300000 --batch_size 256 --epochs 50 --lr 5e-4 --weight_decay 1e-5 --warmup_epochs 3 --patience 8 --early_stop_metric val_auc_weighted --load_shared_baselines false --load_joint_model false --resmear_each_epoch_baselines true --resmear_each_epoch_joint true --kd_temperature 2.0 --kd_alpha 0.5 --kd_alpha_attn 0.0 --joint_unsmear_weight 1.6 --joint_cls_weight 0.8 --joint_phys_weight 0.0 --cls_use_delta_fusion true --cls_detach_delta_for_cls false --cls_gate_hidden_dim 128 --cls_gate_init_bias -2.0 --cls_alpha_init 0.05 --num_workers 6 --device cuda
+Device: cuda
+Data path: /home/ryreu/atlas/PracticeTagging/data/test.h5
+Run dir: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42
+Feature kind: 7d feat_names: ['dEta', 'dPhi', 'log_pt', 'log_E', 'log_pt_rel', 'log_E_rel', 'dR']
+Feature loss weights: {'dEta': 1.0, 'dPhi': 1.0, 'log_pt': 1.0, 'log_E': 1.0, 'log_pt_rel': 1.0, 'log_E_rel': 1.0, 'dR': 1.0}
+Joint physical consistency weight: 0.0
+Use sample weight for all losses: False
+Delta fusion enabled: True
+Detach delta for classifier: False
+Gate hidden dim: 128
+Gate init bias: -2.0
+Alpha init: 0.05
+Raw: (490000, 100, 4) mask: (490000, 100)
+Signal: 244583 Bkg: 245417
+Split: train=140,000 val=50,000 test=300,000
+Offline/HLT feature shape: (490000, 100, 7) (490000, 100, 7)
+Mask identical: True
+Common-mask fraction: 0.5429331836734694
+Feat means: [ 2.0000e-04 -0.0000e+00  8.7947e+00  9.0854e+00 -5.2594e+00 -5.2710e+00
+  2.2270e-01]
+Feat stds : [0.2121 0.2176 1.5178 1.5215 1.4915 1.4932 0.2067]
+Baseline epoch resmear enabled: True
+Joint epoch resmear enabled: True
+[Teacher(OFF_FULL)] ep=001 train_loss=0.54155 train_auc=0.80788 train_auc_w=0.80788 val_loss=0.50336 val_auc=0.84665 val_auc_w=0.84665 monitor=val_auc_weighted best_monitor=0.84665 no_imp=0
+[Teacher(OFF_FULL)] ep=002 train_loss=0.47875 train_auc=0.85722 train_auc_w=0.85722 val_loss=0.48723 val_auc=0.90472 val_auc_w=0.90472 monitor=val_auc_weighted best_monitor=0.90472 no_imp=0
+[Teacher(OFF_FULL)] ep=004 train_loss=0.38076 train_auc=0.91373 train_auc_w=0.91373 val_loss=0.36815 val_auc=0.92128 val_auc_w=0.92128 monitor=val_auc_weighted best_monitor=0.92334 no_imp=1
+[Teacher(OFF_FULL)] ep=006 train_loss=0.35474 train_auc=0.92487 train_auc_w=0.92487 val_loss=0.35328 val_auc=0.92076 val_auc_w=0.92076 monitor=val_auc_weighted best_monitor=0.93345 no_imp=1
+[Teacher(OFF_FULL)] ep=008 train_loss=0.34409 train_auc=0.92906 train_auc_w=0.92906 val_loss=0.34065 val_auc=0.93531 val_auc_w=0.93531 monitor=val_auc_weighted best_monitor=0.93531 no_imp=0
+[Teacher(OFF_FULL)] ep=010 train_loss=0.33643 train_auc=0.93245 train_auc_w=0.93245 val_loss=0.33013 val_auc=0.93893 val_auc_w=0.93893 monitor=val_auc_weighted best_monitor=0.94119 no_imp=1
+[Teacher(OFF_FULL)] ep=012 train_loss=0.33021 train_auc=0.93462 train_auc_w=0.93462 val_loss=0.33890 val_auc=0.92791 val_auc_w=0.92791 monitor=val_auc_weighted best_monitor=0.94119 no_imp=3
+[Teacher(OFF_FULL)] ep=014 train_loss=0.32310 train_auc=0.93746 train_auc_w=0.93746 val_loss=0.33193 val_auc=0.93416 val_auc_w=0.93416 monitor=val_auc_weighted best_monitor=0.94119 no_imp=5
+[Teacher(OFF_FULL)] ep=016 train_loss=0.31786 train_auc=0.93959 train_auc_w=0.93959 val_loss=0.32314 val_auc=0.93870 val_auc_w=0.93870 monitor=val_auc_weighted best_monitor=0.94119 no_imp=7
+[Teacher(OFF_FULL)] ep=018 train_loss=0.31233 train_auc=0.94144 train_auc_w=0.94144 val_loss=0.32579 val_auc=0.93783 val_auc_w=0.93783 monitor=val_auc_weighted best_monitor=0.94233 no_imp=1
+[Teacher(OFF_FULL)] ep=020 train_loss=0.30582 train_auc=0.94343 train_auc_w=0.94343 val_loss=0.32201 val_auc=0.93580 val_auc_w=0.93580 monitor=val_auc_weighted best_monitor=0.94233 no_imp=3
+[Teacher(OFF_FULL)] ep=022 train_loss=0.30179 train_auc=0.94456 train_auc_w=0.94456 val_loss=0.32161 val_auc=0.93919 val_auc_w=0.93919 monitor=val_auc_weighted best_monitor=0.94233 no_imp=5
+[Teacher(OFF_FULL)] ep=024 train_loss=0.29488 train_auc=0.94707 train_auc_w=0.94707 val_loss=0.32034 val_auc=0.94024 val_auc_w=0.94024 monitor=val_auc_weighted best_monitor=0.94233 no_imp=7
+[Teacher(OFF_FULL)] Early stopping
+Saved checkpoint: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines/ckpts/teacher_offline.pt
+[Student(HLT)] ep=001 train_loss=0.55713 train_auc=0.79489 train_auc_w=0.79489 val_loss=0.52907 val_auc=0.85071 val_auc_w=0.85071 monitor=val_auc_weighted best_monitor=0.85071 no_imp=0
+[Student(HLT)] ep=002 train_loss=0.50747 train_auc=0.83895 train_auc_w=0.83895 val_loss=0.47223 val_auc=0.87177 val_auc_w=0.87177 monitor=val_auc_weighted best_monitor=0.87177 no_imp=0
+[Student(HLT)] ep=004 train_loss=0.44599 train_auc=0.88415 train_auc_w=0.88415 val_loss=0.43180 val_auc=0.88375 val_auc_w=0.88375 monitor=val_auc_weighted best_monitor=0.89160 no_imp=1
+[Student(HLT)] ep=006 train_loss=0.42580 train_auc=0.89629 train_auc_w=0.89629 val_loss=0.40696 val_auc=0.90324 val_auc_w=0.90324 monitor=val_auc_weighted best_monitor=0.90324 no_imp=0
+[Student(HLT)] ep=008 train_loss=0.41512 train_auc=0.90156 train_auc_w=0.90156 val_loss=0.40397 val_auc=0.91027 val_auc_w=0.91027 monitor=val_auc_weighted best_monitor=0.91201 no_imp=1
+[Student(HLT)] ep=010 train_loss=0.40743 train_auc=0.90521 train_auc_w=0.90521 val_loss=0.41835 val_auc=0.90576 val_auc_w=0.90576 monitor=val_auc_weighted best_monitor=0.91201 no_imp=3
+[Student(HLT)] ep=012 train_loss=0.40202 train_auc=0.90827 train_auc_w=0.90827 val_loss=0.39961 val_auc=0.91675 val_auc_w=0.91675 monitor=val_auc_weighted best_monitor=0.91675 no_imp=0
+[Student(HLT)] ep=014 train_loss=0.39600 train_auc=0.91121 train_auc_w=0.91121 val_loss=0.39300 val_auc=0.91423 val_auc_w=0.91423 monitor=val_auc_weighted best_monitor=0.91675 no_imp=2
+[Student(HLT)] ep=016 train_loss=0.39363 train_auc=0.91288 train_auc_w=0.91288 val_loss=0.40214 val_auc=0.91035 val_auc_w=0.91035 monitor=val_auc_weighted best_monitor=0.91675 no_imp=4
+[Student(HLT)] ep=018 train_loss=0.38926 train_auc=0.91500 train_auc_w=0.91500 val_loss=0.38797 val_auc=0.91303 val_auc_w=0.91303 monitor=val_auc_weighted best_monitor=0.91675 no_imp=6
+[Student(HLT)] ep=020 train_loss=0.38597 train_auc=0.91626 train_auc_w=0.91626 val_loss=0.38540 val_auc=0.92033 val_auc_w=0.92033 monitor=val_auc_weighted best_monitor=0.92033 no_imp=0
+[Student(HLT)] ep=022 train_loss=0.38130 train_auc=0.91811 train_auc_w=0.91811 val_loss=0.38834 val_auc=0.91614 val_auc_w=0.91614 monitor=val_auc_weighted best_monitor=0.92033 no_imp=2
+[Student(HLT)] ep=024 train_loss=0.37768 train_auc=0.91992 train_auc_w=0.91992 val_loss=0.38223 val_auc=0.91752 val_auc_w=0.91752 monitor=val_auc_weighted best_monitor=0.92033 no_imp=4
+[Student(HLT)] ep=026 train_loss=0.37491 train_auc=0.92117 train_auc_w=0.92117 val_loss=0.37986 val_auc=0.91936 val_auc_w=0.91936 monitor=val_auc_weighted best_monitor=0.92033 no_imp=6
+[Student(HLT)] ep=028 train_loss=0.36814 train_auc=0.92396 train_auc_w=0.92396 val_loss=0.38434 val_auc=0.92008 val_auc_w=0.92008 monitor=val_auc_weighted best_monitor=0.92051 no_imp=1
+[Student(HLT)] ep=030 train_loss=0.36735 train_auc=0.92488 train_auc_w=0.92488 val_loss=0.38081 val_auc=0.92138 val_auc_w=0.92138 monitor=val_auc_weighted best_monitor=0.92362 no_imp=1
+[Student(HLT)] ep=032 train_loss=0.36330 train_auc=0.92610 train_auc_w=0.92610 val_loss=0.38419 val_auc=0.91668 val_auc_w=0.91668 monitor=val_auc_weighted best_monitor=0.92362 no_imp=3
+[Student(HLT)] ep=034 train_loss=0.35854 train_auc=0.92818 train_auc_w=0.92818 val_loss=0.38827 val_auc=0.92291 val_auc_w=0.92291 monitor=val_auc_weighted best_monitor=0.92362 no_imp=5
+[Student(HLT)] ep=036 train_loss=0.35503 train_auc=0.92936 train_auc_w=0.92936 val_loss=0.38194 val_auc=0.91910 val_auc_w=0.91910 monitor=val_auc_weighted best_monitor=0.92362 no_imp=7
+[Student(HLT)] Early stopping
+Saved checkpoint: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines/ckpts/student_hlt.pt
+[Student(HLT)+KD] ep=001 train_total=1.43982 train_hard=0.55154 train_kd=2.32821 train_attn=0.00000 train_auc=0.83536 train_auc_w=0.83536 val_total=1.36279 val_hard=0.50342 val_kd=2.22260 val_attn=0.00000 val_auc=0.86345 val_auc_w=0.86345 monitor=val_auc_weighted best_monitor=0.86345 no_imp=0
+[Student(HLT)+KD] ep=002 train_total=1.33601 train_hard=0.48288 train_kd=2.18945 train_attn=0.00000 train_auc=0.87942 train_auc_w=0.87942 val_total=1.28478 val_hard=0.44894 val_kd=2.12089 val_attn=0.00000 val_auc=0.89717 val_auc_w=0.89717 monitor=val_auc_weighted best_monitor=0.89717 no_imp=0
+[Student(HLT)+KD] ep=004 train_total=1.25566 train_hard=0.42379 train_kd=2.08762 train_attn=0.00000 train_auc=0.90827 train_auc_w=0.90827 val_total=1.23411 val_hard=0.41042 val_kd=2.05806 val_attn=0.00000 val_auc=0.91221 val_auc_w=0.91221 monitor=val_auc_weighted best_monitor=0.91706 no_imp=1
+[Student(HLT)+KD] ep=006 train_total=1.23973 train_hard=0.41089 train_kd=2.06876 train_attn=0.00000 train_auc=0.91379 train_auc_w=0.91379 val_total=1.22854 val_hard=0.39831 val_kd=2.05900 val_attn=0.00000 val_auc=0.91484 val_auc_w=0.91484 monitor=val_auc_weighted best_monitor=0.91706 no_imp=3
+[Student(HLT)+KD] ep=008 train_total=1.22930 train_hard=0.40110 train_kd=2.05756 train_attn=0.00000 train_auc=0.91746 train_auc_w=0.91746 val_total=1.21943 val_hard=0.39626 val_kd=2.04282 val_attn=0.00000 val_auc=0.92073 val_auc_w=0.92073 monitor=val_auc_weighted best_monitor=0.92073 no_imp=0
+[Student(HLT)+KD] ep=010 train_total=1.22352 train_hard=0.39592 train_kd=2.05119 train_attn=0.00000 train_auc=0.91945 train_auc_w=0.91945 val_total=1.21834 val_hard=0.39206 val_kd=2.04485 val_attn=0.00000 val_auc=0.91615 val_auc_w=0.91615 monitor=val_auc_weighted best_monitor=0.92073 no_imp=2
+[Student(HLT)+KD] ep=012 train_total=1.21844 train_hard=0.39081 train_kd=2.04624 train_attn=0.00000 train_auc=0.92134 train_auc_w=0.92134 val_total=1.22097 val_hard=0.39536 val_kd=2.04695 val_attn=0.00000 val_auc=0.91846 val_auc_w=0.91846 monitor=val_auc_weighted best_monitor=0.92262 no_imp=1
+[Student(HLT)+KD] ep=014 train_total=1.21475 train_hard=0.38683 train_kd=2.04268 train_attn=0.00000 train_auc=0.92271 train_auc_w=0.92271 val_total=1.21366 val_hard=0.39070 val_kd=2.03669 val_attn=0.00000 val_auc=0.91635 val_auc_w=0.91635 monitor=val_auc_weighted best_monitor=0.92262 no_imp=3
+[Student(HLT)+KD] ep=016 train_total=1.20992 train_hard=0.38155 train_kd=2.03852 train_attn=0.00000 train_auc=0.92476 train_auc_w=0.92476 val_total=1.20971 val_hard=0.39065 val_kd=2.02917 val_attn=0.00000 val_auc=0.92628 val_auc_w=0.92628 monitor=val_auc_weighted best_monitor=0.92628 no_imp=0
+[Student(HLT)+KD] ep=018 train_total=1.20826 train_hard=0.38059 train_kd=2.03595 train_attn=0.00000 train_auc=0.92541 train_auc_w=0.92541 val_total=1.21241 val_hard=0.38497 val_kd=2.04009 val_attn=0.00000 val_auc=0.91898 val_auc_w=0.91898 monitor=val_auc_weighted best_monitor=0.92628 no_imp=2
+[Student(HLT)+KD] ep=020 train_total=1.20602 train_hard=0.37845 train_kd=2.03379 train_attn=0.00000 train_auc=0.92585 train_auc_w=0.92585 val_total=1.20483 val_hard=0.38477 val_kd=2.02510 val_attn=0.00000 val_auc=0.92436 val_auc_w=0.92436 monitor=val_auc_weighted best_monitor=0.92628 no_imp=4
+[Student(HLT)+KD] ep=022 train_total=1.20494 train_hard=0.37638 train_kd=2.03362 train_attn=0.00000 train_auc=0.92683 train_auc_w=0.92683 val_total=1.20267 val_hard=0.37874 val_kd=2.02677 val_attn=0.00000 val_auc=0.92382 val_auc_w=0.92382 monitor=val_auc_weighted best_monitor=0.92715 no_imp=1
+[Student(HLT)+KD] ep=024 train_total=1.20059 train_hard=0.37303 train_kd=2.02834 train_attn=0.00000 train_auc=0.92806 train_auc_w=0.92806 val_total=1.20090 val_hard=0.37680 val_kd=2.02520 val_attn=0.00000 val_auc=0.92379 val_auc_w=0.92379 monitor=val_auc_weighted best_monitor=0.92715 no_imp=3
+[Student(HLT)+KD] ep=026 train_total=1.19930 train_hard=0.37138 train_kd=2.02737 train_attn=0.00000 train_auc=0.92852 train_auc_w=0.92852 val_total=1.20301 val_hard=0.37884 val_kd=2.02749 val_attn=0.00000 val_auc=0.92269 val_auc_w=0.92269 monitor=val_auc_weighted best_monitor=0.92715 no_imp=5
+[Student(HLT)+KD] ep=028 train_total=1.19452 train_hard=0.36463 train_kd=2.02451 train_attn=0.00000 train_auc=0.93075 train_auc_w=0.93075 val_total=1.20247 val_hard=0.37978 val_kd=2.02535 val_attn=0.00000 val_auc=0.92294 val_auc_w=0.92294 monitor=val_auc_weighted best_monitor=0.92715 no_imp=7
+[Student(HLT)+KD] Early stopping
+Saved checkpoint: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/shared_offline_hlt_baselines/ckpts/student_hlt_kd.pt
+[JointSharedEncoder(HLT,no_kd)] ep=001 train_joint=0.57044 train_uns=0.07161 train_phys=0.00000 train_cls=0.56983 train_hard=0.57000 train_kd=0.00000 train_attn=0.00000 train_gate=0.1375±0.0828 alpha=0.7153 train_auc=0.78095 train_auc_w=0.78095 val_joint=0.49911 val_uns=0.04273 val_phys=0.00000 val_cls=0.53842 val_hard=0.53893 val_kd=0.00000 val_attn=0.00000 val_gate=0.1321±0.0747 val_auc=0.84316 val_auc_w=0.84316 monitor=val_auc_weighted best_monitor=0.84316 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=002 train_joint=0.48751 train_uns=0.04672 train_phys=0.00000 train_cls=0.51596 train_hard=0.51616 train_kd=0.00000 train_attn=0.00000 train_gate=0.1298±0.0781 alpha=0.7096 train_auc=0.83208 train_auc_w=0.83208 val_joint=0.45214 val_uns=0.04088 val_phys=0.00000 val_cls=0.48341 val_hard=0.48374 val_kd=0.00000 val_attn=0.00000 val_gate=0.1207±0.0688 val_auc=0.87495 val_auc_w=0.87495 monitor=val_auc_weighted best_monitor=0.87495 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=004 train_joint=0.42131 train_uns=0.03996 train_phys=0.00000 train_cls=0.44673 train_hard=0.44674 train_kd=0.00000 train_attn=0.00000 train_gate=0.1185±0.0828 alpha=0.6941 train_auc=0.88271 train_auc_w=0.88271 val_joint=0.39807 val_uns=0.03764 val_phys=0.00000 val_cls=0.42231 val_hard=0.42240 val_kd=0.00000 val_attn=0.00000 val_gate=0.1186±0.0853 val_auc=0.90004 val_auc_w=0.90004 monitor=val_auc_weighted best_monitor=0.90004 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=006 train_joint=0.40100 train_uns=0.03808 train_phys=0.00000 train_cls=0.42509 train_hard=0.42501 train_kd=0.00000 train_attn=0.00000 train_gate=0.1140±0.0863 alpha=0.6801 train_auc=0.89599 train_auc_w=0.89599 val_joint=0.40118 val_uns=0.03664 val_phys=0.00000 val_cls=0.42819 val_hard=0.42824 val_kd=0.00000 val_attn=0.00000 val_gate=0.1114±0.0843 val_auc=0.89850 val_auc_w=0.89850 monitor=val_auc_weighted best_monitor=0.90004 no_imp=2
+[JointSharedEncoder(HLT,no_kd)] ep=008 train_joint=0.39187 train_uns=0.03716 train_phys=0.00000 train_cls=0.41552 train_hard=0.41566 train_kd=0.00000 train_attn=0.00000 train_gate=0.1027±0.0761 alpha=0.6646 train_auc=0.90125 train_auc_w=0.90125 val_joint=0.38714 val_uns=0.03609 val_phys=0.00000 val_cls=0.41176 val_hard=0.41176 val_kd=0.00000 val_attn=0.00000 val_gate=0.0996±0.0727 val_auc=0.89479 val_auc_w=0.89479 monitor=val_auc_weighted best_monitor=0.90673 no_imp=1
+[JointSharedEncoder(HLT,no_kd)] ep=010 train_joint=0.38540 train_uns=0.03679 train_phys=0.00000 train_cls=0.40818 train_hard=0.40820 train_kd=0.00000 train_attn=0.00000 train_gate=0.0955±0.0756 alpha=0.6562 train_auc=0.90524 train_auc_w=0.90524 val_joint=0.37917 val_uns=0.03552 val_phys=0.00000 val_cls=0.40293 val_hard=0.40303 val_kd=0.00000 val_attn=0.00000 val_gate=0.0932±0.0737 val_auc=0.91071 val_auc_w=0.91071 monitor=val_auc_weighted best_monitor=0.91071 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=012 train_joint=0.38071 train_uns=0.03650 train_phys=0.00000 train_cls=0.40289 train_hard=0.40304 train_kd=0.00000 train_attn=0.00000 train_gate=0.0896±0.0744 alpha=0.6480 train_auc=0.90785 train_auc_w=0.90785 val_joint=0.37497 val_uns=0.03529 val_phys=0.00000 val_cls=0.39815 val_hard=0.39826 val_kd=0.00000 val_attn=0.00000 val_gate=0.0889±0.0753 val_auc=0.91602 val_auc_w=0.91602 monitor=val_auc_weighted best_monitor=0.91602 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=014 train_joint=0.37418 train_uns=0.03624 train_phys=0.00000 train_cls=0.39524 train_hard=0.39531 train_kd=0.00000 train_attn=0.00000 train_gate=0.0882±0.0759 alpha=0.6414 train_auc=0.91206 train_auc_w=0.91206 val_joint=0.37007 val_uns=0.03492 val_phys=0.00000 val_cls=0.39275 val_hard=0.39290 val_kd=0.00000 val_attn=0.00000 val_gate=0.0875±0.0756 val_auc=0.91766 val_auc_w=0.91766 monitor=val_auc_weighted best_monitor=0.91766 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=016 train_joint=0.37110 train_uns=0.03604 train_phys=0.00000 train_cls=0.39180 train_hard=0.39191 train_kd=0.00000 train_attn=0.00000 train_gate=0.0804±0.0700 alpha=0.6355 train_auc=0.91333 train_auc_w=0.91333 val_joint=0.37060 val_uns=0.03486 val_phys=0.00000 val_cls=0.39354 val_hard=0.39378 val_kd=0.00000 val_attn=0.00000 val_gate=0.0807±0.0702 val_auc=0.91614 val_auc_w=0.91614 monitor=val_auc_weighted best_monitor=0.91766 no_imp=2
+[JointSharedEncoder(HLT,no_kd)] ep=018 train_joint=0.36832 train_uns=0.03587 train_phys=0.00000 train_cls=0.38866 train_hard=0.38879 train_kd=0.00000 train_attn=0.00000 train_gate=0.0808±0.0783 alpha=0.6317 train_auc=0.91525 train_auc_w=0.91525 val_joint=0.37172 val_uns=0.03467 val_phys=0.00000 val_cls=0.39532 val_hard=0.39548 val_kd=0.00000 val_attn=0.00000 val_gate=0.0852±0.0854 val_auc=0.91893 val_auc_w=0.91893 monitor=val_auc_weighted best_monitor=0.91893 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=020 train_joint=0.36504 train_uns=0.03582 train_phys=0.00000 train_cls=0.38466 train_hard=0.38479 train_kd=0.00000 train_attn=0.00000 train_gate=0.0818±0.0892 alpha=0.6306 train_auc=0.91680 train_auc_w=0.91680 val_joint=0.36385 val_uns=0.03459 val_phys=0.00000 val_cls=0.38564 val_hard=0.38593 val_kd=0.00000 val_attn=0.00000 val_gate=0.0842±0.0886 val_auc=0.92403 val_auc_w=0.92403 monitor=val_auc_weighted best_monitor=0.92403 no_imp=0
+[JointSharedEncoder(HLT,no_kd)] ep=022 train_joint=0.36111 train_uns=0.03574 train_phys=0.00000 train_cls=0.37991 train_hard=0.37989 train_kd=0.00000 train_attn=0.00000 train_gate=0.0888±0.1030 alpha=0.6290 train_auc=0.91868 train_auc_w=0.91868 val_joint=0.36631 val_uns=0.03449 val_phys=0.00000 val_cls=0.38890 val_hard=0.38904 val_kd=0.00000 val_attn=0.00000 val_gate=0.0874±0.0989 val_auc=0.91695 val_auc_w=0.91695 monitor=val_auc_weighted best_monitor=0.92403 no_imp=2
+[JointSharedEncoder(HLT,no_kd)] ep=024 train_joint=0.35738 train_uns=0.03566 train_phys=0.00000 train_cls=0.37541 train_hard=0.37554 train_kd=0.00000 train_attn=0.00000 train_gate=0.0874±0.1027 alpha=0.6299 train_auc=0.92093 train_auc_w=0.92093 val_joint=0.35855 val_uns=0.03440 val_phys=0.00000 val_cls=0.37938 val_hard=0.37951 val_kd=0.00000 val_attn=0.00000 val_gate=0.0919±0.1041 val_auc=0.91738 val_auc_w=0.91738 monitor=val_auc_weighted best_monitor=0.92403 no_imp=4
+[JointSharedEncoder(HLT,no_kd)] ep=026 train_joint=0.35534 train_uns=0.03560 train_phys=0.00000 train_cls=0.37296 train_hard=0.37297 train_kd=0.00000 train_attn=0.00000 train_gate=0.0864±0.1062 alpha=0.6275 train_auc=0.92181 train_auc_w=0.92181 val_joint=0.35932 val_uns=0.03436 val_phys=0.00000 val_cls=0.38043 val_hard=0.38059 val_kd=0.00000 val_attn=0.00000 val_gate=0.0851±0.1080 val_auc=0.91823 val_auc_w=0.91823 monitor=val_auc_weighted best_monitor=0.92403 no_imp=6
+[JointSharedEncoder(HLT,no_kd)] ep=028 train_joint=0.34952 train_uns=0.03554 train_phys=0.00000 train_cls=0.36582 train_hard=0.36586 train_kd=0.00000 train_attn=0.00000 train_gate=0.0900±0.1141 alpha=0.6265 train_auc=0.92465 train_auc_w=0.92465 val_joint=0.36219 val_uns=0.03429 val_phys=0.00000 val_cls=0.38417 val_hard=0.38433 val_kd=0.00000 val_attn=0.00000 val_gate=0.0909±0.1152 val_auc=0.92070 val_auc_w=0.92070 monitor=val_auc_weighted best_monitor=0.92403 no_imp=8
+[JointSharedEncoder(HLT,no_kd)] Early stopping
+Saved checkpoint: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/ckpts/joint_sharedencoder_no_kd.pt
+[JointSharedEncoder(HLT,with_kd)] ep=001 train_joint=1.26982 train_uns=0.07164 train_phys=0.00000 train_cls=1.44399 train_hard=0.55436 train_kd=2.33376 train_attn=0.00000 train_gate=0.1237±0.0752 alpha=0.7169 train_auc=0.83282 train_auc_w=0.83282 val_joint=1.19739 val_uns=0.04320 val_phys=0.00000 val_cls=1.41034 val_hard=0.56133 val_kd=2.26006 val_attn=0.00000 val_gate=0.1211±0.0695 val_auc=0.87490 val_auc_w=0.87490 monitor=val_auc_weighted best_monitor=0.87490 no_imp=0
+[JointSharedEncoder(HLT,with_kd)] ep=002 train_joint=1.15179 train_uns=0.04728 train_phys=0.00000 train_cls=1.34516 train_hard=0.48913 train_kd=2.20146 train_attn=0.00000 train_gate=0.1225±0.0787 alpha=0.7119 train_auc=0.87551 train_auc_w=0.87551 val_joint=1.09287 val_uns=0.04108 val_phys=0.00000 val_cls=1.28392 val_hard=0.45589 val_kd=2.11258 val_attn=0.00000 val_gate=0.1183±0.0736 val_auc=0.90448 val_auc_w=0.90448 monitor=val_auc_weighted best_monitor=0.90448 no_imp=0
+[JointSharedEncoder(HLT,with_kd)] ep=004 train_joint=1.06731 train_uns=0.03976 train_phys=0.00000 train_cls=1.25462 train_hard=0.42153 train_kd=2.08781 train_attn=0.00000 train_gate=0.1114±0.0810 alpha=0.6861 train_auc=0.90907 train_auc_w=0.90907 val_joint=1.04239 val_uns=0.03763 val_phys=0.00000 val_cls=1.22774 val_hard=0.40449 val_kd=2.05130 val_attn=0.00000 val_gate=0.1021±0.0696 val_auc=0.91839 val_auc_w=0.91839 monitor=val_auc_weighted best_monitor=0.91839 no_imp=0
+[JointSharedEncoder(HLT,with_kd)] ep=006 train_joint=1.04914 train_uns=0.03765 train_phys=0.00000 train_cls=1.23613 train_hard=0.40818 train_kd=2.06423 train_attn=0.00000 train_gate=0.0972±0.0693 alpha=0.6735 train_auc=0.91474 train_auc_w=0.91474 val_joint=1.05106 val_uns=0.03599 val_phys=0.00000 val_cls=1.24184 val_hard=0.41602 val_kd=2.06813 val_attn=0.00000 val_gate=0.0982±0.0702 val_auc=0.91453 val_auc_w=0.91453 monitor=val_auc_weighted best_monitor=0.91839 no_imp=2
+[JointSharedEncoder(HLT,with_kd)] ep=008 train_joint=1.03969 train_uns=0.03684 train_phys=0.00000 train_cls=1.22592 train_hard=0.39685 train_kd=2.05514 train_attn=0.00000 train_gate=0.0934±0.0745 alpha=0.6603 train_auc=0.91912 train_auc_w=0.91912 val_joint=1.02560 val_uns=0.03549 val_phys=0.00000 val_cls=1.21102 val_hard=0.38859 val_kd=2.03365 val_attn=0.00000 val_gate=0.0918±0.0757 val_auc=0.92200 val_auc_w=0.92200 monitor=val_auc_weighted best_monitor=0.92200 no_imp=0
+[JointSharedEncoder(HLT,with_kd)] ep=010 train_joint=1.03515 train_uns=0.03641 train_phys=0.00000 train_cls=1.22112 train_hard=0.39285 train_kd=2.04947 train_attn=0.00000 train_gate=0.0886±0.0801 alpha=0.6518 train_auc=0.92059 train_auc_w=0.92059 val_joint=1.02535 val_uns=0.03521 val_phys=0.00000 val_cls=1.21128 val_hard=0.39123 val_kd=2.03159 val_attn=0.00000 val_gate=0.0889±0.0812 val_auc=0.92060 val_auc_w=0.92060 monitor=val_auc_weighted best_monitor=0.92269 no_imp=1
+[JointSharedEncoder(HLT,with_kd)] ep=012 train_joint=1.03215 train_uns=0.03614 train_phys=0.00000 train_cls=1.21792 train_hard=0.38992 train_kd=2.04602 train_attn=0.00000 train_gate=0.0885±0.0860 alpha=0.6466 train_auc=0.92184 train_auc_w=0.92184 val_joint=1.03374 val_uns=0.03492 val_phys=0.00000 val_cls=1.22234 val_hard=0.40041 val_kd=2.04460 val_attn=0.00000 val_gate=0.0882±0.0812 val_auc=0.91619 val_auc_w=0.91619 monitor=val_auc_weighted best_monitor=0.92269 no_imp=3
+[JointSharedEncoder(HLT,with_kd)] ep=014 train_joint=1.02713 train_uns=0.03595 train_phys=0.00000 train_cls=1.21201 train_hard=0.38385 train_kd=2.04046 train_attn=0.00000 train_gate=0.0873±0.0964 alpha=0.6393 train_auc=0.92364 train_auc_w=0.92364 val_joint=1.02577 val_uns=0.03470 val_phys=0.00000 val_cls=1.21282 val_hard=0.38899 val_kd=2.03696 val_attn=0.00000 val_gate=0.0862±0.0969 val_auc=0.91975 val_auc_w=0.91975 monitor=val_auc_weighted best_monitor=0.92269 no_imp=5
+[JointSharedEncoder(HLT,with_kd)] ep=016 train_joint=1.02403 train_uns=0.03574 train_phys=0.00000 train_cls=1.20854 train_hard=0.37993 train_kd=2.03731 train_attn=0.00000 train_gate=0.0800±0.0870 alpha=0.6325 train_auc=0.92538 train_auc_w=0.92538 val_joint=1.02190 val_uns=0.03454 val_phys=0.00000 val_cls=1.20830 val_hard=0.38565 val_kd=2.03117 val_attn=0.00000 val_gate=0.0777±0.0845 val_auc=0.92261 val_auc_w=0.92261 monitor=val_auc_weighted best_monitor=0.92632 no_imp=1
+[JointSharedEncoder(HLT,with_kd)] ep=018 train_joint=1.02322 train_uns=0.03559 train_phys=0.00000 train_cls=1.20784 train_hard=0.37967 train_kd=2.03602 train_attn=0.00000 train_gate=0.0764±0.0902 alpha=0.6274 train_auc=0.92548 train_auc_w=0.92548 val_joint=1.01860 val_uns=0.03450 val_phys=0.00000 val_cls=1.20426 val_hard=0.38428 val_kd=2.02457 val_attn=0.00000 val_gate=0.0770±0.0942 val_auc=0.92438 val_auc_w=0.92438 monitor=val_auc_weighted best_monitor=0.92632 no_imp=3
+[JointSharedEncoder(HLT,with_kd)] ep=020 train_joint=1.02065 train_uns=0.03553 train_phys=0.00000 train_cls=1.20475 train_hard=0.37710 train_kd=2.03253 train_attn=0.00000 train_gate=0.0754±0.0959 alpha=0.6243 train_auc=0.92636 train_auc_w=0.92636 val_joint=1.01886 val_uns=0.03432 val_phys=0.00000 val_cls=1.20492 val_hard=0.38462 val_kd=2.02549 val_attn=0.00000 val_gate=0.0784±0.0965 val_auc=0.92297 val_auc_w=0.92297 monitor=val_auc_weighted best_monitor=0.92632 no_imp=5
+[JointSharedEncoder(HLT,with_kd)] ep=022 train_joint=1.01866 train_uns=0.03541 train_phys=0.00000 train_cls=1.20250 train_hard=0.37347 train_kd=2.03158 train_attn=0.00000 train_gate=0.0785±0.1016 alpha=0.6216 train_auc=0.92762 train_auc_w=0.92762 val_joint=1.01458 val_uns=0.03431 val_phys=0.00000 val_cls=1.19961 val_hard=0.37955 val_kd=2.01995 val_attn=0.00000 val_gate=0.0818±0.1042 val_auc=0.92627 val_auc_w=0.92627 monitor=val_auc_weighted best_monitor=0.92632 no_imp=7
+[JointSharedEncoder(HLT,with_kd)] Early stopping
+Saved checkpoint: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/ckpts/joint_sharedencoder_with_kd.pt
+Teacher(OFF_FULL) AUC=0.94348, weighted AUC=0.94348
+Student(HLT) AUC=0.92429, weighted AUC=0.92429
+Student(HLT)+KD AUC=0.92750, weighted AUC=0.92750
+Student(HLT)+KD test total loss=1.20587
+Student(HLT)+KD test hard loss=0.38646
+Student(HLT)+KD test kd loss=2.02544
+Student(HLT)+KD test attn loss=0.00000
+JointSharedEncoder(HLT,no_kd) AUC=0.92422, weighted AUC=0.92422
+JointSharedEncoder(HLT,with_kd) AUC=0.92653, weighted AUC=0.92653
+Joint(no_kd) test unsmear loss=0.03456
+Joint(with_kd) test unsmear loss=0.03454
+Joint(no_kd) test cls hard loss=0.39012
+Joint(with_kd) test cls hard loss=0.38558
+Joint(with_kd) test cls kd loss=2.02941
+Joint(with_kd) test cls attn loss=0.00000
+Joint(no_kd) gate mean/std=0.0842/0.0885, alpha=0.6306
+Joint(with_kd) gate mean/std=0.0857/0.0941, alpha=0.6358
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/sharedencoder_joint_downstream_roc_logfpr_5lines.png
+Saved table: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/roc_operating_points_joint_with_kd.csv
+      Metric Teacher HLT Baseline joint_with_kd Offline-HLT Gap Recovery
+FPR @ 30%TPR 0.3208%      0.7714%       0.5824%                   41.94%
+FPR @ 50%TPR 1.2838%      2.6017%       2.3200%                   21.38%
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_reco_residual_compare_dEta.png
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_reco_residual_compare_dPhi.png
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_reco_residual_compare_log_pt.png
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_reco_residual_compare_log_E.png
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_reco_residual_compare_log_pt_rel.png
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_reco_residual_compare_log_E_rel.png
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_reco_residual_compare_dR.png
+
+====================================================================================================
+Metrics summary (std space) | split=test | n_tokens=16287362
+====================================================================================================
+   feature        method      bias      mae     rmse  abs_p50  abs_p90  abs_p99
+      dEta           hlt -0.000030 0.118413 0.148735 0.099714 0.244652 0.385479
+      dEta   joint_no_kd -0.000224 0.103368 0.131937 0.084560 0.217964 0.355949
+      dEta joint_with_kd -0.000717 0.103053 0.131724 0.084076 0.217748 0.356353
+      dPhi           hlt  0.000003 0.115265 0.144779 0.097105 0.238071 0.375567
+      dPhi   joint_no_kd -0.001331 0.100629 0.128531 0.082212 0.212365 0.347248
+      dPhi joint_with_kd  0.002807 0.100660 0.128619 0.082189 0.212583 0.347636
+    log_pt           hlt -0.003376 0.052931 0.066834 0.044428 0.108895 0.177847
+    log_pt   joint_no_kd  0.000077 0.052860 0.066568 0.044549 0.108548 0.175417
+    log_pt joint_with_kd -0.000232 0.052858 0.066580 0.044533 0.108567 0.175586
+     log_E           hlt -0.003804 0.053634 0.067726 0.044989 0.110411 0.180109
+     log_E   joint_no_kd -0.000089 0.053505 0.067381 0.045066 0.109941 0.177415
+     log_E joint_with_kd -0.000342 0.053496 0.067380 0.045046 0.109931 0.177535
+log_pt_rel           hlt -0.002702 0.056108 0.070905 0.046950 0.115828 0.188590
+log_pt_rel   joint_no_kd -0.000260 0.055969 0.070624 0.046934 0.115456 0.186799
+log_pt_rel joint_with_kd  0.001506 0.056063 0.070668 0.047089 0.115567 0.186193
+ log_E_rel           hlt -0.003414 0.056885 0.071895 0.047589 0.117501 0.191237
+ log_E_rel   joint_no_kd  0.000012 0.056696 0.071517 0.047566 0.116965 0.188859
+ log_E_rel joint_with_kd -0.000402 0.056704 0.071543 0.047553 0.117017 0.189044
+        dR           hlt  0.028576 0.120433 0.151560 0.101095 0.249381 0.394804
+        dR   joint_no_kd  0.007024 0.103971 0.132722 0.085119 0.218826 0.360174
+        dR joint_with_kd  0.004561 0.103917 0.132698 0.085043 0.218665 0.360566
+Saved table: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/joint_reco_metrics_summary_test.csv
+Saved figure: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/figs/joint_gate_alpha_over_epochs.png
+Saved summary: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42/summary_metrics.json
+Done: /home/ryreu/atlas/PracticeTagging/TaggingNew/pure_unsmear/joint_new/runs/unsmear_transformer_sharedencoder_delta_gate_joint_split140k50k300k_seed42

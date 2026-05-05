@@ -1,0 +1,38 @@
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 3610, in <module>
+    main()
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 3121, in main
+    reco, reco_val_metrics = train_reconstructor_seq2seq(
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 2012, in train_reconstructor_seq2seq
+    out_fr = model.forward_free_running(feat_hlt, mask_hlt, const_hlt, max_steps=tgt_steps)
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 970, in forward_free_running
+    h = self.decoder(
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py", line 602, in forward
+    output = mod(
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py", line 1084, in forward
+    x = x + self._ff_block(self.norm3(x))
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py", line 1140, in _ff_block
+    x = self.linear2(self.dropout(self.activation(self.linear1(x))))
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/dropout.py", line 70, in forward
+    return F.dropout(input, self.p, self.training, self.inplace)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py", line 1425, in dropout
+    _VF.dropout_(input, p, training) if inplace else _VF.dropout(input, p, training)
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 39.38 GiB of which 1.38 MiB is free. Including non-PyTorch memory, this process has 39.37 GiB memory in use. Of the allocated memory 37.73 GiB is allocated by PyTorch, and 1.14 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

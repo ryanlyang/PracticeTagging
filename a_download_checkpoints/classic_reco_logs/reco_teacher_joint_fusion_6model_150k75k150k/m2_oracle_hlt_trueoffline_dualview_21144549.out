@@ -1,0 +1,59 @@
+============================================================
+Model-2 Oracle ceiling check: HLT + TRUE OFFLINE dual-view fusion
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_hlt_trueoffline_dualview/model2_oracle_hlt_trueoffline_dualview_150k75k150k_seed0
+Purpose: isolate fusion capacity from reconstructor quality
+============================================================
+ python train_m2_oracle_hlt_trueoffline_dualview.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_hlt_trueoffline_dualview --run_name model2_oracle_hlt_trueoffline_dualview_150k75k150k_seed0 --n_train_jets 375000 --n_train_split 150000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --save_fusion_scores --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_hlt_trueoffline_dualview/model2_oracle_hlt_trueoffline_dualview_150k75k150k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing features...
+Split sizes: Train=150000, Val=75000, Test=150000 (custom_counts=True)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Teacher ep 5: train_auc=0.9439, val_auc=0.9469, val_fpr50=0.012873, best_auc=0.9469, fpr50@best=0.012873
+Teacher ep 10: train_auc=0.9509, val_auc=0.9526, val_fpr50=0.010285, best_auc=0.9526, fpr50@best=0.010285
+Teacher ep 15: train_auc=0.9549, val_auc=0.9522, val_fpr50=0.011025, best_auc=0.9529, fpr50@best=0.010068
+Teacher ep 20: train_auc=0.9577, val_auc=0.9480, val_fpr50=0.013272, best_auc=0.9529, fpr50@best=0.010068
+Teacher ep 25: train_auc=0.9610, val_auc=0.9513, val_fpr50=0.010954, best_auc=0.9539, fpr50@best=0.009423
+Teacher ep 30: train_auc=0.9652, val_auc=0.9503, val_fpr50=0.011826, best_auc=0.9539, fpr50@best=0.009423
+Teacher ep 35: train_auc=0.9696, val_auc=0.9496, val_fpr50=0.011791, best_auc=0.9539, fpr50@best=0.009423
+Early stopping Teacher at epoch 37
+Baseline ep 5: train_auc=0.9099, val_auc=0.9113, val_fpr50=0.028797, best_auc=0.9113, fpr50@best=0.028797
+Baseline ep 10: train_auc=0.9178, val_auc=0.9108, val_fpr50=0.028618, best_auc=0.9182, fpr50@best=0.022376
+Baseline ep 15: train_auc=0.9217, val_auc=0.9192, val_fpr50=0.021502, best_auc=0.9212, fpr50@best=0.020983
+Baseline ep 20: train_auc=0.9256, val_auc=0.9230, val_fpr50=0.019838, best_auc=0.9230, fpr50@best=0.019838
+Baseline ep 25: train_auc=0.9292, val_auc=0.9209, val_fpr50=0.020754, best_auc=0.9230, fpr50@best=0.019838
+Baseline ep 30: train_auc=0.9336, val_auc=0.9217, val_fpr50=0.021050, best_auc=0.9236, fpr50@best=0.018407
+Baseline ep 35: train_auc=0.9385, val_auc=0.9191, val_fpr50=0.023692, best_auc=0.9236, fpr50@best=0.018407
+Baseline ep 40: train_auc=0.9432, val_auc=0.9171, val_fpr50=0.023204, best_auc=0.9236, fpr50@best=0.018407
+Early stopping Baseline at epoch 42
+
+======================================================================
+STEP 2: ORACLE DUAL-VIEW (HLT + TRUE OFFLINE)
+======================================================================
+OracleDualView ep 5: train_auc=0.9446, val_auc=0.9428, val_fpr50=0.013763, best_auc=0.9453, fpr50@best=0.014086
+OracleDualView ep 10: train_auc=0.9512, val_auc=0.9515, val_fpr50=0.011324, best_auc=0.9515, fpr50@best=0.011324
+OracleDualView ep 15: train_auc=0.9550, val_auc=0.9532, val_fpr50=0.010614, best_auc=0.9532, fpr50@best=0.010614
+OracleDualView ep 20: train_auc=0.9587, val_auc=0.9524, val_fpr50=0.009802, best_auc=0.9548, fpr50@best=0.009937
+OracleDualView ep 25: train_auc=0.9620, val_auc=0.9529, val_fpr50=0.010843, best_auc=0.9548, fpr50@best=0.009937
+OracleDualView ep 30: train_auc=0.9658, val_auc=0.9508, val_fpr50=0.010313, best_auc=0.9548, fpr50@best=0.009937
+Early stopping OracleDualView at epoch 34
+Saved score arrays to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_hlt_trueoffline_dualview/model2_oracle_hlt_trueoffline_dualview_150k75k150k_seed0/oracle_hlt_trueoffline_scores_val_test.npz
+
+======================================================================
+FINAL TEST EVALUATION (Oracle HLT+Offline Fusion)
+======================================================================
+Teacher (Offline) AUC: 0.9533
+Baseline (HLT)   AUC: 0.9220
+Oracle Dual-View AUC: 0.9542
+
+FPR@30 Teacher/Baseline/OracleDual: 0.002131 / 0.005155 / 0.002139
+FPR@50 Teacher/Baseline/OracleDual: 0.009940 / 0.020725 / 0.010062
+
+Saved metrics to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_hlt_trueoffline_dualview/model2_oracle_hlt_trueoffline_dualview_150k75k150k_seed0/oracle_hlt_trueoffline_metrics.json
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_hlt_trueoffline_dualview/model2_oracle_hlt_trueoffline_dualview_150k75k150k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_oracle_hlt_trueoffline_dualview/model2_oracle_hlt_trueoffline_dualview_150k75k150k_seed0

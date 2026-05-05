@@ -1,0 +1,46 @@
+============================================================
+Model-14 Five-view (HLT + m2/m3/m4/m6): frozen then joint
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model14_fiveview_m2m3m4m6/model14_fiveview_m2m3m4m6_150k75k150k_seed0
+Selection metric: auc
+m2 checkpoint (pre-joint): checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/offline_reconstructor_stage2.pt
+m3 checkpoint: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model3_recoteacher_s09/model3_recoteacher_s09_150k75k150k_seed0/offline_reconstructor_stageA.pt
+m4 checkpoint: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model4_recoteacher_s01_corrected/model4_recoteacher_s01_corrected_150k75k150k_seed0/offline_reconstructor_stageA.pt
+m6 checkpoint: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected/model6_concat_stagea_corrected_150k75k150k_seed0/offline_reconstructor_stageA.pt
+============================================================
+ python train_fiveview_m2m3m4m6_frozen_then_joint.py --m2_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0 --m3_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model3_recoteacher_s09/model3_recoteacher_s09_150k75k150k_seed0 --m4_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model4_recoteacher_s01_corrected/model4_recoteacher_s01_corrected_150k75k150k_seed0 --m6_run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected/model6_concat_stagea_corrected_150k75k150k_seed0 --m2_reco_ckpt offline_reconstructor_stage2.pt --m3_reco_ckpt offline_reconstructor_stageA.pt --m4_reco_ckpt offline_reconstructor_stageA.pt --m6_reco_ckpt offline_reconstructor_stageA.pt --m2_baseline_ckpt baseline.pt --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model14_fiveview_m2m3m4m6 --run_name model14_fiveview_m2m3m4m6_150k75k150k_seed0 --seed 0 --device cuda --num_workers 6 --corrected_weight_floor 0.03 --reco_eval_batch_size 256 --target_tpr 0.50 --frozen_epochs 40 --frozen_patience 10 --frozen_batch_size 256 --frozen_lr 3e-4 --frozen_weight_decay 1e-4 --frozen_warmup_epochs 5 --frozen_lambda_rank 0.0 --frozen_rank_tau 0.00 --joint_epochs 12 --joint_patience 6 --joint_batch_size 128 --joint_lr_tagger 1e-4 --joint_lr_reco 2e-6 --joint_weight_decay 1e-4 --joint_warmup_epochs 3 --joint_lambda_rank 0.0 --joint_rank_tau 0.00 --select_metric auc
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model14_fiveview_m2m3m4m6/model14_fiveview_m2m3m4m6_150k75k150k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing standardized HLT/offline features...
+
+======================================================================
+STEP 1: BUILD FROZEN FIVE-VIEW TENSORS
+======================================================================
+Building frozen five-view tensors for train...
+Building frozen five-view tensors for val...
+Building frozen five-view tensors for test...
+
+======================================================================
+STEP 2: TRAIN FIVE-VIEW TAGGER (FROZEN RECONSTRUCTORS)
+======================================================================
+Frozen5V ep 5: train_loss=0.35361 (cls=0.35361, rank=0.26809) | val_auc=0.9207, val_fpr50=0.021420, best_sel=0.920688
+Frozen5V ep 10: train_loss=0.34014 (cls=0.34014, rank=0.26674) | val_auc=0.9239, val_fpr50=0.019587, best_sel=0.923966
+Frozen5V ep 15: train_loss=0.33447 (cls=0.33447, rank=0.26639) | val_auc=0.9244, val_fpr50=0.018602, best_sel=0.924690
+Frozen5V ep 20: train_loss=0.33115 (cls=0.33115, rank=0.26542) | val_auc=0.9249, val_fpr50=0.018635, best_sel=0.925245
+Frozen5V ep 25: train_loss=0.32655 (cls=0.32655, rank=0.26499) | val_auc=0.9244, val_fpr50=0.018061, best_sel=0.925245
+Early stopping frozen five-view at epoch 29
+Frozen5V: val_auc=0.9252, val_fpr50=0.018115 | test_auc=0.9239, test_fpr50=0.019930
+
+======================================================================
+STEP 3: JOINT FINETUNE (UNFREEZE M2/M3/M4/M6 RECONSTRUCTORS)
+======================================================================
+Joint5V ep 2: train_loss=0.33215 (cls=0.33215, rank=0.26725) | val_auc=0.9252, val_fpr50=0.018046, best_sel=0.925545
+Joint5V ep 4: train_loss=0.33169 (cls=0.33169, rank=0.26630) | val_auc=0.9256, val_fpr50=0.018237, best_sel=0.925582
+Joint5V ep 6: train_loss=0.32834 (cls=0.32834, rank=0.26615) | val_auc=0.9253, val_fpr50=0.017394, best_sel=0.925582
+Joint5V ep 8: train_loss=0.32590 (cls=0.32590, rank=0.26552) | val_auc=0.9258, val_fpr50=0.017499, best_sel=0.925942
+Joint5V ep 10: train_loss=0.32303 (cls=0.32303, rank=0.26557) | val_auc=0.9259, val_fpr50=0.017384, best_sel=0.925942
+Joint5V ep 12: train_loss=0.32137 (cls=0.32137, rank=0.26495) | val_auc=0.9257, val_fpr50=0.017457, best_sel=0.925942
+Joint5V : val_auc=0.9259, val_fpr50=0.017639 | test_auc=0.9243, test_fpr50=0.019356
+Saved five-view outputs to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model14_fiveview_m2m3m4m6/model14_fiveview_m2m3m4m6_150k75k150k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model14_fiveview_m2m3m4m6/model14_fiveview_m2m3m4m6_150k75k150k_seed0

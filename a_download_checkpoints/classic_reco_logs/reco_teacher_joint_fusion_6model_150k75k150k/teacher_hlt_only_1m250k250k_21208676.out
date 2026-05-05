@@ -1,0 +1,53 @@
+============================================================
+Teacher + HLT Baseline Only (1M/250k/250k split, real train/test H5, weighted)
+Run: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed4
+Train path: ./data/train_quarter.h5
+Test path:  ./data/test.h5
+Data: n_train_jets=1250000, split=1000000/250000/250000, offset=0, test_offset=0
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py --train_path ./data/train_quarter.h5 --test_path ./data/test.h5 --test_offset_jets 0 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only --run_name teacher_hlt_only_1m250k250k_seed4 --n_train_jets 1250000 --n_train_split 1000000 --n_val_split 250000 --n_test_split 250000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 4 --selection_metric auc --step1_only --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed4
+Loading offline constituents...
+Info: using 'weights' from data/train_quarter.h5 as training weights.
+Generating pseudo-HLT...
+Non-priv target setup: added_target_scale=1.000, mean_true_added_raw=25.104, mean_target_added=25.104
+Computing features...
+Split sizes: Train=1000000, Val=250000, Test(external)=250000 (custom_counts=True)
+Stage-B train subset: N=1000000 / 1000000 (frac=1.000, seed=4)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Loading external test constituents...
+Info: using 'weights' from data/test.h5 as training weights.
+Teacher ep 5: train_auc=0.9385, val_auc=0.9430, val_fpr50=0.012904, best_auc=0.9430, fpr50@best=0.012904
+Teacher ep 10: train_auc=0.9446, val_auc=0.9469, val_fpr50=0.012102, best_auc=0.9469, fpr50@best=0.012102
+Teacher ep 15: train_auc=0.9479, val_auc=0.9487, val_fpr50=0.011033, best_auc=0.9487, fpr50@best=0.011033
+Teacher ep 20: train_auc=0.9504, val_auc=0.9495, val_fpr50=0.010712, best_auc=0.9495, fpr50@best=0.010712
+Teacher ep 25: train_auc=0.9530, val_auc=0.9497, val_fpr50=0.010665, best_auc=0.9502, fpr50@best=0.010923
+Teacher ep 30: train_auc=0.9555, val_auc=0.9488, val_fpr50=0.011119, best_auc=0.9502, fpr50@best=0.010923
+Teacher ep 35: train_auc=0.9584, val_auc=0.9467, val_fpr50=0.013504, best_auc=0.9502, fpr50@best=0.010923
+Early stopping Teacher at epoch 39
+Baseline ep 5: train_auc=0.9030, val_auc=0.9095, val_fpr50=0.025960, best_auc=0.9095, fpr50@best=0.025960
+Baseline ep 10: train_auc=0.9099, val_auc=0.9121, val_fpr50=0.023776, best_auc=0.9125, fpr50@best=0.024032
+Baseline ep 15: train_auc=0.9134, val_auc=0.9110, val_fpr50=0.026006, best_auc=0.9154, fpr50@best=0.022636
+Baseline ep 20: train_auc=0.9161, val_auc=0.9159, val_fpr50=0.023342, best_auc=0.9159, fpr50@best=0.023342
+Baseline ep 25: train_auc=0.9186, val_auc=0.9157, val_fpr50=0.022433, best_auc=0.9167, fpr50@best=0.022844
+Baseline ep 30: train_auc=0.9213, val_auc=0.9162, val_fpr50=0.023030, best_auc=0.9176, fpr50@best=0.021778
+Baseline ep 35: train_auc=0.9241, val_auc=0.9152, val_fpr50=0.023771, best_auc=0.9176, fpr50@best=0.021778
+Baseline ep 40: train_auc=0.9266, val_auc=0.9155, val_fpr50=0.024145, best_auc=0.9176, fpr50@best=0.021778
+Early stopping Baseline at epoch 44
+StageC weak-delta HLT reference @TPR=0.50: threshold_prob=0.906082, val_auc_hlt=0.9176
+
+======================================================================
+FINAL TEST EVALUATION (STEP 1 ONLY)
+======================================================================
+Teacher (Offline) AUC: 0.9515
+Baseline (HLT)   AUC: 0.9183
+FPR@30 Teacher/Baseline: 0.002445 / 0.005443
+FPR@50 Teacher/Baseline: 0.009935 / 0.021623
+Saved STEP1-only arrays to: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed4/results_step1_teacher_baseline.npz
+Saved STEP1-only report to: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed4/results_step1_teacher_baseline.json
+Done: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed4
+Done: checkpoints/reco_teacher_joint_fusion_6model_1m250k250k/teacher_hlt_only/teacher_hlt_only_1m250k250k_seed4

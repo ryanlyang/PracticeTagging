@@ -1,0 +1,14 @@
+Wrote extended fusion json: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json
+Total models_order: 55
+============================================================
+55-Model Atlas-Style Global Greedy (Precomputed Dev Pool)
+Fusion json:        checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json
+Precomputed npz:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_devpool.npz
+Precomputed manifest:checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_manifest.json
+TPRs:               0.50,0.30
+Anchor:             joint_delta
+Dev pool size/off:  1000000/0
+Greedy:             max_add=12, w_step=0.01, cal=iso
+Out dir:            checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/atlas_iso_55_1m
+============================================================
+ python analyze_hlt_joint55_atlas_greedy_precomputed.py --precomputed_scores_npz checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_devpool.npz --precomputed_manifest_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_manifest.json --fusion_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json --target_tprs 0.50\,0.30 --anchor_model joint_delta --greedy_max_add 12 --greedy_w_step 0.01 --greedy_calibration iso --dev_pool_size 1000000 --dev_pool_offset 0 --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/atlas_iso_55_1m

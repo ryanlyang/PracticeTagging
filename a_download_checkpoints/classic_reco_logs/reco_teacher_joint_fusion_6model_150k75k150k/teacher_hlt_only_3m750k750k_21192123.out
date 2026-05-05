@@ -1,0 +1,56 @@
+============================================================
+Teacher + HLT Baseline Only (3M/750k/750k split, real train/test H5, weighted)
+Run: checkpoints/reco_teacher_joint_fusion_6model_3m750k750k/teacher_hlt_only/teacher_hlt_only_3m750k750k_seed0
+Train path: ./data/train_quarter.h5
+Test path:  ./data/test.h5
+Data: n_train_jets=3750000, split=3000000/750000/750000, offset=0, test_offset=0
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py --train_path ./data/train_quarter.h5 --test_path ./data/test.h5 --test_offset_jets 0 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_3m750k750k/teacher_hlt_only --run_name teacher_hlt_only_3m750k750k_seed0 --n_train_jets 3750000 --n_train_split 3000000 --n_val_split 750000 --n_test_split 750000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --selection_metric auc --step1_only --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_3m750k750k/teacher_hlt_only/teacher_hlt_only_3m750k750k_seed0
+Loading offline constituents...
+Info: using 'weights' from data/train_quarter.h5 as training weights.
+Generating pseudo-HLT...
+Non-priv target setup: added_target_scale=1.000, mean_true_added_raw=25.102, mean_target_added=25.102
+Computing features...
+Split sizes: Train=3000000, Val=750000, Test(external)=750000 (custom_counts=True)
+Stage-B train subset: N=3000000 / 3000000 (frac=1.000, seed=0)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Loading external test constituents...
+Info: using 'weights' from data/test.h5 as training weights.
+Teacher ep 5: train_auc=0.9452, val_auc=0.9490, val_fpr50=0.010658, best_auc=0.9490, fpr50@best=0.010658
+Teacher ep 10: train_auc=0.9498, val_auc=0.9519, val_fpr50=0.009125, best_auc=0.9519, fpr50@best=0.009125
+Teacher ep 15: train_auc=0.9524, val_auc=0.9531, val_fpr50=0.009216, best_auc=0.9531, fpr50@best=0.009216
+Teacher ep 20: train_auc=0.9543, val_auc=0.9528, val_fpr50=0.009035, best_auc=0.9542, fpr50@best=0.008548
+Teacher ep 25: train_auc=0.9559, val_auc=0.9529, val_fpr50=0.009413, best_auc=0.9549, fpr50@best=0.008504
+Teacher ep 30: train_auc=0.9576, val_auc=0.9549, val_fpr50=0.008343, best_auc=0.9549, fpr50@best=0.008343
+Teacher ep 35: train_auc=0.9594, val_auc=0.9531, val_fpr50=0.009907, best_auc=0.9549, fpr50@best=0.008343
+Teacher ep 40: train_auc=0.9611, val_auc=0.9537, val_fpr50=0.009990, best_auc=0.9549, fpr50@best=0.008343
+Teacher ep 45: train_auc=0.9626, val_auc=0.9524, val_fpr50=0.010718, best_auc=0.9549, fpr50@best=0.008343
+Early stopping Teacher at epoch 45
+Baseline ep 5: train_auc=0.9105, val_auc=0.9139, val_fpr50=0.024070, best_auc=0.9149, fpr50@best=0.024235
+Baseline ep 10: train_auc=0.9155, val_auc=0.9187, val_fpr50=0.021714, best_auc=0.9193, fpr50@best=0.021221
+Baseline ep 15: train_auc=0.9180, val_auc=0.9199, val_fpr50=0.021056, best_auc=0.9206, fpr50@best=0.020807
+Baseline ep 20: train_auc=0.9200, val_auc=0.9215, val_fpr50=0.020136, best_auc=0.9215, fpr50@best=0.020136
+Baseline ep 25: train_auc=0.9218, val_auc=0.9217, val_fpr50=0.019916, best_auc=0.9217, fpr50@best=0.019916
+Baseline ep 30: train_auc=0.9235, val_auc=0.9223, val_fpr50=0.020266, best_auc=0.9223, fpr50@best=0.020266
+Baseline ep 35: train_auc=0.9254, val_auc=0.9219, val_fpr50=0.020345, best_auc=0.9223, fpr50@best=0.020266
+Baseline ep 40: train_auc=0.9271, val_auc=0.9213, val_fpr50=0.021419, best_auc=0.9223, fpr50@best=0.020266
+Baseline ep 45: train_auc=0.9287, val_auc=0.9206, val_fpr50=0.021596, best_auc=0.9223, fpr50@best=0.020266
+Early stopping Baseline at epoch 45
+StageC weak-delta HLT reference @TPR=0.50: threshold_prob=0.909236, val_auc_hlt=0.9223
+
+======================================================================
+FINAL TEST EVALUATION (STEP 1 ONLY)
+======================================================================
+Teacher (Offline) AUC: 0.9549
+Baseline (HLT)   AUC: 0.9217
+FPR@30 Teacher/Baseline: 0.002016 / 0.004888
+FPR@50 Teacher/Baseline: 0.008488 / 0.019925
+Saved STEP1-only arrays to: checkpoints/reco_teacher_joint_fusion_6model_3m750k750k/teacher_hlt_only/teacher_hlt_only_3m750k750k_seed0/results_step1_teacher_baseline.npz
+Saved STEP1-only report to: checkpoints/reco_teacher_joint_fusion_6model_3m750k750k/teacher_hlt_only/teacher_hlt_only_3m750k750k_seed0/results_step1_teacher_baseline.json
+Done: checkpoints/reco_teacher_joint_fusion_6model_3m750k750k/teacher_hlt_only/teacher_hlt_only_3m750k750k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_3m750k750k/teacher_hlt_only/teacher_hlt_only_3m750k750k_seed0

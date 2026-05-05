@@ -1,0 +1,12 @@
+============================================================
+JetClass Full-17 Feature Plotting Job
+Job ID: 21208706
+Node: skl-a-01
+Split: train
+Class assignment: canonical_labels
+Jets: 150000
+Data dir: /home/ryreu/atlas/PracticeTagging/data/jetclass_part0
+Output dir: plots/jetclass_full17_features/train150k_pct_v2_canonical_job21208706
+============================================================
+ python -u /home/ryreu/atlas/PracticeTagging/plot_jetclass_full17_features.py --data_dir /home/ryreu/atlas/PracticeTagging/data/jetclass_part0 --output_dir plots/jetclass_full17_features/train150k_pct_v2_canonical_job21208706 --split train --class_assignment canonical_labels --seed 52 --max_constits 100 --n_jets 150000 --train_files_per_class 8 --val_files_per_class 1 --test_files_per_class 1 --bins 80 --max_constits_per_class 400000 --clip_quantile_low 0.5 --clip_quantile_high 99.5
+Loading split=train with n_jets=150000 from /home/ryreu/atlas/PracticeTagging/data/jetclass_part0

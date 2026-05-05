@@ -1,0 +1,40 @@
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
+  warnings.warn(
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 3630, in <module>
+    torch.save({"model": dual_flag.state_dict(), "auc": float(auc_dual_flag)}, save_root / "dual_view_conf_classifier.pt")
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 3141, in main
+    const_hlt=hlt_const_sort[val_idx],
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 2030, in train_reconstructor_seq2seq
+    with torch.no_grad():
+  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_seq2seq_nexttoken_m25_strictsched.py", line 971, in forward_free_running
+    d_in = self.dec_in(prev_tok) + self.dec_pos[:, : prev_tok.shape[1], :]
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py", line 602, in forward
+    output = mod(
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py", line 1077, in forward
+    x = x + self._mha_block(
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py", line 1127, in _mha_block
+    x = self.multihead_attn(
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1736, in _wrapped_call_impl
+    return self._call_impl(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/module.py", line 1747, in _call_impl
+    return forward_call(*args, **kwargs)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/activation.py", line 1368, in forward
+    attn_output, attn_output_weights = F.multi_head_attention_forward(
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py", line 6097, in multi_head_attention_forward
+    q, k, v = _in_projection_packed(query, key, value, in_proj_weight, in_proj_bias)
+  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py", line 5526, in _in_projection_packed
+    .contiguous()
+torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 20.00 MiB. GPU 0 has a total capacity of 39.38 GiB of which 15.38 MiB is free. Including non-PyTorch memory, this process has 39.36 GiB memory in use. Of the allocated memory 37.21 GiB is allocated by PyTorch, and 1.65 GiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)

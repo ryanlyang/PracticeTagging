@@ -1,0 +1,36 @@
+Wrote extended fusion json: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json
+Total models_order: 55
+============================================================
+55-Model Rolling-Chunk Greedy Fusion (Precomputed Dev Pool)
+Fusion json:         checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json
+Precomputed npz:     checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_devpool.npz
+Precomputed manifest:checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_manifest.json
+Target TPR:          0.50
+Anchor:              joint_delta
+Val pool size/offset:1000000/0
+Chunks:              1
+Greedy:              topk=55, max_steps=20, w_step=0.01
+Acceptance gains:    fit>=1e-6, cal>=1e-6, cum>=1e-6
+Calibration:         iso
+============================================================
+ python analyze_hlt_joint31_rolling_chunk_greedy.py --fusion_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json --precomputed_scores_npz checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_devpool.npz --precomputed_manifest_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/precomputed_devpool_1000000/precomputed_scores_manifest.json --target_tpr 0.50 --anchor_model joint_delta --candidate_topk_fit 55 --val_pool_size 1000000 --val_pool_offset 0 --n_chunks 1 --max_steps 20 --patience 10 --w_step 0.01 --calibration iso --min_fit_gain 1e-6 --min_cal_gain 1e-6 --min_cum_cal_gain 1e-6 --topk_diagnostic 10 --seed 0 --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/global_iso_55_1m
+========================================================================
+31-Model Rolling-Chunk Greedy Fusion
+========================================================================
+Fusion json: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json
+Out dir:     /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/global_iso_55_1m
+Val avail:   1000000
+Val pool:    offset=0, size=1000000
+Chunks:      2 (cyclic fit/cal)
+Target TPR:  0.500
+Anchor:      joint_delta
+Candidates:  54
+Calibration: iso (fit-once on chunk0)
+
+Anchor      AUC_test=0.924535 FPR_test=0.021339 (ref_fpr=0.021835)
+Rolling final AUC_test=0.927511 FPR_test=0.019820 (ref_fpr=0.017155)
+Best cum    AUC_test=0.927511 FPR_test=0.019820 (step=7)
+Selected final: joint_delta,dual_m15_offdrop_high,model2_joint_delta005_fulltrain_prog_unfreeze_stagea_taskaux_150k75k150k_seed0,model2_joint_delta005_fulltrain_prog_unfreeze_splitmass_softmax_150k75k150k_seed0,model2_joint_chamfer_budget_sparse_150k75k150k_seed0,dual_m15_offdrop_low
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/global_iso_55_1m/rolling_chunk_greedy_report.json
+Saved summary: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/global_iso_55_1m/rolling_summary.csv
+Saved step log: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/global_iso_55_1m/rolling_step_log.csv

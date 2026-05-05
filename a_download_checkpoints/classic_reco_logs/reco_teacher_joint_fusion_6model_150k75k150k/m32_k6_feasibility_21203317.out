@@ -1,0 +1,65 @@
+============================================================
+Model-32 Feasibility Pipeline (K0=64 -> top8 shortlist)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility/model32_k6_feasibility_150k75k150k_seed0
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m32_feasibility.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility --run_name model32_k6_feasibility_150k75k150k_seed0 --n_train_jets 375000 --n_train_split 100000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --batch_size 80 --num_workers 6 --seed 0 --device cuda --save_fusion_scores --proposer_k0_train 64 --proposer_top_m_train 8 --k0_infer 64 --top_m_infer 8
+========================================================================
+Model-32 Feasibility Pipeline
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility/model32_k6_feasibility_150k75k150k_seed0
+Shortlist config: train K0=64 -> M=8; infer K0=64 -> M=8; refine(train,infer)=(0,0)
+========================================================================
+Generating pseudo-HLT...
+HLT stats: avg_offline=54.30, avg_hlt=29.18, merged=8037303, eff_lost=1381226
+Computing features for teacher/baseline...
+Split sizes: Train=100000, Val=75000, Test=150000
+
+========================================================================
+STEP 1: Teacher + HLT baseline
+========================================================================
+Teacher ep 5: train_auc=0.9387, val_auc=0.9464, val_fpr50=0.013430, best_auc=0.9464, fpr50@best=0.013430
+Teacher ep 10: train_auc=0.9461, val_auc=0.9474, val_fpr50=0.012625, best_auc=0.9479, fpr50@best=0.012690
+Teacher ep 15: train_auc=0.9513, val_auc=0.9516, val_fpr50=0.010234, best_auc=0.9516, fpr50@best=0.010234
+Teacher ep 20: train_auc=0.9548, val_auc=0.9520, val_fpr50=0.010496, best_auc=0.9530, fpr50@best=0.009736
+Teacher ep 25: train_auc=0.9585, val_auc=0.9514, val_fpr50=0.010371, best_auc=0.9532, fpr50@best=0.008861
+Teacher ep 30: train_auc=0.9638, val_auc=0.9509, val_fpr50=0.011349, best_auc=0.9532, fpr50@best=0.008861
+Teacher ep 35: train_auc=0.9685, val_auc=0.9466, val_fpr50=0.012864, best_auc=0.9532, fpr50@best=0.008861
+Early stopping Teacher at epoch 36
+Baseline ep 5: train_auc=0.9041, val_auc=0.9138, val_fpr50=0.023889, best_auc=0.9138, fpr50@best=0.023889
+Baseline ep 10: train_auc=0.9131, val_auc=0.9152, val_fpr50=0.025304, best_auc=0.9182, fpr50@best=0.022503
+Baseline ep 15: train_auc=0.9180, val_auc=0.9185, val_fpr50=0.022204, best_auc=0.9206, fpr50@best=0.021442
+Baseline ep 20: train_auc=0.9227, val_auc=0.9200, val_fpr50=0.021592, best_auc=0.9209, fpr50@best=0.021472
+Baseline ep 25: train_auc=0.9278, val_auc=0.9203, val_fpr50=0.020425, best_auc=0.9213, fpr50@best=0.020128
+Baseline ep 30: train_auc=0.9331, val_auc=0.9146, val_fpr50=0.023101, best_auc=0.9213, fpr50@best=0.020128
+Baseline ep 35: train_auc=0.9385, val_auc=0.9192, val_fpr50=0.020480, best_auc=0.9213, fpr50@best=0.020128
+Early stopping Baseline at epoch 35
+Teacher test AUC=0.9516 | Baseline test AUC=0.9194
+Confidence weights: train_mean=1.0000, val_mean=1.0000, train_p95=1.276
+
+========================================================================
+STEP 2: Offline latent AE + class priors
+========================================================================
+OfflinePrior ep 001: train=6.25484 set=1.60882 cnt=15.48664 val=10.29051 best=10.29051@1
+OfflinePrior ep 002: train=4.40776 set=1.20825 cnt=10.66488 val=13.95155 best=10.29051@1
+OfflinePrior ep 004: train=3.31006 set=1.17386 cnt=7.12041 val=15.11170 best=10.29051@1
+OfflinePrior ep 006: train=2.23494 set=1.22412 cnt=3.36917 val=15.39152 best=10.29051@1
+OfflinePrior ep 008: train=2.55181 set=1.27397 cnt=4.25923 val=14.18951 best=10.29051@1
+OfflinePrior ep 010: train=2.17114 set=1.26619 cnt=3.01621 val=15.09316 best=10.29051@1
+OfflinePrior ep 012: train=1.90841 set=1.20948 cnt=2.32941 val=15.59027 best=10.29051@1
+OfflinePrior ep 014: train=1.84543 set=1.20580 cnt=2.13174 val=15.09537 best=10.29051@1
+OfflinePrior early stop at ep 15
+
+========================================================================
+STEP 3: Offline->HLT degrader
+========================================================================
+Degrader ep 001: train=4.64120 set=2.12849 cnt=8.37570 val=8.15088 best=8.15088@1
+Degrader ep 002: train=3.44435 set=1.67493 cnt=5.89808 val=8.57904 best=8.15088@1
+Degrader ep 004: train=3.12810 set=1.63180 cnt=4.98767 val=9.07072 best=8.15088@1
+Degrader ep 006: train=2.92147 set=1.61892 cnt=4.34183 val=8.60040 best=8.15088@1
+Degrader ep 008: train=2.78428 set=1.60686 cnt=3.92472 val=9.25087 best=8.15088@1
+Degrader ep 010: train=2.69711 set=1.59466 cnt=3.67483 val=8.81084 best=8.15088@1
+Degrader ep 012: train=2.62588 set=1.58989 cnt=3.45329 val=8.29104 best=8.15088@1
+Degrader early stop at ep 13
+
+========================================================================
+STEP 4: HLT->latent proposer (best-of-K)
+========================================================================

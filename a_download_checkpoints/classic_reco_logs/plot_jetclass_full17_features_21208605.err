@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/home/ryreu/atlas/PracticeTagging/plot_jetclass_full17_features.py", line 372, in <module>
+    main()
+  File "/home/ryreu/atlas/PracticeTagging/plot_jetclass_full17_features.py", line 222, in main
+    split_files = choose_split(
+  File "/home/ryreu/atlas/PracticeTagging/plot_jetclass_full17_features.py", line 92, in choose_split
+    tr, va, te = split_files_by_class(
+NameError: name 'split_files_by_class' is not defined. Did you mean: 'files_by_class'?

@@ -1,0 +1,23 @@
+Wrote extended fusion json: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json
+Total models_order: 55
+============================================================
+Precompute 55-Model Dev-Pool Scores
+Fusion json:      checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json
+Train path:       ./data
+Dev offset/n:     375000/1000000
+Max constits:     100
+Batch/device:     512/cuda
+Weight floors:    joint=1e-4, stageA=0.03
+============================================================
+ python precompute_hlt_joint55_devpool_scores.py --fusion_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers_rolling55.json --train_path ./data --dev_offset_jets 375000 --dev_n_jets 1000000 --max_constits 100 --hlt_seed -1 --batch_size 512 --device cuda --corrected_weight_floor_joint 1e-4 --corrected_weight_floor_stagea 0.03
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing HLT features...
+Device: cuda
+Models to precompute: 55
+Dev pool size: 1000000
+[01/55] hlt                                                family=hlt                    auc_dev=0.921498 auc_test_src=0.921389 t=0.3s
+[02/55] joint_delta                                        family=joint                  auc_dev=0.924777 auc_test_src=0.924567 t=264.4s
+[03/55] reco_teacher_s09                                   family=stagea_reco_teacher    auc_dev=0.919780 auc_test_src=0.919546 t=211.8s
+[04/55] corrected_s01                                      family=stagea_corrected_only  auc_dev=0.919743 auc_test_src=0.919759 t=213.4s
+[05/55] joint_s01                                          family=joint                  auc_dev=0.862315 auc_test_src=0.921935 t=263.3s

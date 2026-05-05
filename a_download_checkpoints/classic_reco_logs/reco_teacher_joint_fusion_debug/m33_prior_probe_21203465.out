@@ -1,0 +1,34 @@
+============================================================
+m33 prior probe (debug)
+Run:   checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0
+Split: train=12000, val=4000, test=8000
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_prior_probe.py --save_dir checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe --run_name m33_prior_probe_debug_seed0 --n_train_jets 45000 --n_train_split 12000 --n_val_split 4000 --n_test_split 8000 --offset_jets 0 --max_constits 100 --num_workers 1 --batch_size 80 --seed 0 --device cuda --teacher_epochs 10 --teacher_patience 3 --prior_epochs 20 --prior_patience 5 --critic_epochs 8 --n_prior_samples_per_class 1000 --roundtrip_eval_count 1500
+========================================================================
+m33 Prior Probe
+Run: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0
+========================================================================
+Split sizes: train=12000 val=4000 test=8000
+ProbeTeacher ep 5: train_auc=0.8994, val_auc=0.8963, val_fpr50=0.049149, best_auc=0.8963, fpr50@best=0.049149
+ProbeTeacher ep 10: train_auc=0.9330, val_auc=0.9261, val_fpr50=0.031381, best_auc=0.9261, fpr50@best=0.031381
+ProbeTeacher test AUC=0.9268
+OfflinePrior ep 001: train=24.97409 set=6.88615 cnt=18.08794 val=19.85626 best=19.85626@1
+OfflinePrior ep 002: train=19.93982 set=1.86246 cnt=18.07736 val=20.03524 best=19.85626@1
+OfflinePrior ep 004: train=19.18440 set=1.73035 cnt=17.45405 val=18.31280 best=18.31280@4
+OfflinePrior ep 006: train=18.59472 set=1.61766 cnt=16.97705 val=17.39486 best=17.39486@6
+OfflinePrior ep 008: train=17.36169 set=1.58288 cnt=15.77880 val=29.64354 best=17.39486@6
+OfflinePrior ep 010: train=15.94091 set=1.53596 cnt=14.40494 val=33.58560 best=17.39486@6
+OfflinePrior early stop at ep 11
+========================================================================
+m33 Prior Probe Summary
+========================================================================
+Overall status: FAIL
+Teacher AUC(test): 0.9268
+AE val set/count: 1.9535 / 15.4413
+Overfit ratios set/count: 1.006 / 0.991
+Critic val AUC(real-vs-gen): 1.0000
+Class sanity separation(top-bg): 0.0000
+Roundtrip total mean/p90: 4.4203 / 7.4093
+Gates: {'best_epoch_not_too_early': 'PASS', 'overfit_set_ratio': 'PASS', 'overfit_count_ratio': 'PASS', 'critic_real_vs_gen_auc': 'FAIL', 'class_sanity_separation': 'FAIL', 'roundtrip_total_mean': 'FAIL'}
+Saved: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0
+Done: checkpoints/reco_teacher_joint_fusion_debug/m33_prior_probe/m33_prior_probe_debug_seed0

@@ -1,0 +1,40 @@
+============================================================
+31-Model Bin-Gated Fusion
+Fusion json: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json
+TPRs:        0.50,0.30
+Anchor:      joint_delta
+Selection:   split
+Calibration: iso
+Cand@0.5:    joint_delta,dual_m15_offdrop_mid,concat_corrected,hlt,dual_m17_antioverlap,dual_m16_topk60,offdrop_high
+Cand@0.3:    joint_delta,joint_s01,corrected_s01,offdrop_mid,dual_m12_noscale,dual_m16_topk60,dual_m15_offdrop_high,joint_delta020
+============================================================
+ python analyze_hlt_joint31_bin_gated_fusion.py --fusion_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json --target_tprs 0.50\,0.30 --anchor_model joint_delta --selection_mode split --candidate_models_tpr50 joint_delta\,dual_m15_offdrop_mid\,concat_corrected\,hlt\,dual_m17_antioverlap\,dual_m16_topk60\,offdrop_high --candidate_models_tpr30 joint_delta\,joint_s01\,corrected_s01\,offdrop_mid\,dual_m12_noscale\,dual_m16_topk60\,dual_m15_offdrop_high\,joint_delta020 --router_cal_frac 0.40 --seed 0 --calibration iso --score_band_edges 0.0\,0.8\,0.9\,1.0 --dist_near_cut 0.0384 --dist_mid_low 0.06285 --dist_mid_high 0.07386 --global_max_add 6 --bin_max_add 3 --w_step 0.01 --min_bin_fit 1200 --min_global_improve 1e-6 --min_bin_improve 5e-6
+========================================================================
+31-Model Bin-Gated Fusion
+========================================================================
+Fusion json: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/fusion_hlt_joint31_all_stackers.json
+Out dir:     /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/bin_gated_fusion_31
+Anchor:      joint_delta
+TPRs:        0.500,0.300
+Selection:   split
+Calibration: iso
+Split fit/ref: 45000 / 30000
+
+TPR=0.500 best methods (by test FPR then AUC):
+  teacher          AUC_test=0.953322 FPR_test=0.010603 (cal=0.009590)
+  bin_gated_blend  AUC_test=0.927189 FPR_test=0.017902 (cal=0.017849)
+  global_blend     AUC_test=0.927190 FPR_test=0.018009 (cal=0.017915)
+  anchor           AUC_test=0.924567 FPR_test=0.019234 (cal=0.018781)
+  hlt              AUC_test=0.921389 FPR_test=0.021911 (cal=0.021712)
+
+TPR=0.300 best methods (by test FPR then AUC):
+  teacher          AUC_test=0.953322 FPR_test=0.002358 (cal=0.002264)
+  global_blend     AUC_test=0.927175 FPR_test=0.004569 (cal=0.004063)
+  bin_gated_blend  AUC_test=0.927175 FPR_test=0.004569 (cal=0.004063)
+  anchor           AUC_test=0.924567 FPR_test=0.004782 (cal=0.004662)
+  hlt              AUC_test=0.921389 FPR_test=0.005741 (cal=0.005528)
+
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/bin_gated_fusion_31/bin_gated_report.json
+Saved summary: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/bin_gated_fusion_31/bin_gated_summary.csv
+Saved updates: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/bin_gated_fusion_31/bin_gated_update_log.csv
+Saved scores: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta/model2_joint_delta005_150k75k150k_seed0/bin_gated_fusion_31/bin_gated_scores.npz

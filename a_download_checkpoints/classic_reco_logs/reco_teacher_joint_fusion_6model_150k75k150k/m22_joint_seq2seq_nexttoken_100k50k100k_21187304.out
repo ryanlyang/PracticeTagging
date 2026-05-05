@@ -1,0 +1,148 @@
+============================================================
+Model-22 Joint Seq2Seq Next-Token Reconstructor + DualView
+Run:   checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken/model22_joint_seq2seq_nexttoken_100k50k100k_seed0
+Split: train=50000, val=20000, test=100000
+Jets:  n_train_jets=170000, offset=0, max_constits=100
+============================================================
+ python offline_reconstructor_joint_dualview_seq2seq_nexttoken.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken --run_name model22_joint_seq2seq_nexttoken_100k50k100k_seed0 --n_train_jets 170000 --n_train_split 50000 --n_val_split 20000 --n_test_split 100000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --reco_epochs 140 --reco_batch_size 128 --reco_lr 2e-4 --reco_patience 30 --reco_min_epochs 45 --reco_huber_delta 0.12 --beam_size 4 --beam_len_sigma 1.35 --beam_temperature 0.9 --loss_w_ar 1.0 --loss_w_set 0.90 --loss_w_eos 0.22 --loss_w_count 0.22 --loss_w_ptr_entropy 0.002 --save_fusion_scores --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken/model22_joint_seq2seq_nexttoken_100k50k100k_seed0
+Loading offline constituents...
+Generating pseudo-HLT...
+Computing features...
+Split sizes: Train=50000, Val=20000, Test=100000
+
+========================================================================
+STEP 1: TEACHER (Offline)
+========================================================================
+Teacher ep 5: train_auc=0.9278, val_auc=0.8964, val_fpr50=0.044963, best_fpr50=0.043392, auc@best=0.9129
+Teacher ep 10: train_auc=0.9449, val_auc=0.9417, val_fpr50=0.018129, best_fpr50=0.015071, auc@best=0.9427
+Teacher ep 15: train_auc=0.9496, val_auc=0.9446, val_fpr50=0.014445, best_fpr50=0.014020, auc@best=0.9462
+Teacher ep 20: train_auc=0.9546, val_auc=0.9457, val_fpr50=0.015392, best_fpr50=0.014015, auc@best=0.9453
+Teacher ep 25: train_auc=0.9600, val_auc=0.9456, val_fpr50=0.014956, best_fpr50=0.013638, auc@best=0.9474
+Teacher ep 30: train_auc=0.9650, val_auc=0.9416, val_fpr50=0.018254, best_fpr50=0.013638, auc@best=0.9474
+Teacher ep 35: train_auc=0.9718, val_auc=0.9395, val_fpr50=0.016467, best_fpr50=0.013638, auc@best=0.9474
+Teacher ep 40: train_auc=0.9780, val_auc=0.9337, val_fpr50=0.018665, best_fpr50=0.013638, auc@best=0.9474
+Early stopping Teacher at epoch 41
+
+========================================================================
+STEP 2: BASELINE (HLT)
+========================================================================
+HLT ep 5: train_auc=0.8854, val_auc=0.8728, val_fpr50=0.059302, best_fpr50=0.051114, auc@best=0.8701
+HLT ep 10: train_auc=0.9082, val_auc=0.9124, val_fpr50=0.026459, best_fpr50=0.024716, auc@best=0.9145
+HLT ep 15: train_auc=0.9160, val_auc=0.9104, val_fpr50=0.026110, best_fpr50=0.024716, auc@best=0.9145
+HLT ep 20: train_auc=0.9213, val_auc=0.9144, val_fpr50=0.024414, best_fpr50=0.024338, auc@best=0.9138
+HLT ep 25: train_auc=0.9276, val_auc=0.9154, val_fpr50=0.022746, best_fpr50=0.022746, auc@best=0.9154
+HLT ep 30: train_auc=0.9337, val_auc=0.9088, val_fpr50=0.028368, best_fpr50=0.022746, auc@best=0.9154
+HLT ep 35: train_auc=0.9416, val_auc=0.9079, val_fpr50=0.026989, best_fpr50=0.022746, auc@best=0.9154
+HLT ep 40: train_auc=0.9502, val_auc=0.9041, val_fpr50=0.031191, best_fpr50=0.022746, auc@best=0.9154
+Early stopping HLT at epoch 43
+
+========================================================================
+STEP 3: SEQ2SEQ RECONSTRUCTOR (Continuous AR + Beam Length)
+========================================================================
+Reco ep 001 | train total=4.42846 ar=1.21666 set=0.83649 eos=0.10318 cnt=11.07236 | val total=3.23036 ar=1.14323 set=0.90905 eos=0.04895 cnt=5.71648
+Reco ep 002 | train total=2.93186 ar=0.93671 set=0.64458 eos=0.04556 cnt=6.38510 | val total=3.01659 ar=1.10417 set=0.74760 eos=0.05822 cnt=5.57282
+Reco ep 004 | train total=2.46196 ar=0.76559 set=0.56065 eos=0.03945 cnt=5.37525 | val total=2.81040 ar=1.15021 set=0.62727 eos=0.04675 cnt=4.92829
+Reco ep 006 | train total=2.21403 ar=0.63897 set=0.49912 eos=0.03148 cnt=5.08171 | val total=2.42851 ar=0.82025 set=0.57968 eos=0.03635 cnt=4.89602
+Reco ep 008 | train total=2.10409 ar=0.57113 set=0.47799 eos=0.02752 cnt=4.97973 | val total=2.31117 ar=0.76454 set=0.52635 eos=0.02279 cnt=4.84719
+Reco ep 010 | train total=2.02093 ar=0.52612 set=0.45369 eos=0.02547 cnt=4.90719 | val total=2.42618 ar=0.80974 set=0.44674 eos=0.02171 cnt=5.49050
+Reco ep 012 | train total=1.93850 ar=0.46810 set=0.41713 eos=0.02415 cnt=4.94666 | val total=2.55784 ar=1.00917 set=0.48771 eos=0.03372 cnt=5.00288
+Reco ep 014 | train total=1.88730 ar=0.44540 set=0.40678 eos=0.02329 cnt=4.86029 | val total=1.98484 ar=0.53864 set=0.40344 eos=0.01950 cnt=4.89662
+Reco ep 016 | train total=1.85627 ar=0.42302 set=0.40131 eos=0.02361 cnt=4.84325 | val total=2.21433 ar=0.75466 set=0.40811 eos=0.02132 cnt=4.93663
+Reco ep 018 | train total=1.81110 ar=0.40329 set=0.38933 eos=0.02181 cnt=4.77841 | val total=2.00436 ar=0.58559 set=0.38594 eos=0.01938 cnt=4.84402
+Reco ep 020 | train total=1.80546 ar=0.39224 set=0.38424 eos=0.02236 cnt=4.82355 | val total=2.19040 ar=0.73432 set=0.38130 eos=0.01778 cnt=5.03409
+Reco ep 022 | train total=1.78008 ar=0.37197 set=0.38140 eos=0.02253 cnt=4.81182 | val total=2.36716 ar=0.90458 set=0.40316 eos=0.02000 cnt=4.97218
+Reco ep 024 | train total=1.77836 ar=0.37229 set=0.37765 eos=0.02134 cnt=4.81901 | val total=2.41904 ar=0.92445 set=0.40898 eos=0.02000 cnt=5.09350
+Reco ep 026 | train total=1.74399 ar=0.35895 set=0.37228 eos=0.02146 cnt=4.74565 | val total=2.32834 ar=0.80776 set=0.38970 eos=0.01935 cnt=5.29158
+Reco ep 028 | train total=1.74453 ar=0.36388 set=0.37174 eos=0.02186 cnt=4.72743 | val total=1.97274 ar=0.56688 set=0.37294 eos=0.01771 cnt=4.84060
+Reco ep 030 | train total=1.72496 ar=0.34937 set=0.37417 eos=0.02068 cnt=4.69553 | val total=2.16792 ar=0.73759 set=0.38625 eos=0.02131 cnt=4.89348
+Reco ep 032 | train total=1.72307 ar=0.33600 set=0.38574 eos=0.02085 cnt=4.70015 | val total=1.76216 ar=0.34122 set=0.37908 eos=0.01984 cnt=4.88127
+Reco ep 034 | train total=1.70961 ar=0.34810 set=0.36617 eos=0.02088 cnt=4.66452 | val total=1.71206 ar=0.34076 set=0.34877 eos=0.02072 cnt=4.78015
+Reco ep 036 | train total=1.68945 ar=0.33523 set=0.36624 eos=0.02113 cnt=4.63073 | val total=1.74309 ar=0.36752 set=0.36294 eos=0.02439 cnt=4.73657
+Reco ep 038 | train total=1.68890 ar=0.33389 set=0.36483 eos=0.02037 cnt=4.64090 | val total=1.81258 ar=0.43859 set=0.34412 eos=0.01656 cnt=4.81525
+Reco ep 040 | train total=1.67859 ar=0.33249 set=0.36356 eos=0.02200 cnt=4.60408 | val total=1.73272 ar=0.36604 set=0.36198 eos=0.01979 cnt=4.70558
+Reco ep 042 | train total=1.67554 ar=0.33047 set=0.36550 eos=0.02112 cnt=4.59243 | val total=1.84670 ar=0.40597 set=0.35722 eos=0.01950 cnt=5.06245
+Reco ep 044 | train total=1.66497 ar=0.32829 set=0.35965 eos=0.02013 cnt=4.57948 | val total=1.86110 ar=0.48497 set=0.35497 eos=0.01862 cnt=4.77864
+Reco ep 046 | train total=1.66580 ar=0.32801 set=0.36788 eos=0.02184 cnt=4.54893 | val total=1.76974 ar=0.42963 set=0.34807 eos=0.02369 cnt=4.63850
+Reco ep 048 | train total=1.65392 ar=0.29691 set=0.39476 eos=0.01968 cnt=4.52720 | val total=1.96326 ar=0.45723 set=0.38308 eos=0.01807 cnt=5.25374
+Reco ep 050 | train total=1.65964 ar=0.29688 set=0.39221 eos=0.01811 cnt=4.56519 | val total=1.81049 ar=0.40074 set=0.36650 eos=0.01957 cnt=4.88248
+Reco ep 052 | train total=1.63014 ar=0.28233 set=0.38900 eos=0.01753 cnt=4.51094 | val total=1.84728 ar=0.43365 set=0.37146 eos=0.01537 cnt=4.88352
+Reco ep 054 | train total=1.63877 ar=0.29314 set=0.38598 eos=0.02096 cnt=4.51015 | val total=1.82572 ar=0.43379 set=0.37450 eos=0.01700 cnt=4.77101
+Reco ep 056 | train total=1.62691 ar=0.28710 set=0.38598 eos=0.01941 cnt=4.48479 | val total=2.01336 ar=0.55102 set=0.37632 eos=0.02999 cnt=5.07069
+Reco ep 058 | train total=1.60813 ar=0.27439 set=0.38369 eos=0.01800 cnt=4.46779 | val total=1.89813 ar=0.47849 set=0.37595 eos=0.01565 cnt=4.89210
+Reco ep 060 | train total=1.60731 ar=0.28805 set=0.38017 eos=0.01925 cnt=4.41580 | val total=1.69077 ar=0.32673 set=0.35757 eos=0.01768 cnt=4.71281
+Reco ep 062 | train total=1.60918 ar=0.30301 set=0.36389 eos=0.02266 cnt=4.42007 | val total=1.82197 ar=0.39751 set=0.38184 eos=0.03550 cnt=4.87096
+Reco ep 064 | train total=1.60757 ar=0.29486 set=0.36400 eos=0.02013 cnt=4.45192 | val total=1.77488 ar=0.35160 set=0.35091 eos=0.02086 cnt=5.00698
+Reco ep 066 | train total=1.58862 ar=0.28960 set=0.36378 eos=0.02072 cnt=4.38992 | val total=1.83224 ar=0.41379 set=0.35444 eos=0.01916 cnt=4.97239
+Reco ep 068 | train total=1.58679 ar=0.28708 set=0.37962 eos=0.01985 cnt=4.32876 | val total=1.88562 ar=0.48325 set=0.36014 eos=0.01875 cnt=4.87649
+Reco ep 070 | train total=1.57848 ar=0.29381 set=0.35987 eos=0.02145 cnt=4.34031 | val total=1.76842 ar=0.40573 set=0.34472 eos=0.01835 cnt=4.76012
+Reco ep 072 | train total=1.55480 ar=0.28266 set=0.35995 eos=0.02045 cnt=4.28373 | val total=1.76455 ar=0.37058 set=0.35600 eos=0.01830 cnt=4.85543
+Reco ep 074 | train total=1.55224 ar=0.27934 set=0.36807 eos=0.01932 cnt=4.25470 | val total=1.64807 ar=0.29389 set=0.33203 eos=0.01756 cnt=4.77383
+Reco ep 076 | train total=1.54482 ar=0.28593 set=0.35543 eos=0.01974 cnt=4.24282 | val total=1.75282 ar=0.36663 set=0.33718 eos=0.02841 cnt=4.88733
+Reco ep 078 | train total=1.53550 ar=0.28604 set=0.35965 eos=0.02105 cnt=4.18138 | val total=1.91383 ar=0.44954 set=0.36054 eos=0.01760 cnt=5.15742
+Reco ep 080 | train total=1.52754 ar=0.28187 set=0.35473 eos=0.01896 cnt=4.18659 | val total=1.70819 ar=0.30614 set=0.33807 eos=0.02167 cnt=4.96223
+Reco ep 082 | train total=1.52311 ar=0.28466 set=0.35458 eos=0.01873 cnt=4.15456 | val total=1.72263 ar=0.30581 set=0.34745 eos=0.02064 cnt=4.99209
+Reco ep 084 | train total=1.50862 ar=0.28693 set=0.35068 eos=0.01996 cnt=4.09329 | val total=1.66445 ar=0.23961 set=0.32218 eos=0.01544 cnt=5.13784
+Reco ep 086 | train total=1.48075 ar=0.27429 set=0.35241 eos=0.01885 cnt=4.01781 | val total=1.71642 ar=0.28333 set=0.33349 eos=0.01691 cnt=5.12713
+Reco ep 088 | train total=1.48572 ar=0.28520 set=0.34720 eos=0.01913 cnt=4.01237 | val total=1.67666 ar=0.26827 set=0.32019 eos=0.01747 cnt=5.06889
+Reco ep 090 | train total=1.48320 ar=0.29564 set=0.34821 eos=0.01928 cnt=3.94946 | val total=1.69125 ar=0.28294 set=0.33092 eos=0.01658 cnt=5.02609
+Reco ep 092 | train total=1.46371 ar=0.29078 set=0.34405 eos=0.01963 cnt=3.89974 | val total=1.67406 ar=0.27433 set=0.33150 eos=0.01656 cnt=4.98499
+Reco ep 094 | train total=1.43715 ar=0.27859 set=0.34534 eos=0.01837 cnt=3.83010 | val total=1.75222 ar=0.27519 set=0.32292 eos=0.01573 cnt=5.37139
+Reco ep 096 | train total=1.43200 ar=0.27858 set=0.35119 eos=0.01895 cnt=3.78200 | val total=1.70622 ar=0.28305 set=0.33967 eos=0.01826 cnt=5.05560
+Reco ep 098 | train total=1.43660 ar=0.27611 set=0.36036 eos=0.01948 cnt=3.77580 | val total=1.73341 ar=0.28548 set=0.34965 eos=0.01885 cnt=5.12631
+Reco ep 100 | train total=1.42471 ar=0.26387 set=0.37284 eos=0.01902 cnt=3.72641 | val total=1.77162 ar=0.28224 set=0.34066 eos=0.01637 cnt=5.35370
+Reco ep 102 | train total=1.38859 ar=0.25529 set=0.36968 eos=0.01761 cnt=3.61522 | val total=1.68340 ar=0.22990 set=0.34087 eos=0.01543 cnt=5.19056
+Reco ep 104 | train total=1.37816 ar=0.25481 set=0.36636 eos=0.01707 cnt=3.58388 | val total=1.68585 ar=0.26361 set=0.32572 eos=0.01659 cnt=5.10937
+Early stopping reconstructor at epoch 104
+Best reconstructor val metrics:
+  val_total: 1.648073
+  val_ar: 0.293894
+  val_set: 0.332031
+  val_eos: 0.017565
+  val_count: 4.773832
+Building reconstructed dataset...
+
+========================================================================
+STEP 4: TAGGERS ON RECONSTRUCTED VIEW
+========================================================================
+RecoOnly ep 5: train_auc=0.8559, val_auc=0.8310, val_fpr50=0.094015, best_fpr50=0.076297, auc@best=0.8456
+RecoOnly ep 10: train_auc=0.8753, val_auc=0.8644, val_fpr50=0.061197, best_fpr50=0.055068, auc@best=0.8706
+RecoOnly ep 15: train_auc=0.8851, val_auc=0.8768, val_fpr50=0.049202, best_fpr50=0.049027, auc@best=0.8747
+RecoOnly ep 20: train_auc=0.8935, val_auc=0.8775, val_fpr50=0.050866, best_fpr50=0.048903, auc@best=0.8750
+RecoOnly ep 25: train_auc=0.9022, val_auc=0.8710, val_fpr50=0.052525, best_fpr50=0.048903, auc@best=0.8750
+RecoOnly ep 30: train_auc=0.9144, val_auc=0.8643, val_fpr50=0.056005, best_fpr50=0.048903, auc@best=0.8750
+RecoOnly ep 35: train_auc=0.9271, val_auc=0.8612, val_fpr50=0.066077, best_fpr50=0.048903, auc@best=0.8750
+Early stopping RecoOnly at epoch 36
+DualView ep 5: train_auc=0.8902, val_auc=0.8994, val_fpr50=0.037138, best_fpr50=0.037138, auc@best=0.8994
+DualView ep 10: train_auc=0.9097, val_auc=0.9098, val_fpr50=0.027545, best_fpr50=0.025960, auc@best=0.9091
+DualView ep 15: train_auc=0.9172, val_auc=0.9104, val_fpr50=0.026810, best_fpr50=0.025079, auc@best=0.9122
+DualView ep 20: train_auc=0.9219, val_auc=0.9099, val_fpr50=0.027340, best_fpr50=0.025079, auc@best=0.9122
+DualView ep 25: train_auc=0.9281, val_auc=0.9131, val_fpr50=0.026883, best_fpr50=0.025079, auc@best=0.9122
+DualView ep 30: train_auc=0.9357, val_auc=0.9082, val_fpr50=0.029292, best_fpr50=0.025079, auc@best=0.9122
+Early stopping DualView at epoch 30
+DualView+Conf ep 5: train_auc=0.8879, val_auc=0.8811, val_fpr50=0.053150, best_fpr50=0.042020, auc@best=0.8885
+DualView+Conf ep 10: train_auc=0.9089, val_auc=0.9111, val_fpr50=0.025657, best_fpr50=0.025657, auc@best=0.9111
+DualView+Conf ep 15: train_auc=0.9154, val_auc=0.9153, val_fpr50=0.023011, best_fpr50=0.023011, auc@best=0.9153
+DualView+Conf ep 20: train_auc=0.9217, val_auc=0.9154, val_fpr50=0.026380, best_fpr50=0.023011, auc@best=0.9153
+DualView+Conf ep 25: train_auc=0.9274, val_auc=0.9127, val_fpr50=0.029302, best_fpr50=0.023011, auc@best=0.9153
+DualView+Conf ep 30: train_auc=0.9325, val_auc=0.9133, val_fpr50=0.024503, best_fpr50=0.023011, auc@best=0.9153
+Early stopping DualView+Conf at epoch 33
+
+========================================================================
+FINAL TEST EVALUATION
+========================================================================
+Teacher (Offline) AUC: 0.947009
+Baseline (HLT)   AUC: 0.912979
+RecoOnly         AUC: 0.871401
+DualView         AUC: 0.909472
+DualView+Conf    AUC: 0.913247
+
+FPR@30
+  Teacher/HLT/RecoOnly/Dual/Dual+Conf: 0.003620 / 0.007421 / 0.016330 / 0.007840 / 0.006854
+FPR@50
+  Teacher/HLT/RecoOnly/Dual/Dual+Conf: 0.014303 / 0.025849 / 0.052952 / 0.028228 / 0.025806
+Saved fusion score arrays to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken/model22_joint_seq2seq_nexttoken_100k50k100k_seed0/fusion_scores_val_test.npz
+
+Saved results to: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken/model22_joint_seq2seq_nexttoken_100k50k100k_seed0
+Done: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model22_joint_seq2seq_nexttoken/model22_joint_seq2seq_nexttoken_100k50k100k_seed0

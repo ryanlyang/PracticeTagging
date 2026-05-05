@@ -1,0 +1,88 @@
+============================================================
+Model-33 K=6 Deterministic Feasibility + DualView
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model33_detfeas_dualview/model33_k6_detfeas_dualview_150k75k150k_seed0
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m33_detfeas_dualview.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model33_detfeas_dualview --run_name model33_k6_detfeas_dualview_150k75k150k_seed0 --n_train_jets 375000 --n_train_split 100000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --batch_size 80 --num_workers 6 --seed 0 --device cuda --save_fusion_scores --conf_weight_floor 1.0 --prior_lr 5e-5 --degrader_lr 5e-5 --prior_loss_w_count 1.0 --degrader_loss_w_count 1.0 --proposer_k0_train 96 --proposer_top_m_train 16 --k0_infer 160 --top_m_infer 24 --infer_refine_steps 3 --infer_refine_lr 0.035 --search_target_k 6 --search_batch_size 40 --search_chunk_k0 100 --search_shortlist_m 20 --search_max_rounds 20 --search_keep_per_round 10 --search_max_pool_size 120 --search_eps_total 0.20 --search_eps_count 0.25 --search_w_chamfer 1.0 --search_w_count 0.30 --search_w_pt 0.12 --search_w_mass 0.06 --selector_epochs 45 --selector_lr 2e-4 --selector_patience 10 --selector_neg_per_class 4 --selector_score_alpha 1.40 --dual_epochs 80 --dual_lr 1.2e-4 --dual_patience 14
+========================================================================
+Model-33 Deterministic Feasibility + DualView Pipeline
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model33_detfeas_dualview/model33_k6_detfeas_dualview_150k75k150k_seed0
+Shortlist config: train K0=96 -> M=16; infer K0=160 -> M=24; search(chunk=100, rounds=20, targetK=6); refine(train,infer)=(0,3); post_refine=0
+========================================================================
+Generating pseudo-HLT (deterministic keyed D_hard)...
+HLT stats: avg_offline=54.30, avg_hlt=29.18, merged=8037303, eff_lost=1380183
+Computing features for teacher/baseline...
+Split sizes: Train=100000, Val=75000, Test=150000
+
+========================================================================
+STEP 1: Teacher + HLT baseline
+========================================================================
+Teacher ep 5: train_auc=0.9387, val_auc=0.9464, val_fpr50=0.013430, best_auc=0.9464, fpr50@best=0.013430
+Teacher ep 10: train_auc=0.9461, val_auc=0.9474, val_fpr50=0.012625, best_auc=0.9479, fpr50@best=0.012690
+Teacher ep 15: train_auc=0.9513, val_auc=0.9516, val_fpr50=0.010234, best_auc=0.9516, fpr50@best=0.010234
+Teacher ep 20: train_auc=0.9548, val_auc=0.9520, val_fpr50=0.010496, best_auc=0.9530, fpr50@best=0.009736
+Teacher ep 25: train_auc=0.9585, val_auc=0.9514, val_fpr50=0.010371, best_auc=0.9532, fpr50@best=0.008861
+Teacher ep 30: train_auc=0.9638, val_auc=0.9509, val_fpr50=0.011349, best_auc=0.9532, fpr50@best=0.008861
+Teacher ep 35: train_auc=0.9685, val_auc=0.9466, val_fpr50=0.012864, best_auc=0.9532, fpr50@best=0.008861
+Early stopping Teacher at epoch 36
+Baseline ep 5: train_auc=0.9044, val_auc=0.9131, val_fpr50=0.025632, best_auc=0.9131, fpr50@best=0.025632
+Baseline ep 10: train_auc=0.9133, val_auc=0.9106, val_fpr50=0.030482, best_auc=0.9170, fpr50@best=0.023063
+Baseline ep 15: train_auc=0.9182, val_auc=0.9198, val_fpr50=0.021238, best_auc=0.9198, fpr50@best=0.021238
+Baseline ep 20: train_auc=0.9230, val_auc=0.9201, val_fpr50=0.021629, best_auc=0.9204, fpr50@best=0.022619
+Baseline ep 25: train_auc=0.9281, val_auc=0.9204, val_fpr50=0.021860, best_auc=0.9204, fpr50@best=0.021860
+Baseline ep 30: train_auc=0.9333, val_auc=0.9161, val_fpr50=0.023629, best_auc=0.9204, fpr50@best=0.021860
+Baseline ep 35: train_auc=0.9392, val_auc=0.9175, val_fpr50=0.022385, best_auc=0.9204, fpr50@best=0.021860
+Early stopping Baseline at epoch 37
+Teacher test AUC=0.9516 | Baseline test AUC=0.9191
+Confidence weights: train_mean=1.0000, val_mean=1.0000, train_p95=1.000
+
+========================================================================
+STEP 2: Offline latent AE + class priors
+========================================================================
+OfflinePrior ep 001: train=19.51947 set=2.54116 cnt=16.97830 val=26.09631 best=26.09631@1
+OfflinePrior ep 002: train=12.86278 set=1.49289 cnt=11.36989 val=36.03781 best=26.09631@1
+OfflinePrior ep 004: train=7.10451 set=1.22721 cnt=5.87729 val=43.29066 best=26.09631@1
+OfflinePrior ep 006: train=5.87157 set=1.18809 cnt=4.68346 val=45.78253 best=26.09631@1
+OfflinePrior ep 008: train=4.36599 set=1.16535 cnt=3.20062 val=39.11762 best=26.09631@1
+OfflinePrior ep 010: train=3.35882 set=1.14390 cnt=2.21490 val=27.86975 best=26.09631@1
+OfflinePrior ep 012: train=2.73038 set=1.13140 cnt=1.59896 val=25.29576 best=25.29576@12
+OfflinePrior ep 014: train=2.52228 set=1.12006 cnt=1.40220 val=24.67491 best=18.25390@13
+OfflinePrior ep 016: train=2.35601 set=1.11394 cnt=1.24205 val=18.75057 best=18.25390@13
+OfflinePrior ep 018: train=2.21132 set=1.11145 cnt=1.09985 val=22.85724 best=18.25390@13
+OfflinePrior ep 020: train=2.19107 set=1.10583 cnt=1.08523 val=47.07125 best=18.25390@13
+OfflinePrior ep 022: train=2.09223 set=1.10400 cnt=0.98821 val=20.15600 best=18.25390@13
+OfflinePrior ep 024: train=2.06204 set=1.10518 cnt=0.95683 val=46.73888 best=18.25390@13
+OfflinePrior ep 026: train=2.01422 set=1.10031 cnt=0.91389 val=33.08824 best=18.25390@13
+OfflinePrior early stop at ep 27
+
+========================================================================
+STEP 3: Offline->HLT degrader
+========================================================================
+Degrader ep 001: train=12.78872 set=2.93551 cnt=9.85320 val=18.63525 best=18.63525@1
+Degrader ep 002: train=8.28164 set=1.97213 cnt=6.30951 val=23.50827 best=18.63525@1
+Degrader ep 004: train=6.09303 set=1.69349 cnt=4.39954 val=17.96171 best=17.90580@3
+Degrader ep 006: train=5.60137 set=1.65521 cnt=3.94616 val=14.96283 best=14.96283@6
+Degrader ep 008: train=5.40002 set=1.63949 cnt=3.76054 val=14.37361 best=11.83826@7
+Degrader ep 010: train=5.28291 set=1.62181 cnt=3.66110 val=15.67202 best=11.83826@7
+Degrader ep 012: train=5.12660 set=1.61923 cnt=3.50737 val=13.70717 best=11.83826@7
+Degrader ep 014: train=5.02191 set=1.61544 cnt=3.40647 val=14.00916 best=11.83826@7
+Degrader ep 016: train=4.99209 set=1.61012 cnt=3.38197 val=13.57375 best=11.83826@7
+Degrader ep 018: train=4.93760 set=1.60540 cnt=3.33220 val=14.04759 best=11.83826@7
+Degrader early stop at ep 19
+
+========================================================================
+STEP 4: HLT->latent proposer (best-of-K)
+========================================================================
+Proposer ep 001: train=8.87122 val=6.94693 best=6.94693@1 | best_set=2.16773 prescore=-125.96711 count=18.09466 div=0.00006 margin=0.11088 kl=66.24282 hlt=2.74201
+Proposer ep 002: train=6.69165 val=8.58706 best=6.94693@1 | best_set=1.99059 prescore=-157.17790 count=16.10596 div=0.00012 margin=0.11238 kl=16.25475 hlt=2.61470
+Proposer ep 004: train=6.21813 val=9.23118 best=6.94693@1 | best_set=1.96332 prescore=-153.97720 count=13.39280 div=0.00015 margin=0.11106 kl=24.03536 hlt=2.60013
+Proposer ep 006: train=6.11546 val=10.53699 best=6.94693@1 | best_set=1.95491 prescore=-153.42513 count=12.87802 div=0.00015 margin=0.10808 kl=25.24755 hlt=2.59128
+Proposer ep 008: train=5.89520 val=9.97248 best=6.94693@1 | best_set=1.96045 prescore=-151.08157 count=11.41421 div=0.00017 margin=0.10883 kl=29.89206 hlt=2.60013
+Proposer ep 010: train=5.84191 val=10.74912 best=6.94693@1 | best_set=1.96695 prescore=-150.00799 count=10.94365 div=0.00017 margin=0.10976 kl=31.79588 hlt=2.60546
+Proposer ep 012: train=5.75889 val=10.56787 best=6.94693@1 | best_set=1.95788 prescore=-149.07876 count=10.41471 div=0.00018 margin=0.10887 kl=33.75684 hlt=2.60343
+Proposer ep 014: train=5.73945 val=10.18054 best=6.94693@1 | best_set=1.96338 prescore=-148.76858 count=10.27072 div=0.00017 margin=0.10842 kl=34.12789 hlt=2.60649
+Proposer ep 016: train=5.69664 val=10.50496 best=6.94693@1 | best_set=1.95729 prescore=-148.55156 count=10.04383 div=0.00017 margin=0.10789 kl=34.81680 hlt=2.59850
+Proposer early stop at ep 17
+
+========================================================================
+STEP 5: Deterministic Chunked Candidate Search (D_hard acceptance)
+========================================================================

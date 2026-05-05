@@ -1,0 +1,49 @@
+============================================================
+M2 Router Signal Sweep (Hungarian run, 200k analysis + 200k test)
+Run dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Out dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k
+Data split: offset=375000, analysis=200000, test=200000
+Corruptions: pt_noise:0.03,pt_noise:0.06,eta_phi_jitter:0.02,eta_phi_jitter:0.05,dropout:0.05,dropout:0.10,merge:0.10,merge:0.20,global_scale:0.03
+============================================================
+ python analyze_m2_router_signal_sweep.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0 --train_path ./data --router_offset_jets 375000 --router_n_analysis 200000 --router_n_test 200000 --ref_offset_jets 0 --ref_n_jets 375000 --max_constits 100 --seed 0 --hlt_seed 0 --batch_size 512 --device cuda --corrected_weight_floor 1e-4 --corruptions pt_noise:0.03\,pt_noise:0.06\,eta_phi_jitter:0.02\,eta_phi_jitter:0.05\,dropout:0.05\,dropout:0.10\,merge:0.10\,merge:0.20\,global_scale:0.03 --router_cal_frac 0.2 --cost_alpha_neg 4.0 --cost_tau 0.02 --top_pair_signal_k 6 --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k/router_signal_sweep_report.json
+[corruption] kind=pt_noise severity=0.0300
+[corruption] kind=pt_noise severity=0.0600
+[corruption] kind=eta_phi_jitter severity=0.0200
+[corruption] kind=eta_phi_jitter severity=0.0500
+[corruption] kind=dropout severity=0.0500
+[corruption] kind=dropout severity=0.1000
+[corruption] kind=merge severity=0.1000
+[corruption] kind=merge severity=0.2000
+[corruption] kind=global_scale severity=0.0300
+========================================================================
+Router Signal Sweep
+========================================================================
+Run dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Out dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k
+Feature profile: core
+N analysis/test: 200000 / 200000
+Router features: 89
+Corruptions: 9
+
+Top methods on held-out test (sorted by FPR@50 then AUC):
+  oracle_best_of_two_lowfpr_cost AUC=0.944016 FPR30=0.002035 FPR50=0.010626 harm_neg=0.0004
+  hard_single_rule             AUC=0.923670 FPR30=0.004879 FPR50=0.019685 harm_neg=0.3786
+  joint                        AUC=0.923739 FPR30=0.004869 FPR50=0.019735 harm_neg=0.3932
+  tree_d2_hard                 AUC=0.923739 FPR30=0.004869 FPR50=0.019735 harm_neg=0.3932
+  tree_d3_hard                 AUC=0.923709 FPR30=0.005019 FPR50=0.019735 harm_neg=0.2398
+  mlp_64_hard                  AUC=0.923740 FPR30=0.004869 FPR50=0.019755 harm_neg=0.3929
+  mlp_64_softmix               AUC=0.923739 FPR30=0.004869 FPR50=0.019755 harm_neg=0.3931
+  tree_d3_softmix              AUC=0.924293 FPR30=0.004959 FPR50=0.019894 harm_neg=0.3932
+  hard_pair_rule               AUC=0.922317 FPR30=0.004769 FPR50=0.019924 harm_neg=0.3168
+  tree_d2_softmix              AUC=0.924243 FPR30=0.005028 FPR50=0.019974 harm_neg=0.3932
+  legacy_softmix_raw           AUC=0.924036 FPR30=0.004699 FPR50=0.020284 harm_neg=0.3932
+  logreg_softmix               AUC=0.923940 FPR30=0.005118 FPR50=0.020284 harm_neg=0.3931
+
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k/router_signal_sweep_report.json
+Saved leaderboard CSV: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k/router_leaderboard_test.csv
+Saved signal-rank CSV: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k/router_signal_rank_fit.csv
+
+Done. Outputs:
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k/router_signal_sweep_report.json
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k/router_leaderboard_test.csv
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_signal_sweep_200k200k/router_signal_rank_fit.csv

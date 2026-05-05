@@ -1,0 +1,42 @@
+============================================================
+M2 Tail-Focused Router (Hungarian run, 300k analysis + 200k test)
+Run dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Out dir:    checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k
+Data split: offset=375000, analysis=300000, test=200000
+Tail cut:   TPR < 0.6 (HLT or Joint)
+Fallback:   joint
+Selection:  fpr50
+Use corruption features: 1
+============================================================
+ python analyze_m2_router_tail_focus.py --run_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0 --train_path ./data --router_offset_jets 375000 --router_n_analysis 300000 --router_n_test 200000 --ref_offset_jets 0 --ref_n_jets 375000 --max_constits 100 --seed 0 --hlt_seed 0 --batch_size 512 --device cuda --corrected_weight_floor 1e-4 --corruptions pt_noise:0.03\,pt_noise:0.06\,eta_phi_jitter:0.02\,eta_phi_jitter:0.05\,dropout:0.05\,dropout:0.10\,merge:0.10\,merge:0.20\,global_scale:0.03 --router_cal_frac 0.2 --cost_alpha_neg 4.0 --cost_tau 0.02 --tail_tpr_cut 0.6 --fallback_non_tail joint --selection_metric fpr50 --out_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k --report_json checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k/tail_router_report.json --use_corruption_features
+[corruption] kind=pt_noise severity=0.0300
+[corruption] kind=pt_noise severity=0.0600
+[corruption] kind=eta_phi_jitter severity=0.0200
+[corruption] kind=eta_phi_jitter severity=0.0500
+[corruption] kind=dropout severity=0.0500
+[corruption] kind=dropout severity=0.1000
+[corruption] kind=merge severity=0.1000
+[corruption] kind=merge severity=0.2000
+[corruption] kind=global_scale severity=0.0300
+========================================================================
+Tail-Focused Router Analysis
+========================================================================
+Run dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0
+Out dir: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k
+N analysis/test: 300000 / 200000
+Tail cut TPR<0.600 | tail rates fit/cal/test: 0.344/0.345/0.343
+Selected threshold: dir=<= thr=0.194903 | cal FPR50=0.017690 AUC=0.925550
+
+Held-out test:
+  hlt                AUC=0.921219 FPR30=0.005476 FPR50=0.021188
+  joint              AUC=0.924190 FPR30=0.004609 FPR50=0.019143
+  tail_hard_selected AUC=0.923858 FPR30=0.004658 FPR50=0.019442
+  tail_hard_05       AUC=0.923993 FPR30=0.004938 FPR50=0.020021
+  tail_softmix       AUC=0.923987 FPR30=0.005008 FPR50=0.020140
+
+Saved report: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k/tail_router_report.json
+Saved sweep CSV: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k/tail_router_threshold_sweep_cal.csv
+
+Done. Outputs:
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k/tail_router_report.json
+  checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_hungarian_nophys_noratio/model2_joint_hungarian_nophys_noratio_150k75k150k_seed0/router_tail_focus_300k200k/tail_router_threshold_sweep_cal.csv
