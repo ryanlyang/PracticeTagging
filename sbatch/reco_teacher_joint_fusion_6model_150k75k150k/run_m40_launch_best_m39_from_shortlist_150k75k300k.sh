@@ -11,7 +11,7 @@ set -euo pipefail
 SWEEP_SAVE_DIR="${SWEEP_SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/m40_constituent_codebook}"
 SWEEP_RUN_NAME="${SWEEP_RUN_NAME:-m40_quant_sweep_150k75k300k_seed0}"
 SHORTLIST_PATH="${SHORTLIST_PATH:-${SWEEP_SAVE_DIR}/${SWEEP_RUN_NAME}/shortlist.json}"
-M39_SUBMIT_SCRIPT="${M39_SUBMIT_SCRIPT:-sbatch/reco_teacher_joint_fusion_6model_150k75k150k/submit_m39_prefixspecialist_detresid_multicand_150k75k300k.sh}"
+M39_SUBMIT_SCRIPT="${M39_SUBMIT_SCRIPT:-sbatch/reco_teacher_joint_fusion_6model_150k75k150k/submit_m39_prefixspecialist_detresid_multicand_150k75k300k_after6_stage2keep_sweep.sh}"
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
@@ -45,11 +45,13 @@ fi
 label_safe="$(echo "${CODEBOOK_LABEL}" | tr -cs '[:alnum:]_-' '_')"
 BASE_RUN_NAME="model39_prefixspecialist_detresid_multicand_150k75k300k_${label_safe}_seed0"
 STAGE2_RUN_NAME="model39_prefix6_stage2_150k75k300k_${label_safe}_seed0"
+STAGE2_RUN_PREFIX="model39_prefix6_stage2_${label_safe}_keepm"
 
 export CODEBOOK_PATH
 export CODEBOOK_LABEL
 export BASE_RUN_NAME
 export STAGE2_RUN_NAME
+export STAGE2_RUN_PREFIX
 
 echo "Using shortlist: ${SHORTLIST_PATH}"
 echo "Best codebook: ${CODEBOOK_PATH} (${CODEBOOK_LABEL})"

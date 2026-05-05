@@ -266,8 +266,8 @@ class RecoSpecialistDataset(Dataset):
         feat_hlt: np.ndarray,
         mask_hlt: np.ndarray,
         const_hlt: np.ndarray,
-        tgt_tok_cont: np.ndarray,
-        tgt_mask_cont: np.ndarray,
+        tgt_tok: np.ndarray,
+        tgt_mask: np.ndarray,
         labels: np.ndarray,
         prefix_tok: np.ndarray,
         prefix_len: np.ndarray,
@@ -275,8 +275,8 @@ class RecoSpecialistDataset(Dataset):
         self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
         self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
         self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
-        self.tgt_tok = torch.tensor(tgt_tok_cont, dtype=torch.float32)
-        self.tgt_mask = torch.tensor(tgt_mask_cont, dtype=torch.bool)
+        self.tgt_tok = torch.tensor(tgt_tok, dtype=torch.float32)
+        self.tgt_mask = torch.tensor(tgt_mask, dtype=torch.bool)
         self.labels = torch.tensor(labels, dtype=torch.float32)
         self.prefix_tok = torch.tensor(prefix_tok, dtype=torch.float32)
         self.prefix_len = torch.tensor(prefix_len, dtype=torch.long)
