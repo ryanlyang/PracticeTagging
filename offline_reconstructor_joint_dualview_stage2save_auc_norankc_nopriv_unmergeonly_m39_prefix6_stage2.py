@@ -17,7 +17,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -45,6 +45,21 @@ def _resolve_prefix_for_run(run_dir: Path, fallback: int) -> int:
         except Exception:
             return int(fallback)
     return int(fallback)
+
+
+def _resolve_quantization_for_run(run_dir: Path) -> Tuple[str, str]:
+    rpt = run_dir / "m39_report.json"
+    if rpt.is_file():
+        try:
+            with open(rpt, "r", encoding="utf-8") as f:
+                d = json.load(f)
+            q = d.get("quantization", {})
+            cb_path = str(q.get("codebook_path", "")).strip()
+            cb_label = str(q.get("codebook_label", "")).strip()
+            return cb_path, cb_label
+        except Exception:
+            return "", ""
+    return "", ""
 
 
 def _gather_axis1(arr: np.ndarray, idx: np.ndarray) -> np.ndarray:
@@ -362,9 +377,19 @@ def main() -> None:
     c_tr_runs: List[m39.CandidateSplitOutput] = []
     c_va_runs: List[m39.CandidateSplitOutput] = []
     c_te_runs: List[m39.CandidateSplitOutput] = []
+    quant_info: List[Dict[str, str]] = []
+    quantizer_cache: Dict[str, m39.TokenCodebookQuantizer] = {}
 
     for ridx, (rd, pf) in enumerate(zip(run_dirs, prefixes)):
         print(f"[{ridx+1}/{len(run_dirs)}] Loading stage1 models: {rd.name} (prefix={pf})")
+        cb_path, cb_label = _resolve_quantization_for_run(rd)
+        token_quantizer: Optional[m39.TokenCodebookQuantizer] = None
+        if cb_path:
+            if cb_path not in quantizer_cache:
+                quantizer_cache[cb_path] = m39._load_token_codebook_quantizer(cb_path)
+            token_quantizer = quantizer_cache[cb_path]
+            print(f"  quantized decode: {token_quantizer.strategy} | {cb_path} ({cb_label})")
+        quant_info.append({"run": rd.name, "codebook_path": cb_path, "codebook_label": cb_label})
 
         carry_ckpt = rd / "carry_predictor.pt"
         reco_ckpt = rd / "reco_completer_m28style.pt"
@@ -424,6 +449,7 @@ def main() -> None:
             batch_size=int(args.candidate_gen_batch),
             device=device,
             seed=int(args.seed) + 1000 * ridx + 101,
+            token_quantizer=token_quantizer,
         )
         c_va = m39._generate_candidates_split(
             reco_model=reco_model,
@@ -447,6 +473,7 @@ def main() -> None:
             batch_size=int(args.candidate_gen_batch),
             device=device,
             seed=int(args.seed) + 1000 * ridx + 202,
+            token_quantizer=token_quantizer,
         )
         c_te = m39._generate_candidates_split(
             reco_model=reco_model,
@@ -470,6 +497,7 @@ def main() -> None:
             batch_size=int(args.candidate_gen_batch),
             device=device,
             seed=int(args.seed) + 1000 * ridx + 303,
+            token_quantizer=token_quantizer,
         )
 
         c_tr_runs.append(c_tr)
@@ -655,6 +683,7 @@ def main() -> None:
         "seed": int(args.seed),
         "stage1_run_names": run_names,
         "stage1_prefixes": [int(x) for x in prefixes],
+        "stage1_quantization": quant_info,
         "split": {
             "train": int(len(train_idx)),
             "val": int(len(val_idx)),

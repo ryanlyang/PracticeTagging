@@ -21,7 +21,7 @@ import json
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -40,6 +40,152 @@ from unmerge_correct_hlt import ParticleTransformer, compute_features, get_stats
 # -----------------------------------------------------------------------------
 # Data / utils
 # -----------------------------------------------------------------------------
+
+
+@dataclass
+class TokenCodebookQuantizer:
+    strategy: str
+    mean: np.ndarray  # [5]
+    std: np.ndarray   # [5]
+    data: Dict[str, np.ndarray]
+
+
+def _load_token_codebook_quantizer(path: str) -> TokenCodebookQuantizer:
+    p = Path(path)
+    if p.is_dir():
+        meta_p = p / "codebook_meta.json"
+        npz_p = p / "codebook.npz"
+    elif p.suffix == ".npz":
+        meta_p = p.with_name("codebook_meta.json")
+        npz_p = p
+    else:
+        raise RuntimeError(f"Unsupported codebook path: {path}")
+
+    if not npz_p.is_file():
+        raise RuntimeError(f"Missing codebook npz: {npz_p}")
+    if not meta_p.is_file():
+        raise RuntimeError(f"Missing codebook meta: {meta_p}")
+
+    with open(meta_p, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    strategy = str(meta.get("strategy", "")).strip().lower()
+    if strategy not in {"global", "pt_stratified", "residual2"}:
+        raise RuntimeError(f"Unsupported codebook strategy in meta: {strategy}")
+
+    z = np.load(npz_p, allow_pickle=False)
+    mean = z["token_mean"].astype(np.float32)
+    std = z["token_std"].astype(np.float32)
+    data: Dict[str, np.ndarray] = {}
+    for k in z.files:
+        if k in {"token_mean", "token_std"}:
+            continue
+        data[k] = z[k]
+    return TokenCodebookQuantizer(strategy=strategy, mean=mean, std=std, data=data)
+
+
+def _batched_argmin_l2_np(x: np.ndarray, centers: np.ndarray, chunk: int = 200000) -> np.ndarray:
+    n = int(x.shape[0])
+    out = np.zeros((n,), dtype=np.int64)
+    c2 = np.sum(centers * centers, axis=1)[None, :]
+    for lo in range(0, n, chunk):
+        hi = min(n, lo + chunk)
+        xx = x[lo:hi]
+        x2 = np.sum(xx * xx, axis=1)[:, None]
+        d2 = x2 + c2 - 2.0 * (xx @ centers.T)
+        out[lo:hi] = np.argmin(d2, axis=1).astype(np.int64)
+    return out
+
+
+def _quantize_token5_np(tok: np.ndarray, q: Optional[TokenCodebookQuantizer]) -> np.ndarray:
+    if q is None:
+        return tok
+    shp = tok.shape
+    x = tok.reshape(-1, shp[-1]).astype(np.float32)
+    mean = q.mean[None, :]
+    std = q.std[None, :]
+    xn = (x - mean) / std
+
+    if q.strategy == "global":
+        c = q.data["centroids_norm"].astype(np.float32)
+        idx = _batched_argmin_l2_np(xn, c)
+        xq = c[idx]
+    elif q.strategy == "pt_stratified":
+        edges = q.data["edges_logpt"].astype(np.float32)
+        cent_pad = q.data["centroids_norm_pad"].astype(np.float32)
+        mask_pad = q.data["centroid_mask_pad"].astype(bool)
+        band = np.digitize(x[:, 0], edges[1:-1], right=False).astype(np.int64)
+        xq = np.zeros_like(xn, dtype=np.float32)
+        for b in np.unique(band):
+            ids = np.where(band == b)[0]
+            cc = cent_pad[b][mask_pad[b]]
+            if cc.shape[0] <= 0:
+                xq[ids] = xn[ids]
+                continue
+            ii = _batched_argmin_l2_np(xn[ids], cc)
+            xq[ids] = cc[ii]
+    elif q.strategy == "residual2":
+        cc = q.data["coarse_centroids_norm"].astype(np.float32)
+        cf = q.data["fine_centroids_norm"].astype(np.float32)
+        ic = _batched_argmin_l2_np(xn, cc)
+        rc = cc[ic]
+        rf = xn - rc
+        iff = _batched_argmin_l2_np(rf, cf)
+        xq = rc + cf[iff]
+    else:
+        xq = xn
+
+    out = xq * std + mean
+    return out.reshape(shp).astype(np.float32)
+
+
+def _quantize_token5_torch(tok: torch.Tensor, q: Optional[TokenCodebookQuantizer]) -> torch.Tensor:
+    if q is None:
+        return tok
+    dev = tok.device
+    dt = tok.dtype
+    shp = tok.shape
+    x = tok.reshape(-1, shp[-1])
+    mean = torch.tensor(q.mean, dtype=dt, device=dev).view(1, -1)
+    std = torch.tensor(q.std, dtype=dt, device=dev).view(1, -1)
+    xn = (x - mean) / std
+
+    def _nn(xn_part: torch.Tensor, centers_np: np.ndarray) -> torch.Tensor:
+        c = torch.tensor(centers_np, dtype=dt, device=dev)
+        x2 = (xn_part * xn_part).sum(dim=1, keepdim=True)
+        c2 = (c * c).sum(dim=1).view(1, -1)
+        d2 = x2 + c2 - 2.0 * (xn_part @ c.t())
+        idx = torch.argmin(d2, dim=1)
+        return c[idx]
+
+    if q.strategy == "global":
+        xq = _nn(xn, q.data["centroids_norm"].astype(np.float32))
+    elif q.strategy == "pt_stratified":
+        edges = q.data["edges_logpt"].astype(np.float32)
+        cent_pad = q.data["centroids_norm_pad"].astype(np.float32)
+        mask_pad = q.data["centroid_mask_pad"].astype(bool)
+        band = np.digitize(x[:, 0].detach().cpu().numpy().astype(np.float32), edges[1:-1], right=False).astype(np.int64)
+        xq = torch.zeros_like(xn)
+        for b in np.unique(band):
+            ids = np.where(band == b)[0]
+            if ids.size == 0:
+                continue
+            cc = cent_pad[b][mask_pad[b]]
+            if cc.shape[0] <= 0:
+                xq[torch.tensor(ids, dtype=torch.long, device=dev)] = xn[torch.tensor(ids, dtype=torch.long, device=dev)]
+                continue
+            ids_t = torch.tensor(ids, dtype=torch.long, device=dev)
+            xq[ids_t] = _nn(xn[ids_t], cc)
+    elif q.strategy == "residual2":
+        cc = q.data["coarse_centroids_norm"].astype(np.float32)
+        cf = q.data["fine_centroids_norm"].astype(np.float32)
+        rc = _nn(xn, cc)
+        rf = xn - rc
+        xq = rc + _nn(rf, cf)
+    else:
+        xq = xn
+
+    out = xq * std + mean
+    return out.reshape(shp)
 
 
 def _const_to_token5_np(const: np.ndarray, mask: np.ndarray) -> np.ndarray:
@@ -263,6 +409,7 @@ def _forward_free_running_forced_prefix_single(
     prefix_tok: torch.Tensor,
     prefix_len: torch.Tensor,
     max_steps: int,
+    token_quantizer: Optional[TokenCodebookQuantizer] = None,
 ) -> Dict[str, torch.Tensor]:
     b = int(feat_hlt.shape[0])
     t = int(max(1, max_steps))
@@ -294,6 +441,8 @@ def _forward_free_running_forced_prefix_single(
         if bool(force_mask.any()):
             forced = prefix_tok[:, step, :]
             next_tok = torch.where(force_mask.unsqueeze(1), forced, next_tok)
+        if token_quantizer is not None:
+            next_tok = _quantize_token5_torch(next_tok, token_quantizer)
         pred_seq.append(next_tok)
         stop_seq.append(stop_logits[:, 0])
         conf_seq.append(conf_logits[:, 0])
@@ -318,6 +467,7 @@ def _train_reco_specialist_with_prefix(
     device: torch.device,
     train_cfg: Dict,
     loss_cfg: Dict,
+    token_quantizer: Optional[TokenCodebookQuantizer] = None,
 ) -> Tuple[m28.HLT2OfflineSeq2Seq, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -390,6 +540,8 @@ def _train_reco_specialist_with_prefix(
             cont_steps = int(max(tgt_mask_cont.float().sum(dim=1).max().item(), 1))
             tgt_tok_trim = tgt_tok_cont[:, :cont_steps, :]
             tgt_mask_trim = tgt_mask_cont[:, :cont_steps]
+            if token_quantizer is not None:
+                tgt_tok_trim = _quantize_token5_torch(tgt_tok_trim, token_quantizer)
             t_full = int(pref_tok.shape[1] + cont_steps)
 
             full_tok = torch.zeros((feat_hlt.shape[0], t_full, 5), dtype=tgt_tok_cont.dtype, device=device)
@@ -409,15 +561,21 @@ def _train_reco_specialist_with_prefix(
                     valid_prev_mask[ib, pp : pp + cc] = True
 
             out_first = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, full_tok)
+            prev_tok = out_first["pred_tok"]
+            if token_quantizer is not None:
+                prev_tok = _quantize_token5_torch(prev_tok, token_quantizer)
             dec_in = m28.build_decoder_input_tokens(
                 model.bos_token,
                 full_tok,
-                model_prev_tokens=out_first["pred_tok"],
+                model_prev_tokens=prev_tok,
                 model_prob=float(ss_prob),
                 valid_prev_mask=valid_prev_mask,
             )
             out_full = model.forward_teacher_with_inputs(feat_hlt, mask_hlt, const_hlt, dec_in)
             out_cont = _gather_contiguous_from_full(out_full, pref_len.long(), cont_steps)
+            if token_quantizer is not None:
+                out_cont = dict(out_cont)
+                out_cont["pred_tok"] = _quantize_token5_torch(out_cont["pred_tok"], token_quantizer)
             losses = m28.compute_reco_losses(out_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
 
             tf_total = losses["total"]
@@ -431,8 +589,12 @@ def _train_reco_specialist_with_prefix(
                     prefix_tok=pref_tok,
                     prefix_len=pref_len.long(),
                     max_steps=t_full,
+                    token_quantizer=token_quantizer,
                 )
                 out_fr_cont = _gather_contiguous_from_full(out_fr_full, pref_len.long(), cont_steps)
+                if token_quantizer is not None:
+                    out_fr_cont = dict(out_fr_cont)
+                    out_fr_cont["pred_tok"] = _quantize_token5_torch(out_fr_cont["pred_tok"], token_quantizer)
                 fr_losses = m28.compute_reco_losses(out_fr_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
                 total = (1.0 - float(fr_mix_alpha)) * tf_total + float(fr_mix_alpha) * fr_losses["total"]
                 tr_fr += float(fr_losses["total"].item()) * int(feat_hlt.shape[0])
@@ -472,6 +634,8 @@ def _train_reco_specialist_with_prefix(
                 cont_steps = int(max(tgt_mask_cont.float().sum(dim=1).max().item(), 1))
                 tgt_tok_trim = tgt_tok_cont[:, :cont_steps, :]
                 tgt_mask_trim = tgt_mask_cont[:, :cont_steps]
+                if token_quantizer is not None:
+                    tgt_tok_trim = _quantize_token5_torch(tgt_tok_trim, token_quantizer)
                 t_full = int(pref_tok.shape[1] + cont_steps)
 
                 full_tok = torch.zeros((feat_hlt.shape[0], t_full, 5), dtype=tgt_tok_cont.dtype, device=device)
@@ -486,15 +650,21 @@ def _train_reco_specialist_with_prefix(
                         valid_prev_mask[ib, pp : pp + cc] = True
 
                 out_first = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, full_tok)
+                prev_tok = out_first["pred_tok"]
+                if token_quantizer is not None:
+                    prev_tok = _quantize_token5_torch(prev_tok, token_quantizer)
                 dec_in = m28.build_decoder_input_tokens(
                     model.bos_token,
                     full_tok,
-                    model_prev_tokens=out_first["pred_tok"],
+                    model_prev_tokens=prev_tok,
                     model_prob=float(ss_prob),
                     valid_prev_mask=valid_prev_mask,
                 )
                 out_full = model.forward_teacher_with_inputs(feat_hlt, mask_hlt, const_hlt, dec_in)
                 out_cont = _gather_contiguous_from_full(out_full, pref_len.long(), cont_steps)
+                if token_quantizer is not None:
+                    out_cont = dict(out_cont)
+                    out_cont["pred_tok"] = _quantize_token5_torch(out_cont["pred_tok"], token_quantizer)
                 losses_tf = m28.compute_reco_losses(out_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
 
                 out_fr_full = _forward_free_running_forced_prefix_single(
@@ -505,8 +675,12 @@ def _train_reco_specialist_with_prefix(
                     prefix_tok=pref_tok,
                     prefix_len=pref_len.long(),
                     max_steps=t_full,
+                    token_quantizer=token_quantizer,
                 )
                 out_fr_cont = _gather_contiguous_from_full(out_fr_full, pref_len.long(), cont_steps)
+                if token_quantizer is not None:
+                    out_fr_cont = dict(out_fr_cont)
+                    out_fr_cont["pred_tok"] = _quantize_token5_torch(out_fr_cont["pred_tok"], token_quantizer)
                 losses_fr = m28.compute_reco_losses(out_fr_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
 
                 bs = int(feat_hlt.shape[0])
@@ -1307,6 +1481,7 @@ def _decode_forced_prefix_multi(
     prefix_tok_bkpd: torch.Tensor,
     prefix_len_bk: torch.Tensor,
     max_steps: int,
+    token_quantizer: Optional[TokenCodebookQuantizer] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Forced-prefix autoregressive decoding.
@@ -1354,6 +1529,8 @@ def _decode_forced_prefix_multi(
             if bool(force_mask.any()):
                 forced = pref_tok[:, step, :]
                 next_tok = torch.where(force_mask.unsqueeze(1), forced, next_tok)
+            if token_quantizer is not None:
+                next_tok = _quantize_token5_torch(next_tok, token_quantizer)
 
             pred_tok_seq.append(next_tok)
             stop_seq.append(torch.sigmoid(stop_logits[:, 0]))
@@ -1454,6 +1631,7 @@ def _generate_candidates_split(
     batch_size: int,
     device: torch.device,
     seed: int,
+    token_quantizer: Optional[TokenCodebookQuantizer] = None,
 ) -> CandidateSplitOutput:
     reco_model.eval()
     carry_model.eval()
@@ -1514,6 +1692,8 @@ def _generate_candidates_split(
             seed_temp=float(seed_temp),
             rng=rng,
         )
+        if token_quantizer is not None:
+            pref_tok_np = _quantize_token5_np(pref_tok_np, token_quantizer)
         pref_tok_t = torch.tensor(pref_tok_np, dtype=torch.float32, device=device)
         pref_len_t = torch.tensor(pref_len_np, dtype=torch.long, device=device)
 
@@ -1525,6 +1705,7 @@ def _generate_candidates_split(
             prefix_tok_bkpd=pref_tok_t,
             prefix_len_bk=pref_len_t,
             max_steps=int(t),
+            token_quantizer=token_quantizer,
         )
 
         pred_const_np = pred_const_bkt4.detach().cpu().numpy().astype(np.float32)
@@ -1847,6 +2028,13 @@ def main() -> None:
         f"K={int(args.seed_candidate_k)} keepM={int(args.seed_keep_m)} max_prefix={int(args.seed_max_prefix)} "
         f"train_specialist_prefix={int(args.train_specialist_prefix)}"
     )
+    token_quantizer: Optional[TokenCodebookQuantizer] = None
+    if str(args.codebook_path).strip():
+        token_quantizer = _load_token_codebook_quantizer(str(args.codebook_path).strip())
+        print(
+            f"Quantized decode enabled: strategy={token_quantizer.strategy} "
+            f"codebook={str(args.codebook_path)} label={str(args.codebook_label)}"
+        )
     print("=" * 72)
 
     # ---------------------------------------------------------------------
@@ -2132,6 +2320,9 @@ def main() -> None:
         mask_hlt=mask_hlt[val_idx],
         prefix_max=int(specialist_prefix),
     )
+    if token_quantizer is not None:
+        pref_tok_tr = _quantize_token5_np(pref_tok_tr, token_quantizer)
+        pref_tok_va = _quantize_token5_np(pref_tok_va, token_quantizer)
 
     tgt_tok_tr, tgt_mask_tr = _build_continuation_targets_from_prefix(
         off_const=const_off[train_idx],
@@ -2236,6 +2427,7 @@ def main() -> None:
         device=device,
         train_cfg=reco_train_cfg,
         loss_cfg=reco_loss_cfg,
+        token_quantizer=token_quantizer,
     )
 
     # ---------------------------------------------------------------------
@@ -2267,6 +2459,7 @@ def main() -> None:
         batch_size=int(args.candidate_gen_batch),
         device=device,
         seed=int(args.seed) + 101,
+        token_quantizer=token_quantizer,
     )
     c_va = _generate_candidates_split(
         reco_model=reco_model,
@@ -2290,6 +2483,7 @@ def main() -> None:
         batch_size=int(args.candidate_gen_batch),
         device=device,
         seed=int(args.seed) + 202,
+        token_quantizer=token_quantizer,
     )
 
     print(
@@ -2418,6 +2612,7 @@ def main() -> None:
         batch_size=int(args.candidate_gen_batch),
         device=device,
         seed=int(args.seed) + 303,
+        token_quantizer=token_quantizer,
     )
     mv_te = _build_m38_multicandidate_arrays(c_te, max_constits=int(args.max_constits), candidate_k=int(args.seed_candidate_k))
     mv_te["cand_meta"] = ((mv_te["cand_meta"] - mm) / ms).astype(np.float32)
