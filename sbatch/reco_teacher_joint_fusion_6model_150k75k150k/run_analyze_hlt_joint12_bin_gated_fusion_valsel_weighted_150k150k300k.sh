@@ -85,6 +85,10 @@ do
   fi
 done
 
+export OUT_DIR FUSION_JSON
+export M2D005_NPZ M2D020_NPZ M4_NPZ M5_NPZ M6_NPZ
+export M9MID_NPZ M9HIGH_NPZ M12_NPZ M15MID_NPZ M15HIGH_NPZ M16_NPZ M17_NPZ
+
 python - <<'PY'
 import json
 from pathlib import Path
