@@ -2,13 +2,13 @@
 # -*- coding: utf-8 -*-
 
 """
-m38: Seeded m28 completion + deterministic D_hard residual selection + multi-candidate dualview.
+m39: Prefix-specialist m28 completion + deterministic D_hard residual selection + multi-candidate dualview.
 
 Pipeline:
 1) Load Offline jets and build deterministic pseudo-HLT.
 2) Train Teacher (Offline) and HLT baseline classifiers.
 3) Train carryover predictor on HLT tokens (token-level carry likelihood).
-4) Train m28-style HLT->Offline completer (set-level objective, multi-hypothesis).
+4) Train m28-style HLT->Offline completer as a specialist for a fixed carryover prefix length.
 5) For each jet: build diverse seed prefixes, force-prefix decode K candidates,
    run deterministic D_hard on each candidate, score residuals, keep best M.
 6) Train final multi-candidate dualview heads (NoGate/Gated).
@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -111,6 +112,459 @@ class FeatMaskDataset(Dataset):
             "feat": self.feat_hlt[i],
             "mask": self.mask_hlt[i],
         }
+
+
+class RecoSpecialistDataset(Dataset):
+    def __init__(
+        self,
+        feat_hlt: np.ndarray,
+        mask_hlt: np.ndarray,
+        const_hlt: np.ndarray,
+        tgt_tok_cont: np.ndarray,
+        tgt_mask_cont: np.ndarray,
+        labels: np.ndarray,
+        prefix_tok: np.ndarray,
+        prefix_len: np.ndarray,
+    ):
+        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
+        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
+        self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
+        self.tgt_tok = torch.tensor(tgt_tok_cont, dtype=torch.float32)
+        self.tgt_mask = torch.tensor(tgt_mask_cont, dtype=torch.bool)
+        self.labels = torch.tensor(labels, dtype=torch.float32)
+        self.prefix_tok = torch.tensor(prefix_tok, dtype=torch.float32)
+        self.prefix_len = torch.tensor(prefix_len, dtype=torch.long)
+
+    def __len__(self) -> int:
+        return int(self.feat_hlt.shape[0])
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        return {
+            "feat_hlt": self.feat_hlt[i],
+            "mask_hlt": self.mask_hlt[i],
+            "const_hlt": self.const_hlt[i],
+            "tgt_tok": self.tgt_tok[i],
+            "tgt_mask": self.tgt_mask[i],
+            "label": self.labels[i],
+            "prefix_tok": self.prefix_tok[i],
+            "prefix_len": self.prefix_len[i],
+        }
+
+
+def _build_specialist_prefix_tokens(
+    carry_probs: np.ndarray,
+    const_hlt: np.ndarray,
+    mask_hlt: np.ndarray,
+    prefix_max: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    n = int(const_hlt.shape[0])
+    pmax = int(max(0, prefix_max))
+    if pmax <= 0:
+        return np.zeros((n, 0, 5), dtype=np.float32), np.zeros((n,), dtype=np.int64)
+    hlt_tok = _const_to_token5_np(const_hlt, mask_hlt)
+    pref_tok = np.zeros((n, pmax, 5), dtype=np.float32)
+    pref_len = np.zeros((n,), dtype=np.int64)
+
+    for i in range(n):
+        ids = np.where(mask_hlt[i])[0]
+        if ids.size == 0:
+            continue
+        nn = int(min(pmax, ids.size))
+        scores = carry_probs[i, ids]
+        pt_vals = const_hlt[i, ids, 0]
+        ord_idx = np.lexsort((-pt_vals, -scores))
+        pick = ids[ord_idx[:nn]]
+        pick = pick[np.argsort(-const_hlt[i, pick, 0])]
+        pref_tok[i, :nn] = hlt_tok[i, pick]
+        pref_len[i] = nn
+    return pref_tok, pref_len
+
+
+def _build_continuation_targets_from_prefix(
+    off_const: np.ndarray,
+    off_mask: np.ndarray,
+    prefix_tok: np.ndarray,
+    prefix_len: np.ndarray,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Build continuation targets by greedily removing Offline tokens that match prefix tokens.
+    """
+    n, l, _ = off_const.shape
+    off_tok = _const_to_token5_np(off_const, off_mask)
+    out_tok = np.zeros((n, l, 5), dtype=np.float32)
+    out_mask = np.zeros((n, l), dtype=bool)
+    w = np.asarray([1.0, 0.35, 0.25, 0.25, 1.0], dtype=np.float32)
+
+    for i in range(n):
+        off_ids = np.where(off_mask[i])[0]
+        if off_ids.size == 0:
+            continue
+        keep_ids = off_ids.tolist()
+        npref = int(min(prefix_len[i], prefix_tok.shape[1]))
+        if npref > 0 and len(keep_ids) > 0:
+            pref_i = prefix_tok[i, :npref]
+            taken = set()
+            for j in range(npref):
+                rem = [idx for idx in keep_ids if idx not in taken]
+                if not rem:
+                    break
+                rem_arr = np.asarray(rem, dtype=np.int64)
+                d = np.abs(off_tok[i, rem_arr] - pref_i[j][None, :]) * w[None, :]
+                d = d.sum(axis=1)
+                k = int(np.argmin(d))
+                taken.add(int(rem_arr[k]))
+            keep_ids = [idx for idx in keep_ids if idx not in taken]
+
+        kk = len(keep_ids)
+        if kk > 0:
+            out_tok[i, :kk] = off_tok[i, keep_ids]
+            out_mask[i, :kk] = True
+
+    return out_tok, out_mask
+
+
+def _gather_contiguous_from_full(
+    out_full: Dict[str, torch.Tensor],
+    prefix_len: torch.Tensor,
+    cont_steps: int,
+) -> Dict[str, torch.Tensor]:
+    b = int(prefix_len.shape[0])
+    if cont_steps <= 0:
+        cont_steps = 1
+    idx = prefix_len.view(b, 1) + torch.arange(cont_steps, device=prefix_len.device).view(1, cont_steps)
+
+    pred = out_full["pred_tok"]
+    stop = out_full["stop_logits"]
+    conf = out_full["conf_logits"]
+    attn = out_full["attn"]
+
+    dd = pred.shape[-1]
+    ll = attn.shape[-1]
+    pred_cont = pred.gather(1, idx.unsqueeze(-1).expand(-1, -1, dd))
+    stop_cont = stop.gather(1, idx)
+    conf_cont = conf.gather(1, idx)
+    attn_cont = attn.gather(1, idx.unsqueeze(-1).expand(-1, -1, ll))
+
+    return {
+        "pred_tok": pred_cont,
+        "stop_logits": stop_cont,
+        "conf_logits": conf_cont,
+        "count_pred": out_full["count_pred"],
+        "attn": attn_cont,
+        "gate": torch.zeros_like(stop_cont),
+    }
+
+
+def _forward_free_running_forced_prefix_single(
+    model: m28.HLT2OfflineSeq2Seq,
+    feat_hlt: torch.Tensor,
+    mask_hlt: torch.Tensor,
+    const_hlt: torch.Tensor,
+    prefix_tok: torch.Tensor,
+    prefix_len: torch.Tensor,
+    max_steps: int,
+) -> Dict[str, torch.Tensor]:
+    b = int(feat_hlt.shape[0])
+    t = int(max(1, max_steps))
+    mem, hlt_tok, count_pred = model.encode(feat_hlt, mask_hlt, const_hlt)
+    mem_pad = ~mask_hlt
+
+    in_tok = model.bos_token.expand(b, 1, model.token_dim)
+    n_layers = len(model.decoder.layers)
+    layer_cache: List[torch.Tensor | None] = [None] * n_layers
+
+    pred_seq = []
+    stop_seq = []
+    conf_seq = []
+    attn_seq = []
+    gate_seq = []
+
+    for step in range(t):
+        x_step = model.dec_in(in_tok) + model.dec_pos[:, step : step + 1, :]
+        h_last, layer_cache = model._decoder_step_cached(x_step, mem, mem_pad, layer_cache)
+        pred_tok, stop_logits, conf_logits, attn, gate = model._predict_from_hidden(
+            h_last,
+            mem,
+            mask_hlt,
+            hlt_tok,
+            hyp_idx=0,
+        )
+        next_tok = pred_tok[:, 0, :]
+        force_mask = prefix_len > step
+        if bool(force_mask.any()):
+            forced = prefix_tok[:, step, :]
+            next_tok = torch.where(force_mask.unsqueeze(1), forced, next_tok)
+        pred_seq.append(next_tok)
+        stop_seq.append(stop_logits[:, 0])
+        conf_seq.append(conf_logits[:, 0])
+        attn_seq.append(attn[:, 0, :])
+        gate_seq.append(gate[:, 0])
+        in_tok = next_tok.unsqueeze(1)
+
+    return {
+        "pred_tok": torch.stack(pred_seq, dim=1),
+        "stop_logits": torch.stack(stop_seq, dim=1),
+        "conf_logits": torch.stack(conf_seq, dim=1),
+        "count_pred": count_pred,
+        "attn": torch.stack(attn_seq, dim=1),
+        "gate": torch.stack(gate_seq, dim=1),
+    }
+
+
+def _train_reco_specialist_with_prefix(
+    model: m28.HLT2OfflineSeq2Seq,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    train_cfg: Dict,
+    loss_cfg: Dict,
+) -> Tuple[m28.HLT2OfflineSeq2Seq, Dict[str, float]]:
+    opt = torch.optim.AdamW(
+        model.parameters(),
+        lr=float(train_cfg["lr"]),
+        weight_decay=float(train_cfg["weight_decay"]),
+    )
+
+    best_state = None
+    best_val = float("inf")
+    best_ep = -1
+    no_improve = 0
+    min_epochs = int(train_cfg.get("min_epochs", 1))
+    patience = int(train_cfg.get("patience", 20))
+    total_epochs = int(train_cfg["epochs"])
+
+    phase_rewind = bool(loss_cfg.get("phase_rewind", True))
+    phase_reset_optimizer = bool(loss_cfg.get("phase_reset_optimizer", True))
+    phase_lr_decay = float(loss_cfg.get("phase_lr_decay", 0.80))
+    physics_warmup_epochs = int(max(loss_cfg.get("physics_warmup_epochs", 0), 0))
+    current_phase_idx = -1
+    phase_best_state = None
+    phase_best_val = float("inf")
+    phase_best_ep = -1
+    ep_times: List[float] = []
+
+    for ep in range(total_epochs):
+        t0 = time.perf_counter()
+        phase_sched = m28.phased_curriculum_schedule(ep, total_epochs, loss_cfg)
+        phase_idx = int(phase_sched["phase_idx"])
+        phase_name = str(phase_sched["phase_name"])
+        ss_prob = float(phase_sched["ss_prob"])
+        fr_mix_alpha = float(phase_sched["fr_mix_alpha"])
+        fr_every_n = int(phase_sched["fr_every_n"])
+        physics_scale = 1.0 if physics_warmup_epochs <= 0 else min(1.0, float(ep + 1) / float(physics_warmup_epochs))
+
+        if current_phase_idx < 0:
+            current_phase_idx = phase_idx
+            print(f"Entering phase {phase_idx} ({phase_name}) at epoch {ep+1}")
+        elif phase_idx != current_phase_idx:
+            if phase_rewind and phase_best_state is not None:
+                model.load_state_dict(phase_best_state)
+                print(
+                    f"Phase transition {current_phase_idx}->{phase_idx}: rewound to "
+                    f"phase-best epoch {phase_best_ep} (valFR={phase_best_val:.6f})"
+                )
+            if phase_reset_optimizer:
+                old_lr = float(opt.param_groups[0]["lr"])
+                new_lr = max(old_lr * float(phase_lr_decay), float(train_cfg["lr"]) * 0.20)
+                opt = torch.optim.AdamW(model.parameters(), lr=new_lr, weight_decay=float(train_cfg["weight_decay"]))
+                print(f"Phase {phase_idx} optimizer reset: lr {old_lr:.3e} -> {new_lr:.3e}")
+            current_phase_idx = phase_idx
+            phase_best_state = None
+            phase_best_val = float("inf")
+            phase_best_ep = -1
+            no_improve = 0
+
+        model.train()
+        tr_total = tr_set = tr_eos = tr_cnt = tr_jpt = tr_j4 = tr_cfr = tr_cfp = tr_fr = 0.0
+        ntr = 0
+
+        for bi, batch in enumerate(train_loader):
+            feat_hlt = batch["feat_hlt"].to(device)
+            mask_hlt = batch["mask_hlt"].to(device)
+            const_hlt = batch["const_hlt"].to(device)
+            tgt_tok_cont = batch["tgt_tok"].to(device)
+            tgt_mask_cont = batch["tgt_mask"].to(device)
+            pref_tok = batch["prefix_tok"].to(device)
+            pref_len = batch["prefix_len"].to(device)
+
+            cont_steps = int(max(tgt_mask_cont.float().sum(dim=1).max().item(), 1))
+            tgt_tok_trim = tgt_tok_cont[:, :cont_steps, :]
+            tgt_mask_trim = tgt_mask_cont[:, :cont_steps]
+            t_full = int(pref_tok.shape[1] + cont_steps)
+
+            full_tok = torch.zeros((feat_hlt.shape[0], t_full, 5), dtype=tgt_tok_cont.dtype, device=device)
+            for ib in range(int(feat_hlt.shape[0])):
+                pp = int(min(pref_len[ib].item(), pref_tok.shape[1]))
+                cc = int(tgt_mask_trim[ib].sum().item())
+                if pp > 0:
+                    full_tok[ib, :pp] = pref_tok[ib, :pp]
+                if cc > 0:
+                    full_tok[ib, pp : pp + cc] = tgt_tok_trim[ib, :cc]
+
+            valid_prev_mask = torch.zeros((feat_hlt.shape[0], t_full), dtype=torch.bool, device=device)
+            for ib in range(int(feat_hlt.shape[0])):
+                pp = int(min(pref_len[ib].item(), pref_tok.shape[1]))
+                cc = int(tgt_mask_trim[ib].sum().item())
+                if cc > 0:
+                    valid_prev_mask[ib, pp : pp + cc] = True
+
+            out_first = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, full_tok)
+            dec_in = m28.build_decoder_input_tokens(
+                model.bos_token,
+                full_tok,
+                model_prev_tokens=out_first["pred_tok"],
+                model_prob=float(ss_prob),
+                valid_prev_mask=valid_prev_mask,
+            )
+            out_full = model.forward_teacher_with_inputs(feat_hlt, mask_hlt, const_hlt, dec_in)
+            out_cont = _gather_contiguous_from_full(out_full, pref_len.long(), cont_steps)
+            losses = m28.compute_reco_losses(out_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
+
+            tf_total = losses["total"]
+            apply_fr = (fr_every_n > 0) and (fr_mix_alpha > 0.0) and ((bi + 1) % fr_every_n == 0)
+            if apply_fr:
+                out_fr_full = _forward_free_running_forced_prefix_single(
+                    model=model,
+                    feat_hlt=feat_hlt,
+                    mask_hlt=mask_hlt,
+                    const_hlt=const_hlt,
+                    prefix_tok=pref_tok,
+                    prefix_len=pref_len.long(),
+                    max_steps=t_full,
+                )
+                out_fr_cont = _gather_contiguous_from_full(out_fr_full, pref_len.long(), cont_steps)
+                fr_losses = m28.compute_reco_losses(out_fr_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
+                total = (1.0 - float(fr_mix_alpha)) * tf_total + float(fr_mix_alpha) * fr_losses["total"]
+                tr_fr += float(fr_losses["total"].item()) * int(feat_hlt.shape[0])
+            else:
+                total = tf_total
+
+            opt.zero_grad(set_to_none=True)
+            total.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            opt.step()
+
+            bs = int(feat_hlt.shape[0])
+            tr_total += float(total.item()) * bs
+            tr_set += float(losses["set"].item()) * bs
+            tr_eos += float(losses["eos"].item()) * bs
+            tr_cnt += float(losses["count"].item()) * bs
+            tr_jpt += float(losses["jetpt"].item()) * bs
+            tr_j4 += float(losses["fourvec"].item()) * bs
+            tr_cfr += float(losses["conf_rank"].item()) * bs
+            tr_cfp += float(losses["conf_prefix"].item()) * bs
+            ntr += bs
+
+        model.eval()
+        va_tf_total = va_fr_total = 0.0
+        va_tf_set = va_tf_eos = va_tf_cnt = va_tf_jpt = va_tf_j4 = va_tf_cfr = va_tf_cfp = 0.0
+        nva = 0
+        with torch.no_grad():
+            for batch in val_loader:
+                feat_hlt = batch["feat_hlt"].to(device)
+                mask_hlt = batch["mask_hlt"].to(device)
+                const_hlt = batch["const_hlt"].to(device)
+                tgt_tok_cont = batch["tgt_tok"].to(device)
+                tgt_mask_cont = batch["tgt_mask"].to(device)
+                pref_tok = batch["prefix_tok"].to(device)
+                pref_len = batch["prefix_len"].to(device)
+
+                cont_steps = int(max(tgt_mask_cont.float().sum(dim=1).max().item(), 1))
+                tgt_tok_trim = tgt_tok_cont[:, :cont_steps, :]
+                tgt_mask_trim = tgt_mask_cont[:, :cont_steps]
+                t_full = int(pref_tok.shape[1] + cont_steps)
+
+                full_tok = torch.zeros((feat_hlt.shape[0], t_full, 5), dtype=tgt_tok_cont.dtype, device=device)
+                valid_prev_mask = torch.zeros((feat_hlt.shape[0], t_full), dtype=torch.bool, device=device)
+                for ib in range(int(feat_hlt.shape[0])):
+                    pp = int(min(pref_len[ib].item(), pref_tok.shape[1]))
+                    cc = int(tgt_mask_trim[ib].sum().item())
+                    if pp > 0:
+                        full_tok[ib, :pp] = pref_tok[ib, :pp]
+                    if cc > 0:
+                        full_tok[ib, pp : pp + cc] = tgt_tok_trim[ib, :cc]
+                        valid_prev_mask[ib, pp : pp + cc] = True
+
+                out_first = model.forward_teacher(feat_hlt, mask_hlt, const_hlt, full_tok)
+                dec_in = m28.build_decoder_input_tokens(
+                    model.bos_token,
+                    full_tok,
+                    model_prev_tokens=out_first["pred_tok"],
+                    model_prob=float(ss_prob),
+                    valid_prev_mask=valid_prev_mask,
+                )
+                out_full = model.forward_teacher_with_inputs(feat_hlt, mask_hlt, const_hlt, dec_in)
+                out_cont = _gather_contiguous_from_full(out_full, pref_len.long(), cont_steps)
+                losses_tf = m28.compute_reco_losses(out_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
+
+                out_fr_full = _forward_free_running_forced_prefix_single(
+                    model=model,
+                    feat_hlt=feat_hlt,
+                    mask_hlt=mask_hlt,
+                    const_hlt=const_hlt,
+                    prefix_tok=pref_tok,
+                    prefix_len=pref_len.long(),
+                    max_steps=t_full,
+                )
+                out_fr_cont = _gather_contiguous_from_full(out_fr_full, pref_len.long(), cont_steps)
+                losses_fr = m28.compute_reco_losses(out_fr_cont, tgt_tok_trim, tgt_mask_trim, loss_cfg, physics_scale=physics_scale)
+
+                bs = int(feat_hlt.shape[0])
+                va_tf_total += float(losses_tf["total"].item()) * bs
+                va_fr_total += float(losses_fr["total"].item()) * bs
+                va_tf_set += float(losses_tf["set"].item()) * bs
+                va_tf_eos += float(losses_tf["eos"].item()) * bs
+                va_tf_cnt += float(losses_tf["count"].item()) * bs
+                va_tf_jpt += float(losses_tf["jetpt"].item()) * bs
+                va_tf_j4 += float(losses_tf["fourvec"].item()) * bs
+                va_tf_cfr += float(losses_tf["conf_rank"].item()) * bs
+                va_tf_cfp += float(losses_tf["conf_prefix"].item()) * bs
+                nva += bs
+
+        tr_total_m = tr_total / max(1, ntr)
+        va_tf_m = va_tf_total / max(1, nva)
+        va_fr_m = va_fr_total / max(1, nva)
+
+        if va_fr_m < phase_best_val:
+            phase_best_val = va_fr_m
+            phase_best_ep = ep + 1
+            phase_best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+
+        improved = va_fr_m < best_val
+        if improved:
+            best_val = va_fr_m
+            best_ep = ep + 1
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            no_improve = 0
+        else:
+            no_improve += 1
+
+        ep_dt = float(time.perf_counter() - t0)
+        ep_times.append(ep_dt)
+        mean_dt = float(np.mean(ep_times[-10:])) if ep_times else ep_dt
+        eta_s = max(total_epochs - (ep + 1), 0) * mean_dt
+        print(
+            f"RecoSpec ep {ep+1:03d} | t={ep_dt/60.0:05.2f}m eta={eta_s/3600.0:05.2f}h | "
+            f"phase={phase_idx}:{phase_name} ss={ss_prob:.2f} mixFR={fr_mix_alpha:.2f}@{fr_every_n} | "
+            f"train total={tr_total_m:.5f} set={tr_set/max(1,ntr):.5f} eos={tr_eos/max(1,ntr):.5f} "
+            f"cnt={tr_cnt/max(1,ntr):.5f} jpt={tr_jpt/max(1,ntr):.5f} j4={tr_j4/max(1,ntr):.5f} "
+            f"crk={tr_cfr/max(1,ntr):.5f} cpre={tr_cfp/max(1,ntr):.5f} fr={tr_fr/max(1,ntr):.5f} | "
+            f"valTF total={va_tf_m:.5f} set={va_tf_set/max(1,nva):.5f} eos={va_tf_eos/max(1,nva):.5f} "
+            f"cnt={va_tf_cnt/max(1,nva):.5f} jpt={va_tf_jpt/max(1,nva):.5f} j4={va_tf_j4/max(1,nva):.5f} "
+            f"crk={va_tf_cfr/max(1,nva):.5f} cpre={va_tf_cfp/max(1,nva):.5f} | valFR total={va_fr_m:.5f}"
+        )
+
+        if (ep + 1) >= min_epochs and no_improve >= patience:
+            print(f"Early stopping RecoSpecialist at epoch {ep+1}")
+            break
+
+    if best_state is not None:
+        model.load_state_dict(best_state)
+
+    return model, {
+        "best_val_fr_total": float(best_val),
+        "best_epoch": int(best_ep),
+    }
 
 
 class DualViewM38Dataset(Dataset):
@@ -1195,11 +1649,11 @@ def _build_m38_multicandidate_arrays(c: CandidateSplitOutput, max_constits: int,
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="m38 seeded m28 + deterministic residual multicandidate dualview")
+    p = argparse.ArgumentParser(description="m39 prefix-specialist m28 + deterministic residual multicandidate dualview")
 
     p.add_argument("--train_path", type=str, default="./data")
-    p.add_argument("--save_dir", type=str, default="checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model38_seeded_m28_detresid_multicand")
-    p.add_argument("--run_name", type=str, default="model38_k6_seeded_m28_detresid_multicand_150k75k300k_seed0")
+    p.add_argument("--save_dir", type=str, default="checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model39_prefixspecialist_detresid_multicand")
+    p.add_argument("--run_name", type=str, default="model39_prefixspecialist_detresid_multicand_150k75k300k_seed0")
 
     p.add_argument("--n_train_jets", type=int, default=525000)
     p.add_argument("--n_train_split", type=int, default=150000)
@@ -1283,11 +1737,12 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--reco_phase_lr_decay", type=float, default=float(m28.LOSS_CFG["phase_lr_decay"]))
 
     # seeded candidate generation
-    p.add_argument("--seed_candidate_k", type=int, default=6)
-    p.add_argument("--seed_keep_m", type=int, default=3)
+    p.add_argument("--seed_candidate_k", type=int, default=1)
+    p.add_argument("--seed_keep_m", type=int, default=1)
     p.add_argument("--seed_max_prefix", type=int, default=12)
     p.add_argument("--seed_temp", type=float, default=0.35)
     p.add_argument("--candidate_gen_batch", type=int, default=64)
+    p.add_argument("--train_specialist_prefix", type=int, default=-1, help="Fixed carryover prefix count used for specialist reco training; -1 uses seed_max_prefix.")
 
     # residual acceptance / ranking
     p.add_argument("--search_eps_total", type=float, default=0.60)
@@ -1321,11 +1776,12 @@ def main() -> None:
     save_root.mkdir(parents=True, exist_ok=True)
 
     print("=" * 72)
-    print("Model-38 Seeded m28 + Deterministic Residual MultiCandidate DualView")
+    print("Model-39 Prefix-Specialist m28 + Deterministic Residual MultiCandidate DualView")
     print(f"Run: {save_root}")
     print(
         f"Split train/val/test = {int(args.n_train_split)}/{int(args.n_val_split)}/{int(args.n_test_split)} | "
-        f"K={int(args.seed_candidate_k)} keepM={int(args.seed_keep_m)} max_prefix={int(args.seed_max_prefix)}"
+        f"K={int(args.seed_candidate_k)} keepM={int(args.seed_keep_m)} max_prefix={int(args.seed_max_prefix)} "
+        f"train_specialist_prefix={int(args.train_specialist_prefix)}"
     )
     print("=" * 72)
 
@@ -1543,30 +1999,76 @@ def main() -> None:
     )
 
     # ---------------------------------------------------------------------
-    # STEP 3: m28 completer
+    # STEP 3: m28 completer (prefix specialist)
     # ---------------------------------------------------------------------
     print("\n" + "=" * 72)
-    print("STEP 3: Train m28-style completer")
+    print("STEP 3: Train m28-style completer (prefix specialist)")
     print("=" * 72)
 
-    tgt_tok_tr = m28.const_to_token_np(const_off[train_idx])
-    tgt_tok_va = m28.const_to_token_np(const_off[val_idx])
+    specialist_prefix = int(args.train_specialist_prefix if int(args.train_specialist_prefix) >= 0 else args.seed_max_prefix)
+    specialist_prefix = int(np.clip(specialist_prefix, 0, int(args.max_constits)))
+    print(f"Specialist prefix length (train-time): {specialist_prefix}")
 
-    ds_reco_tr = m28.RecoSeqDataset(
+    carry_probs_tr = _predict_carry_probs(
+        model=carry_model,
+        feat_hlt=feat_hlt_tr,
+        mask_hlt=mask_hlt[train_idx],
+        device=device,
+        batch_size=int(args.batch_size),
+    )
+    carry_probs_va = _predict_carry_probs(
+        model=carry_model,
+        feat_hlt=feat_hlt_va,
+        mask_hlt=mask_hlt[val_idx],
+        device=device,
+        batch_size=int(args.batch_size),
+    )
+
+    pref_tok_tr, pref_len_tr = _build_specialist_prefix_tokens(
+        carry_probs=carry_probs_tr,
+        const_hlt=const_hlt[train_idx],
+        mask_hlt=mask_hlt[train_idx],
+        prefix_max=int(specialist_prefix),
+    )
+    pref_tok_va, pref_len_va = _build_specialist_prefix_tokens(
+        carry_probs=carry_probs_va,
+        const_hlt=const_hlt[val_idx],
+        mask_hlt=mask_hlt[val_idx],
+        prefix_max=int(specialist_prefix),
+    )
+
+    tgt_tok_tr, tgt_mask_tr = _build_continuation_targets_from_prefix(
+        off_const=const_off[train_idx],
+        off_mask=mask_off[train_idx],
+        prefix_tok=pref_tok_tr,
+        prefix_len=pref_len_tr,
+    )
+    tgt_tok_va, tgt_mask_va = _build_continuation_targets_from_prefix(
+        off_const=const_off[val_idx],
+        off_mask=mask_off[val_idx],
+        prefix_tok=pref_tok_va,
+        prefix_len=pref_len_va,
+    )
+
+    ds_reco_tr = RecoSpecialistDataset(
         feat_hlt=feat_hlt_tr,
         mask_hlt=mask_hlt[train_idx],
         const_hlt=const_hlt[train_idx],
         tgt_tok=tgt_tok_tr,
-        tgt_mask=mask_off[train_idx],
+        tgt_mask=tgt_mask_tr,
         labels=labels[train_idx].astype(np.float32),
+        prefix_tok=pref_tok_tr,
+        prefix_len=pref_len_tr,
     )
-    ds_reco_va = m28.RecoSeqDataset(
+    ds_reco_va = RecoSpecialistDataset(
         feat_hlt=feat_hlt_va,
         mask_hlt=mask_hlt[val_idx],
         const_hlt=const_hlt[val_idx],
         tgt_tok=tgt_tok_va,
-        tgt_mask=mask_off[val_idx],
+        tgt_mask=tgt_mask_va,
         labels=labels[val_idx].astype(np.float32),
+        prefix_tok=pref_tok_va,
+        prefix_len=pref_len_va,
     )
     dl_reco_tr = DataLoader(
         ds_reco_tr,
@@ -1592,9 +2094,9 @@ def main() -> None:
         ff_dim=int(args.reco_ff_dim),
         dropout=float(args.reco_dropout),
         max_hlt_tokens=int(args.max_constits),
-        max_decode_tokens=int(args.max_constits),
+        max_decode_tokens=int(args.max_constits + specialist_prefix),
         use_coord_residual_param=False,
-        num_hypotheses=int(args.seed_candidate_k),
+        num_hypotheses=1,
     ).to(device)
 
     reco_train_cfg = {
@@ -1631,16 +2133,13 @@ def main() -> None:
     reco_loss_cfg["phase_lr_decay"] = float(args.reco_phase_lr_decay)
     reco_loss_cfg["winner_mode"] = "reco"
 
-    reco_model, reco_metrics = m28.train_reconstructor_seq2seq(
+    reco_model, reco_metrics = _train_reco_specialist_with_prefix(
         model=reco_model,
         train_loader=dl_reco_tr,
         val_loader=dl_reco_va,
         device=device,
         train_cfg=reco_train_cfg,
         loss_cfg=reco_loss_cfg,
-        teacher=None,
-        feat_means_t=None,
-        feat_stds_t=None,
     )
 
     # ---------------------------------------------------------------------
@@ -1770,7 +2269,7 @@ def main() -> None:
         lr=float(args.dual_lr),
         weight_decay=float(args.dual_weight_decay),
         patience=int(args.dual_patience),
-        name="M38NoGate",
+        name="M39NoGate",
     )
 
     m38_gated = MultiCandidateM38Gated(
@@ -1791,7 +2290,7 @@ def main() -> None:
         lr=float(args.dual_lr),
         weight_decay=float(args.dual_weight_decay),
         patience=int(args.dual_patience),
-        name="M38Gated",
+        name="M39Gated",
     )
 
     # ---------------------------------------------------------------------
@@ -1852,8 +2351,8 @@ def main() -> None:
     print(
         f"Teacher AUC={teacher_auc_test:.4f} FPR50={fpr50_teacher:.6f} | "
         f"HLT baseline AUC={baseline_auc_test:.4f} FPR50={fpr50_baseline:.6f} | "
-        f"m38 NoGate AUC={auc_nog:.4f} FPR50={fpr50_nog:.6f} | "
-        f"m38 Gated AUC={auc_gat:.4f} FPR50={fpr50_gat:.6f}"
+        f"m39 NoGate AUC={auc_nog:.4f} FPR50={fpr50_nog:.6f} | "
+        f"m39 Gated AUC={auc_gat:.4f} FPR50={fpr50_gat:.6f}"
     )
 
     # save artifacts
@@ -1861,25 +2360,25 @@ def main() -> None:
     torch.save({"model": baseline.state_dict(), "auc_test": float(baseline_auc_test)}, save_root / "baseline_hlt.pt")
     torch.save({"model": carry_model.state_dict(), "metrics": carry_metrics}, save_root / "carry_predictor.pt")
     torch.save({"model": reco_model.state_dict(), "metrics": reco_metrics}, save_root / "reco_completer_m28style.pt")
-    torch.save({"model": m38_nogate.state_dict(), "metrics": m38_nogate_metrics}, save_root / "m38_multicand_nogate.pt")
-    torch.save({"model": m38_gated.state_dict(), "metrics": m38_gated_metrics}, save_root / "m38_multicand_gated.pt")
+    torch.save({"model": m38_nogate.state_dict(), "metrics": m38_nogate_metrics}, save_root / "m39_multicand_nogate.pt")
+    torch.save({"model": m38_gated.state_dict(), "metrics": m38_gated_metrics}, save_root / "m39_multicand_gated.pt")
 
     np.savez_compressed(
-        save_root / "m38_test_scores.npz",
+        save_root / "m39_test_scores.npz",
         labels_test=lab_final.astype(np.float32),
-        preds_m38_nogate=pred_nog.astype(np.float32),
-        preds_m38_gated=pred_gat.astype(np.float32),
+        preds_m39_nogate=pred_nog.astype(np.float32),
+        preds_m39_gated=pred_gat.astype(np.float32),
         preds_teacher=np.asarray(teacher_p_test, dtype=np.float32),
         preds_hlt=np.asarray(baseline_p_test, dtype=np.float32),
         sample_weight=np.asarray(w_final, dtype=np.float32),
         auc_teacher=float(teacher_auc_test),
         auc_hlt=float(baseline_auc_test),
-        auc_m38_nogate=float(auc_nog),
-        auc_m38_gated=float(auc_gat),
+        auc_m39_nogate=float(auc_nog),
+        auc_m39_gated=float(auc_gat),
         fpr50_teacher=float(fpr50_teacher),
         fpr50_hlt=float(fpr50_baseline),
-        fpr50_m38_nogate=float(fpr50_nog),
-        fpr50_m38_gated=float(fpr50_gat),
+        fpr50_m39_nogate=float(fpr50_nog),
+        fpr50_m39_gated=float(fpr50_gat),
     )
 
     if bool(args.save_fusion_scores):
@@ -1888,13 +2387,13 @@ def main() -> None:
             labels_test=lab_final.astype(np.float32),
             preds_teacher=np.asarray(teacher_p_test, dtype=np.float32),
             preds_hlt=np.asarray(baseline_p_test, dtype=np.float32),
-            preds_m38_nogate=np.asarray(pred_nog, dtype=np.float32),
-            preds_m38_gated=np.asarray(pred_gat, dtype=np.float32),
+            preds_m39_nogate=np.asarray(pred_nog, dtype=np.float32),
+            preds_m39_gated=np.asarray(pred_gat, dtype=np.float32),
             sample_weight=np.asarray(w_final, dtype=np.float32),
         )
 
     report = {
-        "model": "m38_seeded_m28_detresid_multicand",
+        "model": "m39_prefixspecialist_detresid_multicand",
         "seed": int(args.seed),
         "n_train_jets": int(args.n_train_jets),
         "split": {
@@ -1937,18 +2436,18 @@ def main() -> None:
                 "mean_best_residual": float(np.mean(c_te.best_residual_all)),
             },
         },
-        "m38_nogate": {
+        "m39_nogate": {
             "auc_test": float(auc_nog),
             "fpr50_test": float(fpr50_nog),
             "metrics": m38_nogate_metrics,
         },
-        "m38_gated": {
+        "m39_gated": {
             "auc_test": float(auc_gat),
             "fpr50_test": float(fpr50_gat),
             "metrics": m38_gated_metrics,
         },
     }
-    with open(save_root / "m38_report.json", "w", encoding="utf-8") as f:
+    with open(save_root / "m39_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
     np.savez_compressed(

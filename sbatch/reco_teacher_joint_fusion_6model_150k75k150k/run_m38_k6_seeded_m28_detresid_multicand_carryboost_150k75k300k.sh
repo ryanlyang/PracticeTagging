@@ -30,12 +30,16 @@ SEED_MAX_PREFIX="${SEED_MAX_PREFIX:-12}"
 CANDIDATE_GEN_BATCH="${CANDIDATE_GEN_BATCH:-64}"
 
 RECO_SET_LOSS_MODE="${RECO_SET_LOSS_MODE:-chamfer}"
-RECO_LR="${RECO_LR:-1.5e-4}"
-RECO_BATCH_SIZE="${RECO_BATCH_SIZE:-32}"
-RECO_LOSS_W_EOS="${RECO_LOSS_W_EOS:-0.30}"
-RECO_LOSS_W_COUNT="${RECO_LOSS_W_COUNT:-0.30}"
-RECO_LOSS_W_JETPT="${RECO_LOSS_W_JETPT:-0.12}"
-RECO_LOSS_W_4VEC="${RECO_LOSS_W_4VEC:-0.05}"
+RECO_LR="${RECO_LR:-1.8e-4}"
+RECO_BATCH_SIZE="${RECO_BATCH_SIZE:-80}"
+RECO_LOSS_W_EOS="${RECO_LOSS_W_EOS:-0.20}"
+RECO_LOSS_W_COUNT="${RECO_LOSS_W_COUNT:-0.20}"
+RECO_LOSS_W_JETPT="${RECO_LOSS_W_JETPT:-0.08}"
+RECO_LOSS_W_4VEC="${RECO_LOSS_W_4VEC:-0.03}"
+RECO_LOSS_W_CONF_RANK="${RECO_LOSS_W_CONF_RANK:-0.20}"
+RECO_LOSS_W_CONF_PREFIX="${RECO_LOSS_W_CONF_PREFIX:-0.12}"
+RECO_CONF_MARGIN="${RECO_CONF_MARGIN:-0.06}"
+RECO_CONF_PREFIX_TAU="${RECO_CONF_PREFIX_TAU:-16.0}"
 
 CARRY_EPOCHS="${CARRY_EPOCHS:-48}"
 CARRY_PATIENCE="${CARRY_PATIENCE:-10}"
@@ -96,9 +100,9 @@ CMD=(
   --carry_lr_decay_start_epoch "${CARRY_LR_DECAY_START}"
   --carry_lr_decay_gamma "${CARRY_LR_DECAY_GAMMA}"
   --carry_min_lr_ratio "${CARRY_MIN_LR_RATIO}"
-  --reco_epochs 140
-  --reco_patience 20
-  --reco_min_epochs 35
+  --reco_epochs 175
+  --reco_patience 30
+  --reco_min_epochs 45
   --reco_lr "${RECO_LR}"
   --reco_batch_size "${RECO_BATCH_SIZE}"
   --reco_set_loss_mode "${RECO_SET_LOSS_MODE}"
@@ -106,6 +110,24 @@ CMD=(
   --reco_loss_w_count "${RECO_LOSS_W_COUNT}"
   --reco_loss_w_jetpt "${RECO_LOSS_W_JETPT}"
   --reco_loss_w_4vec "${RECO_LOSS_W_4VEC}"
+  --reco_loss_w_conf_rank "${RECO_LOSS_W_CONF_RANK}"
+  --reco_loss_w_conf_prefix "${RECO_LOSS_W_CONF_PREFIX}"
+  --reco_conf_margin "${RECO_CONF_MARGIN}"
+  --reco_conf_prefix_tau "${RECO_CONF_PREFIX_TAU}"
+  --reco_physics_warmup_epochs 12
+  --reco_phase1_end_epoch 15
+  --reco_phase2_end_epoch 75
+  --reco_phase3_end_epoch 127
+  --reco_phase2_alpha_fr_end 0.70
+  --reco_phase3_alpha_fr_end 0.95
+  --reco_phase4_alpha_fr 0.95
+  --reco_phase2_ss_end 0.60
+  --reco_phase3_ss_end 0.90
+  --reco_phase4_ss 0.90
+  --reco_phase2_free_run_every_n 2
+  --reco_phase3_free_run_every_n 1
+  --reco_phase4_free_run_every_n 1
+  --reco_phase_lr_decay 0.80
   --seed_candidate_k "${SEED_CANDIDATE_K}"
   --seed_keep_m "${SEED_KEEP_M}"
   --seed_max_prefix "${SEED_MAX_PREFIX}"
