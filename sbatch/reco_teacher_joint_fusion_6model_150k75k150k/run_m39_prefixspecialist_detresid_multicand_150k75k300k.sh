@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=96G
-#SBATCH --time=8-00:00:00
+#SBATCH --time=5-12:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m39_prefixspecialist_detresid_multicand_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m39_prefixspecialist_detresid_multicand_%j.err
 

@@ -2565,6 +2565,14 @@ def main() -> None:
         action="store_true",
         help="Use ATLAS 'training_weights' (when available) to weight top-tagger BCE in Step-1 training/validation.",
     )
+    parser.add_argument(
+        "--force_m5_step1",
+        action="store_true",
+        help=(
+            "Force STEP 1 to m5-style behavior: weighted sampling only, "
+            "unweighted per-sample BCE/reports for Teacher/Baseline."
+        ),
+    )
     parser.add_argument("--n_train_jets", type=int, default=50000)
     parser.add_argument("--offset_jets", type=int, default=0)
     parser.add_argument("--max_constits", type=int, default=80)
@@ -3118,11 +3126,15 @@ def main() -> None:
 
     train_w_train = train_weight[train_idx].astype(np.float32)
     train_w_val = train_weight[val_idx].astype(np.float32)
+    if bool(args.force_m5_step1):
+        print("STEP 1 override: --force_m5_step1 enabled (m5-style weighting path).")
+    step1_train_w = np.ones_like(train_w_train, dtype=np.float32) if bool(args.force_m5_step1) else train_w_train
+    step1_val_w = np.ones_like(train_w_val, dtype=np.float32) if bool(args.force_m5_step1) else train_w_val
     ds_train_off = WeightedJetDataset(
-        feat_off_std[train_idx], masks_off[train_idx], labels[train_idx], sample_weight=train_w_train
+        feat_off_std[train_idx], masks_off[train_idx], labels[train_idx], sample_weight=step1_train_w
     )
     ds_val_off = WeightedJetDataset(
-        feat_off_std[val_idx], masks_off[val_idx], labels[val_idx], sample_weight=train_w_val
+        feat_off_std[val_idx], masks_off[val_idx], labels[val_idx], sample_weight=step1_val_w
     )
 
     labels_test_ref: np.ndarray
@@ -3142,7 +3154,7 @@ def main() -> None:
             )
         const_raw_test = all_const_test[args.test_offset_jets: args.test_offset_jets + n_test_split]
         labels_test_ref = all_labels_test[args.test_offset_jets: args.test_offset_jets + n_test_split].astype(np.int64)
-        if bool(args.use_train_weights):
+        if bool(args.use_train_weights) and not bool(args.force_m5_step1):
             test_weight_ref = all_w_test[args.test_offset_jets: args.test_offset_jets + n_test_split].astype(np.float32)
         else:
             test_weight_ref = np.ones((len(labels_test_ref),), dtype=np.float32)
@@ -3165,7 +3177,7 @@ def main() -> None:
         )
     else:
         labels_test_ref = labels[test_idx].astype(np.int64)
-        if bool(args.use_train_weights):
+        if bool(args.use_train_weights) and not bool(args.force_m5_step1):
             test_weight_ref = train_weight[test_idx].astype(np.float32)
         else:
             test_weight_ref = np.ones((len(test_idx),), dtype=np.float32)
@@ -3193,10 +3205,10 @@ def main() -> None:
     auc_teacher, preds_teacher, labs, w_teacher_test = _eval_classifier_with_optional_weights(teacher, dl_test_off, device)
 
     ds_train_hlt = WeightedJetDataset(
-        feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx], sample_weight=train_w_train
+        feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx], sample_weight=step1_train_w
     )
     ds_val_hlt = WeightedJetDataset(
-        feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx], sample_weight=train_w_val
+        feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx], sample_weight=step1_val_w
     )
     if external_test_step1:
         ds_test_hlt = WeightedJetDataset(

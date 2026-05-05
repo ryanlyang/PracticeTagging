@@ -1109,6 +1109,11 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_path", type=str, default="./data")
     ap.add_argument("--use_train_weights", action="store_true")
+    ap.add_argument(
+        "--force_m5_step1",
+        action="store_true",
+        help="Force STEP 1 to use plain m5-style Teacher/Baseline training (disables STEP-1 dropout variant).",
+    )
     ap.add_argument("--n_train_jets", type=int, default=250000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
@@ -1407,7 +1412,13 @@ def main() -> None:
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
     teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    if bool(args.teacher_use_offline_dropout):
+    if bool(args.force_m5_step1):
+        if bool(args.teacher_use_offline_dropout):
+            print("STEP 1 override: --force_m5_step1 enabled, ignoring --teacher_use_offline_dropout.")
+        teacher = b.train_single_view_classifier_auc(
+            teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
+        )
+    elif bool(args.teacher_use_offline_dropout):
         print("Teacher mode: offline-dropout")
         teacher = train_single_view_teacher_with_offline_dropout(
             model=teacher,

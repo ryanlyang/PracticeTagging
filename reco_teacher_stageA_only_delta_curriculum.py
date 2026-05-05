@@ -726,6 +726,11 @@ def main() -> None:
     ap.add_argument("--skip_save_models", action="store_true")
     ap.add_argument("--seed", type=int, default=b.RANDOM_SEED)
     ap.add_argument("--use_train_weights", action="store_true")
+    ap.add_argument(
+        "--force_m5_step1",
+        action="store_true",
+        help="Force STEP 1 to use plain m5-style Teacher/Baseline training on full offline features.",
+    )
 
     ap.add_argument("--teacher_use_anti_overlap", action="store_true")
     ap.add_argument("--teacher_anti_lambda", type=float, default=0.01)
@@ -825,6 +830,7 @@ def main() -> None:
 
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
+    masks_off_full = masks_off.copy()
     const_off_full = const_raw.copy()
     const_off_full[~masks_off] = 0.0
 
@@ -870,6 +876,7 @@ def main() -> None:
 
     print("Computing features...")
     feat_off = b.compute_features(const_off, masks_off)
+    feat_off_full = b.compute_features(const_off_full, masks_off_full)
     feat_hlt = b.compute_features(hlt_const, hlt_mask)
 
     idx = np.arange(len(labels))
@@ -908,6 +915,16 @@ def main() -> None:
     feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means, stds)
 
     feat_off_teacher_std = apply_teacher_feature_ablation_np(feat_off_std, masks_off, args.teacher_feature_ablation)
+    step1_feat_off_std = feat_off_teacher_std
+    step1_mask_off = masks_off
+    step1_feat_hlt_std = feat_hlt_std
+    if bool(args.force_m5_step1):
+        means_step1, stds_step1 = b.get_stats(feat_off_full, masks_off_full, train_idx)
+        step1_feat_off_std = b.standardize(feat_off_full, masks_off_full, means_step1, stds_step1)
+        step1_feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means_step1, stds_step1)
+        step1_mask_off = masks_off_full
+        if str(args.teacher_feature_ablation) != "none":
+            print("STEP 1 override: --force_m5_step1 enabled, ignoring --teacher_feature_ablation.")
 
     data_setup = {
         "train_path_arg": str(args.train_path),
@@ -947,9 +964,9 @@ def main() -> None:
     print("=" * 70)
     BS = int(cfg["training"]["batch_size"])
 
-    ds_train_off = b.JetDataset(feat_off_teacher_std[train_idx], masks_off[train_idx], labels[train_idx])
-    ds_val_off = b.JetDataset(feat_off_teacher_std[val_idx], masks_off[val_idx], labels[val_idx])
-    ds_test_off = b.JetDataset(feat_off_teacher_std[test_idx], masks_off[test_idx], labels[test_idx])
+    ds_train_off = b.JetDataset(step1_feat_off_std[train_idx], step1_mask_off[train_idx], labels[train_idx])
+    ds_val_off = b.JetDataset(step1_feat_off_std[val_idx], step1_mask_off[val_idx], labels[val_idx])
+    ds_test_off = b.JetDataset(step1_feat_off_std[test_idx], step1_mask_off[test_idx], labels[test_idx])
     dl_train_off = DataLoader(
         ds_train_off,
         batch_size=BS,
@@ -960,9 +977,9 @@ def main() -> None:
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
-    ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
-    ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
-    ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
+    ds_train_hlt = b.JetDataset(step1_feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
+    ds_val_hlt = b.JetDataset(step1_feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
+    ds_test_hlt = b.JetDataset(step1_feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
     dl_train_hlt = DataLoader(
         ds_train_hlt,
         batch_size=BS,
@@ -991,7 +1008,13 @@ def main() -> None:
     )
 
     teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    if bool(args.teacher_use_anti_overlap):
+    if bool(args.force_m5_step1):
+        if bool(args.teacher_use_anti_overlap):
+            print("STEP 1 override: --force_m5_step1 enabled, ignoring --teacher_use_anti_overlap.")
+        teacher = b.train_single_view_classifier_auc(
+            teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
+        )
+    elif bool(args.teacher_use_anti_overlap):
         print(
             "Teacher mode: anti-overlap "
             f"(lambda={float(args.teacher_anti_lambda):.4f}, tau={float(args.teacher_anti_tau):.4f}, "

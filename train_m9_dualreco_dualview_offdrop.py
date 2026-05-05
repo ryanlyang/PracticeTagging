@@ -1564,6 +1564,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_path", type=str, default="./data")
     ap.add_argument("--use_train_weights", action="store_true")
+    ap.add_argument(
+        "--force_m5_step1",
+        action="store_true",
+        help=(
+            "Force STEP 1 Teacher/Baseline to m5-style training on full offline features "
+            "(disables STEP-1 anti-overlap/offline-dropout variants)."
+        ),
+    )
     ap.add_argument("--n_train_jets", type=int, default=375000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
@@ -1842,6 +1850,7 @@ def main() -> None:
 
     print("Computing features...")
     feat_off = b.compute_features(const_off_target, masks_off_target)
+    feat_off_full = b.compute_features(const_off_full, masks_off_full)
     feat_hlt = b.compute_features(hlt_const, hlt_mask)
 
     idx = np.arange(len(labels))
@@ -1885,6 +1894,26 @@ def main() -> None:
         masks_off_target,
         feature_ablation_mode if target_mode == "feature_ablation" else "none",
     )
+    step1_feat_off_std = feat_off_teacher_std
+    step1_mask_off = masks_off_target
+    step1_feat_hlt_std = feat_hlt_std
+    step1_sw_train = sw_train
+    step1_sw_val = sw_val
+    step1_sw_test = sw_test
+    if bool(args.force_m5_step1):
+        means_step1, stds_step1 = b.get_stats(feat_off_full, masks_off_full, train_idx)
+        step1_feat_off_std = b.standardize(feat_off_full, masks_off_full, means_step1, stds_step1)
+        step1_feat_hlt_std = b.standardize(feat_hlt, hlt_mask, means_step1, stds_step1)
+        step1_mask_off = masks_off_full
+        step1_sw_train = np.ones_like(sw_train, dtype=np.float32)
+        step1_sw_val = np.ones_like(sw_val, dtype=np.float32)
+        step1_sw_test = np.ones_like(sw_test, dtype=np.float32)
+        if bool(args.teacher_use_anti_overlap):
+            print("STEP 1 override: --force_m5_step1 enabled, ignoring --teacher_use_anti_overlap.")
+        if bool(args.teacher_use_offline_dropout):
+            print("STEP 1 override: --force_m5_step1 enabled, ignoring --teacher_use_offline_dropout.")
+        if target_mode in {"topk", "feature_ablation", "concat"}:
+            print("STEP 1 override: using full offline features/masks for m5-aligned comparability.")
 
     data_setup = {
         "train_path_arg": str(args.train_path),
@@ -1929,13 +1958,13 @@ def main() -> None:
     BS = int(cfg["training"]["batch_size"])
 
     ds_train_off = m2mod.WeightedJetDataset(
-        feat_off_teacher_std[train_idx], masks_off_target[train_idx], labels[train_idx], sample_weight=sw_train
+        step1_feat_off_std[train_idx], step1_mask_off[train_idx], labels[train_idx], sample_weight=step1_sw_train
     )
     ds_val_off = m2mod.WeightedJetDataset(
-        feat_off_teacher_std[val_idx], masks_off_target[val_idx], labels[val_idx], sample_weight=sw_val
+        step1_feat_off_std[val_idx], step1_mask_off[val_idx], labels[val_idx], sample_weight=step1_sw_val
     )
     ds_test_off = m2mod.WeightedJetDataset(
-        feat_off_teacher_std[test_idx], masks_off_target[test_idx], labels[test_idx], sample_weight=sw_test
+        step1_feat_off_std[test_idx], step1_mask_off[test_idx], labels[test_idx], sample_weight=step1_sw_test
     )
     off_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_off = DataLoader(ds_train_off, batch_size=BS, shuffle=(off_sampler is None), sampler=off_sampler, drop_last=True)
@@ -1943,13 +1972,13 @@ def main() -> None:
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
     ds_train_hlt = m2mod.WeightedJetDataset(
-        feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx], sample_weight=sw_train
+        step1_feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx], sample_weight=step1_sw_train
     )
     ds_val_hlt = m2mod.WeightedJetDataset(
-        feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx], sample_weight=sw_val
+        step1_feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx], sample_weight=step1_sw_val
     )
     ds_test_hlt = m2mod.WeightedJetDataset(
-        feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx], sample_weight=sw_test
+        step1_feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx], sample_weight=step1_sw_test
     )
     hlt_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_hlt = DataLoader(ds_train_hlt, batch_size=BS, shuffle=(hlt_sampler is None), sampler=hlt_sampler, drop_last=True)
@@ -1968,16 +1997,18 @@ def main() -> None:
     )
 
     teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    if bool(args.teacher_use_anti_overlap):
+    if bool(args.force_m5_step1):
+        teacher = m2mod.train_single_view_classifier_auc(teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher")
+    elif bool(args.teacher_use_anti_overlap):
         print(
             "Teacher mode: anti-overlap "
             f"(lambda={float(args.teacher_anti_lambda):.4f}, tau={float(args.teacher_anti_tau):.4f}, "
             f"beta={float(args.teacher_anti_beta):.4f}, warmup={int(args.teacher_anti_warmup_epochs)})"
         )
         ds_train_teacher_anti = sA.TeacherAntiOverlapDataset(
-            feat_off=feat_off_teacher_std[train_idx],
-            mask_off=masks_off_target[train_idx],
-            feat_hlt=feat_hlt_std[train_idx],
+            feat_off=step1_feat_off_std[train_idx],
+            mask_off=step1_mask_off[train_idx],
+            feat_hlt=step1_feat_hlt_std[train_idx],
             mask_hlt=hlt_mask[train_idx],
             labels=labels[train_idx],
         )
@@ -2008,8 +2039,8 @@ def main() -> None:
         print("Teacher mode: offline-dropout")
         teacher = train_single_view_teacher_with_offline_dropout(
             model=teacher,
-            feat_off=feat_off_teacher_std,
-            mask_off=masks_off_target,
+            feat_off=step1_feat_off_std,
+            mask_off=step1_mask_off,
             mask_hlt=hlt_mask,
             labels=labels.astype(np.float32),
             train_idx=train_idx,

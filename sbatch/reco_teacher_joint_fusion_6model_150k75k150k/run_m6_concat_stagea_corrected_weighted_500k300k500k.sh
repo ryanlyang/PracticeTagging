@@ -45,6 +45,7 @@ CMD=(
   python reco_concat_teacher_stageA_then_corrected.py
   --train_path "${TRAIN_PATH}"
   --use_train_weights
+  --force_m5_step1
   --save_dir "${SAVE_DIR}"
   --run_name "${RUN_NAME}"
   --n_train_jets "${N_TRAIN_JETS}"

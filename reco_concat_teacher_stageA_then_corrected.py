@@ -1097,6 +1097,14 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_path", type=str, default="./data")
     ap.add_argument("--use_train_weights", action="store_true")
+    ap.add_argument(
+        "--force_m5_step1",
+        action="store_true",
+        help=(
+            "Force STEP 1 Teacher/Baseline to m5-style offline-vs-HLT training. "
+            "Concat teacher is still trained for Stage-A guidance."
+        ),
+    )
     ap.add_argument("--n_train_jets", type=int, default=250000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
@@ -1348,7 +1356,10 @@ def main() -> None:
     )
 
     print("\n" + "=" * 70)
-    print("STEP 1: HLT BASELINE + CONCAT TEACHER")
+    if bool(args.force_m5_step1):
+        print("STEP 1: TEACHER + BASELINE (m5-aligned) + CONCAT TEACHER AUX")
+    else:
+        print("STEP 1: HLT BASELINE + CONCAT TEACHER")
     print("=" * 70)
     bs_cls = int(cfg["training"]["batch_size"])
 
@@ -1377,6 +1388,38 @@ def main() -> None:
     )
     auc_hlt_test, preds_hlt_test, labs_hlt_test = b.eval_classifier(baseline, dl_test_hlt, device)
     auc_hlt_val, preds_hlt_val, labs_hlt_val = b.eval_classifier(baseline, dl_val_hlt, device)
+
+    if bool(args.force_m5_step1):
+        ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
+        ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
+        ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
+        off_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+        dl_train_off = DataLoader(
+            ds_train_off,
+            batch_size=bs_cls,
+            shuffle=(off_sampler is None),
+            sampler=off_sampler,
+            drop_last=True,
+        )
+        dl_val_off = DataLoader(ds_val_off, batch_size=bs_cls, shuffle=False)
+        dl_test_off = DataLoader(ds_test_off, batch_size=bs_cls, shuffle=False)
+        teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
+        teacher = b.train_single_view_classifier_auc(
+            teacher,
+            dl_train_off,
+            dl_val_off,
+            device,
+            cfg["training"],
+            name="Teacher",
+        )
+        auc_teacher_test, _, labs_teacher_test = b.eval_classifier(teacher, dl_test_off, device)
+        auc_teacher_val, _, labs_teacher_val = b.eval_classifier(teacher, dl_val_off, device)
+        assert np.array_equal(labs_hlt_val.astype(np.float32), labs_teacher_val.astype(np.float32))
+        assert np.array_equal(labs_hlt_test.astype(np.float32), labs_teacher_test.astype(np.float32))
+        print(
+            "m5-aligned Teacher AUC "
+            f"(val/test): {float(auc_teacher_val):.4f} / {float(auc_teacher_test):.4f}"
+        )
 
     ds_train_concat = b.JetDataset(feat_concat_std[train_idx], mask_concat[train_idx], labels[train_idx])
     ds_val_concat = b.JetDataset(feat_concat_std[val_idx], mask_concat[val_idx], labels[val_idx])

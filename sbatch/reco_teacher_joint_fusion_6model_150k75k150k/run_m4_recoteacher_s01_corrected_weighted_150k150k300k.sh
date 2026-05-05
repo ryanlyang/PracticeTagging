@@ -44,6 +44,7 @@ CMD=(
   python reco_teacher_stageA_only_delta_curriculum.py
   --train_path "${TRAIN_PATH}"
   --use_train_weights
+  --force_m5_step1
   --save_dir "${SAVE_DIR}"
   --run_name "${RUN_NAME}"
   --n_train_jets "${N_TRAIN_JETS}"
