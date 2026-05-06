@@ -1,0 +1,41 @@
+============================================================
+Model-15 HIGH dual-reco dualview (weighted)
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_high_weighted_500k300k500k/model15_dualreco_dualview_offdrop_high_weighted_500k300k500k_seed0
+Train path: ./data/train_quarter.h5
+Split: train=500000, val=300000, test=500000, n_train_jets=1300000
+offdrop_prob_max=0.70
+============================================================
+ python train_m9_dualreco_dualview_offdrop.py --train_path ./data/train_quarter.h5 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_high_weighted_500k300k500k --run_name model15_dualreco_dualview_offdrop_high_weighted_500k300k500k_seed0 --n_train_jets 1300000 --n_train_split 500000 --n_val_split 300000 --n_test_split 500000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --teacher_use_offline_dropout --teacher_drop_prob_max 0.70 --teacher_drop_warmup_epochs 20 --teacher_drop_mode deterministic_bank --teacher_drop_num_banks 3 --teacher_drop_bank_cycle_epochs 1 --teacher_lambda_drop_cls 1.0 --teacher_use_consistency --teacher_consistency_temp 2.0 --teacher_lambda_consistency 0.2 --stageA_epochs 90 --stageA_patience 18 --stageA_kd_temp 2.5 --stageA_lambda_kd 5.0 --stageA_lambda_emb 0.0 --stageA_lambda_tok 0.0 --stageA_lambda_phys 0.05 --stageA_lambda_budget_hinge 1.0 --stageA_budget_eps 0.015 --stageA_budget_weight_floor 1e-4 --stageA_target_tpr 0.50 --stageA_lambda_delta 0.15 --stageA_delta_tau 0.05 --stageA_delta_lambda_fp 3.0 --stageA_loss_norm_ema_decay 0.98 --stageA_loss_norm_eps 1e-6 --added_target_scale 0.90 --target_drop_prob_max 0.70 --target_drop_num_banks 3 --target_drop_bank_cycle_epochs 1 --recoB_epochs 90 --recoB_patience 18 --recoB_lr 3e-4 --recoB_weight_decay 1e-4 --recoB_warmup_epochs 5 --recoB_stage1_epochs 20 --recoB_stage2_epochs 55 --recoB_min_full_scale_epochs 5 --recoB_ratio_count_under_lambda 1.0 --recoB_ratio_count_over_lambda 0.25 --recoB_ratio_count_over_margin_base 2.0 --recoB_ratio_count_over_margin_scale 6.0 --recoB_ratio_count_over_ratio_gamma 0.70 --recoB_ratio_count_over_lambda_floor 0.05 --recoB_ratio_count_eps 0.015 --corrected_weight_floor 0.03 --reco_eval_batch_size 256 --select_metric auc --dual_frozen_epochs 45 --dual_frozen_patience 12 --dual_frozen_batch_size 256 --dual_frozen_lr 3e-4 --dual_frozen_weight_decay 1e-4 --dual_frozen_warmup_epochs 5 --dual_frozen_lambda_rank 0.2 --dual_frozen_rank_tau 0.05 --dual_joint_epochs 12 --dual_joint_patience 6 --dual_joint_batch_size 128 --dual_joint_lr_dual 1e-4 --dual_joint_lr_reco_a 2e-6 --dual_joint_lr_reco_b 2e-6 --dual_joint_weight_decay 1e-4 --dual_joint_warmup_epochs 3 --dual_joint_lambda_rank 0.2 --dual_joint_rank_tau 0.05 --dual_joint_lambda_anchor_a 0.02 --dual_joint_lambda_anchor_b 0.02 --report_target_tpr 0.50 --device cuda
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_high_weighted_500k300k500k/model15_dualreco_dualview_offdrop_high_weighted_500k300k500k_seed0
+Loading offline constituents...
+Info: using 'weights' from data/train_quarter.h5 as training weights.
+Generating pseudo-HLT...
+Non-priv rho split setup: rho=0.900, mean_true_added_raw(target)=25.099, mean_target_merge=22.589, mean_target_eff=2.510
+Computing features...
+Split sizes: Train=500000, Val=300000, Test=500000 (custom_counts=True)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Baseline ep 5: train_auc=0.9094, val_auc=0.9002, val_fpr50=0.032125, best_auc=0.9003, fpr50@best=0.031782
+Baseline ep 10: train_auc=0.9190, val_auc=0.8964, val_fpr50=0.033861, best_auc=0.9011, fpr50@best=0.030494
+Baseline ep 15: train_auc=0.9255, val_auc=0.8997, val_fpr50=0.030438, best_auc=0.9045, fpr50@best=0.028237
+Baseline ep 20: train_auc=0.9304, val_auc=0.9024, val_fpr50=0.029366, best_auc=0.9045, fpr50@best=0.028237
+Baseline ep 25: train_auc=0.9376, val_auc=0.8998, val_fpr50=0.030468, best_auc=0.9045, fpr50@best=0.028237
+Early stopping Baseline at epoch 28
+StageA delta HLT reference @TPR=0.50: threshold_prob=0.843347, val_tpr=0.499990, val_fpr=0.040617
+Teacher mode: offline-dropout
+TeacherDrop ep 5: train_loss=0.58577 (full=0.28981, drop=0.29560, cons=0.00183, p=0.175, bank=1) | val_auc=0.9311, val_fpr50=0.018721, best_auc=0.9317
+TeacherDrop ep 10: train_loss=0.54958 (full=0.26855, drop=0.28054, cons=0.00243, p=0.350, bank=0) | val_auc=0.9346, val_fpr50=0.015738, best_auc=0.9388
+TeacherDrop ep 15: train_loss=0.52293 (full=0.25064, drop=0.27161, cons=0.00344, p=0.525, bank=2) | val_auc=0.9347, val_fpr50=0.015629, best_auc=0.9388
+TeacherDrop ep 20: train_loss=0.49757 (full=0.23257, drop=0.26405, cons=0.00476, p=0.700, bank=1) | val_auc=0.9335, val_fpr50=0.018133, best_auc=0.9388
+Early stopping TeacherDrop at epoch 24
+
+======================================================================
+STEP 2: TRAIN RECO-A (TEACHER-GUIDED STAGE-A)
+======================================================================
+----------------------------------------------------------------------
+Stage-A curriculum: phase_035 | epochs [1,20] | stage_scale=0.35
+----------------------------------------------------------------------
+Ep 5 [phase_035]: train_total=6.0650, val_total=7.7175, train_teacher_auc=0.9011, val_teacher_auc=0.8627, val_teacher_fpr50=0.056641, best_global_auc=0.8834 | kd=4.6617, emb=0.0968, tok=3.5403, phys=0.3148, budget_hinge=29589.1749, delta=0.5254, delta_gain=0.2344, delta_cost=0.2532, stage_scale=0.35

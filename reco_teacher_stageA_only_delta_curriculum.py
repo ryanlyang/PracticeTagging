@@ -731,6 +731,12 @@ def main() -> None:
         action="store_true",
         help="Force STEP 1 to use plain m5-style Teacher/Baseline training on full offline features.",
     )
+    ap.add_argument(
+        "--step1_load_dir",
+        type=str,
+        default="",
+        help="If set to a directory containing teacher.pt and baseline.pt, load them and skip STEP 1 training.",
+    )
 
     ap.add_argument("--teacher_use_anti_overlap", action="store_true")
     ap.add_argument("--teacher_anti_lambda", type=float, default=0.01)
@@ -990,10 +996,24 @@ def main() -> None:
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=BS, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
 
+    step1_load_dir = str(getattr(args, "step1_load_dir", "")).strip()
+    step1_teacher_ckpt = None
+    step1_baseline_ckpt = None
+    if step1_load_dir:
+        step1_dir = Path(step1_load_dir).expanduser().resolve()
+        step1_teacher_ckpt = step1_dir / "teacher.pt"
+        step1_baseline_ckpt = step1_dir / "baseline.pt"
+
     baseline = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    baseline = b.train_single_view_classifier_auc(
-        baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
-    )
+    if step1_baseline_ckpt is not None and step1_baseline_ckpt.is_file():
+        baseline_pack = torch.load(step1_baseline_ckpt, map_location=device)
+        baseline_sd = baseline_pack["model"] if isinstance(baseline_pack, dict) and "model" in baseline_pack else baseline_pack
+        baseline.load_state_dict(baseline_sd, strict=True)
+        print(f"STEP 1: loaded baseline checkpoint from {step1_baseline_ckpt}")
+    else:
+        baseline = b.train_single_view_classifier_auc(
+            baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
+        )
     auc_baseline, preds_baseline, labs_test_hlt = b.eval_classifier(baseline, dl_test_hlt, device)
     auc_baseline_val, preds_baseline_val, labs_val_baseline = b.eval_classifier(baseline, dl_val_hlt, device)
 
@@ -1008,7 +1028,12 @@ def main() -> None:
     )
 
     teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    if bool(args.force_m5_step1):
+    if step1_teacher_ckpt is not None and step1_teacher_ckpt.is_file():
+        teacher_pack = torch.load(step1_teacher_ckpt, map_location=device)
+        teacher_sd = teacher_pack["model"] if isinstance(teacher_pack, dict) and "model" in teacher_pack else teacher_pack
+        teacher.load_state_dict(teacher_sd, strict=True)
+        print(f"STEP 1: loaded teacher checkpoint from {step1_teacher_ckpt}")
+    elif bool(args.force_m5_step1):
         if bool(args.teacher_use_anti_overlap):
             print("STEP 1 override: --force_m5_step1 enabled, ignoring --teacher_use_anti_overlap.")
         teacher = b.train_single_view_classifier_auc(

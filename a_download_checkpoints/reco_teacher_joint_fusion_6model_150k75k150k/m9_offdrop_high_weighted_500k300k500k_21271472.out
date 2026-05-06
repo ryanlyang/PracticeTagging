@@ -1,0 +1,45 @@
+============================================================
+Model-9 HIGH offline-dropout residual
+Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model9_stageA_residual_hlt_offdrop_high_weighted_500k300k500k/model9_stageA_residual_hlt_offdrop_high_weighted_500k300k500k_seed0
+Train path: ./data/train_quarter.h5 (weighted)
+Split: train=500000, val=300000, test=500000, n_train_jets=1300000
+teacher_drop_prob_max=0.70
+teacher_drop_mode=deterministic_bank, banks=3, bank_cycle_epochs=1
+ratio_count_budget=on under=1.0 over=0.25 margin_base=2.0 margin_scale=6.0 gamma=0.70 floor=0.05 eps=0.015
+============================================================
+ python reco_teacher_stageA_residual_hlt.py --train_path ./data/train_quarter.h5 --use_train_weights --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model9_stageA_residual_hlt_offdrop_high_weighted_500k300k500k --run_name model9_stageA_residual_hlt_offdrop_high_weighted_500k300k500k_seed0 --n_train_jets 1300000 --n_train_split 500000 --n_val_split 300000 --n_test_split 500000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --teacher_use_offline_dropout --teacher_drop_prob_max 0.70 --teacher_drop_warmup_epochs 20 --teacher_drop_mode deterministic_bank --teacher_drop_num_banks 3 --teacher_drop_bank_cycle_epochs 1 --teacher_lambda_drop_cls 1.0 --teacher_use_consistency --teacher_consistency_temp 2.0 --teacher_lambda_consistency 0.2 --stageA_epochs 90 --stageA_patience 18 --stageA_kd_temp 2.5 --stageA_lambda_kd 5.0 --stageA_lambda_emb 0.0 --stageA_lambda_tok 0.0 --stageA_lambda_phys 0.05 --stageA_lambda_budget_hinge 1.0 --stageA_budget_eps 0.015 --stageA_budget_weight_floor 1e-4 --stageA_ratio_count_tolerant --stageA_ratio_count_under_lambda 1.0 --stageA_ratio_count_over_lambda 0.25 --stageA_ratio_count_over_margin_base 2.0 --stageA_ratio_count_over_margin_scale 6.0 --stageA_ratio_count_over_ratio_gamma 0.70 --stageA_ratio_count_over_lambda_floor 0.05 --stageA_ratio_count_eps 0.015 --stageA_target_tpr 0.50 --stageA_lambda_delta 0.15 --stageA_delta_tau 0.05 --stageA_delta_lambda_fp 3.0 --stageA_loss_norm_ema_decay 0.98 --stageA_loss_norm_eps 1e-6 --added_target_scale 0.90 --reco_weight_threshold 0.03 --reco_eval_batch_size 256 --residual_epochs 45 --residual_patience 12 --residual_lr 3e-4 --residual_weight_decay 1e-4 --residual_warmup_epochs 5 --residual_lambda_res 1.0 --residual_lambda_kd 0.2 --residual_lambda_cls 0.1 --residual_kd_temp 2.5 --residual_select_metric fpr50 --residual_alpha_grid 0.0\,0.25\,0.5\,0.75\,1.0\,1.25\,1.5\,2.0 --residual_joint_epochs 12 --residual_joint_patience 10 --residual_joint_lr_reco 2e-6 --residual_joint_lr_head 1e-4 --residual_joint_weight_decay 1e-4 --residual_joint_warmup_epochs 4 --residual_joint_lambda_reco_anchor 0.02 --report_target_tpr 0.50 --device cuda
+[RatioBudget] Enabled ratio-aware asymmetric count tolerance: eps=0.0150, under=1.000, over=0.250, margin_base=2.000, margin_scale=6.000, gamma=0.700, over_floor=0.050
+Device: cuda
+Save dir: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model9_stageA_residual_hlt_offdrop_high_weighted_500k300k500k/model9_stageA_residual_hlt_offdrop_high_weighted_500k300k500k_seed0
+Loading offline constituents...
+Info: using 'weights' from data/train_quarter.h5 as training weights.
+Generating pseudo-HLT...
+Non-priv rho split setup: rho=0.900, mean_true_added_raw=25.099, mean_target_merge=22.589, mean_target_eff=2.510
+Computing features...
+Split sizes: Train=500000, Val=300000, Test=500000 (custom_counts=True)
+
+======================================================================
+STEP 1: TEACHER + BASELINE
+======================================================================
+Teacher mode: offline-dropout
+TeacherDrop ep 5: train_loss=1.04683 (full=0.31414, drop=0.31968, cons=2.06503, p=0.175, bank=1) | val_auc=0.9465, val_fpr50=0.012359, best_auc=0.9465
+TeacherDrop ep 10: train_loss=1.00669 (full=0.29529, drop=0.30696, cons=2.02216, p=0.350, bank=0) | val_auc=0.9411, val_fpr50=0.016915, best_auc=0.9465
+TeacherDrop ep 15: train_loss=0.98170 (full=0.28141, drop=0.29972, cons=2.00287, p=0.525, bank=2) | val_auc=0.9442, val_fpr50=0.012185, best_auc=0.9496
+TeacherDrop ep 20: train_loss=0.96088 (full=0.26734, drop=0.29555, cons=1.99000, p=0.700, bank=1) | val_auc=0.9446, val_fpr50=0.012270, best_auc=0.9496
+TeacherDrop ep 25: train_loss=0.91472 (full=0.25042, drop=0.27746, cons=1.93422, p=0.700, bank=0) | val_auc=0.9475, val_fpr50=0.011072, best_auc=0.9496
+Early stopping TeacherDrop at epoch 28
+Baseline ep 5: train_auc=0.9025, val_auc=0.9070, val_fpr50=0.029370, best_auc=0.9102, fpr50@best=0.027744
+Baseline ep 10: train_auc=0.9105, val_auc=0.9143, val_fpr50=0.023963, best_auc=0.9151, fpr50@best=0.021615
+Baseline ep 15: train_auc=0.9156, val_auc=0.9081, val_fpr50=0.027720, best_auc=0.9151, fpr50@best=0.021615
+Baseline ep 20: train_auc=0.9209, val_auc=0.9090, val_fpr50=0.026598, best_auc=0.9151, fpr50@best=0.021615
+Early stopping Baseline at epoch 21
+StageA delta HLT reference @TPR=0.50: threshold_prob=0.870412, val_tpr=0.500017, val_fpr=0.021617
+
+======================================================================
+STEP 2: STAGE A (TEACHER-GUIDED RECONSTRUCTOR)
+======================================================================
+----------------------------------------------------------------------
+Stage-A curriculum: phase_035 | epochs [1,20] | stage_scale=0.35
+----------------------------------------------------------------------
+Ep 5 [phase_035]: train_total=6.0653, val_total=9.4080, train_teacher_auc=0.9015, val_teacher_auc=0.7529, val_teacher_fpr50=0.143827, best_global_auc=0.7917 | kd=4.4862, emb=0.0865, tok=3.5846, phys=0.5009, budget_hinge=38.7772, delta=0.4646, delta_gain=0.2063, delta_cost=0.2236, stage_scale=0.35
+Ep 10 [phase_035]: train_total=6.0628, val_total=9.7390, train_teacher_auc=0.9097, val_teacher_auc=0.7512, val_teacher_fpr50=0.142760, best_global_auc=0.8004 | kd=4.2085, emb=0.0769, tok=3.6115, phys=0.4594, budget_hinge=44.1108, delta=0.3932, delta_gain=0.1813, delta_cost=0.1915, stage_scale=0.35

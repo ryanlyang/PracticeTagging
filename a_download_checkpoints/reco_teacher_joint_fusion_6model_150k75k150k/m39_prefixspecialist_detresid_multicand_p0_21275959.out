@@ -1,0 +1,68 @@
+============================================================
+Model-39 Prefix-Specialist + Deterministic-Residual MultiCandidate
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model39_prefixspecialist_detresid_multicand/model39_prefixspecialist_detresid_multicand_150k75k300k_residual2_k1024__seed0_bs64_pfx0
+Split: train=50000, val=20000, test=300000
+Reco batch size: 64
+Step1 quantized teacher offline: 1
+============================================================
+ python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m39_prefixspecialist_detresid_multicand.py --save_dir /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model39_prefixspecialist_detresid_multicand --run_name model39_prefixspecialist_detresid_multicand_150k75k300k_residual2_k1024__seed0_bs64_pfx0 --n_train_jets 370000 --n_train_split 50000 --n_val_split 20000 --n_test_split 300000 --offset_jets 0 --max_constits 100 --batch_size 64 --num_workers 1 --seed 0 --device cuda --save_fusion_scores --carry_epochs 48 --carry_patience 10 --carry_lr 2e-4 --carry_target_mode fixed_k --carry_target_k -1 --carry_target_thresh_gate 0 --carry_dist_thresh 0.22 --carry_lr_decay_start_epoch 20 --carry_lr_decay_gamma 0.96 --carry_min_lr_ratio 0.35 --reco_epochs 175 --reco_patience 30 --reco_min_epochs 45 --reco_lr 1.8e-4 --reco_batch_size 64 --reco_set_loss_mode chamfer --reco_loss_w_eos 0.20 --reco_loss_w_count 0.20 --reco_loss_w_jetpt 0.08 --reco_loss_w_4vec 0.03 --reco_loss_w_conf_rank 0.20 --reco_loss_w_conf_prefix 0.12 --reco_conf_margin 0.06 --reco_conf_prefix_tau 16.0 --reco_physics_warmup_epochs 12 --reco_phase1_end_epoch 15 --reco_phase2_end_epoch 75 --reco_phase3_end_epoch 127 --reco_phase2_alpha_fr_end 0.70 --reco_phase3_alpha_fr_end 0.95 --reco_phase4_alpha_fr 0.95 --reco_phase2_ss_end 0.60 --reco_phase3_ss_end 0.90 --reco_phase4_ss 0.90 --reco_phase2_free_run_every_n 2 --reco_phase3_free_run_every_n 1 --reco_phase4_free_run_every_n 1 --reco_phase_lr_decay 0.80 --seed_candidate_k 1 --seed_keep_m 1 --seed_max_prefix 0 --train_specialist_prefix 0 --seed_temp 0.35 --candidate_gen_batch 64 --search_eps_total 0.60 --search_eps_count 0.30 --search_w_chamfer 1.00 --search_w_count 0.25 --search_w_pt 0.12 --search_w_mass 0.08 --dual_epochs 90 --dual_lr 1.2e-4 --dual_patience 16 --codebook_path /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/m40_constituent_codebook/m40_quant_sweep_150k75k300k_seed0/codebooks/residual2_k1024 --codebook_label residual2_k1024 --step1_quantize_teacher_offline
+========================================================================
+Model-39 Prefix-Specialist m28 + Deterministic Residual MultiCandidate DualView
+Run: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model39_prefixspecialist_detresid_multicand/model39_prefixspecialist_detresid_multicand_150k75k300k_residual2_k1024__seed0_bs64_pfx0
+Split train/val/test = 50000/20000/300000 | K=1 keepM=1 max_prefix=0 train_specialist_prefix=0
+Quantized decode enabled: strategy=residual2 codebook=/home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/m40_constituent_codebook/m40_quant_sweep_150k75k300k_seed0/codebooks/residual2_k1024 label=residual2_k1024
+========================================================================
+Generating pseudo-HLT (deterministic keyed D_hard)...
+STEP 1 teacher offline quantization enabled: strategy=residual2 label=residual2_k1024
+HLT stats: avg_offline=54.29, avg_hlt=29.18, merged=7930084, eff_lost=1361629
+Split sizes: Train=50000, Val=20000, Test=300000
+Computing standardized features for train/val/test...
+
+========================================================================
+STEP 1: Teacher + HLT baseline
+========================================================================
+Teacher ep 5: train_auc=0.8229, val_auc=0.8146, val_fpr50=0.109645, best_auc=0.8230, fpr50@best=0.099773
+Teacher ep 10: train_auc=0.8310, val_auc=0.8258, val_fpr50=0.097571, best_auc=0.8266, fpr50@best=0.096197
+Teacher ep 15: train_auc=0.8372, val_auc=0.8273, val_fpr50=0.096929, best_auc=0.8273, fpr50@best=0.096929
+Teacher ep 20: train_auc=0.8471, val_auc=0.8252, val_fpr50=0.097537, best_auc=0.8273, fpr50@best=0.096929
+Teacher ep 25: train_auc=0.8592, val_auc=0.8194, val_fpr50=0.107845, best_auc=0.8273, fpr50@best=0.096929
+Early stopping Teacher at epoch 27
+Baseline ep 5: train_auc=0.8809, val_auc=0.8996, val_fpr50=0.037679, best_auc=0.8996, fpr50@best=0.037679
+Baseline ep 10: train_auc=0.9041, val_auc=0.9037, val_fpr50=0.030354, best_auc=0.9082, fpr50@best=0.032747
+Baseline ep 15: train_auc=0.9107, val_auc=0.9105, val_fpr50=0.026886, best_auc=0.9120, fpr50@best=0.026606
+Baseline ep 20: train_auc=0.9169, val_auc=0.9147, val_fpr50=0.026859, best_auc=0.9147, fpr50@best=0.026859
+Baseline ep 25: train_auc=0.9225, val_auc=0.9138, val_fpr50=0.023920, best_auc=0.9147, fpr50@best=0.026859
+Baseline ep 30: train_auc=0.9278, val_auc=0.9094, val_fpr50=0.026107, best_auc=0.9147, fpr50@best=0.026859
+Early stopping Baseline at epoch 32
+Teacher test AUC=0.8300 | Baseline test AUC=0.9145
+
+========================================================================
+STEP 2: Carryover token predictor
+========================================================================
+Carry target mode: fixed_k (k=0, thresh_gate=False)
+CarryPredictor ep 001: train_loss=0.00149 val_auc=0.0000 r@12=0.0000 p@12=0.0000 best=0.0000@1 lr=2.000e-04
+CarryPredictor ep 002: train_loss=0.00000 val_auc=0.0000 r@12=0.0000 p@12=0.0000 best=0.0000@1 lr=2.000e-04
+CarryPredictor ep 004: train_loss=0.00000 val_auc=0.0000 r@12=0.0000 p@12=0.0000 best=0.0000@1 lr=2.000e-04
+CarryPredictor ep 006: train_loss=0.00000 val_auc=0.0000 r@12=0.0000 p@12=0.0000 best=0.0000@1 lr=2.000e-04
+CarryPredictor ep 008: train_loss=0.00000 val_auc=0.0000 r@12=0.0000 p@12=0.0000 best=0.0000@1 lr=2.000e-04
+CarryPredictor ep 010: train_loss=0.00000 val_auc=0.0000 r@12=0.0000 p@12=0.0000 best=0.0000@1 lr=2.000e-04
+Early stopping CarryPredictor at epoch 11
+
+========================================================================
+STEP 3: Train m28-style completer (prefix specialist)
+========================================================================
+Specialist prefix length (train-time): 0
+Entering phase 1 (stabilize) at epoch 1
+RecoSpec ep 001 | t=06.93m eta=20.10h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=9.01835 set=6.71433 eos=0.11576 cnt=8.42625 jpt=1.57315 j4=8.73184 crk=0.04535 cpre=4.61649 fr=0.00000 | valTF total=9.49321 set=7.15940 eos=0.03120 cnt=8.59820 jpt=1.68776 j4=9.45071 crk=0.00824 cpre=4.76160 | valFR total=9.77702
+RecoSpec ep 002 | t=06.84m eta=19.86h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=8.39192 set=6.61626 eos=0.03623 cnt=5.79172 jpt=1.58123 j4=8.70528 crk=0.01331 cpre=4.52233 fr=0.00000 | valTF total=8.58562 set=6.91847 eos=0.04180 cnt=5.26603 jpt=1.59875 j4=8.77392 crk=0.00778 cpre=4.49029 | valFR total=9.10614
+RecoSpec ep 003 | t=06.86m eta=19.72h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=7.96386 set=6.25741 eos=0.03221 cnt=5.44220 jpt=1.49506 j4=8.03226 crk=0.01195 cpre=4.32459 fr=0.00000 | valTF total=8.33312 set=6.57340 eos=0.03168 cnt=5.59856 jpt=1.57035 j4=8.82978 crk=0.00807 cpre=4.45353 | valFR total=8.70821
+RecoSpec ep 004 | t=06.85m eta=19.58h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=7.36916 set=5.70508 eos=0.03033 cnt=5.33565 jpt=1.30395 j4=6.76319 crk=0.01346 cpre=4.04753 fr=0.00000 | valTF total=7.57573 set=5.95483 eos=0.02719 cnt=5.43723 jpt=1.09436 j4=5.46047 crk=0.00973 cpre=3.68561 | valFR total=8.44208
+RecoSpec ep 005 | t=06.85m eta=19.46h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=6.86501 set=5.22038 eos=0.02705 cnt=5.25344 jpt=1.19082 j4=6.03051 crk=0.01431 cpre=3.92100 fr=0.00000 | valTF total=6.86258 set=5.30299 eos=0.03463 cnt=4.92012 jpt=0.98447 j4=5.19894 crk=0.01359 cpre=3.90081 | valFR total=7.77172
+RecoSpec ep 006 | t=06.85m eta=19.33h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=7.16378 set=5.47845 eos=0.02776 cnt=5.14966 jpt=1.30066 j4=6.77981 crk=0.01502 cpre=4.10880 fr=0.00000 | valTF total=7.73196 set=6.00822 eos=0.02459 cnt=5.15700 jpt=1.45571 j4=7.74660 crk=0.00944 cpre=4.25910 | valFR total=8.62496
+RecoSpec ep 007 | t=06.86m eta=19.22h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=6.65301 set=4.95480 eos=0.02571 cnt=5.19400 jpt=1.21408 j4=6.18136 crk=0.01638 cpre=4.05087 fr=0.00000 | valTF total=5.50565 set=3.94275 eos=0.02432 cnt=5.24891 jpt=0.54287 j4=1.42974 crk=0.03735 cpre=3.75339 | valFR total=6.37553
+RecoSpec ep 008 | t=06.85m eta=19.10h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=5.98956 set=4.37175 eos=0.03213 cnt=5.07810 jpt=0.91929 j4=4.59180 crk=0.02594 cpre=3.74715 fr=0.00000 | valTF total=6.31318 set=4.69070 eos=0.03226 cnt=5.41365 jpt=0.78796 j4=3.66933 crk=0.02468 cpre=3.44097 | valFR total=6.53809
+RecoSpec ep 009 | t=06.84m eta=18.98h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=6.13827 set=4.47343 eos=0.02659 cnt=5.07883 jpt=0.99643 j4=4.65216 crk=0.02675 cpre=3.94918 fr=0.00000 | valTF total=8.01879 set=6.04207 eos=0.02517 cnt=5.74204 jpt=1.45920 j4=7.32165 crk=0.04600 cpre=4.68145 | valFR total=8.44292
+RecoSpec ep 010 | t=06.85m eta=18.86h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=6.32749 set=4.65473 eos=0.02564 cnt=5.03152 jpt=1.04836 j4=5.10217 crk=0.02127 cpre=3.82986 fr=0.00000 | valTF total=4.99142 set=3.35762 eos=0.02165 cnt=5.65159 jpt=0.44099 j4=1.28153 crk=0.03075 cpre=3.59622 | valFR total=5.88917
+RecoSpec ep 011 | t=06.83m eta=18.72h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=6.14609 set=4.42739 eos=0.02471 cnt=5.02940 jpt=1.07057 j4=5.20311 crk=0.02229 cpre=4.01480 fr=0.00000 | valTF total=7.28608 set=5.48093 eos=0.02624 cnt=4.85392 jpt=1.49683 j4=7.62073 crk=0.00904 cpre=4.23294 | valFR total=8.11479
+RecoSpec ep 012 | t=06.84m eta=18.60h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=6.03399 set=4.29955 eos=0.02610 cnt=4.99961 jpt=1.07973 j4=5.26543 crk=0.02120 cpre=4.00575 fr=0.00000 | valTF total=5.78852 set=4.06180 eos=0.02258 cnt=4.99246 jpt=1.05574 j4=5.17642 crk=0.01443 cpre=4.00873 | valFR total=6.58856
+RecoSpec ep 013 | t=06.84m eta=18.49h | phase=1:stabilize ss=0.00 mixFR=0.00@0 | train total=5.99716 set=4.24651 eos=0.02399 cnt=4.93543 jpt=1.15065 j4=5.83431 crk=0.01905 cpre=4.06534 fr=0.00000 | valTF total=7.11625 set=5.27217 eos=0.02186 cnt=4.83118 jpt=1.55548 j4=8.09813 crk=0.00920 cpre=4.20204 | valFR total=7.96928

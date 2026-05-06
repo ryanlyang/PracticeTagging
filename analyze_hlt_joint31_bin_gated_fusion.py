@@ -415,6 +415,60 @@ def _load_required_scores(
         scores_test["teacher"] = np.asarray(z2["preds_teacher_test"], dtype=np.float64)
         used_paths["teacher"] = str(joint_npz_path)
 
+    # Optional external override for HLT/teacher curves.
+    # This supports STEP1-only artifacts when users want a single shared
+    # teacher/HLT reference across many model runs.
+    hlt_override = score_files_raw.get("hlt")
+    if isinstance(hlt_override, str):
+        hlt_npz_path = _safe_path(hlt_override, repo_root)
+        zh = _load_npz(hlt_npz_path)
+        # Prefer fusion-score style val key; if absent, keep existing val scores.
+        has_hlt_val = ("preds_hlt_val" in zh)
+        k_hlt_val = "preds_hlt_val" if has_hlt_val else None
+        k_hlt_test = _first_existing_key(
+            zh,
+            [
+                "preds_hlt_test",
+            ],
+        )
+        if has_hlt_val and "labels_val" in zh:
+            yv_h = np.asarray(zh["labels_val"], dtype=np.float32)
+            if not np.array_equal(y_val, yv_h):
+                raise RuntimeError(f"Validation labels mismatch for external hlt npz={hlt_npz_path}")
+        if "labels_test" in zh:
+            yt_h = np.asarray(zh["labels_test"], dtype=np.float32)
+            if not np.array_equal(y_test, yt_h):
+                raise RuntimeError(f"Test labels mismatch for external hlt npz={hlt_npz_path}")
+        if has_hlt_val and k_hlt_val is not None:
+            scores_val["hlt"] = np.asarray(zh[k_hlt_val], dtype=np.float64)
+        scores_test["hlt"] = np.asarray(zh[k_hlt_test], dtype=np.float64)
+        used_paths["hlt"] = str(hlt_npz_path)
+
+    teacher_override = score_files_raw.get("teacher")
+    if isinstance(teacher_override, str):
+        t_npz_path = _safe_path(teacher_override, repo_root)
+        zt = _load_npz(t_npz_path)
+        has_t_val = ("preds_teacher_val" in zt)
+        k_t_val = "preds_teacher_val" if has_t_val else None
+        k_t_test = _first_existing_key(
+            zt,
+            [
+                "preds_teacher_test",
+            ],
+        )
+        if has_t_val and "labels_val" in zt:
+            yv_t = np.asarray(zt["labels_val"], dtype=np.float32)
+            if not np.array_equal(y_val, yv_t):
+                raise RuntimeError(f"Validation labels mismatch for external teacher npz={t_npz_path}")
+        if "labels_test" in zt:
+            yt_t = np.asarray(zt["labels_test"], dtype=np.float32)
+            if not np.array_equal(y_test, yt_t):
+                raise RuntimeError(f"Test labels mismatch for external teacher npz={t_npz_path}")
+        if has_t_val and k_t_val is not None:
+            scores_val["teacher"] = np.asarray(zt[k_t_val], dtype=np.float64)
+        scores_test["teacher"] = np.asarray(zt[k_t_test], dtype=np.float64)
+        used_paths["teacher"] = str(t_npz_path)
+
     for name in sorted(set(required_models)):
         if name in scores_val:
             continue

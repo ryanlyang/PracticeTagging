@@ -16,6 +16,9 @@ RUN_M15HIGH="${ROOT}/run_m15_dualreco_dualview_offdrop_high_weighted_500k300k500
 RUN_M16="${ROOT}/run_m16_dualreco_dualview_topk60_weighted_500k300k500k.sh"
 RUN_M17="${ROOT}/run_m17_dualreco_dualview_antioverlap_weighted_500k300k500k.sh"
 RUN_ANALYZE="${ROOT}/run_analyze_hlt_joint12_bin_gated_fusion_valsel_weighted_500k300k500k.sh"
+STEP1_DEP_JOB_ID="${STEP1_DEP_JOB_ID:-}"
+STEP1_REF_NPZ="${STEP1_REF_NPZ:-}"
+INCLUDE_HLT_CANDIDATE="${INCLUDE_HLT_CANDIDATE:-1}"
 
 # Optional:
 #   DEP_JOB_IDS="21200001:21200002:..." bash .../submit_...sh
@@ -54,6 +57,12 @@ else
   echo "  dual_m17_antioverlap=${j17}"
 fi
 
+if [[ -n "${STEP1_DEP_JOB_ID}" ]]; then
+  dep="${dep}:${STEP1_DEP_JOB_ID}"
+  echo "Added STEP1 dependency: ${STEP1_DEP_JOB_ID}"
+fi
+
+export STEP1_REF_NPZ INCLUDE_HLT_CANDIDATE
 ja=$(sbatch --dependency="afterok:${dep}" "${RUN_ANALYZE}" | awk '{print $4}')
 echo "Queued dependent analysis job: ${ja}"
 echo "Dependency: afterok:${dep}"

@@ -862,6 +862,9 @@ def train_single_view_classifier_auc(
     device: torch.device,
     train_cfg: Dict,
     name: str,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every_epochs: int = 1,
+    resume_from_checkpoint: bool = False,
 ) -> nn.Module:
     """Train single-view top-tagger and select checkpoint by best val AUC."""
     opt = torch.optim.AdamW(
@@ -875,8 +878,34 @@ def train_single_view_classifier_auc(
     fpr50_at_best = float("nan")
     best_state = None
     no_improve = 0
+    start_epoch = 0
+    ckpt_every = max(1, int(checkpoint_every_epochs))
 
-    for ep in tqdm(range(int(train_cfg["epochs"])), desc=name):
+    if checkpoint_path is not None and bool(resume_from_checkpoint) and checkpoint_path.exists():
+        try:
+            pack = torch.load(checkpoint_path, map_location="cpu")
+            if isinstance(pack, dict):
+                if "model" in pack:
+                    model.load_state_dict(pack["model"])
+                if "optimizer" in pack:
+                    opt.load_state_dict(pack["optimizer"])
+                if "scheduler" in pack:
+                    sch.load_state_dict(pack["scheduler"])
+                if "best_state" in pack:
+                    best_state = pack["best_state"]
+                best_val_auc = float(pack.get("best_val_auc", best_val_auc))
+                fpr50_at_best = float(pack.get("fpr50_at_best", fpr50_at_best))
+                no_improve = int(pack.get("no_improve", no_improve))
+                start_epoch = int(pack.get("epoch", -1)) + 1
+                print(
+                    f"[{name}] Resumed STEP1 checkpoint: {checkpoint_path} "
+                    f"(start_epoch={start_epoch+1}, best_auc={best_val_auc:.4f})"
+                )
+        except Exception as e:
+            print(f"[{name}] WARN: failed to resume from {checkpoint_path}: {e}")
+            start_epoch = 0
+
+    for ep in tqdm(range(start_epoch, int(train_cfg["epochs"])), desc=name):
         _, tr_auc = _train_classifier_with_optional_weights(model, train_loader, opt, device)
         va_auc, va_preds, va_labs, va_w = _eval_classifier_with_optional_weights(model, val_loader, device)
         va_fpr, va_tpr, _ = roc_curve(va_labs, va_preds, sample_weight=va_w)
@@ -901,8 +930,40 @@ def train_single_view_classifier_auc(
             print(f"Early stopping {name} at epoch {ep+1}")
             break
 
+        if checkpoint_path is not None and (((ep + 1) % ckpt_every) == 0):
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "epoch": int(ep),
+                    "model": model.state_dict(),
+                    "optimizer": opt.state_dict(),
+                    "scheduler": sch.state_dict(),
+                    "best_state": best_state,
+                    "best_val_auc": float(best_val_auc),
+                    "fpr50_at_best": float(fpr50_at_best),
+                    "no_improve": int(no_improve),
+                },
+                checkpoint_path,
+            )
+
     if best_state is not None:
         model.load_state_dict(best_state)
+
+    if checkpoint_path is not None:
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "epoch": int(max(0, int(train_cfg["epochs"]) - 1)),
+                "model": model.state_dict(),
+                "optimizer": opt.state_dict(),
+                "scheduler": sch.state_dict(),
+                "best_state": best_state,
+                "best_val_auc": float(best_val_auc),
+                "fpr50_at_best": float(fpr50_at_best),
+                "no_improve": int(no_improve),
+            },
+            checkpoint_path,
+        )
     return model
 
 
@@ -1722,6 +1783,7 @@ def train_reconstructor_weighted(
     train_cfg: Dict,
     loss_cfg: Dict,
     apply_reco_weight: bool,
+    use_weighted_val_selection: bool,
     reload_best_at_stage_transition: bool,
 ) -> Tuple[OfflineReconstructor, Dict[str, float]]:
     opt = torch.optim.AdamW(
@@ -1736,7 +1798,7 @@ def train_reconstructor_weighted(
     no_improve = 0
     best_metrics: Dict[str, float] = {}
     min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
-    val_metric_source = "weighted" if bool(apply_reco_weight) else "unweighted"
+    val_metric_source = "weighted" if bool(use_weighted_val_selection) else "unweighted"
 
     total_epochs = int(train_cfg["epochs"])
     stage1_end = int(max(int(train_cfg.get("stage1_epochs", 0)), 0))
@@ -1963,7 +2025,7 @@ def train_reconstructor_weighted(
         va_local_w /= max(n_va, 1)
         va_fp_mass_w /= max(n_va, 1)
 
-        val_total_sel = float(va_total_w) if bool(apply_reco_weight) else float(va_total_u)
+        val_total_sel = float(va_total_w) if bool(use_weighted_val_selection) else float(va_total_u)
 
         phase_entry = phase_best.get(phase_idx, None)
         if (phase_entry is None) or (val_total_sel < float(phase_entry["val_total"])):
@@ -2573,6 +2635,12 @@ def main() -> None:
             "unweighted per-sample BCE/reports for Teacher/Baseline."
         ),
     )
+    parser.add_argument(
+        "--step1_load_dir",
+        type=str,
+        default="",
+        help="If set to a directory containing teacher.pt and baseline.pt, load them and skip STEP 1 training.",
+    )
     parser.add_argument("--n_train_jets", type=int, default=50000)
     parser.add_argument("--offset_jets", type=int, default=0)
     parser.add_argument("--max_constits", type=int, default=80)
@@ -2663,6 +2731,16 @@ def main() -> None:
 
     # Kept for CLI compatibility; this script always selects by val_auc.
     parser.add_argument("--selection_metric", type=str, default="auc", choices=["auc", "fpr50"])
+    parser.add_argument(
+        "--val_selection_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "unweighted", "weighted"],
+        help=(
+            "Validation metric source for model selection in Stage A/B/C. "
+            "'auto' keeps legacy behavior (weighted when --use_train_weights or discrepancy weighting is enabled)."
+        ),
+    )
 
     # Stage C (joint finetune)
     parser.add_argument("--stageC_epochs", type=int, default=65)
@@ -2722,6 +2800,17 @@ def main() -> None:
         "--step1_only",
         action="store_true",
         help="Run only STEP 1 (Teacher + HLT Baseline) and exit before reconstructor/joint stages.",
+    )
+    parser.add_argument(
+        "--step1_checkpoint_every_epochs",
+        type=int,
+        default=1,
+        help="Save STEP-1 teacher/baseline resume checkpoints every N epochs.",
+    )
+    parser.add_argument(
+        "--step1_resume_from_checkpoints",
+        action="store_true",
+        help="Resume STEP-1 teacher/baseline training from progress_ckpt_step1/*.pt when available.",
     )
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
     parser.add_argument("--use_corrected_flags", action="store_true")
@@ -3198,11 +3287,40 @@ def main() -> None:
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
+    step1_ckpt_dir = save_root / "progress_ckpt_step1"
+    teacher_step1_ckpt = step1_ckpt_dir / "teacher_resume.pt"
+    baseline_step1_ckpt = step1_ckpt_dir / "baseline_resume.pt"
+
+    step1_load_dir = str(getattr(args, "step1_load_dir", "")).strip()
+    step1_teacher_ckpt = None
+    step1_baseline_ckpt = None
+    if step1_load_dir:
+        step1_dir = Path(step1_load_dir).expanduser().resolve()
+        step1_teacher_ckpt = step1_dir / "teacher.pt"
+        step1_baseline_ckpt = step1_dir / "baseline.pt"
+
     teacher = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    teacher = train_single_view_classifier_auc(
-        teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
-    )
+    if step1_teacher_ckpt is not None and step1_teacher_ckpt.is_file():
+        teacher_pack = torch.load(step1_teacher_ckpt, map_location=device)
+        teacher_sd = teacher_pack["model"] if isinstance(teacher_pack, dict) and "model" in teacher_pack else teacher_pack
+        teacher.load_state_dict(teacher_sd, strict=True)
+        print(f"STEP 1: loaded teacher checkpoint from {step1_teacher_ckpt}")
+    else:
+        teacher = train_single_view_classifier_auc(
+            teacher,
+            dl_train_off,
+            dl_val_off,
+            device,
+            cfg["training"],
+            name="Teacher",
+            checkpoint_path=teacher_step1_ckpt if bool(args.step1_resume_from_checkpoints) else None,
+            checkpoint_every_epochs=int(args.step1_checkpoint_every_epochs),
+            resume_from_checkpoint=bool(args.step1_resume_from_checkpoints),
+        )
     auc_teacher, preds_teacher, labs, w_teacher_test = _eval_classifier_with_optional_weights(teacher, dl_test_off, device)
+    auc_teacher_val, preds_teacher_val, labs_teacher_val, w_teacher_val = _eval_classifier_with_optional_weights(
+        teacher, dl_val_off, device
+    )
 
     ds_train_hlt = WeightedJetDataset(
         feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx], sample_weight=step1_train_w
@@ -3236,11 +3354,25 @@ def main() -> None:
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
 
     baseline = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    baseline = train_single_view_classifier_auc(
-        baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
-    )
+    if step1_baseline_ckpt is not None and step1_baseline_ckpt.is_file():
+        baseline_pack = torch.load(step1_baseline_ckpt, map_location=device)
+        baseline_sd = baseline_pack["model"] if isinstance(baseline_pack, dict) and "model" in baseline_pack else baseline_pack
+        baseline.load_state_dict(baseline_sd, strict=True)
+        print(f"STEP 1: loaded baseline checkpoint from {step1_baseline_ckpt}")
+    else:
+        baseline = train_single_view_classifier_auc(
+            baseline,
+            dl_train_hlt,
+            dl_val_hlt,
+            device,
+            cfg["training"],
+            name="Baseline",
+            checkpoint_path=baseline_step1_ckpt if bool(args.step1_resume_from_checkpoints) else None,
+            checkpoint_every_epochs=int(args.step1_checkpoint_every_epochs),
+            resume_from_checkpoint=bool(args.step1_resume_from_checkpoints),
+        )
     auc_baseline, preds_baseline, labs_baseline, w_baseline_test = _eval_classifier_with_optional_weights(baseline, dl_test_hlt, device)
-    auc_baseline_val, preds_baseline_val, labs_baseline_val, _ = _eval_classifier_with_optional_weights(
+    auc_baseline_val, preds_baseline_val, labs_baseline_val, w_baseline_val = _eval_classifier_with_optional_weights(
         baseline, dl_val_hlt, device
     )
     hlt_delta_thr_prob = prob_threshold_at_target_tpr(
@@ -3255,8 +3387,12 @@ def main() -> None:
     if bool(args.step1_only):
         labs = np.asarray(labs, dtype=np.float32)
         labs_baseline = np.asarray(labs_baseline, dtype=np.float32)
+        labs_teacher_val = np.asarray(labs_teacher_val, dtype=np.float32)
+        labs_baseline_val = np.asarray(labs_baseline_val, dtype=np.float32)
         if not np.array_equal(labs, labs_baseline):
             raise RuntimeError("Teacher/baseline label mismatch on test split in --step1_only mode.")
+        if not np.array_equal(labs_teacher_val, labs_baseline_val):
+            raise RuntimeError("Teacher/baseline label mismatch on val split in --step1_only mode.")
 
         w_teacher_curve = w_teacher_test if bool(args.use_train_weights) else None
         w_baseline_curve = w_baseline_test if bool(args.use_train_weights) else None
@@ -3278,15 +3414,25 @@ def main() -> None:
         step1_npz = save_root / "results_step1_teacher_baseline.npz"
         np.savez_compressed(
             step1_npz,
+            labels_val=labs_teacher_val.astype(np.float32),
+            preds_teacher_val=np.asarray(preds_teacher_val, dtype=np.float64),
+            preds_hlt_val=np.asarray(preds_baseline_val, dtype=np.float64),
             labels_test=labs.astype(np.float32),
             preds_teacher_test=np.asarray(preds_teacher, dtype=np.float64),
             preds_hlt_test=np.asarray(preds_baseline, dtype=np.float64),
+            auc_teacher_val=float(auc_teacher_val),
+            auc_hlt_val=float(auc_baseline_val),
             auc_teacher_test=float(auc_teacher),
             auc_hlt_test=float(auc_baseline),
             fpr30_teacher=float(fpr30_teacher),
             fpr30_hlt=float(fpr30_baseline),
             fpr50_teacher=float(fpr50_teacher),
             fpr50_hlt=float(fpr50_baseline),
+            sample_weight_val=(
+                np.asarray(w_teacher_val, dtype=np.float64)
+                if (bool(args.use_train_weights) and w_teacher_val is not None)
+                else np.ones_like(np.asarray(labs_teacher_val, dtype=np.float64))
+            ),
             sample_weight_test=(
                 np.asarray(w_teacher_test, dtype=np.float64)
                 if (bool(args.use_train_weights) and w_teacher_test is not None)
@@ -3628,7 +3774,17 @@ def main() -> None:
     use_cls_weighting_all_stages = bool(args.use_train_weights)
     if bool(args.disc_weight_enable) and float(args.disc_cls_lambda) > 0.0:
         use_cls_weighting_all_stages = True
-    use_weighted_val_selection_all_stages = bool(args.disc_weight_enable or args.use_train_weights)
+    val_selection_mode = str(args.val_selection_mode).strip().lower()
+    if val_selection_mode == "weighted":
+        use_weighted_val_selection_all_stages = True
+    elif val_selection_mode == "unweighted":
+        use_weighted_val_selection_all_stages = False
+    else:
+        use_weighted_val_selection_all_stages = bool(args.disc_weight_enable or args.use_train_weights)
+    print(
+        "Val selection mode: "
+        f"{val_selection_mode} -> weighted_selection={bool(use_weighted_val_selection_all_stages)}"
+    )
 
     reconstructor, reco_val_metrics = train_reconstructor_weighted(
         reconstructor,
@@ -3638,6 +3794,7 @@ def main() -> None:
         cfg["reconstructor_training"],
         cfg["loss"],
         apply_reco_weight=bool(use_reco_weighting_all_stages),
+        use_weighted_val_selection=bool(use_weighted_val_selection_all_stages),
         reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
     )
 

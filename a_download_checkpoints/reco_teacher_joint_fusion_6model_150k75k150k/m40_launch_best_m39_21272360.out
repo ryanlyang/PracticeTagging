@@ -1,0 +1,14 @@
+Using shortlist: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/m40_constituent_codebook/m40_quant_sweep_150k75k300k_seed0/shortlist.json
+Best codebook: /home/ryreu/atlas/PracticeTagging/checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/m40_constituent_codebook/m40_quant_sweep_150k75k300k_seed0/codebooks/residual2_k1024 (residual2_k1024)
+Submitting m39 with BASE_RUN_NAME=model39_prefixspecialist_detresid_multicand_150k75k300k_residual2_k1024__seed0
+Submitted m39 specialist p0: 21272922
+Submitted m39 specialist p3: 21272923
+Submitted m39 specialist p6: 21272924
+Submitted m39 specialist p9: 21272925
+Submitted m39 specialist p12: 21272926
+Submitted m39 specialist p15: 21272927
+Stage2 dependency: afterok:21272922:21272923:21272924:21272925:21272926:21272927
+Submitted dependent m39 stage2 keep_m=6: 21272928
+Submitted dependent m39 stage2 keep_m=4: 21272929
+Submitted dependent m39 stage2 keep_m=2: 21272930
+Submitted dependent m39 stage2 keep_m=1: 21272931

@@ -2210,6 +2210,12 @@ def main() -> None:
     parser.add_argument("--skip_save_models", action="store_true")
     parser.add_argument("--seed", type=int, default=RANDOM_SEED)
     parser.add_argument("--use_train_weights", action="store_true")
+    parser.add_argument(
+        "--step1_load_dir",
+        type=str,
+        default="",
+        help="If set to a directory containing teacher.pt and baseline.pt, load them and skip STEP 1 training.",
+    )
 
     # HLT controls
     parser.add_argument("--merge_radius", type=float, default=BASE_CONFIG["hlt_effects"]["merge_radius"])
@@ -2529,10 +2535,24 @@ def main() -> None:
     dl_val_off = DataLoader(ds_val_off, batch_size=BS, shuffle=False)
     dl_test_off = DataLoader(ds_test_off, batch_size=BS, shuffle=False)
 
+    step1_load_dir = str(getattr(args, "step1_load_dir", "")).strip()
+    step1_teacher_ckpt = None
+    step1_baseline_ckpt = None
+    if step1_load_dir:
+        step1_dir = Path(step1_load_dir).expanduser().resolve()
+        step1_teacher_ckpt = step1_dir / "teacher.pt"
+        step1_baseline_ckpt = step1_dir / "baseline.pt"
+
     teacher = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    teacher = train_single_view_classifier_auc(
-        teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
-    )
+    if step1_teacher_ckpt is not None and step1_teacher_ckpt.is_file():
+        teacher_pack = torch.load(step1_teacher_ckpt, map_location=device)
+        teacher_sd = teacher_pack["model"] if isinstance(teacher_pack, dict) and "model" in teacher_pack else teacher_pack
+        teacher.load_state_dict(teacher_sd, strict=True)
+        print(f"STEP 1: loaded teacher checkpoint from {step1_teacher_ckpt}")
+    else:
+        teacher = train_single_view_classifier_auc(
+            teacher, dl_train_off, dl_val_off, device, cfg["training"], name="Teacher"
+        )
     auc_teacher, preds_teacher, labs = eval_classifier(teacher, dl_test_off, device)
     auc_teacher_val, preds_teacher_val, labs_val_teacher = eval_classifier(teacher, dl_val_off, device)
 
@@ -2550,9 +2570,15 @@ def main() -> None:
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=BS, shuffle=False)
 
     baseline = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    baseline = train_single_view_classifier_auc(
-        baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
-    )
+    if step1_baseline_ckpt is not None and step1_baseline_ckpt.is_file():
+        baseline_pack = torch.load(step1_baseline_ckpt, map_location=device)
+        baseline_sd = baseline_pack["model"] if isinstance(baseline_pack, dict) and "model" in baseline_pack else baseline_pack
+        baseline.load_state_dict(baseline_sd, strict=True)
+        print(f"STEP 1: loaded baseline checkpoint from {step1_baseline_ckpt}")
+    else:
+        baseline = train_single_view_classifier_auc(
+            baseline, dl_train_hlt, dl_val_hlt, device, cfg["training"], name="Baseline"
+        )
     auc_baseline, preds_baseline, _ = eval_classifier(baseline, dl_test_hlt, device)
     auc_baseline_val, preds_baseline_val, labs_val_baseline = eval_classifier(baseline, dl_val_hlt, device)
     assert np.array_equal(labs_val_teacher.astype(np.float32), labs_val_baseline.astype(np.float32))

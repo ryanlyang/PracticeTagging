@@ -1105,6 +1105,12 @@ def main() -> None:
             "Concat teacher is still trained for Stage-A guidance."
         ),
     )
+    ap.add_argument(
+        "--step1_load_dir",
+        type=str,
+        default="",
+        help="If set to a directory containing baseline.pt, load it and skip baseline STEP 1 training.",
+    )
     ap.add_argument("--n_train_jets", type=int, default=250000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
@@ -1377,15 +1383,27 @@ def main() -> None:
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=bs_cls, shuffle=False)
     dl_test_hlt = DataLoader(ds_test_hlt, batch_size=bs_cls, shuffle=False)
 
+    step1_load_dir = str(getattr(args, "step1_load_dir", "")).strip()
+    step1_baseline_ckpt = None
+    if step1_load_dir:
+        step1_dir = Path(step1_load_dir).expanduser().resolve()
+        step1_baseline_ckpt = step1_dir / "baseline.pt"
+
     baseline = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    baseline = b.train_single_view_classifier_auc(
-        baseline,
-        dl_train_hlt,
-        dl_val_hlt,
-        device,
-        cfg["training"],
-        name="Baseline-HLT",
-    )
+    if step1_baseline_ckpt is not None and step1_baseline_ckpt.is_file():
+        baseline_pack = torch.load(step1_baseline_ckpt, map_location=device)
+        baseline_sd = baseline_pack["model"] if isinstance(baseline_pack, dict) and "model" in baseline_pack else baseline_pack
+        baseline.load_state_dict(baseline_sd, strict=True)
+        print(f"STEP 1: loaded baseline checkpoint from {step1_baseline_ckpt}")
+    else:
+        baseline = b.train_single_view_classifier_auc(
+            baseline,
+            dl_train_hlt,
+            dl_val_hlt,
+            device,
+            cfg["training"],
+            name="Baseline-HLT",
+        )
     auc_hlt_test, preds_hlt_test, labs_hlt_test = b.eval_classifier(baseline, dl_test_hlt, device)
     auc_hlt_val, preds_hlt_val, labs_hlt_val = b.eval_classifier(baseline, dl_val_hlt, device)
 

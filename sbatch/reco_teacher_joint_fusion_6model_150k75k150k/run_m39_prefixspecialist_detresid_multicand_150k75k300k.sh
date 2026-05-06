@@ -54,6 +54,10 @@ CARRY_MIN_LR_RATIO="${CARRY_MIN_LR_RATIO:-0.35}"
 CODEBOOK_PATH="${CODEBOOK_PATH:-}"
 CODEBOOK_LABEL="${CODEBOOK_LABEL:-}"
 STEP1_QUANTIZE_TEACHER_OFFLINE="${STEP1_QUANTIZE_TEACHER_OFFLINE:-auto}"
+SKIP_STEP1_TRAINING="${SKIP_STEP1_TRAINING:-0}"
+STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
+CHECKPOINT_EVERY_EPOCHS="${CHECKPOINT_EVERY_EPOCHS:-5}"
+RESUME_FROM_CHECKPOINTS="${RESUME_FROM_CHECKPOINTS:-1}"
 
 set +u
 source ~/.bashrc
@@ -171,6 +175,16 @@ fi
 if [[ "${STEP1_QUANTIZE_TEACHER_OFFLINE}" == "1" ]]; then
   CMD+=(--step1_quantize_teacher_offline)
 fi
+if [[ "${SKIP_STEP1_TRAINING}" == "1" ]]; then
+  CMD+=(--skip_step1_training)
+fi
+if [[ -n "${STEP1_LOAD_DIR}" ]]; then
+  CMD+=(--step1_load_dir "${STEP1_LOAD_DIR}")
+fi
+CMD+=(--checkpoint_every_epochs "${CHECKPOINT_EVERY_EPOCHS}")
+if [[ "${RESUME_FROM_CHECKPOINTS}" == "1" ]]; then
+  CMD+=(--resume_from_checkpoints)
+fi
 
 echo "============================================================"
 echo "Model-39 Prefix-Specialist + Deterministic-Residual MultiCandidate"
@@ -178,6 +192,9 @@ echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}"
 echo "Reco batch size: ${RECO_BATCH_SIZE}"
 echo "Step1 quantized teacher offline: ${STEP1_QUANTIZE_TEACHER_OFFLINE}"
+echo "Skip Step1 training: ${SKIP_STEP1_TRAINING}"
+echo "Checkpoint every epochs: ${CHECKPOINT_EVERY_EPOCHS}"
+echo "Resume from checkpoints: ${RESUME_FROM_CHECKPOINTS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo

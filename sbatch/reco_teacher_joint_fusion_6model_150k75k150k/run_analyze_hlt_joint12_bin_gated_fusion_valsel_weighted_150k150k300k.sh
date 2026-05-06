@@ -45,6 +45,8 @@ ROUTER_CAL_FRAC="${ROUTER_CAL_FRAC:-0.40}"
 SEED="${SEED:-0}"
 
 CANDIDATE_MODELS_ALL="${CANDIDATE_MODELS_ALL:-joint_delta,joint_delta020,joint_s01,corrected_s01,concat_corrected,offdrop_mid,offdrop_high,dual_m12_noscale,dual_m15_offdrop_mid,dual_m15_offdrop_high,dual_m16_topk60,dual_m17_antioverlap}"
+INCLUDE_HLT_CANDIDATE="${INCLUDE_HLT_CANDIDATE:-1}"
+STEP1_REF_NPZ="${STEP1_REF_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/teacher_hlt_only_weighted_150k150k300k/teacher_hlt_only_weighted_150k150k300k_seed0/results_step1_teacher_baseline.npz}"
 
 # Fine-grained search.
 GLOBAL_MAX_ADD="${GLOBAL_MAX_ADD:-8}"
@@ -85,9 +87,24 @@ do
   fi
 done
 
+STEP1_REF_USE=0
+if [[ -n "${STEP1_REF_NPZ}" && -f "${STEP1_REF_NPZ}" ]]; then
+  STEP1_REF_USE=1
+elif [[ -n "${STEP1_REF_NPZ}" ]]; then
+  echo "WARN: STEP1_REF_NPZ not found, falling back to joint_delta HLT/teacher scores: ${STEP1_REF_NPZ}" >&2
+fi
+
+if [[ "${INCLUDE_HLT_CANDIDATE}" == "1" ]]; then
+  case ",${CANDIDATE_MODELS_ALL}," in
+    *,hlt,*) ;;
+    *) CANDIDATE_MODELS_ALL="${CANDIDATE_MODELS_ALL},hlt" ;;
+  esac
+fi
+
 export OUT_DIR FUSION_JSON
 export M2D005_NPZ M2D020_NPZ M4_NPZ M5_NPZ M6_NPZ
 export M9MID_NPZ M9HIGH_NPZ M12_NPZ M15MID_NPZ M15HIGH_NPZ M16_NPZ M17_NPZ
+export STEP1_REF_NPZ STEP1_REF_USE
 
 python - <<'PY'
 import json
@@ -112,6 +129,11 @@ score_files = {
     "dual_m16_topk60": str(Path(os.environ["M16_NPZ"]).resolve()),
     "dual_m17_antioverlap": str(Path(os.environ["M17_NPZ"]).resolve()),
 }
+
+if str(os.environ.get("STEP1_REF_USE", "0")) == "1":
+    step1_npz = str(Path(os.environ["STEP1_REF_NPZ"]).resolve())
+    score_files["hlt"] = step1_npz
+    score_files["teacher"] = step1_npz
 
 fusion = {"run_dirs": {"score_files": score_files}}
 fusion_json.write_text(json.dumps(fusion, indent=2), encoding="utf-8")
@@ -150,6 +172,9 @@ echo "Calibration: ${CALIBRATION}"
 echo "Out dir:     ${OUT_DIR}"
 echo "Fusion json: ${FUSION_JSON}"
 echo "Models:      ${CANDIDATE_MODELS_ALL}"
+if [[ "${STEP1_REF_USE}" == "1" ]]; then
+  echo "Step1 ref:   ${STEP1_REF_NPZ}"
+fi
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo

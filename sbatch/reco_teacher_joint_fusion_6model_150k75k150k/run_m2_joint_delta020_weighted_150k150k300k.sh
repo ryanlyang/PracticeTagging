@@ -55,6 +55,7 @@ CMD=(
   --num_workers "${NUM_WORKERS}"
   --seed "${SEED}"
   --selection_metric auc
+  --val_selection_mode unweighted
   --stageB_lambda_rank 0.0
   --stageB_lambda_cons 0.0
   --stageC_lr_dual 1e-5

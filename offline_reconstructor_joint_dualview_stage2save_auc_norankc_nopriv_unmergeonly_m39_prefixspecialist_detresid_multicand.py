@@ -480,6 +480,9 @@ def _train_reco_specialist_with_prefix(
     train_cfg: Dict,
     loss_cfg: Dict,
     token_quantizer: Optional[TokenCodebookQuantizer] = None,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every: int = 0,
+    resume_from_checkpoint: bool = False,
 ) -> Tuple[m28.HLT2OfflineSeq2Seq, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -504,8 +507,26 @@ def _train_reco_specialist_with_prefix(
     phase_best_val = float("inf")
     phase_best_ep = -1
     ep_times: List[float] = []
+    start_ep = 0
 
-    for ep in range(total_epochs):
+    if bool(resume_from_checkpoint) and checkpoint_path is not None and checkpoint_path.is_file():
+        ck = torch.load(checkpoint_path, map_location="cpu")
+        if "model_state" in ck:
+            model.load_state_dict(ck["model_state"])
+        if "optimizer_state" in ck:
+            opt.load_state_dict(ck["optimizer_state"])
+        best_state = ck.get("best_state", best_state)
+        best_val = float(ck.get("best_val", best_val))
+        best_ep = int(ck.get("best_ep", best_ep))
+        no_improve = int(ck.get("no_improve", no_improve))
+        current_phase_idx = int(ck.get("current_phase_idx", current_phase_idx))
+        phase_best_state = ck.get("phase_best_state", phase_best_state)
+        phase_best_val = float(ck.get("phase_best_val", phase_best_val))
+        phase_best_ep = int(ck.get("phase_best_ep", phase_best_ep))
+        start_ep = int(ck.get("epoch", -1)) + 1
+        print(f"RecoSpecialist: resumed from checkpoint {checkpoint_path} at epoch {start_ep}")
+
+    for ep in range(start_ep, total_epochs):
         t0 = time.perf_counter()
         phase_sched = m28.phased_curriculum_schedule(ep, total_epochs, loss_cfg)
         phase_idx = int(phase_sched["phase_idx"])
@@ -743,6 +764,25 @@ def _train_reco_specialist_with_prefix(
         if (ep + 1) >= min_epochs and no_improve >= patience:
             print(f"Early stopping RecoSpecialist at epoch {ep+1}")
             break
+
+        if checkpoint_path is not None and int(checkpoint_every) > 0 and ((ep + 1) % int(checkpoint_every) == 0):
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "epoch": int(ep),
+                    "model_state": model.state_dict(),
+                    "optimizer_state": opt.state_dict(),
+                    "best_state": best_state,
+                    "best_val": float(best_val),
+                    "best_ep": int(best_ep),
+                    "no_improve": int(no_improve),
+                    "current_phase_idx": int(current_phase_idx),
+                    "phase_best_state": phase_best_state,
+                    "phase_best_val": float(phase_best_val),
+                    "phase_best_ep": int(phase_best_ep),
+                },
+                checkpoint_path,
+            )
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -1072,14 +1112,31 @@ def _train_m38_model(
     weight_decay: float,
     patience: int,
     name: str,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every: int = 0,
+    resume_from_checkpoint: bool = False,
 ) -> Tuple[nn.Module, Dict[str, float]]:
     opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
     best_state = None
     best_auc = float("-inf")
     best_epoch = 0
     no_imp = 0
+    start_ep = 0
 
-    for ep in range(int(epochs)):
+    if bool(resume_from_checkpoint) and checkpoint_path is not None and checkpoint_path.is_file():
+        ck = torch.load(checkpoint_path, map_location="cpu")
+        if "model_state" in ck:
+            model.load_state_dict(ck["model_state"])
+        if "optimizer_state" in ck:
+            opt.load_state_dict(ck["optimizer_state"])
+        best_state = ck.get("best_state", None)
+        best_auc = float(ck.get("best_auc", best_auc))
+        best_epoch = int(ck.get("best_epoch", best_epoch))
+        no_imp = int(ck.get("no_imp", no_imp))
+        start_ep = int(ck.get("epoch", -1)) + 1
+        print(f"{name}: resumed from checkpoint {checkpoint_path} at epoch {start_ep}")
+
+    for ep in range(start_ep, int(epochs)):
         model.train()
         tr_loss = 0.0
         tr_n = 0
@@ -1131,6 +1188,21 @@ def _train_m38_model(
         if no_imp >= int(patience):
             print(f"Early stopping {name} at epoch {ep+1}")
             break
+
+        if checkpoint_path is not None and int(checkpoint_every) > 0 and ((ep + 1) % int(checkpoint_every) == 0):
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "epoch": int(ep),
+                    "model_state": model.state_dict(),
+                    "optimizer_state": opt.state_dict(),
+                    "best_state": best_state,
+                    "best_auc": float(best_auc),
+                    "best_epoch": int(best_epoch),
+                    "no_imp": int(no_imp),
+                },
+                checkpoint_path,
+            )
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -1211,6 +1283,9 @@ def _train_carry_predictor(
     lr_decay_start_epoch: int = 0,
     lr_decay_gamma: float = 1.0,
     min_lr_ratio: float = 0.30,
+    checkpoint_path: Optional[Path] = None,
+    checkpoint_every: int = 0,
+    resume_from_checkpoint: bool = False,
 ) -> Tuple[CarryoverTokenPredictor, Dict[str, float]]:
     opt = torch.optim.AdamW(model.parameters(), lr=float(lr), weight_decay=float(weight_decay))
     pos_w = torch.tensor(float(max(pos_weight, 1e-3)), dtype=torch.float32, device=device)
@@ -1219,8 +1294,23 @@ def _train_carry_predictor(
     best_epoch = 0
     best_topk_metrics: Dict[str, float] = {}
     no_imp = 0
+    start_ep = 0
 
-    for ep in range(int(epochs)):
+    if bool(resume_from_checkpoint) and checkpoint_path is not None and checkpoint_path.is_file():
+        ck = torch.load(checkpoint_path, map_location="cpu")
+        if "model_state" in ck:
+            model.load_state_dict(ck["model_state"])
+        if "optimizer_state" in ck:
+            opt.load_state_dict(ck["optimizer_state"])
+        best_state = ck.get("best_state", None)
+        best_auc = float(ck.get("best_auc", best_auc))
+        best_epoch = int(ck.get("best_epoch", best_epoch))
+        best_topk_metrics = ck.get("best_topk_metrics", best_topk_metrics) or {}
+        no_imp = int(ck.get("no_imp", no_imp))
+        start_ep = int(ck.get("epoch", -1)) + 1
+        print(f"CarryPredictor: resumed from checkpoint {checkpoint_path} at epoch {start_ep}")
+
+    for ep in range(start_ep, int(epochs)):
         model.train()
         tr_loss = 0.0
         tr_n = 0
@@ -1295,6 +1385,22 @@ def _train_carry_predictor(
         if no_imp >= int(patience):
             print(f"Early stopping CarryPredictor at epoch {ep+1}")
             break
+
+        if checkpoint_path is not None and int(checkpoint_every) > 0 and ((ep + 1) % int(checkpoint_every) == 0):
+            checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "epoch": int(ep),
+                    "model_state": model.state_dict(),
+                    "optimizer_state": opt.state_dict(),
+                    "best_state": best_state,
+                    "best_auc": float(best_auc),
+                    "best_epoch": int(best_epoch),
+                    "best_topk_metrics": dict(best_topk_metrics),
+                    "no_imp": int(no_imp),
+                },
+                checkpoint_path,
+            )
 
     if best_state is not None:
         model.load_state_dict(best_state)
@@ -1913,6 +2019,19 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Quantize Offline constituents with the provided codebook before STEP-1 Teacher feature building.",
     )
+    p.add_argument(
+        "--skip_step1_training",
+        action="store_true",
+        help="Skip STEP-1 teacher/baseline training and load pretrained checkpoints from --step1_load_dir.",
+    )
+    p.add_argument(
+        "--step1_load_dir",
+        type=str,
+        default="",
+        help="Directory containing teacher.pt and baseline_hlt.pt for STEP-1 reuse.",
+    )
+    p.add_argument("--checkpoint_every_epochs", type=int, default=5)
+    p.add_argument("--resume_from_checkpoints", action="store_true")
 
     p.add_argument("--n_train_jets", type=int, default=525000)
     p.add_argument("--n_train_split", type=int, default=150000)
@@ -2191,15 +2310,6 @@ def main() -> None:
     dl_te_off = DataLoader(ds_te_off, batch_size=int(args.batch_size), shuffle=False)
 
     teacher = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    teacher = base.train_single_view_classifier_auc(
-        model=teacher,
-        train_loader=dl_tr_off,
-        val_loader=dl_va_off,
-        device=device,
-        train_cfg=cls_cfg,
-        name="Teacher",
-    )
-    teacher_auc_test, teacher_p_test, teacher_y_test, teacher_w_test = base._eval_classifier_with_optional_weights(teacher, dl_te_off, device)
 
     ds_tr_hlt = base.WeightedJetDataset(feat_hlt_tr, mask_hlt[train_idx], labels[train_idx], sw_train)
     ds_va_hlt = base.WeightedJetDataset(feat_hlt_va, mask_hlt[val_idx], labels[val_idx], sw_val)
@@ -2210,17 +2320,45 @@ def main() -> None:
     dl_te_hlt = DataLoader(ds_te_hlt, batch_size=int(args.batch_size), shuffle=False)
 
     baseline = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
-    baseline = base.train_single_view_classifier_auc(
-        model=baseline,
-        train_loader=dl_tr_hlt,
-        val_loader=dl_va_hlt,
-        device=device,
-        train_cfg=cls_cfg,
-        name="Baseline",
-    )
+
+    if bool(args.skip_step1_training):
+        load_dir = Path(str(args.step1_load_dir).strip()) if str(args.step1_load_dir).strip() else save_root
+        teacher_ckpt = load_dir / "teacher.pt"
+        baseline_ckpt = load_dir / "baseline_hlt.pt"
+        if not teacher_ckpt.is_file() or not baseline_ckpt.is_file():
+            raise RuntimeError(
+                "STEP-1 skip requested but missing checkpoints. "
+                f"Expected {teacher_ckpt} and {baseline_ckpt}"
+            )
+        teacher_obj = torch.load(teacher_ckpt, map_location="cpu")
+        baseline_obj = torch.load(baseline_ckpt, map_location="cpu")
+        teacher.load_state_dict(teacher_obj["model"])
+        baseline.load_state_dict(baseline_obj["model"])
+        print(f"STEP 1 training skipped: loaded teacher/baseline from {load_dir}")
+    else:
+        teacher = base.train_single_view_classifier_auc(
+            model=teacher,
+            train_loader=dl_tr_off,
+            val_loader=dl_va_off,
+            device=device,
+            train_cfg=cls_cfg,
+            name="Teacher",
+        )
+        baseline = base.train_single_view_classifier_auc(
+            model=baseline,
+            train_loader=dl_tr_hlt,
+            val_loader=dl_va_hlt,
+            device=device,
+            train_cfg=cls_cfg,
+            name="Baseline",
+        )
+
+    teacher_auc_test, teacher_p_test, teacher_y_test, teacher_w_test = base._eval_classifier_with_optional_weights(teacher, dl_te_off, device)
     baseline_auc_test, baseline_p_test, baseline_y_test, baseline_w_test = base._eval_classifier_with_optional_weights(baseline, dl_te_hlt, device)
 
     print(f"Teacher test AUC={teacher_auc_test:.4f} | Baseline test AUC={baseline_auc_test:.4f}")
+    torch.save({"model": teacher.state_dict(), "auc_test": float(teacher_auc_test)}, save_root / "teacher.pt")
+    torch.save({"model": baseline.state_dict(), "auc_test": float(baseline_auc_test)}, save_root / "baseline_hlt.pt")
 
     specialist_prefix = int(args.train_specialist_prefix if int(args.train_specialist_prefix) >= 0 else args.seed_max_prefix)
     specialist_prefix = int(np.clip(specialist_prefix, 0, int(args.max_constits)))
@@ -2298,6 +2436,9 @@ def main() -> None:
         max_tokens=int(args.max_constits),
     ).to(device)
 
+    progress_dir = save_root / "progress_ckpt"
+    progress_dir.mkdir(parents=True, exist_ok=True)
+
     carry_model, carry_metrics = _train_carry_predictor(
         model=carry_model,
         train_loader=dl_c_tr,
@@ -2311,6 +2452,9 @@ def main() -> None:
         lr_decay_start_epoch=int(args.carry_lr_decay_start_epoch),
         lr_decay_gamma=float(args.carry_lr_decay_gamma),
         min_lr_ratio=float(args.carry_min_lr_ratio),
+        checkpoint_path=progress_dir / "carry_resume.pt",
+        checkpoint_every=int(args.checkpoint_every_epochs),
+        resume_from_checkpoint=bool(args.resume_from_checkpoints),
     )
 
     # ---------------------------------------------------------------------
@@ -2457,6 +2601,9 @@ def main() -> None:
         train_cfg=reco_train_cfg,
         loss_cfg=reco_loss_cfg,
         token_quantizer=token_quantizer,
+        checkpoint_path=progress_dir / "reco_resume.pt",
+        checkpoint_every=int(args.checkpoint_every_epochs),
+        resume_from_checkpoint=bool(args.resume_from_checkpoints),
     )
 
     # ---------------------------------------------------------------------
@@ -2589,6 +2736,9 @@ def main() -> None:
         weight_decay=float(args.dual_weight_decay),
         patience=int(args.dual_patience),
         name="M39NoGate",
+        checkpoint_path=progress_dir / "m39_nogate_resume.pt",
+        checkpoint_every=int(args.checkpoint_every_epochs),
+        resume_from_checkpoint=bool(args.resume_from_checkpoints),
     )
 
     m38_gated = MultiCandidateM38Gated(
@@ -2610,6 +2760,9 @@ def main() -> None:
         weight_decay=float(args.dual_weight_decay),
         patience=int(args.dual_patience),
         name="M39Gated",
+        checkpoint_path=progress_dir / "m39_gated_resume.pt",
+        checkpoint_every=int(args.checkpoint_every_epochs),
+        resume_from_checkpoint=bool(args.resume_from_checkpoints),
     )
 
     # ---------------------------------------------------------------------
