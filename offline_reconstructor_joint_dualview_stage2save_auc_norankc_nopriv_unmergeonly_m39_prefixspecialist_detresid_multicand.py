@@ -207,6 +207,18 @@ def _const_to_token5_np(const: np.ndarray, mask: np.ndarray) -> np.ndarray:
     return tok
 
 
+def _token5_to_const_np(tok: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    pt = np.exp(np.clip(tok[..., 0], -20.0, 20.0)).astype(np.float32)
+    eta = np.clip(tok[..., 1], -5.0, 5.0).astype(np.float32)
+    sphi = tok[..., 2]
+    cphi = tok[..., 3]
+    phi = np.arctan2(sphi, cphi).astype(np.float32)
+    e = np.exp(np.clip(tok[..., 4], -20.0, 20.0)).astype(np.float32)
+    out = np.stack([pt, eta, phi, e], axis=-1).astype(np.float32)
+    out[~mask] = 0.0
+    return out
+
+
 def _build_candidate_token12_np(
     off_const: np.ndarray,
     off_mask: np.ndarray,
@@ -1896,6 +1908,11 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--run_name", type=str, default="model39_prefixspecialist_detresid_multicand_150k75k300k_seed0")
     p.add_argument("--codebook_path", type=str, default="", help="Optional m40 codebook path (provenance hook).")
     p.add_argument("--codebook_label", type=str, default="", help="Optional m40 codebook label (provenance hook).")
+    p.add_argument(
+        "--step1_quantize_teacher_offline",
+        action="store_true",
+        help="Quantize Offline constituents with the provided codebook before STEP-1 Teacher feature building.",
+    )
 
     p.add_argument("--n_train_jets", type=int, default=525000)
     p.add_argument("--n_train_split", type=int, default=150000)
@@ -2109,6 +2126,18 @@ def main() -> None:
     # Match m28 training regime: sort both Offline and HLT tokens by descending pT.
     const_off, mask_off, _ = m28.sort_constituents_by_pt_np(const_off, mask_off)
     const_hlt, mask_hlt, _ = m28.sort_constituents_by_pt_np(const_hlt, mask_hlt)
+
+    const_off_teacher = const_off
+    if bool(args.step1_quantize_teacher_offline):
+        if token_quantizer is None:
+            raise RuntimeError("--step1_quantize_teacher_offline requires --codebook_path.")
+        off_tok_full = _const_to_token5_np(const_off, mask_off)
+        off_tok_quant = _quantize_token5_np(off_tok_full, token_quantizer)
+        const_off_teacher = _token5_to_const_np(off_tok_quant, mask_off)
+        print(
+            "STEP 1 teacher offline quantization enabled: "
+            f"strategy={token_quantizer.strategy} label={str(args.codebook_label)}"
+        )
     print(
         "HLT stats: "
         f"avg_offline={hlt_stats.get('avg_offline_per_jet', float('nan')):.2f}, "
@@ -2119,9 +2148,9 @@ def main() -> None:
 
     # standardized features
     print("Computing standardized features for train/val/test...")
-    feat_off_tr = compute_features(const_off[train_idx], mask_off[train_idx])
-    feat_off_va = compute_features(const_off[val_idx], mask_off[val_idx])
-    feat_off_te = compute_features(const_off[test_idx], mask_off[test_idx])
+    feat_off_tr = compute_features(const_off_teacher[train_idx], mask_off[train_idx])
+    feat_off_va = compute_features(const_off_teacher[val_idx], mask_off[val_idx])
+    feat_off_te = compute_features(const_off_teacher[test_idx], mask_off[test_idx])
     feat_hlt_tr = compute_features(const_hlt[train_idx], mask_hlt[train_idx])
     feat_hlt_va = compute_features(const_hlt[val_idx], mask_hlt[val_idx])
     feat_hlt_te = compute_features(const_hlt[test_idx], mask_hlt[test_idx])
@@ -2704,6 +2733,7 @@ def main() -> None:
         "quantization": {
             "codebook_path": str(args.codebook_path),
             "codebook_label": str(args.codebook_label),
+            "step1_quantize_teacher_offline": bool(args.step1_quantize_teacher_offline),
         },
         "carry_targeting": {
             "mode": str(args.carry_target_mode),

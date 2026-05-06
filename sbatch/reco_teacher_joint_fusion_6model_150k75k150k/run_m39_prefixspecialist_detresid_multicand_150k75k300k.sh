@@ -53,6 +53,7 @@ CARRY_LR_DECAY_GAMMA="${CARRY_LR_DECAY_GAMMA:-0.96}"
 CARRY_MIN_LR_RATIO="${CARRY_MIN_LR_RATIO:-0.35}"
 CODEBOOK_PATH="${CODEBOOK_PATH:-}"
 CODEBOOK_LABEL="${CODEBOOK_LABEL:-}"
+STEP1_QUANTIZE_TEACHER_OFFLINE="${STEP1_QUANTIZE_TEACHER_OFFLINE:-auto}"
 
 set +u
 source ~/.bashrc
@@ -160,12 +161,23 @@ fi
 if [[ -n "${CODEBOOK_LABEL}" ]]; then
   CMD+=(--codebook_label "${CODEBOOK_LABEL}")
 fi
+if [[ "${STEP1_QUANTIZE_TEACHER_OFFLINE}" == "auto" ]]; then
+  if [[ -n "${CODEBOOK_PATH}" ]]; then
+    STEP1_QUANTIZE_TEACHER_OFFLINE="1"
+  else
+    STEP1_QUANTIZE_TEACHER_OFFLINE="0"
+  fi
+fi
+if [[ "${STEP1_QUANTIZE_TEACHER_OFFLINE}" == "1" ]]; then
+  CMD+=(--step1_quantize_teacher_offline)
+fi
 
 echo "============================================================"
 echo "Model-39 Prefix-Specialist + Deterministic-Residual MultiCandidate"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}"
 echo "Reco batch size: ${RECO_BATCH_SIZE}"
+echo "Step1 quantized teacher offline: ${STEP1_QUANTIZE_TEACHER_OFFLINE}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
