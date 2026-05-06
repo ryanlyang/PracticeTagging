@@ -4258,6 +4258,27 @@ def main() -> None:
         print("Saving val/test score arrays for fusion analysis...")
         auc_teacher_val, preds_teacher_val, labs_teacher_val = eval_classifier(teacher, dl_val_off, device)
         auc_baseline_val, preds_baseline_val, labs_baseline_val = eval_classifier(baseline, dl_val_hlt, device)
+        # Export pre-joint (Stage-B selected) val/test scores as separate heads.
+        auc_stage2_val = float("nan")
+        preds_stage2_val = np.zeros(0, dtype=np.float64)
+        fpr50_stage2_val = float("nan")
+        if stage2_reco_state is not None and stage2_dual_state is not None:
+            reco_state_cur = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+            dual_state_cur = {k: v.detach().cpu().clone() for k, v in dual_joint.state_dict().items()}
+            reconstructor.load_state_dict(stage2_reco_state)
+            dual_joint.load_state_dict(stage2_dual_state)
+            auc_stage2_val, preds_stage2_val, labs_stage2_val, fpr50_stage2_val = eval_joint_model(
+                reconstructor,
+                dual_joint,
+                dl_val_joint,
+                device,
+                corrected_weight_floor=float(args.corrected_weight_floor),
+                corrected_use_flags=bool(args.use_corrected_flags),
+            )
+            assert np.array_equal(labs_teacher_val.astype(np.float32), labs_stage2_val.astype(np.float32))
+            # Restore selected Stage-C state for regular joint export.
+            reconstructor.load_state_dict(reco_state_cur)
+            dual_joint.load_state_dict(dual_state_cur)
         auc_joint_val, preds_joint_val, labs_joint_val, fpr50_joint_val = eval_joint_model(
             reconstructor,
             dual_joint,
@@ -4277,14 +4298,20 @@ def main() -> None:
             preds_teacher_test=np.asarray(preds_teacher, dtype=np.float64),
             preds_hlt_val=np.asarray(preds_baseline_val, dtype=np.float64),
             preds_hlt_test=np.asarray(preds_baseline, dtype=np.float64),
+            preds_stage2_val=np.asarray(preds_stage2_val, dtype=np.float64),
+            preds_stage2_test=np.asarray(preds_stage2, dtype=np.float64),
             preds_joint_val=np.asarray(preds_joint_val, dtype=np.float64),
             preds_joint_test=np.asarray(preds_joint, dtype=np.float64),
             auc_teacher_val=float(auc_teacher_val),
             auc_teacher_test=float(auc_teacher),
             auc_hlt_val=float(auc_baseline_val),
             auc_hlt_test=float(auc_baseline),
+            auc_stage2_val=float(auc_stage2_val),
+            auc_stage2_test=float(auc_stage2),
             auc_joint_val=float(auc_joint_val),
             auc_joint_test=float(auc_joint),
+            fpr50_stage2_val=float(fpr50_stage2_val),
+            fpr50_stage2_test=float(fpr50_stage2),
             fpr50_joint_val=float(fpr50_joint_val),
             fpr50_joint_test=float(fpr50_joint),
             hlt_nconst_val=np.asarray(hlt_mask[val_idx].sum(axis=1), dtype=np.int32),

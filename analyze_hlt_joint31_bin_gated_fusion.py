@@ -48,6 +48,18 @@ MODEL_SCORE_SPECS: Dict[str, Tuple[str, str, List[str], List[str]]] = {
         ["preds_joint_val"],
         ["preds_joint_test"],
     ),
+    "joint_s01_stage2": (
+        "joint_s01_run_dir",
+        "fusion_scores_val_test.npz",
+        ["preds_stage2_val"],
+        ["preds_stage2_test"],
+    ),
+    "joint_s01_joint": (
+        "joint_s01_run_dir",
+        "fusion_scores_val_test.npz",
+        ["preds_joint_val"],
+        ["preds_joint_test"],
+    ),
     "concat_corrected": (
         "concat_run_dir",
         "concat_teacher_stageA_scores.npz",
@@ -78,11 +90,35 @@ MODEL_SCORE_SPECS: Dict[str, Tuple[str, str, List[str], List[str]]] = {
         ["preds_residual_joint_val", "preds_residual_frozen_val"],
         ["preds_residual_joint_test", "preds_residual_frozen_test"],
     ),
+    "offdrop_mid_joint": (
+        "m9_mid_run_dir",
+        "stageA_residual_scores.npz",
+        ["preds_residual_joint_val"],
+        ["preds_residual_joint_test"],
+    ),
+    "offdrop_mid_frozen": (
+        "m9_mid_run_dir",
+        "stageA_residual_scores.npz",
+        ["preds_residual_frozen_val"],
+        ["preds_residual_frozen_test"],
+    ),
     "offdrop_high": (
         "m9_high_run_dir",
         "stageA_residual_scores.npz",
         ["preds_residual_joint_val", "preds_residual_frozen_val"],
         ["preds_residual_joint_test", "preds_residual_frozen_test"],
+    ),
+    "offdrop_high_joint": (
+        "m9_high_run_dir",
+        "stageA_residual_scores.npz",
+        ["preds_residual_joint_val"],
+        ["preds_residual_joint_test"],
+    ),
+    "offdrop_high_frozen": (
+        "m9_high_run_dir",
+        "stageA_residual_scores.npz",
+        ["preds_residual_frozen_val"],
+        ["preds_residual_frozen_test"],
     ),
     "corrected_k40": (
         "m4_k40_run_dir",
@@ -132,7 +168,31 @@ MODEL_SCORE_SPECS: Dict[str, Tuple[str, str, List[str], List[str]]] = {
         ["preds_joint_val"],
         ["preds_joint_test"],
     ),
+    "joint_delta_stage2": (
+        "m2_delta000_run_dir",
+        "fusion_scores_val_test.npz",
+        ["preds_stage2_val"],
+        ["preds_stage2_test"],
+    ),
+    "joint_delta_joint": (
+        "m2_delta000_run_dir",
+        "fusion_scores_val_test.npz",
+        ["preds_joint_val"],
+        ["preds_joint_test"],
+    ),
     "joint_delta020": (
+        "m2_delta020_run_dir",
+        "fusion_scores_val_test.npz",
+        ["preds_joint_val"],
+        ["preds_joint_test"],
+    ),
+    "joint_delta020_stage2": (
+        "m2_delta020_run_dir",
+        "fusion_scores_val_test.npz",
+        ["preds_stage2_val"],
+        ["preds_stage2_test"],
+    ),
+    "joint_delta020_joint": (
         "m2_delta020_run_dir",
         "fusion_scores_val_test.npz",
         ["preds_joint_val"],
@@ -149,6 +209,18 @@ MODEL_SCORE_SPECS: Dict[str, Tuple[str, str, List[str], List[str]]] = {
         "dualreco_dualview_scores.npz",
         ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
         ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
+    ),
+    "dual_m12_noscale_frozen": (
+        "m12_dual_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
+        ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
+    ),
+    "dual_m12_noscale_joint": (
+        "m12_dual_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_joint_val"],
+        ["preds_dual_joint_test"],
     ),
     "dual_m13_coreshape": (
         "m13_dual_run_dir",
@@ -168,11 +240,35 @@ MODEL_SCORE_SPECS: Dict[str, Tuple[str, str, List[str], List[str]]] = {
         ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
         ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
     ),
+    "dual_m15_offdrop_mid_frozen": (
+        "m15_dual_mid_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
+        ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
+    ),
+    "dual_m15_offdrop_mid_joint": (
+        "m15_dual_mid_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_joint_val"],
+        ["preds_dual_joint_test"],
+    ),
     "dual_m15_offdrop_high": (
         "m15_dual_high_run_dir",
         "dualreco_dualview_scores.npz",
         ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
         ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
+    ),
+    "dual_m15_offdrop_high_frozen": (
+        "m15_dual_high_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
+        ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
+    ),
+    "dual_m15_offdrop_high_joint": (
+        "m15_dual_high_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_joint_val"],
+        ["preds_dual_joint_test"],
     ),
     "dual_m16_topk40": (
         "m16_dual_k40_run_dir",
@@ -186,6 +282,18 @@ MODEL_SCORE_SPECS: Dict[str, Tuple[str, str, List[str], List[str]]] = {
         ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
         ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
     ),
+    "dual_m16_topk60_frozen": (
+        "m16_dual_k60_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
+        ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
+    ),
+    "dual_m16_topk60_joint": (
+        "m16_dual_k60_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_joint_val"],
+        ["preds_dual_joint_test"],
+    ),
     "dual_m16_topk80": (
         "m16_dual_k80_run_dir",
         "dualreco_dualview_scores.npz",
@@ -198,12 +306,38 @@ MODEL_SCORE_SPECS: Dict[str, Tuple[str, str, List[str], List[str]]] = {
         ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
         ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
     ),
+    "dual_m17_antioverlap_frozen": (
+        "m17_dual_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
+        ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
+    ),
+    "dual_m17_antioverlap_joint": (
+        "m17_dual_run_dir",
+        "dualreco_dualview_scores.npz",
+        ["preds_dual_joint_val"],
+        ["preds_dual_joint_test"],
+    ),
     "dual_m19_basic": (
         "m19_dual_run_dir",
         "dualreco_dualview_scores.npz",
         ["preds_dual_frozen_val", "preds_dualview_frozen_val"],
         ["preds_dual_frozen_test", "preds_dualview_frozen_test"],
     ),
+}
+
+VARIANT_EXPANSIONS: Dict[str, List[str]] = {
+    # Anchor `joint_delta` already contributes its post-joint head explicitly.
+    "joint_delta": ["joint_delta_stage2"],
+    "joint_delta020": ["joint_delta020_stage2", "joint_delta020_joint"],
+    "joint_s01": ["joint_s01_stage2", "joint_s01_joint"],
+    "offdrop_mid": ["offdrop_mid_frozen", "offdrop_mid_joint"],
+    "offdrop_high": ["offdrop_high_frozen", "offdrop_high_joint"],
+    "dual_m12_noscale": ["dual_m12_noscale_frozen", "dual_m12_noscale_joint"],
+    "dual_m15_offdrop_mid": ["dual_m15_offdrop_mid_frozen", "dual_m15_offdrop_mid_joint"],
+    "dual_m15_offdrop_high": ["dual_m15_offdrop_high_frozen", "dual_m15_offdrop_high_joint"],
+    "dual_m16_topk60": ["dual_m16_topk60_frozen", "dual_m16_topk60_joint"],
+    "dual_m17_antioverlap": ["dual_m17_antioverlap_frozen", "dual_m17_antioverlap_joint"],
 }
 
 
@@ -228,6 +362,19 @@ def _parse_str_list(spec: str) -> List[str]:
         t = tok.strip()
         if t:
             out.append(t)
+    return out
+
+
+def _expand_candidate_variants(cands: List[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for c in cands:
+        expanded = VARIANT_EXPANSIONS.get(c, [c])
+        for m in expanded:
+            if m in seen:
+                continue
+            seen.add(m)
+            out.append(m)
     return out
 
 
@@ -287,6 +434,63 @@ def _first_existing_key(npz: np.lib.npyio.NpzFile, names: Iterable[str]) -> str:
         if n in npz:
             return n
     raise KeyError(f"None of keys found in npz: {list(names)}")
+
+
+def _select_key_pair(
+    npz: np.lib.npyio.NpzFile,
+    val_keys: List[str],
+    test_keys: List[str],
+    y_val: np.ndarray,
+    mode: str,
+    target_tpr: float,
+) -> Tuple[str, str]:
+    mode = str(mode).lower().strip()
+    pairs: List[Tuple[str, str]] = []
+
+    if len(val_keys) == len(test_keys):
+        for kv, kt in zip(val_keys, test_keys):
+            if kv in npz and kt in npz:
+                pairs.append((kv, kt))
+    else:
+        val_present = [k for k in val_keys if k in npz]
+        test_present = [k for k in test_keys if k in npz]
+        if val_present and test_present:
+            pairs.append((val_present[0], test_present[0]))
+
+    if not pairs:
+        raise KeyError(
+            f"No matching val/test key pair found. val_keys={val_keys}, test_keys={test_keys}"
+        )
+
+    if mode == "first" or len(pairs) == 1:
+        return pairs[0]
+
+    best_pair = pairs[0]
+    best_metric = None
+    yv = np.asarray(y_val, dtype=np.float32)
+
+    for kv, kt in pairs:
+        sv = np.asarray(npz[kv], dtype=np.float64)
+        if mode == "best_val_auc":
+            metric = (
+                float(roc_auc_score(yv, sv))
+                if np.unique(yv.astype(np.int64)).size > 1
+                else float("-inf")
+            )
+            better = (best_metric is None) or (metric > float(best_metric))
+        elif mode == "best_val_fpr":
+            thr = threshold_for_target_tpr(yv, sv, float(target_tpr))
+            rr = rates_from_threshold(yv, sv, thr)
+            metric = float(rr["fpr"])
+            better = (best_metric is None) or (metric < float(best_metric))
+        else:
+            raise ValueError(f"Unknown head_select_mode: {mode}")
+
+        if better:
+            best_metric = metric
+            best_pair = (kv, kt)
+
+    return best_pair
 
 
 def threshold_for_target_tpr(labels: np.ndarray, scores: np.ndarray, target_tpr: float) -> float:
@@ -376,7 +580,16 @@ def _load_npz(path: Path) -> np.lib.npyio.NpzFile:
 def _load_required_scores(
     fusion_json_path: Path,
     required_models: List[str],
-) -> Tuple[np.ndarray, np.ndarray, Dict[str, np.ndarray], Dict[str, np.ndarray], Dict[str, str]]:
+    head_select_mode: str = "first",
+    head_select_tpr: float = 0.50,
+) -> Tuple[
+    np.ndarray,
+    np.ndarray,
+    Dict[str, np.ndarray],
+    Dict[str, np.ndarray],
+    Dict[str, str],
+    Dict[str, str],
+]:
     repo_root = Path(__file__).resolve().parent
     fusion = json.loads(fusion_json_path.read_text())
     run_dirs_raw = dict(fusion.get("run_dirs", {}))
@@ -469,35 +682,61 @@ def _load_required_scores(
         scores_test["teacher"] = np.asarray(zt[k_t_test], dtype=np.float64)
         used_paths["teacher"] = str(t_npz_path)
 
+    skipped_models: Dict[str, str] = {}
     for name in sorted(set(required_models)):
         if name in scores_val:
             continue
         if name not in MODEL_SCORE_SPECS:
-            raise KeyError(f"Unsupported model requested: {name}")
+            skipped_models[name] = "unsupported_model_name"
+            continue
         run_key, file_name, val_keys, test_keys = MODEL_SCORE_SPECS[name]
         sf = score_files_raw.get(name)
+        if not isinstance(sf, str):
+            for suf in ("_joint", "_frozen", "_stage2"):
+                if name.endswith(suf):
+                    base = name[: -len(suf)]
+                    sf = score_files_raw.get(base)
+                    if isinstance(sf, str):
+                        break
         if isinstance(sf, str):
             npz_path = _safe_path(sf, repo_root)
         else:
             rd = resolved_run_dirs.get(run_key)
             if rd is None:
-                raise KeyError(f"Missing run dir for {name}: key={run_key}")
+                skipped_models[name] = f"missing_score_file_and_run_dir:{run_key}"
+                continue
             npz_path = _safe_path(str(rd / file_name), repo_root)
 
-        z = _load_npz(npz_path)
+        try:
+            z = _load_npz(npz_path)
+        except Exception as e:
+            skipped_models[name] = f"npz_load_error:{type(e).__name__}"
+            continue
         yv = np.asarray(z["labels_val"], dtype=np.float32)
         yt = np.asarray(z["labels_test"], dtype=np.float32)
         if not np.array_equal(y_val, yv):
-            raise RuntimeError(f"Validation labels mismatch for model={name} npz={npz_path}")
+            skipped_models[name] = "labels_val_mismatch"
+            continue
         if not np.array_equal(y_test, yt):
-            raise RuntimeError(f"Test labels mismatch for model={name} npz={npz_path}")
-        k_val = _first_existing_key(z, val_keys)
-        k_test = _first_existing_key(z, test_keys)
+            skipped_models[name] = "labels_test_mismatch"
+            continue
+        try:
+            k_val, k_test = _select_key_pair(
+                z,
+                val_keys,
+                test_keys,
+                y_val=y_val,
+                mode=head_select_mode,
+                target_tpr=float(head_select_tpr),
+            )
+        except Exception as e:
+            skipped_models[name] = f"missing_prediction_keys:{type(e).__name__}"
+            continue
         scores_val[name] = np.asarray(z[k_val], dtype=np.float64)
         scores_test[name] = np.asarray(z[k_test], dtype=np.float64)
-        used_paths[name] = str(npz_path)
+        used_paths[name] = f"{npz_path}::val={k_val},test={k_test}"
 
-    return y_val, y_test, scores_val, scores_test, used_paths
+    return y_val, y_test, scores_val, scores_test, used_paths, skipped_models
 
 
 def _score_band(scores: np.ndarray, edges: List[float]) -> np.ndarray:
@@ -790,6 +1029,12 @@ def main() -> None:
     ap.add_argument("--candidate_models_all", type=str, default="")
     ap.add_argument("--candidate_models_tpr50", type=str, default="")
     ap.add_argument("--candidate_models_tpr30", type=str, default="")
+    ap.add_argument(
+        "--expand_prepost_variants",
+        type=int,
+        default=1,
+        help="If 1, expand base model names into explicit pre/post-joint pool entries when available.",
+    )
     ap.add_argument("--selection_mode", type=str, default="split", choices=["split", "valsel"])
     ap.add_argument("--router_cal_frac", type=float, default=0.4)
     ap.add_argument("--seed", type=int, default=0)
@@ -804,6 +1049,19 @@ def main() -> None:
     ap.add_argument("--min_bin_fit", type=int, default=1200)
     ap.add_argument("--min_global_improve", type=float, default=1e-6)
     ap.add_argument("--min_bin_improve", type=float, default=5e-6)
+    ap.add_argument(
+        "--head_select_mode",
+        type=str,
+        default="first",
+        choices=["first", "best_val_auc", "best_val_fpr"],
+        help="How to pick model-score head when multiple keys exist in one npz.",
+    )
+    ap.add_argument(
+        "--head_select_tpr",
+        type=float,
+        default=0.50,
+        help="TPR used when head_select_mode=best_val_fpr.",
+    )
     ap.add_argument("--out_dir", type=str, default="")
     ap.add_argument("--report_json", type=str, default="")
     args = ap.parse_args()
@@ -834,6 +1092,8 @@ def main() -> None:
             cands = c_30
         else:
             cands = _default_candidates_for_tpr(tpr)
+        if int(args.expand_prepost_variants) != 0:
+            cands = _expand_candidate_variants(cands)
         if args.anchor_model not in cands:
             cands = [args.anchor_model] + list(cands)
         # Keep stable unique order.
@@ -847,9 +1107,33 @@ def main() -> None:
         candidates_by_tpr[float(tpr)] = dedup
 
     required_models = sorted(set(["hlt", args.anchor_model] + [m for v in candidates_by_tpr.values() for m in v]))
-    y_val, y_test, scores_val_raw, scores_test_raw, score_paths = _load_required_scores(fusion_json, required_models)
+    y_val, y_test, scores_val_raw, scores_test_raw, score_paths, skipped_models = _load_required_scores(
+        fusion_json,
+        required_models,
+        head_select_mode=str(args.head_select_mode),
+        head_select_tpr=float(args.head_select_tpr),
+    )
     if args.anchor_model not in scores_val_raw:
         raise KeyError(f"anchor_model not available: {args.anchor_model}")
+
+    # Drop unavailable models from each TPR candidate pool.
+    dropped_by_tpr: Dict[str, List[str]] = {}
+    for tpr in target_tprs:
+        key = float(tpr)
+        orig = list(candidates_by_tpr[key])
+        keep = [m for m in orig if m in scores_val_raw and m in scores_test_raw]
+        dropped = [m for m in orig if m not in keep]
+        if args.anchor_model not in keep and args.anchor_model in scores_val_raw:
+            keep = [args.anchor_model] + keep
+        dedup: List[str] = []
+        seen = set()
+        for m in keep:
+            if m in seen:
+                continue
+            seen.add(m)
+            dedup.append(m)
+        candidates_by_tpr[key] = dedup
+        dropped_by_tpr[f"{tpr:.4f}"] = dropped
 
     out_dir = (
         Path(args.out_dir).expanduser().resolve()
@@ -1050,6 +1334,8 @@ def main() -> None:
         "out_dir": str(out_dir),
         "settings": vars(args),
         "score_files_used": score_paths,
+        "skipped_models": skipped_models,
+        "dropped_candidates_by_tpr": dropped_by_tpr,
         "target_tprs": target_tprs,
         "by_tpr": report_tpr,
         "files": {
@@ -1077,6 +1363,12 @@ def main() -> None:
     print(f"Selection:   {args.selection_mode}")
     print(f"Calibration: {args.calibration}")
     print(f"Split fit/ref: {len(idx_fit)} / {len(idx_ref)}")
+    if skipped_models:
+        print(f"Skipped models (missing/invalid): {len(skipped_models)}")
+    for tpr in target_tprs:
+        d = dropped_by_tpr.get(f"{tpr:.4f}", [])
+        if d:
+            print(f"TPR={tpr:.3f} dropped unavailable candidates: {','.join(d)}")
     print()
     for tpr in target_tprs:
         key = f"{tpr:.4f}"
