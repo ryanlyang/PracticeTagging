@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=jcCfV1HLT
+#SBATCH --job-name=jcG56C03
 #SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
-#SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_50k25k100k_stronger_canonical_v1hlt_%j.out
-#SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_50k25k100k_stronger_canonical_v1hlt_%j.err
+#SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_50k25k100k_stronger_canonical_path_gentok56_ablate_lcons003_%j.out
+#SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_50k25k100k_stronger_canonical_path_gentok56_ablate_lcons003_%j.err
 
 set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/jetclass_joint_dualview}"
-RUN_NAME="${RUN_NAME:-jetclass_joint_confgen_v2attr_50k25k100k_stronger_canonical_v1hlt}"
+RUN_NAME="${RUN_NAME:-jetclass_joint_confgen_v2attr_50k25k100k_stronger_canonical_path_gentok56_ablate_lcons003}"
 SEED="${SEED:-52}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
@@ -26,11 +26,6 @@ FEATURE_PREPROCESSING="${FEATURE_PREPROCESSING:-canonical}"
 CLASS_ASSIGNMENT="${CLASS_ASSIGNMENT:-canonical_labels}"
 TARGET_CLASS="${TARGET_CLASS:-Hbb}"
 BACKGROUND_CLASS="${BACKGROUND_CLASS:-QCD}"
-STAGEC_EPOCHS="${STAGEC_EPOCHS:-0}"
-STAGEC_PATIENCE="${STAGEC_PATIENCE:-2}"
-STAGEC_MIN_EPOCHS="${STAGEC_MIN_EPOCHS:-0}"
-STAGEC_LR_DUAL="${STAGEC_LR_DUAL:-2e-4}"
-STAGEC_LR_RECO="${STAGEC_LR_RECO:-1e-4}"
 
 set +u
 source ~/.bashrc
@@ -52,8 +47,6 @@ export PYTHONHASHSEED="${SEED}"
 export JETCLASS_STAGEA_W_SPARSE_SPLIT="${JETCLASS_STAGEA_W_SPARSE_SPLIT:-0.012}"
 export JETCLASS_STAGEA_W_SPARSE_GEN="${JETCLASS_STAGEA_W_SPARSE_GEN:-0.003}"
 export JETCLASS_STAGEA_W_GEN_FP="${JETCLASS_STAGEA_W_GEN_FP:-0.04}"
-# Use the same HLT corruption path as v1 stronger canonical.
-export JETCLASS_HLT_MODE="${JETCLASS_HLT_MODE:-v1}"
 
 python - <<'PY'
 import importlib.util
@@ -114,7 +107,7 @@ CMD=(
   --stageA_stage1_epochs 20
   --stageA_stage2_epochs 55
   --stageA_min_full_scale_epochs 5
-  --reco_max_generated_tokens 40
+  --reco_max_generated_tokens 56
   --stageA_attr_epochs 12
   --stageA_attr_patience 4
   --stageA_attr_lr 2e-4
@@ -140,18 +133,18 @@ CMD=(
   --stageB_patience 10
   --stageB_min_epochs 10
   --stageB_lr_dual 4e-4
-  --stageC_epochs "${STAGEC_EPOCHS}"
-  --stageC_patience "${STAGEC_PATIENCE}"
-  --stageC_min_epochs "${STAGEC_MIN_EPOCHS}"
-  --stageC_lr_dual "${STAGEC_LR_DUAL}"
-  --stageC_lr_reco "${STAGEC_LR_RECO}"
+  --stageC_epochs 45
+  --stageC_patience 12
+  --stageC_min_epochs 15
+  --stageC_lr_dual 2e-4
+  --stageC_lr_reco 1e-4
   --lambda_reco 0.4
-  --lambda_cons 0.06
+  --lambda_cons 0.03
   --added_target_scale 0.90
 )
 
 echo "============================================================"
-echo "JetClass Joint Dual-View V2 (confgen reconstructor + v1/default HLT corruption)"
+echo "JetClass Joint Dual-View V2 (confidence-gated ops + attr-head constraints)"
 echo "Job ID: ${SLURM_JOB_ID:-N/A}"
 echo "Node: ${SLURMD_NODENAME:-N/A}"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
@@ -159,7 +152,6 @@ echo "Split: train=${N_TRAIN_JETS}, val=${N_VAL_JETS}, test=${N_TEST_JETS}"
 echo "Class assignment: ${CLASS_ASSIGNMENT}"
 echo "Feature preprocessing: ${FEATURE_PREPROCESSING}"
 echo "Target/background: ${TARGET_CLASS} vs ${BACKGROUND_CLASS}"
-echo "StageC epochs: ${STAGEC_EPOCHS} (set to 0 for prejoint-only)"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
