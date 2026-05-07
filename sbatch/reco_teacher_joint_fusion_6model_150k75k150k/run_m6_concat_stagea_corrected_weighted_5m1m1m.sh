@@ -3,8 +3,8 @@
 #SBATCH --partition=tier3
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:a100:1
-#SBATCH --mem=200G
-#SBATCH --time=5-00:00:00
+#SBATCH --mem=320G
+#SBATCH --time=4-00:00:00
 #SBATCH --requeue
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m6_concat_weighted_5m1m1m_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m6_concat_weighted_5m1m1m_%j.err
