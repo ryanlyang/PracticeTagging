@@ -99,6 +99,7 @@ def main() -> None:
     MERGE_MODE_ELE_GAM = int(getattr(v2, "MERGE_MODE_ELE_GAM", 2))
     MERGE_MODE_CH_NH = int(getattr(v2, "MERGE_MODE_CH_NH", 3))
     _stagea_aux_queue: List[Dict[str, np.ndarray]] = []
+    _orig_build_hlt_view = v2.build_hlt_view
 
     # Parse once so patched Stage-A trainer can use the exact run-time knobs.
     args = v2.parse_args()
@@ -460,6 +461,60 @@ def main() -> None:
         )
         return out_tok, out_msk, per_jet, prov
 
+    def _build_hlt_view_default_with_capture(
+        tok: np.ndarray,
+        msk: np.ndarray,
+        params,
+        seed: int,
+        return_provenance: bool = False,
+    ):
+        out = _orig_build_hlt_view(
+            tok,
+            msk,
+            params=params,
+            seed=seed,
+            return_provenance=return_provenance,
+        )
+        if not return_provenance:
+            return out
+        out_tok, out_msk, per_jet, prov = out
+        split_target_mask = np.asarray(
+            prov.get("split_target_mask", np.zeros((out_tok.shape[0], out_tok.shape[1]), dtype=bool)),
+            dtype=bool,
+        )
+        split_mode_target = np.asarray(
+            prov.get("split_mode_target", np.full((out_tok.shape[0], out_tok.shape[1]), MERGE_MODE_NONE, dtype=np.int64)),
+            dtype=np.int64,
+        )
+        child_type_a_target = np.asarray(
+            prov.get("child_type_a_target", np.full((out_tok.shape[0], out_tok.shape[1]), TYPE_UNK, dtype=np.int64)),
+            dtype=np.int64,
+        )
+        child_type_b_target = np.asarray(
+            prov.get("child_type_b_target", np.full((out_tok.shape[0], out_tok.shape[1]), TYPE_UNK, dtype=np.int64)),
+            dtype=np.int64,
+        )
+        child_attr_a_target = np.asarray(
+            prov.get("child_attr_a_target", np.zeros((out_tok.shape[0], out_tok.shape[1], 5), dtype=np.float32)),
+            dtype=np.float32,
+        )
+        child_attr_b_target = np.asarray(
+            prov.get("child_attr_b_target", np.zeros((out_tok.shape[0], out_tok.shape[1], 5), dtype=np.float32)),
+            dtype=np.float32,
+        )
+        _stagea_aux_queue.append(
+            {
+                "hlt_tok_raw": np.asarray(out_tok, dtype=np.float32).copy(),
+                "split_target_mask": split_target_mask.copy(),
+                "split_mode_target": split_mode_target.copy(),
+                "child_type_a_target": child_type_a_target.copy(),
+                "child_type_b_target": child_type_b_target.copy(),
+                "child_attr_a_target": child_attr_a_target.copy(),
+                "child_attr_b_target": child_attr_b_target.copy(),
+            }
+        )
+        return out_tok, out_msk, per_jet, prov
+
     class _WeightedReconstructionDatasetFullInfo(Dataset):
         """
         Stage-A reconstruction dataset with full-info supervision fields:
@@ -807,8 +862,16 @@ def main() -> None:
             model.load_state_dict(best_state)
         return model, {"val_total": float(best_val)}
 
-    # HLT profile: match current m2-style setup with V2-compatible API and real provenance.
-    v2.build_hlt_view = _build_hlt_view_m2style_with_provenance
+    # HLT profile:
+    # - default (v1-like) via JETCLASS_HLT_MODE=default|v1
+    # - m2-style (current confgen default) otherwise
+    hlt_mode = str(os.environ.get("JETCLASS_HLT_MODE", "m2style")).strip().lower()
+    if hlt_mode in {"default", "v1", "canonical"}:
+        v2.build_hlt_view = _build_hlt_view_default_with_capture
+        print("HLT builder mode: default (same path as v1/v2 base scripts)")
+    else:
+        v2.build_hlt_view = _build_hlt_view_m2style_with_provenance
+        print("HLT builder mode: m2-style patched corruption")
 
     # Reconstructor/loss/corrected-view: confidence-gated ops + full-info Stage-A.
     v2.OfflineReconstructor = jetlatent.OfflineReconstructorConfidenceHybridOps
