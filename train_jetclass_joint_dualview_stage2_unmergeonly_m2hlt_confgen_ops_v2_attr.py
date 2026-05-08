@@ -123,15 +123,67 @@ def main() -> None:
     )
     stagea_w_gen_fp = float(os.environ.get("JETCLASS_STAGEA_W_GEN_FP", 0.04))
 
-    # Optional teacher-dominant Stage-A objective (m3-style approximation):
-    # L = w_teacher * KL(student_corrected || teacher_hlt) + w_budget * budget (+ tiny set/local optionally).
+    # Optional teacher-dominant Stage-A objective:
+    # L = w_teacher * KL(teacher(corrected_kin7) || teacher(offline_kin7))
+    #   + w_budget * budget (+ tiny set/local optionally).
     stagea_teacher_w = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_TEACHER", 0.0))
     stagea_teacher_temp = float(max(1e-6, os.environ.get("JETCLASS_STAGEA_TEACHER_TEMP", 2.5)))
     stagea_teacher_w_budget = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_BUDGET_ONLY", 0.35))
     stagea_teacher_w_set = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_SET_ONLY", 0.0))
     stagea_teacher_w_local = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_LOCAL_ONLY", 0.0))
-    _stagea_teacher_mode = stagea_teacher_w > 0.0
-    _captured_teacher_model: Dict[str, object] = {"model": None}
+    stagea_teacher_ckpt = str(os.environ.get("JETCLASS_STAGEA_OFFLINE_FUSED_STUDENT_CKPT", "")).strip()
+    _stagea_teacher_mode = (stagea_teacher_w > 0.0) and (len(stagea_teacher_ckpt) > 0)
+    _stagea_teacher_cache: Dict[str, object] = {"model": None, "src": ""}
+    if (stagea_teacher_w > 0.0) and (len(stagea_teacher_ckpt) == 0):
+        print(
+            "Stage-A teacher weight > 0 but JETCLASS_STAGEA_OFFLINE_FUSED_STUDENT_CKPT is unset; "
+            "teacher-dominant Stage-A disabled."
+        )
+
+    def _load_stagea_teacher_model(device: torch.device):
+        if not _stagea_teacher_mode:
+            return None
+        if _stagea_teacher_cache.get("model", None) is not None:
+            return _stagea_teacher_cache["model"]
+
+        ckpt_path = Path(stagea_teacher_ckpt).expanduser().resolve()
+        if not ckpt_path.exists():
+            raise FileNotFoundError(
+                f"JETCLASS_STAGEA_OFFLINE_FUSED_STUDENT_CKPT not found: {ckpt_path}"
+            )
+        obj = torch.load(ckpt_path, map_location="cpu")
+        state = obj["model"] if isinstance(obj, dict) and ("model" in obj) else obj
+        meta = obj.get("meta", {}) if isinstance(obj, dict) else {}
+
+        input_dim = int(meta.get("input_dim", 7))
+        if "head.6.weight" in state:
+            n_classes = int(state["head.6.weight"].shape[0])
+        else:
+            raise KeyError(
+                f"Could not infer n_classes from checkpoint {ckpt_path}; expected key `head.6.weight`."
+            )
+
+        teacher_model = v2.JetClassTransformer(
+            input_dim=input_dim,
+            n_classes=n_classes,
+            embed_dim=int(meta.get("embed_dim", 128)),
+            num_heads=int(meta.get("num_heads", 8)),
+            num_layers=int(meta.get("num_layers", 6)),
+            ff_dim=int(meta.get("ff_dim", 512)),
+            dropout=float(meta.get("dropout", 0.1)),
+        ).to(device)
+        teacher_model.load_state_dict(state, strict=True)
+        teacher_model.eval()
+        for p in teacher_model.parameters():
+            p.requires_grad_(False)
+
+        _stagea_teacher_cache["model"] = teacher_model
+        _stagea_teacher_cache["src"] = str(ckpt_path)
+        print(
+            "Stage-A fused-student teacher loaded: "
+            f"{ckpt_path} | input_dim={input_dim} n_classes={n_classes} temp={stagea_teacher_temp:.3f}"
+        )
+        return teacher_model
 
     def _infer_type_id(token: np.ndarray) -> int:
         pid = token[IDX_PID0:IDX_PID4 + 1]
@@ -550,6 +602,8 @@ def main() -> None:
             self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
             self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
             self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+            # 7D offline kinematic features used by frozen fused-student teacher distillation.
+            self.offline_feat_kin = reco_joint.compute_features_torch(self.const_off, self.mask_off).detach()
 
             n = int(feat_hlt.shape[0])
             if sample_weight_reco is None:
@@ -620,6 +674,7 @@ def main() -> None:
                 "budget_merge_true": self.budget_merge_true[i],
                 "budget_eff_true": self.budget_eff_true[i],
                 "sample_weight_reco": self.sample_weight_reco[i],
+                "offline_feat_kin": self.offline_feat_kin[i],
                 "split_target_mask": self.split_target_mask[i],
                 "split_mode_target": self.split_mode_target[i],
                 "child_type_a_target": self.child_type_a_target[i],
@@ -639,6 +694,7 @@ def main() -> None:
         *,
         loss_cfg: Dict,
         sample_weight: torch.Tensor | None,
+        stagea_teacher_model: torch.nn.Module | None,
     ) -> Dict[str, torch.Tensor]:
         device = reco_out["cand_tokens"].device
         loss_cfg_local = dict(loss_cfg)
@@ -715,7 +771,37 @@ def main() -> None:
             + stagea_anchor_track * loss_anchor_track
         )
 
-        total = losses_reco["total"] + loss_attr_main + loss_anchor
+        loss_teacher = zero
+        if stagea_teacher_model is not None:
+            with torch.no_grad():
+                feat_off_kin = batch["offline_feat_kin"].to(device)
+                mask_off = batch["mask_off"].to(device)
+                logit_off = stagea_teacher_model(feat_off_kin, mask_off)
+                prob_off = torch.softmax(logit_off / stagea_teacher_temp, dim=1)
+
+            feat_b_kd, mask_b_kd = jetlatent.build_soft_corrected_view_confgen_ops(
+                reco_out,
+                weight_floor=1e-4,
+                scale_features_by_weight=False,
+                include_flags=False,
+            )
+            feat_corr_kin = feat_b_kd[:, :, :7]
+            logit_corr = stagea_teacher_model(feat_corr_kin, mask_b_kd)
+            loss_teacher = F.kl_div(
+                F.log_softmax(logit_corr / stagea_teacher_temp, dim=1),
+                prob_off,
+                reduction="batchmean",
+            ) * (stagea_teacher_temp ** 2)
+
+        if stagea_teacher_model is not None:
+            total = (
+                stagea_teacher_w * loss_teacher
+                + stagea_teacher_w_budget * losses_reco["budget"]
+                + stagea_teacher_w_set * losses_reco["set"]
+                + stagea_teacher_w_local * losses_reco["local"]
+            )
+        else:
+            total = losses_reco["total"] + loss_attr_main + loss_anchor
         return {
             "total": total,
             "set": losses_reco["set"],
@@ -724,6 +810,7 @@ def main() -> None:
             "local": losses_reco["local"],
             "attr_main": loss_attr_main,
             "anchor": loss_anchor,
+            "teacher": loss_teacher,
         }
 
     def _train_reconstructor_weighted_fullinfo(
@@ -744,6 +831,9 @@ def main() -> None:
             weight_decay=float(train_cfg["weight_decay"]),
         )
         sch = reco_joint.get_scheduler(opt, int(train_cfg["warmup_epochs"]), int(train_cfg["epochs"]))
+        stagea_teacher_model = _load_stagea_teacher_model(device) if _stagea_teacher_mode else None
+        if _stagea_teacher_mode and stagea_teacher_model is None:
+            print("Stage-A teacher mode requested but teacher model is unavailable; falling back to normal Stage-A.")
 
         best_state = None
         best_val = 1e9
@@ -753,7 +843,7 @@ def main() -> None:
         for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
             model.train()
             sc = reco_joint.stage_scale_local(ep, train_cfg)
-            tr_total = tr_set = tr_budget = tr_pt = tr_local = tr_attr = tr_anchor = 0.0
+            tr_total = tr_set = tr_budget = tr_pt = tr_local = tr_attr = tr_anchor = tr_teacher = 0.0
             n_tr = 0
             for batch in train_loader:
                 feat_hlt = batch["feat_hlt"].to(device)
@@ -770,6 +860,7 @@ def main() -> None:
                     batch,
                     loss_cfg=loss_cfg,
                     sample_weight=(sw_reco if (bool(apply_reco_weight) and sw_reco is not None) else None),
+                    stagea_teacher_model=stagea_teacher_model,
                 )
                 losses["total"].backward()
                 torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
@@ -783,10 +874,11 @@ def main() -> None:
                 tr_local += float(losses["local"].item()) * bs
                 tr_attr += float(losses["attr_main"].item()) * bs
                 tr_anchor += float(losses["anchor"].item()) * bs
+                tr_teacher += float(losses["teacher"].item()) * bs
                 n_tr += bs
 
             model.eval()
-            va_total_u = va_set_u = va_budget_u = va_pt_u = va_local_u = va_attr_u = va_anchor_u = 0.0
+            va_total_u = va_set_u = va_budget_u = va_pt_u = va_local_u = va_attr_u = va_anchor_u = va_teacher_u = 0.0
             va_total_w = 0.0
             n_va = 0
             with torch.no_grad():
@@ -804,6 +896,7 @@ def main() -> None:
                         batch,
                         loss_cfg=loss_cfg,
                         sample_weight=None,
+                        stagea_teacher_model=stagea_teacher_model,
                     )
                     if bool(apply_reco_weight) and sw_reco is not None:
                         losses_w = _compose_stagea_fullinfo_losses(
@@ -811,6 +904,7 @@ def main() -> None:
                             batch,
                             loss_cfg=loss_cfg,
                             sample_weight=sw_reco,
+                            stagea_teacher_model=stagea_teacher_model,
                         )
                     else:
                         losses_w = losses_u
@@ -823,6 +917,7 @@ def main() -> None:
                     va_local_u += float(losses_u["local"].item()) * bs
                     va_attr_u += float(losses_u["attr_main"].item()) * bs
                     va_anchor_u += float(losses_u["anchor"].item()) * bs
+                    va_teacher_u += float(losses_u["teacher"].item()) * bs
                     va_total_w += float(losses_w["total"].item()) * bs
                     n_va += bs
 
@@ -834,6 +929,7 @@ def main() -> None:
             tr_local /= max(n_tr, 1)
             tr_attr /= max(n_tr, 1)
             tr_anchor /= max(n_tr, 1)
+            tr_teacher /= max(n_tr, 1)
 
             va_total_u /= max(n_va, 1)
             va_set_u /= max(n_va, 1)
@@ -842,6 +938,7 @@ def main() -> None:
             va_local_u /= max(n_va, 1)
             va_attr_u /= max(n_va, 1)
             va_anchor_u /= max(n_va, 1)
+            va_teacher_u /= max(n_va, 1)
             va_total_w /= max(n_va, 1)
 
             select_metric = va_total_w if bool(apply_reco_weight) else va_total_u
@@ -857,11 +954,11 @@ def main() -> None:
                     f"Ep {ep+1}: train_total={tr_total:.4f}, val_total_unw={va_total_u:.4f}, "
                     f"val_total_w={va_total_w:.4f}, select={'weighted' if bool(apply_reco_weight) else 'unweighted'}, "
                     f"best_sel={best_val:.4f} | set_unw={va_set_u:.4f}, attr_unw={va_attr_u:.4f}, "
-                    f"anchor_unw={va_anchor_u:.4f}, budget_unw={va_budget_u:.4f}, "
+                    f"anchor_unw={va_anchor_u:.4f}, teacher_unw={va_teacher_u:.4f}, budget_unw={va_budget_u:.4f}, "
                     f"w_set={float(loss_cfg.get('w_set', 0.0)):.3f}, w_budget={float(loss_cfg.get('w_budget', 0.0)):.3f}, "
                     f"w_pt={float(loss_cfg.get('w_pt_ratio', 0.0)):.3f}, w_local={float(loss_cfg.get('w_local', 0.0)):.3f}, "
                     f"w_sparse(split/gen)={stagea_w_sparse_split:.3f}/{stagea_w_sparse_gen:.3f}, "
-                    f"stage_scale={sc:.2f}"
+                    f"stage_scale={sc:.2f}, teacher_mode={'on' if stagea_teacher_model is not None else 'off'}"
                 )
 
             if no_improve >= int(train_cfg["patience"]) and (ep + 1) >= int(max(min_stop_epoch, 1)):
