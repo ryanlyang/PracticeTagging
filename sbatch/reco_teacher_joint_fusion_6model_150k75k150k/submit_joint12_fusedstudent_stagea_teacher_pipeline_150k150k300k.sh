@@ -12,6 +12,7 @@ TARGETS_DIR="${TARGETS_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k
 STUDENT_SAVE_DIR="${STUDENT_SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/offline_fused_student_joint12_weighted_150k150k300k}"
 STUDENT_RUN_NAME="${STUDENT_RUN_NAME:-toptag_offline_fused_student_joint12_weighted_150k150k300k_seed0}"
 FINAL_RUN_NAME="${FINAL_RUN_NAME:-model41_joint12_fusedstudent_stagea_teacher_weighted_150k150k300k_seed0}"
+TARGET_SOURCE_SPLITS_NPZ="${TARGET_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
 
 UPSTREAM_JOB_IDS="${UPSTREAM_JOB_IDS:-}"
 
@@ -38,7 +39,7 @@ echo "  build:   ${job_build}"
 
 job_student=$(sbatch --parsable \
   --dependency=afterok:${job_build} \
-  --export=ALL,FUSED_TARGETS_NPZ="${TARGETS_DIR}/fused_targets_train_val_test.npz",SAVE_DIR="${STUDENT_SAVE_DIR}",RUN_NAME="${STUDENT_RUN_NAME}" \
+  --export=ALL,FUSED_TARGETS_NPZ="${TARGETS_DIR}/fused_targets_train_val_test.npz",TARGET_SOURCE_SPLITS_NPZ="${TARGET_SOURCE_SPLITS_NPZ}",SAVE_DIR="${STUDENT_SAVE_DIR}",RUN_NAME="${STUDENT_RUN_NAME}" \
   "${RUN_STUDENT}")
 echo "  student: ${job_student}"
 

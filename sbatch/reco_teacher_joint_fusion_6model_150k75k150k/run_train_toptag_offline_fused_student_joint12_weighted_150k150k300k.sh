@@ -21,6 +21,7 @@ TRAIN_PATH="${TRAIN_PATH:-./data/train_quarter.h5}"
 FUSED_TARGETS_NPZ="${FUSED_TARGETS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/fused_targets_joint12_weighted_150k150k300k/fused_targets_train_val_test.npz}"
 TARGET_KEY="${TARGET_KEY:-probs_fused_overall}"
 TARGET_SPLIT_SCHEME="${TARGET_SPLIT_SCHEME:-train_val_test}"
+TARGET_SOURCE_SPLITS_NPZ="${TARGET_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-600000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-150000}"
@@ -67,12 +68,14 @@ CMD=(
   --fused_targets_npz "${FUSED_TARGETS_NPZ}"
   --target_key "${TARGET_KEY}"
   --target_split_scheme "${TARGET_SPLIT_SCHEME}"
+  --target_source_splits_npz "${TARGET_SOURCE_SPLITS_NPZ}"
 )
 
 echo "============================================================"
 echo "Train top-tagging offline fused student"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Targets: ${FUSED_TARGETS_NPZ}"
+echo "Source splits: ${TARGET_SOURCE_SPLITS_NPZ}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"

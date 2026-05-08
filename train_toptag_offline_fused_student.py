@@ -154,6 +154,15 @@ def main() -> None:
         default="train_val_test",
         choices=["train_val_test", "fit_ref_test"],
     )
+    ap.add_argument(
+        "--target_source_splits_npz",
+        type=Path,
+        default=None,
+        help="Optional data_splits.npz from the source run that generated fused targets. "
+             "When set, align fit/ref/test targets to exact jet indices from that source split.",
+    )
+    ap.add_argument("--target_source_val_key", type=str, default="val_idx")
+    ap.add_argument("--target_source_test_key", type=str, default="test_idx")
     args = ap.parse_args()
 
     tkd.set_seed(int(args.seed))
@@ -214,9 +223,6 @@ def main() -> None:
         stratify=labels[rem_idx],
     )
 
-    means, stds = get_stats(feat_off, masks_off, train_idx)
-    feat_off_std = standardize(feat_off, masks_off, means, stds)
-
     # Load fused targets
     fused_npz = args.fused_targets_npz.expanduser().resolve()
     arr = np.load(fused_npz)
@@ -235,12 +241,80 @@ def main() -> None:
     y_soft_tr = np.asarray(arr[ktr], dtype=np.float32).reshape(-1)
     y_soft_va = np.asarray(arr[kva], dtype=np.float32).reshape(-1)
     y_soft_te = np.asarray(arr[kte], dtype=np.float32).reshape(-1)
+
+    if args.target_source_splits_npz is not None:
+        src_npz = args.target_source_splits_npz.expanduser().resolve()
+        src = np.load(src_npz)
+        val_key = str(args.target_source_val_key).strip()
+        test_key = str(args.target_source_test_key).strip()
+        if val_key not in src or test_key not in src:
+            raise KeyError(
+                f"Missing `{val_key}` or `{test_key}` in source splits npz: {src_npz}. "
+                f"Available keys: {sorted(src.files)}"
+            )
+        src_val = np.asarray(src[val_key], dtype=np.int64).reshape(-1)
+        src_test = np.asarray(src[test_key], dtype=np.int64).reshape(-1)
+
+        if "idx_fit" in arr and "idx_ref" in arr:
+            idx_fit_local = np.asarray(arr["idx_fit"], dtype=np.int64).reshape(-1)
+            idx_ref_local = np.asarray(arr["idx_ref"], dtype=np.int64).reshape(-1)
+        else:
+            raise KeyError(
+                f"Missing idx_fit/idx_ref in fused targets npz: {fused_npz}. "
+                "Rebuild fused targets with build_toptag_fused_targets_from_joint12_bingated.py "
+                "or run without --target_source_splits_npz."
+            )
+
+        if idx_fit_local.size == 0 or idx_ref_local.size == 0:
+            raise ValueError("idx_fit/idx_ref are empty; cannot align source splits.")
+        if int(idx_fit_local.max()) >= int(src_val.shape[0]) or int(idx_ref_local.max()) >= int(src_val.shape[0]):
+            raise ValueError(
+                "idx_fit/idx_ref out of bounds for source val_idx length: "
+                f"fit_max={int(idx_fit_local.max())}, ref_max={int(idx_ref_local.max())}, "
+                f"val_len={int(src_val.shape[0])}"
+            )
+
+        train_idx = src_val[idx_fit_local]
+        val_idx = src_val[idx_ref_local]
+        test_idx = src_test
+
+        print(
+            "Aligned fused-target splits from source split NPZ: "
+            f"{src_npz} | train={len(train_idx)} val={len(val_idx)} test={len(test_idx)}"
+        )
+
     if int(y_soft_tr.shape[0]) != int(len(train_idx)):
         raise ValueError(f"Train target length mismatch: {y_soft_tr.shape[0]} vs {len(train_idx)}")
     if int(y_soft_va.shape[0]) != int(len(val_idx)):
         raise ValueError(f"Val target length mismatch: {y_soft_va.shape[0]} vs {len(val_idx)}")
     if int(y_soft_te.shape[0]) != int(len(test_idx)):
         raise ValueError(f"Test target length mismatch: {y_soft_te.shape[0]} vs {len(test_idx)}")
+
+    means, stds = get_stats(feat_off, masks_off, train_idx)
+    feat_off_std = standardize(feat_off, masks_off, means, stds)
+
+    # Sanity check: fused soft targets should be positively informative for true labels.
+    def _label_target_auc(h: np.ndarray, s: np.ndarray) -> float:
+        h_i = h.astype(np.int64).reshape(-1)
+        s_f = s.astype(np.float64).reshape(-1)
+        if h_i.size == 0 or np.unique(h_i).size < 2:
+            return float("nan")
+        return float(roc_auc_score(h_i, s_f))
+
+    soft_auc_tr = _label_target_auc(labels[train_idx], y_soft_tr)
+    soft_auc_va = _label_target_auc(labels[val_idx], y_soft_va)
+    soft_auc_te = _label_target_auc(labels[test_idx], y_soft_te)
+    print(
+        "Target-vs-label AUC sanity: "
+        f"train={soft_auc_tr:.4f}, val={soft_auc_va:.4f}, test={soft_auc_te:.4f}"
+    )
+    auc_vals = [soft_auc_tr, soft_auc_va, soft_auc_te]
+    bad_auc = [x for x in auc_vals if np.isfinite(x) and x < 0.75]
+    if len(bad_auc) > 0:
+        print(
+            "WARNING: low target-vs-label AUC detected. "
+            "This usually indicates target/index misalignment."
+        )
 
     ds_tr = SoftTargetJetDataset(
         feat_off_std[train_idx], masks_off[train_idx], labels[train_idx], y_soft_tr
@@ -376,6 +450,14 @@ def main() -> None:
         "fused_targets_npz": str(fused_npz),
         "target_key": str(args.target_key),
         "target_split_scheme": str(args.target_split_scheme),
+        "target_source_splits_npz": (
+            str(args.target_source_splits_npz.expanduser().resolve())
+            if args.target_source_splits_npz is not None
+            else ""
+        ),
+        "target_label_auc_train": float(soft_auc_tr),
+        "target_label_auc_val": float(soft_auc_va),
+        "target_label_auc_test": float(soft_auc_te),
         "best_val_loss": float(best_val_loss),
         "best_epoch": int(best_epoch),
         "val_loss": float(va_loss),
