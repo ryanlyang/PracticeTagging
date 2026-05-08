@@ -31,7 +31,7 @@ import copy
 import json
 import random
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Dict, Optional, Tuple
 
 import h5py
 import numpy as np
@@ -289,6 +289,7 @@ class StageAReconstructionDataset(Dataset):
         labels: np.ndarray,
         budget_merge_true: np.ndarray,
         budget_eff_true: np.ndarray,
+        stagea_fused_target: Optional[np.ndarray] = None,
     ):
         self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
         self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
@@ -298,12 +299,21 @@ class StageAReconstructionDataset(Dataset):
         self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
         self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
         self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+        self.stagea_fused_target = None
+        if stagea_fused_target is not None:
+            tgt = np.asarray(stagea_fused_target, dtype=np.float32).reshape(-1)
+            if int(tgt.shape[0]) != int(self.labels.shape[0]):
+                raise ValueError(
+                    "stagea_fused_target length mismatch: "
+                    f"{int(tgt.shape[0])} vs labels {int(self.labels.shape[0])}"
+                )
+            self.stagea_fused_target = torch.tensor(tgt, dtype=torch.float32)
 
     def __len__(self) -> int:
         return self.feat_hlt.shape[0]
 
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
-        return {
+        out = {
             "feat_hlt": self.feat_hlt[i],
             "mask_hlt": self.mask_hlt[i],
             "const_hlt": self.const_hlt[i],
@@ -313,6 +323,9 @@ class StageAReconstructionDataset(Dataset):
             "budget_merge_true": self.budget_merge_true[i],
             "budget_eff_true": self.budget_eff_true[i],
         }
+        if self.stagea_fused_target is not None:
+            out["stagea_fused_target"] = self.stagea_fused_target[i]
+        return out
 
 
 def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) -> torch.Tensor:
@@ -503,6 +516,7 @@ def _compute_teacher_guided_reco_losses(
     kd_temperature: float,
     budget_eps: float,
     budget_weight_floor: float,
+    stagea_fused_target: Optional[torch.Tensor] = None,
 ) -> Dict[str, torch.Tensor]:
     aux_losses = compute_reconstruction_losses(
         reco_out,
@@ -536,7 +550,10 @@ def _compute_teacher_guided_reco_losses(
     attn_teacher_reco = reco_pack[1]
     emb_teacher_reco = reco_pack[2]
 
-    target_soft = torch.sigmoid(logits_teacher_off / kd_temperature)
+    if stagea_fused_target is not None:
+        target_soft = torch.clamp(stagea_fused_target.view(-1), min=0.0, max=1.0)
+    else:
+        target_soft = torch.sigmoid(logits_teacher_off / kd_temperature)
     kd_vec = (
         F.binary_cross_entropy_with_logits(
             logits_teacher_reco / kd_temperature,
@@ -699,6 +716,9 @@ def train_reconstructor_teacher_guided(
             labels_batch = batch["label"].to(device)
             budget_merge_true = batch["budget_merge_true"].to(device)
             budget_eff_true = batch["budget_eff_true"].to(device)
+            fused_target_batch = batch.get("stagea_fused_target", None)
+            if fused_target_batch is not None:
+                fused_target_batch = fused_target_batch.to(device)
 
             opt.zero_grad()
             out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=sc)
@@ -718,6 +738,7 @@ def train_reconstructor_teacher_guided(
                 kd_temperature=kd_temperature,
                 budget_eps=budget_eps,
                 budget_weight_floor=budget_weight_floor,
+                stagea_fused_target=fused_target_batch,
             )
             loss_total, _, reco_loss_ema_state = _compose_teacher_guided_reco_total(
                 losses_raw=losses,
@@ -765,6 +786,9 @@ def train_reconstructor_teacher_guided(
                 labels_batch = batch["label"].to(device)
                 budget_merge_true = batch["budget_merge_true"].to(device)
                 budget_eff_true = batch["budget_eff_true"].to(device)
+                fused_target_batch = batch.get("stagea_fused_target", None)
+                if fused_target_batch is not None:
+                    fused_target_batch = fused_target_batch.to(device)
 
                 out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
                 losses = _compute_teacher_guided_reco_losses(
@@ -782,6 +806,7 @@ def train_reconstructor_teacher_guided(
                     kd_temperature=kd_temperature,
                     budget_eps=budget_eps,
                     budget_weight_floor=budget_weight_floor,
+                    stagea_fused_target=fused_target_batch,
                 )
                 loss_total, _, _ = _compose_teacher_guided_reco_total(
                     losses_raw=losses,
@@ -2237,6 +2262,31 @@ def main() -> None:
     parser.add_argument("--stageA_budget_eps", type=float, default=0.015)
     parser.add_argument("--stageA_budget_weight_floor", type=float, default=1e-4)
     parser.add_argument("--stageA_target_tpr", type=float, default=0.50)
+    parser.add_argument(
+        "--stageA_teacher_ckpt",
+        type=str,
+        default="",
+        help="Optional external teacher checkpoint for Stage-A guidance only (overrides STEP-1 teacher in Stage-A).",
+    )
+    parser.add_argument(
+        "--stageA_fused_targets_npz",
+        type=str,
+        default="",
+        help="Optional fused-target NPZ for direct Stage-A logit distillation.",
+    )
+    parser.add_argument(
+        "--stageA_fused_targets_key",
+        type=str,
+        default="probs_fused_overall",
+        help="Fused-target key prefix in NPZ (e.g. probs_fused_overall, probs_fused_bin).",
+    )
+    parser.add_argument(
+        "--stageA_fused_split_scheme",
+        type=str,
+        default="train_val_test",
+        choices=["train_val_test", "fit_ref_test"],
+        help="How to read Stage-A fused targets from NPZ suffixes.",
+    )
     parser.add_argument("--disable_stageA_loss_normalization", action="store_true")
     parser.add_argument("--stageA_loss_norm_ema_decay", type=float, default=0.98)
     parser.add_argument("--stageA_loss_norm_eps", type=float, default=1e-6)
@@ -2670,6 +2720,61 @@ def main() -> None:
             f"tau32={test_m['mae_tau32']:.4f}, n_added={test_m['mae_n_added']:.3f}"
         )
 
+    # Optional direct fused targets for Stage-A logit distillation.
+    stagea_fused_tr = None
+    stagea_fused_va = None
+    stagea_fused_npz_path = str(getattr(args, "stageA_fused_targets_npz", "")).strip()
+    if len(stagea_fused_npz_path) > 0:
+        fused_npz = Path(stagea_fused_npz_path).expanduser().resolve()
+        if not fused_npz.is_file():
+            raise FileNotFoundError(f"Missing --stageA_fused_targets_npz: {fused_npz}")
+        arr_fused = np.load(fused_npz)
+        key_prefix = str(getattr(args, "stageA_fused_targets_key", "probs_fused_overall")).strip()
+        scheme = str(getattr(args, "stageA_fused_split_scheme", "train_val_test")).strip().lower()
+        if scheme == "fit_ref_test":
+            ktr = f"{key_prefix}_fit"
+            kva = f"{key_prefix}_ref"
+        else:
+            ktr = f"{key_prefix}_train"
+            kva = f"{key_prefix}_val"
+        if ktr not in arr_fused or kva not in arr_fused:
+            raise KeyError(
+                f"Missing fused target keys in {fused_npz}. "
+                f"Expected `{ktr}` and `{kva}`. Available keys: {sorted(arr_fused.files)}"
+            )
+        stagea_fused_tr = np.asarray(arr_fused[ktr], dtype=np.float32).reshape(-1)
+        stagea_fused_va = np.asarray(arr_fused[kva], dtype=np.float32).reshape(-1)
+        if int(stagea_fused_tr.shape[0]) != int(len(train_idx)):
+            raise ValueError(
+                f"Stage-A fused train length mismatch: {int(stagea_fused_tr.shape[0])} vs train split {int(len(train_idx))}."
+            )
+        if int(stagea_fused_va.shape[0]) != int(len(val_idx)):
+            raise ValueError(
+                f"Stage-A fused val length mismatch: {int(stagea_fused_va.shape[0])} vs val split {int(len(val_idx))}."
+            )
+        print(
+            "Stage-A fused targets loaded: "
+            f"{fused_npz} | key={key_prefix} | scheme={scheme} | "
+            f"train={stagea_fused_tr.shape} val={stagea_fused_va.shape}"
+        )
+
+    # Stage-A teacher model can be overridden independently from STEP-1 teacher.
+    stagea_teacher_model = teacher
+    stagea_teacher_ckpt = str(getattr(args, "stageA_teacher_ckpt", "")).strip()
+    if len(stagea_teacher_ckpt) > 0:
+        teacher_override_path = Path(stagea_teacher_ckpt).expanduser().resolve()
+        if not teacher_override_path.is_file():
+            raise FileNotFoundError(f"Missing --stageA_teacher_ckpt: {teacher_override_path}")
+        stagea_teacher_model = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
+        teacher_override_pack = torch.load(teacher_override_path, map_location=device)
+        teacher_override_sd = (
+            teacher_override_pack["model"]
+            if isinstance(teacher_override_pack, dict) and ("model" in teacher_override_pack)
+            else teacher_override_pack
+        )
+        stagea_teacher_model.load_state_dict(teacher_override_sd, strict=True)
+        print(f"Stage-A teacher override loaded from: {teacher_override_path}")
+
     # Stage A: reconstructor pretrain
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)")
@@ -2678,11 +2783,13 @@ def main() -> None:
         feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
         const_off[train_idx], masks_off[train_idx], labels[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
+        stagea_fused_target=stagea_fused_tr,
     )
     ds_val_reco = StageAReconstructionDataset(
         feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx], labels[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
+        stagea_fused_target=stagea_fused_va,
     )
     dl_train_reco = DataLoader(
         ds_train_reco,
@@ -2710,7 +2817,7 @@ def main() -> None:
         device=device,
         train_cfg=cfg["reconstructor_training"],
         loss_cfg=cfg["loss"],
-        teacher_model=teacher,
+        teacher_model=stagea_teacher_model,
         feat_means=means.astype(np.float32),
         feat_stds=stds.astype(np.float32),
         kd_temperature=float(args.stageA_kd_temp),
