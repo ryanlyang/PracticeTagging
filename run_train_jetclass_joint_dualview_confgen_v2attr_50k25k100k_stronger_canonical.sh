@@ -78,8 +78,8 @@ CMD=(
   --n_val_jets "${N_VAL_JETS}"
   --n_test_jets "${N_TEST_JETS}"
   --batch_size 512
-  --epochs 30
-  --patience 8
+  --epochs 60
+  --patience 12
   --lr 7e-4
   --weight_decay 1e-5
   --warmup_epochs 3
@@ -129,8 +129,8 @@ CMD=(
   --loss_w_sparse 0.012
   --loss_w_local 0.06
   --loss_gen_local_radius 0.08
-  --stageB_epochs 35
-  --stageB_patience 10
+  --stageB_epochs 60
+  --stageB_patience 15
   --stageB_min_epochs 10
   --stageB_lr_dual 4e-4
   --stageC_epochs 45

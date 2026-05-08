@@ -24,6 +24,7 @@ V2 adds constrained non-kinematic supervision for reconstructed (unmerged) token
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import math
 from pathlib import Path
@@ -193,6 +194,43 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--lambda_attr_charge", type=float, default=0.03)
     p.add_argument("--lambda_attr_track", type=float, default=0.03)
     p.add_argument("--corrected_weight_floor", type=float, default=1e-4)
+    p.add_argument(
+        "--train_reco_only_after_stageA",
+        action="store_true",
+        help="Train a single-view classifier on frozen reconstructor corrected outputs (in addition to dualview).",
+    )
+    p.add_argument("--reco_only_epochs", type=int, default=60)
+    p.add_argument("--reco_only_patience", type=int, default=15)
+    p.add_argument("--reco_only_lr", type=float, default=4e-4)
+    p.add_argument("--reco_only_warmup_epochs", type=int, default=3)
+    p.add_argument("--reco_only_batch_size", type=int, default=512)
+    p.add_argument(
+        "--enable_fused_kd_distill",
+        action="store_true",
+        help="Train student reconstructor+dualview against fused logits from two frozen teacher runs.",
+    )
+    p.add_argument("--distill_teacher_run_dir_a", type=Path, default=None)
+    p.add_argument("--distill_teacher_run_dir_b", type=Path, default=None)
+    p.add_argument("--distill_teacher_weight_a", type=float, default=0.5)
+    p.add_argument("--distill_temp", type=float, default=2.5)
+    p.add_argument("--distill_alpha_kl", type=float, default=1.0)
+    p.add_argument("--distill_alpha_ce", type=float, default=0.25)
+    p.add_argument("--distill_init_run_dir", type=Path, default=None)
+    p.add_argument("--distill_phase1_epochs", type=int, default=20)
+    p.add_argument("--distill_phase1_patience", type=int, default=6)
+    p.add_argument("--distill_phase1_min_epochs", type=int, default=5)
+    p.add_argument("--distill_phase1_lr_dual", type=float, default=3e-4)
+    p.add_argument("--distill_phase2_epochs", type=int, default=30)
+    p.add_argument("--distill_phase2_patience", type=int, default=8)
+    p.add_argument("--distill_phase2_min_epochs", type=int, default=10)
+    p.add_argument("--distill_phase2_lr_dual", type=float, default=2e-4)
+    p.add_argument("--distill_phase2_lr_reco", type=float, default=7e-5)
+    p.add_argument("--distill_phase2_lambda_reco", type=float, default=0.20)
+    p.add_argument("--distill_phase2_lambda_cons", type=float, default=0.03)
+    p.add_argument("--distill_phase2_lambda_attr_mode", type=float, default=0.04)
+    p.add_argument("--distill_phase2_lambda_attr_type", type=float, default=0.06)
+    p.add_argument("--distill_phase2_lambda_attr_charge", type=float, default=0.01)
+    p.add_argument("--distill_phase2_lambda_attr_track", type=float, default=0.01)
 
     # Non-privileged budget target
     p.add_argument("--added_target_scale", type=float, default=0.90)
@@ -681,6 +719,438 @@ def eval_joint_multiclass(
         return out
     out.update(eval_metrics(ys, probs, class_names, background_class, target_class))
     return out
+
+
+@torch.no_grad()
+def build_corrected_feature_arrays(
+    reconstructor: OfflineReconstructor,
+    feat_hlt_reco: np.ndarray,
+    mask_hlt: np.ndarray,
+    const_hlt: np.ndarray,
+    device: torch.device,
+    reco_batch_size: int,
+    corrected_weight_floor: float,
+) -> Tuple[np.ndarray, np.ndarray]:
+    reconstructor.eval()
+    feat_chunks: List[np.ndarray] = []
+    mask_chunks: List[np.ndarray] = []
+    n = int(feat_hlt_reco.shape[0])
+    bs = int(max(1, reco_batch_size))
+    for i in range(0, n, bs):
+        j = min(n, i + bs)
+        feat_t = torch.from_numpy(feat_hlt_reco[i:j]).to(device=device, dtype=torch.float32, non_blocking=True)
+        mask_t = torch.from_numpy(mask_hlt[i:j]).to(device=device, dtype=torch.bool, non_blocking=True)
+        const_t = torch.from_numpy(const_hlt[i:j]).to(device=device, dtype=torch.float32, non_blocking=True)
+        reco_out = reconstructor(feat_t, mask_t, const_t, stage_scale=1.0)
+        feat_b, mask_b = build_soft_corrected_view(
+            reco_out,
+            weight_floor=float(corrected_weight_floor),
+            scale_features_by_weight=True,
+            include_flags=False,
+        )
+        feat_chunks.append(feat_b.detach().cpu().numpy().astype(np.float32))
+        mask_chunks.append(mask_b.detach().cpu().numpy().astype(bool))
+    feat_all = np.concatenate(feat_chunks, axis=0) if feat_chunks else np.zeros((0, 1, 10), dtype=np.float32)
+    mask_all = np.concatenate(mask_chunks, axis=0) if mask_chunks else np.zeros((0, 1), dtype=bool)
+    return feat_all, mask_all
+
+
+def train_eval_reco_only_classifier(
+    reconstructor: OfflineReconstructor,
+    tr_feat_hlt_reco: np.ndarray,
+    va_feat_hlt_reco: np.ndarray,
+    te_feat_hlt_reco: np.ndarray,
+    tr_hlt_mask: np.ndarray,
+    va_hlt_mask: np.ndarray,
+    te_hlt_mask: np.ndarray,
+    tr_hlt_const4: np.ndarray,
+    va_hlt_const4: np.ndarray,
+    te_hlt_const4: np.ndarray,
+    tr_y: np.ndarray,
+    va_y: np.ndarray,
+    te_y: np.ndarray,
+    args: argparse.Namespace,
+    device: torch.device,
+    class_names: Sequence[str],
+    save_root: Path,
+) -> Tuple[nn.Module, Dict[str, float], List[Dict[str, float]], Dict[str, float]]:
+    print("\n" + "=" * 70)
+    print("STEP 2.5: RECO-ONLY TAGGER (FROZEN RECONSTRUCTOR OUTPUT)")
+    print("=" * 70)
+
+    tr_feat_corr, tr_mask_corr = build_corrected_feature_arrays(
+        reconstructor=reconstructor,
+        feat_hlt_reco=tr_feat_hlt_reco,
+        mask_hlt=tr_hlt_mask,
+        const_hlt=tr_hlt_const4,
+        device=device,
+        reco_batch_size=int(args.reco_batch_size),
+        corrected_weight_floor=float(args.corrected_weight_floor),
+    )
+    va_feat_corr, va_mask_corr = build_corrected_feature_arrays(
+        reconstructor=reconstructor,
+        feat_hlt_reco=va_feat_hlt_reco,
+        mask_hlt=va_hlt_mask,
+        const_hlt=va_hlt_const4,
+        device=device,
+        reco_batch_size=int(args.reco_batch_size),
+        corrected_weight_floor=float(args.corrected_weight_floor),
+    )
+    te_feat_corr, te_mask_corr = build_corrected_feature_arrays(
+        reconstructor=reconstructor,
+        feat_hlt_reco=te_feat_hlt_reco,
+        mask_hlt=te_hlt_mask,
+        const_hlt=te_hlt_const4,
+        device=device,
+        reco_batch_size=int(args.reco_batch_size),
+        corrected_weight_floor=float(args.corrected_weight_floor),
+    )
+
+    ds_tr = JetDataset(tr_feat_corr, tr_mask_corr, tr_y)
+    ds_va = JetDataset(va_feat_corr, va_mask_corr, va_y)
+    ds_te = JetDataset(te_feat_corr, te_mask_corr, te_y)
+    dl_tr = make_loader(ds_tr, batch_size=int(args.reco_only_batch_size), shuffle=True, num_workers=int(args.num_workers))
+    dl_va = make_loader(ds_va, batch_size=int(args.reco_only_batch_size), shuffle=False, num_workers=int(args.num_workers))
+    dl_te = make_loader(ds_te, batch_size=int(args.reco_only_batch_size), shuffle=False, num_workers=int(args.num_workers))
+
+    reco_args = argparse.Namespace(**vars(args))
+    reco_args.epochs = int(args.reco_only_epochs)
+    reco_args.patience = int(args.reco_only_patience)
+    reco_args.lr = float(args.reco_only_lr)
+    reco_args.warmup_epochs = int(args.reco_only_warmup_epochs)
+
+    model, best_val, hist = fit_model(
+        train_loader=dl_tr,
+        val_loader=dl_va,
+        input_dim=int(tr_feat_corr.shape[-1]),
+        n_classes=int(len(class_names)),
+        class_names=class_names,
+        background_class=str(args.background_class),
+        target_class=str(args.target_class),
+        args=reco_args,
+        tag="reco_only_corrected_stageA",
+        save_dir=save_root,
+    )
+    test = eval_epoch(
+        model,
+        dl_te,
+        device=device,
+        class_names=class_names,
+        background_class=str(args.background_class),
+        target_class=str(args.target_class),
+    )
+    print(
+        f"RecoOnly (StageA frozen): acc={float(test['acc']):.4f}, auc_macro={float(test['auc_macro_ovr']):.4f}, "
+        f"fpr50(sig-vs-bg)={float(test['signal_vs_bg_fpr50']):.6f}, "
+        f"fpr50({args.target_class}/({args.target_class}+{args.background_class}))="
+        f"{float(test['target_vs_bg_ratio_fpr50']):.6f}"
+    )
+    return model, best_val, hist, test
+
+
+def _load_model_state_from_run_dir(model: nn.Module, run_dir: Path, ckpt_names: Sequence[str]) -> str:
+    run_dir = Path(run_dir).resolve()
+    tried: List[str] = []
+    for name in ckpt_names:
+        p = run_dir / name
+        tried.append(str(p))
+        if not p.exists():
+            continue
+        obj = torch.load(p, map_location="cpu")
+        state = obj["model"] if isinstance(obj, dict) and ("model" in obj) else obj
+        model.load_state_dict(state, strict=True)
+        return str(p)
+    raise FileNotFoundError(
+        f"Could not load checkpoint for {model.__class__.__name__} from {run_dir}. Tried: {tried}"
+    )
+
+
+def _load_two_teacher_models(
+    reconstructor_template: nn.Module,
+    input_dim_a: int,
+    n_classes: int,
+    args: argparse.Namespace,
+    device: torch.device,
+) -> Dict[str, object]:
+    if args.distill_teacher_run_dir_a is None or args.distill_teacher_run_dir_b is None:
+        raise ValueError(
+            "--enable_fused_kd_distill requires both --distill_teacher_run_dir_a and --distill_teacher_run_dir_b"
+        )
+
+    def _build_pair(run_dir: Path) -> Dict[str, object]:
+        reco = copy.deepcopy(reconstructor_template).to(device)
+        dual = JetClassDualViewTransformer(
+            input_dim_a=int(input_dim_a),
+            input_dim_b=10,
+            n_classes=int(n_classes),
+            embed_dim=int(args.embed_dim),
+            num_heads=int(args.num_heads),
+            num_layers=int(args.num_layers),
+            ff_dim=int(args.ff_dim),
+            dropout=float(args.dropout),
+        ).to(device)
+        reco_src = _load_model_state_from_run_dir(
+            reco,
+            run_dir,
+            ("offline_reconstructor_stage2.pt", "offline_reconstructor.pt"),
+        )
+        dual_src = _load_model_state_from_run_dir(
+            dual,
+            run_dir,
+            ("dual_joint_stage2.pt", "dual_joint.pt"),
+        )
+        reco.eval()
+        dual.eval()
+        for p in reco.parameters():
+            p.requires_grad_(False)
+        for p in dual.parameters():
+            p.requires_grad_(False)
+        return {"reco": reco, "dual": dual, "reco_src": reco_src, "dual_src": dual_src, "run_dir": str(run_dir)}
+
+    ta = _build_pair(Path(args.distill_teacher_run_dir_a))
+    tb = _build_pair(Path(args.distill_teacher_run_dir_b))
+    return {"A": ta, "B": tb}
+
+
+def train_joint_dual_multiclass_fused_kd(
+    reconstructor: OfflineReconstructor,
+    dual_model: nn.Module,
+    teacher_a: Dict[str, object],
+    teacher_b: Dict[str, object],
+    teacher_weight_a: float,
+    kd_temp: float,
+    kd_alpha: float,
+    ce_alpha: float,
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    device: torch.device,
+    stage_name: str,
+    freeze_reconstructor: bool,
+    epochs: int,
+    patience: int,
+    min_epochs: int,
+    lr_dual: float,
+    lr_reco: float,
+    weight_decay: float,
+    warmup_epochs: int,
+    lambda_reco: float,
+    lambda_cons: float,
+    lambda_attr_mode: float,
+    lambda_attr_type: float,
+    lambda_attr_charge: float,
+    lambda_attr_track: float,
+    loss_cfg: Dict,
+    mode_none_weight: float,
+    mode_label_smoothing: float,
+    track_weight: float,
+    class_names: Sequence[str],
+    background_class: str,
+    target_class: str,
+    corrected_weight_floor: float,
+) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, torch.Tensor]]]:
+    for p in reconstructor.parameters():
+        p.requires_grad_(not freeze_reconstructor)
+    for p in dual_model.parameters():
+        p.requires_grad_(True)
+
+    params = [{"params": dual_model.parameters(), "lr": float(lr_dual)}]
+    if not freeze_reconstructor:
+        params.append({"params": reconstructor.parameters(), "lr": float(lr_reco)})
+    opt = torch.optim.AdamW(params, lr=float(lr_dual), weight_decay=float(weight_decay))
+
+    def _lr_lambda(ep: int) -> float:
+        if ep < int(warmup_epochs):
+            return (ep + 1) / max(int(warmup_epochs), 1)
+        x = (ep - int(warmup_epochs)) / max(int(epochs) - int(warmup_epochs), 1)
+        return 0.5 * (1.0 + math.cos(math.pi * x))
+
+    sch = torch.optim.lr_scheduler.LambdaLR(opt, _lr_lambda)
+    best_metric = float("-inf")
+    best_val_auc = float("-inf")
+    best_val_acc = float("-inf")
+    best_state_dual = None
+    best_state_reco = None
+    wait = 0
+    t = float(max(1e-6, kd_temp))
+    wa = float(np.clip(teacher_weight_a, 0.0, 1.0))
+    wb = 1.0 - wa
+
+    for ep in tqdm(range(int(epochs)), desc=stage_name):
+        if freeze_reconstructor:
+            reconstructor.eval()
+        else:
+            reconstructor.train()
+        dual_model.train()
+
+        tr_total = tr_kd = tr_ce = tr_reco = tr_cons = tr_attr = 0.0
+        n_tr = 0
+        for batch in train_loader:
+            feat_hlt_reco = batch["feat_hlt_reco"].to(device)
+            feat_hlt_dual = batch["feat_hlt_dual"].to(device)
+            mask_hlt = batch["mask_hlt"].to(device)
+            const_hlt = batch["const_hlt"].to(device)
+            const_off = batch["const_off"].to(device)
+            mask_off = batch["mask_off"].to(device)
+            b_merge = batch["budget_merge_true"].to(device)
+            b_eff = batch["budget_eff_true"].to(device)
+            y = batch["label"].to(device)
+
+            with torch.no_grad():
+                reco_a = teacher_a["reco"](feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+                feat_ba, mask_ba = build_soft_corrected_view(
+                    reco_a,
+                    weight_floor=float(corrected_weight_floor),
+                    scale_features_by_weight=True,
+                    include_flags=False,
+                )
+                logit_a = teacher_a["dual"](feat_hlt_dual, mask_hlt, feat_ba, mask_ba)
+
+                reco_b = teacher_b["reco"](feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+                feat_bb, mask_bb = build_soft_corrected_view(
+                    reco_b,
+                    weight_floor=float(corrected_weight_floor),
+                    scale_features_by_weight=True,
+                    include_flags=False,
+                )
+                logit_b = teacher_b["dual"](feat_hlt_dual, mask_hlt, feat_bb, mask_bb)
+
+                prob_t = wa * torch.softmax(logit_a / t, dim=1) + wb * torch.softmax(logit_b / t, dim=1)
+
+            opt.zero_grad()
+            if freeze_reconstructor:
+                with torch.no_grad():
+                    reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+            else:
+                reco_out = reconstructor(feat_hlt_reco, mask_hlt, const_hlt, stage_scale=1.0)
+
+            feat_bs, mask_bs = build_soft_corrected_view(
+                reco_out,
+                weight_floor=float(corrected_weight_floor),
+                scale_features_by_weight=True,
+                include_flags=False,
+            )
+            logits = dual_model(feat_hlt_dual, mask_hlt, feat_bs, mask_bs)
+            loss_kd = F.kl_div(
+                F.log_softmax(logits / t, dim=1),
+                prob_t,
+                reduction="batchmean",
+            ) * (t * t)
+            loss_ce = F.cross_entropy(logits, y)
+
+            if float(lambda_reco) > 0.0:
+                losses_reco = compute_reconstruction_losses_weighted(
+                    reco_out,
+                    const_hlt,
+                    mask_hlt,
+                    const_off,
+                    mask_off,
+                    b_merge,
+                    b_eff,
+                    loss_cfg,
+                    sample_weight=None,
+                )
+                loss_reco = losses_reco["total"]
+            else:
+                loss_reco = torch.zeros((), device=device)
+
+            loss_cons = reco_out["child_weight"].mean() + reco_out["gen_weight"].mean()
+            losses_attr = compute_v2_attr_losses(
+                reco_out,
+                batch,
+                mode_none_weight=float(mode_none_weight),
+                mode_label_smoothing=float(mode_label_smoothing),
+                track_weight=float(track_weight),
+            )
+            loss_attr = (
+                float(lambda_attr_mode) * losses_attr["mode"]
+                + float(lambda_attr_type) * losses_attr["type"]
+                + float(lambda_attr_charge) * losses_attr["charge"]
+                + float(lambda_attr_track) * losses_attr["track"]
+            )
+
+            loss = (
+                float(kd_alpha) * loss_kd
+                + float(ce_alpha) * loss_ce
+                + float(lambda_reco) * loss_reco
+                + float(lambda_cons) * loss_cons
+                + loss_attr
+            )
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(dual_model.parameters(), 1.0)
+            if not freeze_reconstructor:
+                torch.nn.utils.clip_grad_norm_(reconstructor.parameters(), 1.0)
+            opt.step()
+
+            bs = int(y.shape[0])
+            tr_total += float(loss.item()) * bs
+            tr_kd += float(loss_kd.item()) * bs
+            tr_ce += float(loss_ce.item()) * bs
+            tr_reco += float(loss_reco.item()) * bs
+            tr_cons += float(loss_cons.item()) * bs
+            tr_attr += float(loss_attr.item()) * bs
+            n_tr += bs
+
+        sch.step()
+        tr_total /= max(n_tr, 1)
+        tr_kd /= max(n_tr, 1)
+        tr_ce /= max(n_tr, 1)
+        tr_reco /= max(n_tr, 1)
+        tr_cons /= max(n_tr, 1)
+        tr_attr /= max(n_tr, 1)
+
+        va = eval_joint_multiclass(
+            reconstructor=reconstructor,
+            dual_model=dual_model,
+            loader=val_loader,
+            device=device,
+            class_names=class_names,
+            background_class=background_class,
+            target_class=target_class,
+            corrected_weight_floor=float(corrected_weight_floor),
+        )
+        va_auc = float(va["auc_macro_ovr"]) if np.isfinite(float(va["auc_macro_ovr"])) else float("nan")
+        va_acc = float(va["acc"]) if np.isfinite(float(va["acc"])) else float("nan")
+        metric = va_auc if np.isfinite(va_auc) else va_acc
+        if np.isfinite(va_auc) and va_auc > best_val_auc:
+            best_val_auc = va_auc
+        if np.isfinite(va_acc) and va_acc > best_val_acc:
+            best_val_acc = va_acc
+
+        if np.isfinite(metric) and metric > best_metric:
+            best_metric = float(metric)
+            best_state_dual = {k: v.detach().cpu().clone() for k, v in dual_model.state_dict().items()}
+            best_state_reco = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
+            wait = 0
+        else:
+            wait += 1
+
+        print_every = 1 if stage_name.startswith("Distill-Phase2") else 5
+        if (ep + 1) % print_every == 0:
+            print(
+                f"{stage_name} ep {ep+1}: train(total/kd/ce/reco/cons/attr)="
+                f"{tr_total:.4f}/{tr_kd:.4f}/{tr_ce:.4f}/{tr_reco:.4f}/{tr_cons:.4f}/{tr_attr:.4f} | "
+                f"val(loss/acc/auc/fpr50_sigbg/fpr50_ratio)="
+                f"{float(va['loss']):.4f}/{float(va['acc']):.4f}/{float(va['auc_macro_ovr']):.4f}/"
+                f"{float(va['signal_vs_bg_fpr50']):.6f}/{float(va['target_vs_bg_ratio_fpr50']):.6f} "
+                f"best_metric={best_metric:.4f}"
+            )
+
+        if (ep + 1) >= int(min_epochs) and wait >= int(patience):
+            print(f"Early stopping {stage_name} at epoch {ep+1}")
+            break
+
+    if best_state_dual is not None:
+        dual_model.load_state_dict(best_state_dual)
+    if best_state_reco is not None:
+        reconstructor.load_state_dict(best_state_reco)
+
+    metrics = {
+        "best_val_metric": float(best_metric),
+        "best_val_auc_macro_ovr": float(best_val_auc),
+        "best_val_acc": float(best_val_acc),
+    }
+    states = {"dual": best_state_dual, "reco": best_state_reco}
+    return reconstructor, dual_model, metrics, states
 
 
 def train_joint_dual_multiclass(
@@ -1348,9 +1818,31 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         track_weight=float(args.v2_track_weight),
     )
 
-    print("\n" + "=" * 70)
-    print("STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECONSTRUCTOR)")
-    print("=" * 70)
+    reco_only_model = None
+    reco_only_val_best: Dict[str, float] = {}
+    reco_only_hist: List[Dict[str, float]] = []
+    reco_only_test: Dict[str, float] = {}
+    if bool(args.train_reco_only_after_stageA):
+        reco_only_model, reco_only_val_best, reco_only_hist, reco_only_test = train_eval_reco_only_classifier(
+            reconstructor=reconstructor,
+            tr_feat_hlt_reco=tr_feat_hlt,
+            va_feat_hlt_reco=va_feat_hlt,
+            te_feat_hlt_reco=te_feat_hlt,
+            tr_hlt_mask=tr_hlt_mask_raw,
+            va_hlt_mask=va_hlt_mask_raw,
+            te_hlt_mask=te_hlt_mask_raw,
+            tr_hlt_const4=tr_hlt_const4,
+            va_hlt_const4=va_hlt_const4,
+            te_hlt_const4=te_hlt_const4,
+            tr_y=tr_y,
+            va_y=va_y,
+            te_y=te_y,
+            args=args,
+            device=device,
+            class_names=class_names,
+            save_root=save_root,
+        )
+
     dual_model = JetClassDualViewTransformer(
         input_dim_a=input_dim,
         input_dim_b=10,
@@ -1361,36 +1853,152 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         ff_dim=int(args.ff_dim),
         dropout=float(args.dropout),
     ).to(device)
-    reconstructor, dual_model, stageB_metrics, stageB_states = train_joint_dual_multiclass(
-        reconstructor=reconstructor,
-        dual_model=dual_model,
-        train_loader=dl_tr_joint,
-        val_loader=dl_va_joint,
-        device=device,
-        stage_name="StageB-DualPretrain",
-        freeze_reconstructor=True,
-        epochs=int(args.stageB_epochs),
-        patience=int(args.stageB_patience),
-        min_epochs=int(args.stageB_min_epochs),
-        lr_dual=float(args.stageB_lr_dual),
-        lr_reco=float(args.stageC_lr_reco),
-        weight_decay=float(args.weight_decay),
-        warmup_epochs=int(args.warmup_epochs),
-        lambda_reco=0.0,
-        lambda_cons=0.0,
-        lambda_attr_mode=0.0,
-        lambda_attr_type=0.0,
-        lambda_attr_charge=0.0,
-        lambda_attr_track=0.0,
-        loss_cfg=reco_cfg["loss"],
-        mode_none_weight=float(args.v2_mode_none_weight),
-        mode_label_smoothing=float(args.v2_mode_label_smoothing),
-        track_weight=float(args.v2_track_weight),
-        class_names=class_names,
-        background_class=str(args.background_class),
-        target_class=str(args.target_class),
-        corrected_weight_floor=float(args.corrected_weight_floor),
-    )
+    distill_teacher_sources: Dict[str, object] = {}
+
+    if bool(args.enable_fused_kd_distill):
+        print("\n" + "=" * 70)
+        print("STEP 3: FUSED-TEACHER KD (FREEZE->UNFREEZE)")
+        print("=" * 70)
+
+        if args.distill_init_run_dir is not None:
+            init_dir = Path(args.distill_init_run_dir)
+            src_r = _load_model_state_from_run_dir(
+                reconstructor,
+                init_dir,
+                ("offline_reconstructor_stage2.pt", "offline_reconstructor.pt"),
+            )
+            src_d = _load_model_state_from_run_dir(
+                dual_model,
+                init_dir,
+                ("dual_joint_stage2.pt", "dual_joint.pt"),
+            )
+            print(f"Distill student init loaded: reco={src_r}, dual={src_d}")
+
+        teachers = _load_two_teacher_models(
+            reconstructor_template=reconstructor,
+            input_dim_a=input_dim,
+            n_classes=n_classes,
+            args=args,
+            device=device,
+        )
+        distill_teacher_sources = {
+            "A_run_dir": teachers["A"]["run_dir"],
+            "A_reco_ckpt": teachers["A"]["reco_src"],
+            "A_dual_ckpt": teachers["A"]["dual_src"],
+            "B_run_dir": teachers["B"]["run_dir"],
+            "B_reco_ckpt": teachers["B"]["reco_src"],
+            "B_dual_ckpt": teachers["B"]["dual_src"],
+        }
+        print("Teacher A/B loaded for fused KD.")
+
+        reconstructor, dual_model, kd_p1_metrics, _ = train_joint_dual_multiclass_fused_kd(
+            reconstructor=reconstructor,
+            dual_model=dual_model,
+            teacher_a=teachers["A"],
+            teacher_b=teachers["B"],
+            teacher_weight_a=float(args.distill_teacher_weight_a),
+            kd_temp=float(args.distill_temp),
+            kd_alpha=float(args.distill_alpha_kl),
+            ce_alpha=float(args.distill_alpha_ce),
+            train_loader=dl_tr_joint,
+            val_loader=dl_va_joint,
+            device=device,
+            stage_name="Distill-Phase1",
+            freeze_reconstructor=True,
+            epochs=int(args.distill_phase1_epochs),
+            patience=int(args.distill_phase1_patience),
+            min_epochs=int(args.distill_phase1_min_epochs),
+            lr_dual=float(args.distill_phase1_lr_dual),
+            lr_reco=float(args.distill_phase2_lr_reco),
+            weight_decay=float(args.weight_decay),
+            warmup_epochs=int(args.warmup_epochs),
+            lambda_reco=0.0,
+            lambda_cons=0.0,
+            lambda_attr_mode=0.0,
+            lambda_attr_type=0.0,
+            lambda_attr_charge=0.0,
+            lambda_attr_track=0.0,
+            loss_cfg=reco_cfg["loss"],
+            mode_none_weight=float(args.v2_mode_none_weight),
+            mode_label_smoothing=float(args.v2_mode_label_smoothing),
+            track_weight=float(args.v2_track_weight),
+            class_names=class_names,
+            background_class=str(args.background_class),
+            target_class=str(args.target_class),
+            corrected_weight_floor=float(args.corrected_weight_floor),
+        )
+        reconstructor, dual_model, kd_p2_metrics, _ = train_joint_dual_multiclass_fused_kd(
+            reconstructor=reconstructor,
+            dual_model=dual_model,
+            teacher_a=teachers["A"],
+            teacher_b=teachers["B"],
+            teacher_weight_a=float(args.distill_teacher_weight_a),
+            kd_temp=float(args.distill_temp),
+            kd_alpha=float(args.distill_alpha_kl),
+            ce_alpha=float(args.distill_alpha_ce),
+            train_loader=dl_tr_joint,
+            val_loader=dl_va_joint,
+            device=device,
+            stage_name="Distill-Phase2",
+            freeze_reconstructor=False,
+            epochs=int(args.distill_phase2_epochs),
+            patience=int(args.distill_phase2_patience),
+            min_epochs=int(args.distill_phase2_min_epochs),
+            lr_dual=float(args.distill_phase2_lr_dual),
+            lr_reco=float(args.distill_phase2_lr_reco),
+            weight_decay=float(args.weight_decay),
+            warmup_epochs=int(args.warmup_epochs),
+            lambda_reco=float(args.distill_phase2_lambda_reco),
+            lambda_cons=float(args.distill_phase2_lambda_cons),
+            lambda_attr_mode=float(args.distill_phase2_lambda_attr_mode),
+            lambda_attr_type=float(args.distill_phase2_lambda_attr_type),
+            lambda_attr_charge=float(args.distill_phase2_lambda_attr_charge),
+            lambda_attr_track=float(args.distill_phase2_lambda_attr_track),
+            loss_cfg=reco_cfg["loss"],
+            mode_none_weight=float(args.v2_mode_none_weight),
+            mode_label_smoothing=float(args.v2_mode_label_smoothing),
+            track_weight=float(args.v2_track_weight),
+            class_names=class_names,
+            background_class=str(args.background_class),
+            target_class=str(args.target_class),
+            corrected_weight_floor=float(args.corrected_weight_floor),
+        )
+        stageB_metrics = {"distill_phase1": kd_p1_metrics, "distill_phase2": kd_p2_metrics}
+    else:
+        print("\n" + "=" * 70)
+        print("STEP 3: STAGE B (DUAL PRETRAIN, FROZEN RECONSTRUCTOR)")
+        print("=" * 70)
+        reconstructor, dual_model, stageB_metrics, _ = train_joint_dual_multiclass(
+            reconstructor=reconstructor,
+            dual_model=dual_model,
+            train_loader=dl_tr_joint,
+            val_loader=dl_va_joint,
+            device=device,
+            stage_name="StageB-DualPretrain",
+            freeze_reconstructor=True,
+            epochs=int(args.stageB_epochs),
+            patience=int(args.stageB_patience),
+            min_epochs=int(args.stageB_min_epochs),
+            lr_dual=float(args.stageB_lr_dual),
+            lr_reco=float(args.stageC_lr_reco),
+            weight_decay=float(args.weight_decay),
+            warmup_epochs=int(args.warmup_epochs),
+            lambda_reco=0.0,
+            lambda_cons=0.0,
+            lambda_attr_mode=0.0,
+            lambda_attr_type=0.0,
+            lambda_attr_charge=0.0,
+            lambda_attr_track=0.0,
+            loss_cfg=reco_cfg["loss"],
+            mode_none_weight=float(args.v2_mode_none_weight),
+            mode_label_smoothing=float(args.v2_mode_label_smoothing),
+            track_weight=float(args.v2_track_weight),
+            class_names=class_names,
+            background_class=str(args.background_class),
+            target_class=str(args.target_class),
+            corrected_weight_floor=float(args.corrected_weight_floor),
+        )
+
     stage2_test = eval_joint_multiclass(
         reconstructor,
         dual_model,
@@ -1404,49 +2012,53 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
     stage2_reco_state = {k: v.detach().cpu().clone() for k, v in reconstructor.state_dict().items()}
     stage2_dual_state = {k: v.detach().cpu().clone() for k, v in dual_model.state_dict().items()}
 
-    print("\n" + "=" * 70)
-    print("STEP 4: STAGE C (JOINT FINETUNE)")
-    print("=" * 70)
-    reconstructor, dual_model, stageC_metrics, stageC_states = train_joint_dual_multiclass(
-        reconstructor=reconstructor,
-        dual_model=dual_model,
-        train_loader=dl_tr_joint,
-        val_loader=dl_va_joint,
-        device=device,
-        stage_name="StageC-Joint",
-        freeze_reconstructor=False,
-        epochs=int(args.stageC_epochs),
-        patience=int(args.stageC_patience),
-        min_epochs=int(args.stageC_min_epochs),
-        lr_dual=float(args.stageC_lr_dual),
-        lr_reco=float(args.stageC_lr_reco),
-        weight_decay=float(args.weight_decay),
-        warmup_epochs=int(args.warmup_epochs),
-        lambda_reco=float(args.lambda_reco),
-        lambda_cons=float(args.lambda_cons),
-        lambda_attr_mode=float(args.lambda_attr_mode),
-        lambda_attr_type=float(args.lambda_attr_type),
-        lambda_attr_charge=float(args.lambda_attr_charge),
-        lambda_attr_track=float(args.lambda_attr_track),
-        loss_cfg=reco_cfg["loss"],
-        mode_none_weight=float(args.v2_mode_none_weight),
-        mode_label_smoothing=float(args.v2_mode_label_smoothing),
-        track_weight=float(args.v2_track_weight),
-        class_names=class_names,
-        background_class=str(args.background_class),
-        target_class=str(args.target_class),
-        corrected_weight_floor=float(args.corrected_weight_floor),
-    )
-    joint_test = eval_joint_multiclass(
-        reconstructor,
-        dual_model,
-        dl_te_joint,
-        device,
-        class_names,
-        str(args.background_class),
-        str(args.target_class),
-        float(args.corrected_weight_floor),
-    )
+    if int(args.stageC_epochs) > 0:
+        print("\n" + "=" * 70)
+        print("STEP 4: STAGE C (JOINT FINETUNE)")
+        print("=" * 70)
+        reconstructor, dual_model, stageC_metrics, _ = train_joint_dual_multiclass(
+            reconstructor=reconstructor,
+            dual_model=dual_model,
+            train_loader=dl_tr_joint,
+            val_loader=dl_va_joint,
+            device=device,
+            stage_name="StageC-Joint",
+            freeze_reconstructor=False,
+            epochs=int(args.stageC_epochs),
+            patience=int(args.stageC_patience),
+            min_epochs=int(args.stageC_min_epochs),
+            lr_dual=float(args.stageC_lr_dual),
+            lr_reco=float(args.stageC_lr_reco),
+            weight_decay=float(args.weight_decay),
+            warmup_epochs=int(args.warmup_epochs),
+            lambda_reco=float(args.lambda_reco),
+            lambda_cons=float(args.lambda_cons),
+            lambda_attr_mode=float(args.lambda_attr_mode),
+            lambda_attr_type=float(args.lambda_attr_type),
+            lambda_attr_charge=float(args.lambda_attr_charge),
+            lambda_attr_track=float(args.lambda_attr_track),
+            loss_cfg=reco_cfg["loss"],
+            mode_none_weight=float(args.v2_mode_none_weight),
+            mode_label_smoothing=float(args.v2_mode_label_smoothing),
+            track_weight=float(args.v2_track_weight),
+            class_names=class_names,
+            background_class=str(args.background_class),
+            target_class=str(args.target_class),
+            corrected_weight_floor=float(args.corrected_weight_floor),
+        )
+        joint_test = eval_joint_multiclass(
+            reconstructor,
+            dual_model,
+            dl_te_joint,
+            device,
+            class_names,
+            str(args.background_class),
+            str(args.target_class),
+            float(args.corrected_weight_floor),
+        )
+    else:
+        stageC_metrics = {"skipped": 1.0}
+        joint_test = dict(stage2_test)
 
     summary = {
         "class_names": class_names,
@@ -1507,11 +2119,21 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         "baseline_val_best": baseline_val_best,
         "stageA_reconstructor": reco_val_metrics,
         "stageA_reconstructor_attr": reco_attr_metrics,
+        "reco_only_val_best": reco_only_val_best,
+        "distill_config": {
+            "enabled": bool(args.enable_fused_kd_distill),
+            "teacher_weight_a": float(args.distill_teacher_weight_a),
+            "temp": float(args.distill_temp),
+            "alpha_kl": float(args.distill_alpha_kl),
+            "alpha_ce": float(args.distill_alpha_ce),
+            "teacher_sources": distill_teacher_sources,
+        },
         "stageB_joint": stageB_metrics,
         "stageC_joint": stageC_metrics,
         "test_metrics": {
             "teacher_on_offline": teacher_test,
             "baseline_on_hlt": baseline_test,
+            "reco_only_on_hlt": {k: v for k, v in reco_only_test.items() if k not in ("probs", "labels")},
             "stage2_on_hlt": {k: v for k, v in stage2_test.items() if k not in ("probs", "labels")},
             "joint_on_hlt": {k: v for k, v in joint_test.items() if k not in ("probs", "labels")},
         },
@@ -1526,6 +2148,9 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         json.dump(hist_teacher, f, indent=2)
     with (save_root / "baseline_history.json").open("w", encoding="utf-8") as f:
         json.dump(hist_baseline, f, indent=2)
+    if reco_only_hist:
+        with (save_root / "reco_only_history.json").open("w", encoding="utf-8") as f:
+            json.dump(reco_only_hist, f, indent=2)
     with (save_root / "args.json").open("w", encoding="utf-8") as f:
         json.dump(vars(args), f, indent=2, default=str)
     np.savez_compressed(save_root / "hlt_diagnostics_train_perjet.npz", **tr_hlt_diag)
@@ -1543,6 +2168,8 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
     if not bool(args.skip_save_models):
         torch.save({"model": teacher.state_dict()}, save_root / "teacher.pt")
         torch.save({"model": baseline.state_dict()}, save_root / "baseline.pt")
+        if reco_only_model is not None:
+            torch.save({"model": reco_only_model.state_dict()}, save_root / "reco_only_corrected_stageA.pt")
         torch.save({"model": stage2_reco_state}, save_root / "offline_reconstructor_stage2.pt")
         torch.save({"model": stage2_dual_state}, save_root / "dual_joint_stage2.pt")
         torch.save({"model": reconstructor.state_dict()}, save_root / "offline_reconstructor.pt")
@@ -1563,6 +2190,13 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         f"fpr50({args.target_class}/({args.target_class}+{args.background_class}))="
         f"{baseline_test['target_vs_bg_ratio_fpr50']:.6f}"
     )
+    if reco_only_test:
+        print(
+            f"RecoOnly (StageA): acc={float(reco_only_test['acc']):.4f}, auc_macro={float(reco_only_test['auc_macro_ovr']):.4f}, "
+            f"fpr50(sig-vs-bg)={float(reco_only_test['signal_vs_bg_fpr50']):.6f}, "
+            f"fpr50({args.target_class}/({args.target_class}+{args.background_class}))="
+            f"{float(reco_only_test['target_vs_bg_ratio_fpr50']):.6f}"
+        )
     print(
         f"Stage2 (PreJoint): acc={float(stage2_test['acc']):.4f}, auc_macro={float(stage2_test['auc_macro_ovr']):.4f}, "
         f"fpr50(sig-vs-bg)={float(stage2_test['signal_vs_bg_fpr50']):.6f}, "

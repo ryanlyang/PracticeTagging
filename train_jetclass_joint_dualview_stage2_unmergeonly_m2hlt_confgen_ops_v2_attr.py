@@ -123,6 +123,16 @@ def main() -> None:
     )
     stagea_w_gen_fp = float(os.environ.get("JETCLASS_STAGEA_W_GEN_FP", 0.04))
 
+    # Optional teacher-dominant Stage-A objective (m3-style approximation):
+    # L = w_teacher * KL(student_corrected || teacher_hlt) + w_budget * budget (+ tiny set/local optionally).
+    stagea_teacher_w = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_TEACHER", 0.0))
+    stagea_teacher_temp = float(max(1e-6, os.environ.get("JETCLASS_STAGEA_TEACHER_TEMP", 2.5)))
+    stagea_teacher_w_budget = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_BUDGET_ONLY", 0.35))
+    stagea_teacher_w_set = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_SET_ONLY", 0.0))
+    stagea_teacher_w_local = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_LOCAL_ONLY", 0.0))
+    _stagea_teacher_mode = stagea_teacher_w > 0.0
+    _captured_teacher_model: Dict[str, object] = {"model": None}
+
     def _infer_type_id(token: np.ndarray) -> int:
         pid = token[IDX_PID0:IDX_PID4 + 1]
         if np.max(pid) <= 0:
