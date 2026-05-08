@@ -30,10 +30,27 @@ from unmerge_correct_hlt import (
     standardize,
     ParticleTransformer,
     get_scheduler,
-    fpr_at_target_tpr,
 )
 
 import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd as tkd
+
+
+def _fpr_at_target_tpr(fpr: np.ndarray, tpr: np.ndarray, target_tpr: float) -> float:
+    """Numerically stable FPR@target-TPR helper (no external module dependency)."""
+    if fpr.size == 0 or tpr.size == 0:
+        return float("nan")
+    target = float(np.clip(target_tpr, 0.0, 1.0))
+    idx = int(np.searchsorted(tpr, target, side="left"))
+    if idx <= 0:
+        return float(fpr[0])
+    if idx >= len(tpr):
+        return float(fpr[-1])
+    t0, t1 = float(tpr[idx - 1]), float(tpr[idx])
+    f0, f1 = float(fpr[idx - 1]), float(fpr[idx])
+    if t1 <= t0:
+        return float(f1)
+    w = (target - t0) / (t1 - t0)
+    return float(f0 + w * (f1 - f0))
 
 
 class SoftTargetJetDataset(Dataset):
@@ -99,7 +116,7 @@ def _eval_soft(
     if probs.size > 0 and np.unique(y).size > 1:
         auc = float(roc_auc_score(y, probs))
         fpr, tpr, _ = roc_curve(y, probs)
-        fpr50 = float(fpr_at_target_tpr(fpr, tpr, 0.50))
+        fpr50 = float(_fpr_at_target_tpr(fpr, tpr, 0.50))
     else:
         auc = float("nan")
         fpr50 = float("nan")
