@@ -250,6 +250,7 @@ class JointDualDataset(Dataset):
         budget_merge_true: np.ndarray,
         budget_eff_true: np.ndarray,
         labels: np.ndarray,
+        joint_fused_target: np.ndarray | None = None,
     ):
         self.feat_hlt_reco = torch.tensor(feat_hlt_reco, dtype=torch.float32)
         self.feat_hlt_dual = torch.tensor(feat_hlt_dual, dtype=torch.float32)
@@ -260,12 +261,21 @@ class JointDualDataset(Dataset):
         self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
         self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
         self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+        self.joint_fused_target = None
+        if joint_fused_target is not None:
+            tgt = np.asarray(joint_fused_target, dtype=np.float32).reshape(-1)
+            if int(tgt.shape[0]) != int(self.labels.shape[0]):
+                raise ValueError(
+                    "joint_fused_target length mismatch: "
+                    f"{int(tgt.shape[0])} vs labels {int(self.labels.shape[0])}"
+                )
+            self.joint_fused_target = torch.tensor(tgt, dtype=torch.float32)
 
     def __len__(self) -> int:
         return self.feat_hlt_reco.shape[0]
 
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
-        return {
+        out = {
             "feat_hlt_reco": self.feat_hlt_reco[i],
             "feat_hlt_dual": self.feat_hlt_dual[i],
             "mask_hlt": self.mask_hlt[i],
@@ -276,6 +286,9 @@ class JointDualDataset(Dataset):
             "budget_eff_true": self.budget_eff_true[i],
             "label": self.labels[i],
         }
+        if self.joint_fused_target is not None:
+            out["joint_fused_target"] = self.joint_fused_target[i]
+        return out
 
 
 class StageAReconstructionDataset(Dataset):
@@ -290,6 +303,7 @@ class StageAReconstructionDataset(Dataset):
         budget_merge_true: np.ndarray,
         budget_eff_true: np.ndarray,
         stagea_fused_target: Optional[np.ndarray] = None,
+        stagea_anchor_target: Optional[np.ndarray] = None,
     ):
         self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
         self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
@@ -308,6 +322,15 @@ class StageAReconstructionDataset(Dataset):
                     f"{int(tgt.shape[0])} vs labels {int(self.labels.shape[0])}"
                 )
             self.stagea_fused_target = torch.tensor(tgt, dtype=torch.float32)
+        self.stagea_anchor_target = None
+        if stagea_anchor_target is not None:
+            tgt_anchor = np.asarray(stagea_anchor_target, dtype=np.float32).reshape(-1)
+            if int(tgt_anchor.shape[0]) != int(self.labels.shape[0]):
+                raise ValueError(
+                    "stagea_anchor_target length mismatch: "
+                    f"{int(tgt_anchor.shape[0])} vs labels {int(self.labels.shape[0])}"
+                )
+            self.stagea_anchor_target = torch.tensor(tgt_anchor, dtype=torch.float32)
 
     def __len__(self) -> int:
         return self.feat_hlt.shape[0]
@@ -325,6 +348,8 @@ class StageAReconstructionDataset(Dataset):
         }
         if self.stagea_fused_target is not None:
             out["stagea_fused_target"] = self.stagea_fused_target[i]
+        if self.stagea_anchor_target is not None:
+            out["stagea_anchor_target"] = self.stagea_anchor_target[i]
         return out
 
 
@@ -334,6 +359,29 @@ def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) 
     sw = sample_weight.float().clamp(min=0.0)
     denom = sw.sum().clamp(min=1e-6)
     return (vec * sw).sum() / denom
+
+
+def _build_advantage_weights(
+    target_soft: torch.Tensor,
+    anchor_soft: torch.Tensor,
+    adv_weight: float,
+    adv_power: float,
+    uncert_weight: float,
+    use_abs_delta: bool,
+    w_min: float,
+    w_max: float,
+) -> torch.Tensor:
+    w = torch.ones_like(target_soft, dtype=torch.float32)
+    if float(adv_weight) > 0.0:
+        delta = target_soft - anchor_soft
+        delta_mag = delta.abs() if bool(use_abs_delta) else F.relu(delta)
+        delta_mag = torch.pow(delta_mag.clamp(min=0.0), float(max(adv_power, 1e-6)))
+        w = w * (1.0 + float(adv_weight) * delta_mag)
+    if float(uncert_weight) > 0.0:
+        uncert = (1.0 - 2.0 * torch.abs(target_soft - 0.5)).clamp(min=0.0, max=1.0)
+        w = w * (1.0 + float(uncert_weight) * uncert)
+    w = w.clamp(min=float(max(w_min, 1e-6)), max=float(max(w_max, max(w_min, 1e-6))))
+    return w
 
 
 def _build_weighted_sampler(sample_weight: np.ndarray | None) -> WeightedRandomSampler | None:
@@ -517,6 +565,14 @@ def _compute_teacher_guided_reco_losses(
     budget_eps: float,
     budget_weight_floor: float,
     stagea_fused_target: Optional[torch.Tensor] = None,
+    stagea_anchor_target: Optional[torch.Tensor] = None,
+    stagea_fused_adv_weight: float = 0.0,
+    stagea_fused_adv_power: float = 1.0,
+    stagea_fused_uncert_weight: float = 0.0,
+    stagea_fused_adv_use_abs: bool = False,
+    stagea_fused_kd_w_min: float = 0.25,
+    stagea_fused_kd_w_max: float = 4.0,
+    stagea_lambda_delta_aux: float = 0.0,
 ) -> Dict[str, torch.Tensor]:
     aux_losses = compute_reconstruction_losses(
         reco_out,
@@ -550,10 +606,27 @@ def _compute_teacher_guided_reco_losses(
     attn_teacher_reco = reco_pack[1]
     emb_teacher_reco = reco_pack[2]
 
+    anchor_soft_teacher = torch.sigmoid(logits_teacher_off / kd_temperature)
+    if stagea_anchor_target is not None:
+        anchor_soft = torch.clamp(stagea_anchor_target.view(-1), min=0.0, max=1.0)
+    else:
+        anchor_soft = anchor_soft_teacher
     if stagea_fused_target is not None:
         target_soft = torch.clamp(stagea_fused_target.view(-1), min=0.0, max=1.0)
     else:
-        target_soft = torch.sigmoid(logits_teacher_off / kd_temperature)
+        target_soft = anchor_soft
+
+    kd_sample_w = _build_advantage_weights(
+        target_soft=target_soft,
+        anchor_soft=anchor_soft,
+        adv_weight=float(max(stagea_fused_adv_weight, 0.0)),
+        adv_power=float(max(stagea_fused_adv_power, 1e-6)),
+        uncert_weight=float(max(stagea_fused_uncert_weight, 0.0)),
+        use_abs_delta=bool(stagea_fused_adv_use_abs),
+        w_min=float(max(stagea_fused_kd_w_min, 1e-6)),
+        w_max=float(max(stagea_fused_kd_w_max, max(stagea_fused_kd_w_min, 1e-6))),
+    )
+
     kd_vec = (
         F.binary_cross_entropy_with_logits(
             logits_teacher_reco / kd_temperature,
@@ -562,7 +635,15 @@ def _compute_teacher_guided_reco_losses(
         )
         * (kd_temperature * kd_temperature)
     )
-    loss_kd = _weighted_batch_mean(kd_vec, None)
+    loss_kd = _weighted_batch_mean(kd_vec, kd_sample_w)
+
+    if float(stagea_lambda_delta_aux) > 0.0:
+        reco_soft = torch.sigmoid(logits_teacher_reco / kd_temperature)
+        delta_pred = reco_soft - anchor_soft
+        delta_tgt = target_soft - anchor_soft
+        delta_aux_vec = (delta_pred - delta_tgt).pow(2)
+        delta_aux = _weighted_batch_mean(delta_aux_vec, kd_sample_w)
+        loss_kd = loss_kd + float(stagea_lambda_delta_aux) * delta_aux
 
     # Embedding alignment (jet-level representation consistency).
     emb_off_n = F.normalize(emb_teacher_off, dim=1)
@@ -589,6 +670,9 @@ def _compute_teacher_guided_reco_losses(
         "phys": loss_phys,
         "budget_hinge": loss_budget_hinge,
         "logits_teacher_reco": logits_teacher_reco,
+        "kd_weight_mean": kd_sample_w.mean(),
+        "target_soft_mean": target_soft.mean(),
+        "anchor_soft_mean": anchor_soft.mean(),
     }
 
 
@@ -615,6 +699,13 @@ def train_reconstructor_teacher_guided(
     loss_norm_ema_decay: float,
     loss_norm_eps: float,
     reload_best_at_stage_transition: bool,
+    stagea_fused_adv_weight: float = 0.0,
+    stagea_fused_adv_power: float = 1.0,
+    stagea_fused_uncert_weight: float = 0.0,
+    stagea_fused_adv_use_abs: bool = False,
+    stagea_fused_kd_w_min: float = 0.25,
+    stagea_fused_kd_w_max: float = 4.0,
+    stagea_lambda_delta_aux: float = 0.0,
 ) -> Tuple[OfflineReconstructor, Dict[str, float]]:
     opt = torch.optim.AdamW(
         model.parameters(),
@@ -633,6 +724,12 @@ def train_reconstructor_teacher_guided(
     budget_weight_floor = float(max(budget_weight_floor, 0.0))
     loss_norm_ema_decay = float(np.clip(loss_norm_ema_decay, 0.0, 0.9999))
     loss_norm_eps = float(max(loss_norm_eps, 1e-12))
+    stagea_fused_adv_weight = float(max(stagea_fused_adv_weight, 0.0))
+    stagea_fused_adv_power = float(max(stagea_fused_adv_power, 1e-6))
+    stagea_fused_uncert_weight = float(max(stagea_fused_uncert_weight, 0.0))
+    stagea_fused_kd_w_min = float(max(stagea_fused_kd_w_min, 1e-6))
+    stagea_fused_kd_w_max = float(max(stagea_fused_kd_w_max, stagea_fused_kd_w_min))
+    stagea_lambda_delta_aux = float(max(stagea_lambda_delta_aux, 0.0))
 
     means_t = torch.tensor(feat_means, dtype=torch.float32, device=device)
     stds_t = torch.tensor(np.clip(feat_stds, 1e-6, None), dtype=torch.float32, device=device)
@@ -703,6 +800,7 @@ def train_reconstructor_teacher_guided(
         sc = stage_scale_local(ep, train_cfg)
 
         tr_total = tr_kd = tr_emb = tr_tok = tr_phys = tr_budget_hinge = 0.0
+        tr_kd_w = 0.0
         n_tr = 0
         tr_probs_all = []
         tr_labels_all = []
@@ -719,6 +817,9 @@ def train_reconstructor_teacher_guided(
             fused_target_batch = batch.get("stagea_fused_target", None)
             if fused_target_batch is not None:
                 fused_target_batch = fused_target_batch.to(device)
+            anchor_target_batch = batch.get("stagea_anchor_target", None)
+            if anchor_target_batch is not None:
+                anchor_target_batch = anchor_target_batch.to(device)
 
             opt.zero_grad()
             out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=sc)
@@ -739,6 +840,14 @@ def train_reconstructor_teacher_guided(
                 budget_eps=budget_eps,
                 budget_weight_floor=budget_weight_floor,
                 stagea_fused_target=fused_target_batch,
+                stagea_anchor_target=anchor_target_batch,
+                stagea_fused_adv_weight=stagea_fused_adv_weight,
+                stagea_fused_adv_power=stagea_fused_adv_power,
+                stagea_fused_uncert_weight=stagea_fused_uncert_weight,
+                stagea_fused_adv_use_abs=bool(stagea_fused_adv_use_abs),
+                stagea_fused_kd_w_min=stagea_fused_kd_w_min,
+                stagea_fused_kd_w_max=stagea_fused_kd_w_max,
+                stagea_lambda_delta_aux=stagea_lambda_delta_aux,
             )
             loss_total, _, reco_loss_ema_state = _compose_teacher_guided_reco_total(
                 losses_raw=losses,
@@ -768,10 +877,12 @@ def train_reconstructor_teacher_guided(
             tr_tok += losses["tok"].item() * bs
             tr_phys += losses["phys"].item() * bs
             tr_budget_hinge += losses["budget_hinge"].item() * bs
+            tr_kd_w += losses["kd_weight_mean"].item() * bs
             n_tr += bs
 
         model.eval()
         va_total = va_kd = va_emb = va_tok = va_phys = va_budget_hinge = 0.0
+        va_kd_w = 0.0
         n_va = 0
         va_probs_all = []
         va_labels_all = []
@@ -789,6 +900,9 @@ def train_reconstructor_teacher_guided(
                 fused_target_batch = batch.get("stagea_fused_target", None)
                 if fused_target_batch is not None:
                     fused_target_batch = fused_target_batch.to(device)
+                anchor_target_batch = batch.get("stagea_anchor_target", None)
+                if anchor_target_batch is not None:
+                    anchor_target_batch = anchor_target_batch.to(device)
 
                 out = model(feat_hlt, mask_hlt, const_hlt, stage_scale=1.0)
                 losses = _compute_teacher_guided_reco_losses(
@@ -807,6 +921,14 @@ def train_reconstructor_teacher_guided(
                     budget_eps=budget_eps,
                     budget_weight_floor=budget_weight_floor,
                     stagea_fused_target=fused_target_batch,
+                    stagea_anchor_target=anchor_target_batch,
+                    stagea_fused_adv_weight=stagea_fused_adv_weight,
+                    stagea_fused_adv_power=stagea_fused_adv_power,
+                    stagea_fused_uncert_weight=stagea_fused_uncert_weight,
+                    stagea_fused_adv_use_abs=bool(stagea_fused_adv_use_abs),
+                    stagea_fused_kd_w_min=stagea_fused_kd_w_min,
+                    stagea_fused_kd_w_max=stagea_fused_kd_w_max,
+                    stagea_lambda_delta_aux=stagea_lambda_delta_aux,
                 )
                 loss_total, _, _ = _compose_teacher_guided_reco_total(
                     losses_raw=losses,
@@ -832,6 +954,7 @@ def train_reconstructor_teacher_guided(
                 va_tok += losses["tok"].item() * bs
                 va_phys += losses["phys"].item() * bs
                 va_budget_hinge += losses["budget_hinge"].item() * bs
+                va_kd_w += losses["kd_weight_mean"].item() * bs
                 n_va += bs
 
         sch.step()
@@ -842,6 +965,7 @@ def train_reconstructor_teacher_guided(
         tr_tok /= max(n_tr, 1)
         tr_phys /= max(n_tr, 1)
         tr_budget_hinge /= max(n_tr, 1)
+        tr_kd_w /= max(n_tr, 1)
 
         va_total /= max(n_va, 1)
         va_kd /= max(n_va, 1)
@@ -849,6 +973,7 @@ def train_reconstructor_teacher_guided(
         va_tok /= max(n_va, 1)
         va_phys /= max(n_va, 1)
         va_budget_hinge /= max(n_va, 1)
+        va_kd_w /= max(n_va, 1)
 
         tr_probs = np.concatenate(tr_probs_all, axis=0) if len(tr_probs_all) > 0 else np.zeros((0,), dtype=np.float32)
         tr_labels = np.concatenate(tr_labels_all, axis=0) if len(tr_labels_all) > 0 else np.zeros((0,), dtype=np.int64)
@@ -911,6 +1036,8 @@ def train_reconstructor_teacher_guided(
                 "val_teacher_fpr50": float(va_fpr50),
                 "loss_normalized": bool(normalize_loss_terms),
                 "loss_norm_ema_decay": float(loss_norm_ema_decay),
+                "train_kd_weight_mean": float(tr_kd_w),
+                "val_kd_weight_mean": float(va_kd_w),
             }
         else:
             no_improve += 1
@@ -921,7 +1048,7 @@ def train_reconstructor_teacher_guided(
                 f"train_teacher_auc={tr_auc:.4f}, val_teacher_auc={va_auc:.4f}, "
                 f"val_teacher_fpr50={va_fpr50:.6f}, best_teacher_auc={best_val_auc:.4f} | "
                 f"kd={va_kd:.4f}, emb={va_emb:.4f}, tok={va_tok:.4f}, "
-                f"phys={va_phys:.4f}, budget_hinge={va_budget_hinge:.4f}, "
+                f"phys={va_phys:.4f}, budget_hinge={va_budget_hinge:.4f}, kd_w={va_kd_w:.3f}, "
                 f"stage_scale={sc:.2f}"
             )
         if (ep + 1) >= min_stop_epoch and no_improve >= int(train_cfg["patience"]):
@@ -1979,6 +2106,21 @@ def train_joint_dual(
     reco_normalize_loss_terms: bool = True,
     reco_loss_norm_ema_decay: float = 0.98,
     reco_loss_norm_eps: float = 1e-6,
+    reco_stagea_fused_adv_weight: float = 0.0,
+    reco_stagea_fused_adv_power: float = 1.0,
+    reco_stagea_fused_uncert_weight: float = 0.0,
+    reco_stagea_fused_adv_use_abs: bool = False,
+    reco_stagea_fused_kd_w_min: float = 0.25,
+    reco_stagea_fused_kd_w_max: float = 4.0,
+    reco_stagea_lambda_delta_aux: float = 0.0,
+    joint_fused_kd_lambda: float = 0.0,
+    joint_fused_kd_temp: float = 1.0,
+    joint_fused_adv_weight: float = 0.0,
+    joint_fused_adv_power: float = 1.0,
+    joint_fused_uncert_weight: float = 0.0,
+    joint_fused_adv_use_abs: bool = False,
+    joint_fused_kd_w_min: float = 0.25,
+    joint_fused_kd_w_max: float = 4.0,
 ) -> Tuple[OfflineReconstructor, nn.Module, Dict[str, float], Dict[str, Dict[str, Dict[str, torch.Tensor]]]]:
     for p in reconstructor.parameters():
         p.requires_grad = not freeze_reconstructor
@@ -2006,6 +2148,13 @@ def train_joint_dual(
             "phys": 1.0,
             "budget": 1.0,
         }
+    joint_fused_kd_lambda = float(max(joint_fused_kd_lambda, 0.0))
+    joint_fused_kd_temp = float(max(joint_fused_kd_temp, 1e-3))
+    joint_fused_adv_weight = float(max(joint_fused_adv_weight, 0.0))
+    joint_fused_adv_power = float(max(joint_fused_adv_power, 1e-6))
+    joint_fused_uncert_weight = float(max(joint_fused_uncert_weight, 0.0))
+    joint_fused_kd_w_min = float(max(joint_fused_kd_w_min, 1e-6))
+    joint_fused_kd_w_max = float(max(joint_fused_kd_w_max, joint_fused_kd_w_min))
 
     best_state_dual_sel = None
     best_state_reco_sel = None
@@ -2033,6 +2182,7 @@ def train_joint_dual(
         tr_rank = 0.0
         tr_reco = 0.0
         tr_cons = 0.0
+        tr_fused_kd = 0.0
         n_tr = 0
 
         for batch in train_loader:
@@ -2045,6 +2195,9 @@ def train_joint_dual(
             b_merge = batch["budget_merge_true"].to(device)
             b_eff = batch["budget_eff_true"].to(device)
             y = batch["label"].to(device)
+            joint_fused_target = batch.get("joint_fused_target", None)
+            if joint_fused_target is not None:
+                joint_fused_target = joint_fused_target.to(device)
 
             opt.zero_grad()
 
@@ -2065,6 +2218,30 @@ def train_joint_dual(
             loss_cls = F.binary_cross_entropy_with_logits(logits, y)
             loss_rank = low_fpr_surrogate_loss(logits, y, target_tpr=0.50, tau=0.05)
             loss_cons = reco_out["child_weight"].mean() + reco_out["gen_weight"].mean()
+            if joint_fused_target is not None and joint_fused_kd_lambda > 0.0:
+                target_soft_joint = torch.clamp(joint_fused_target.view(-1), min=0.0, max=1.0)
+                anchor_soft_joint = torch.sigmoid(logits.detach() / joint_fused_kd_temp)
+                w_joint = _build_advantage_weights(
+                    target_soft=target_soft_joint,
+                    anchor_soft=anchor_soft_joint,
+                    adv_weight=joint_fused_adv_weight,
+                    adv_power=joint_fused_adv_power,
+                    uncert_weight=joint_fused_uncert_weight,
+                    use_abs_delta=bool(joint_fused_adv_use_abs),
+                    w_min=joint_fused_kd_w_min,
+                    w_max=joint_fused_kd_w_max,
+                )
+                kd_joint_vec = (
+                    F.binary_cross_entropy_with_logits(
+                        logits / joint_fused_kd_temp,
+                        target_soft_joint,
+                        reduction="none",
+                    )
+                    * (joint_fused_kd_temp * joint_fused_kd_temp)
+                )
+                loss_joint_fused_kd = _weighted_batch_mean(kd_joint_vec, w_joint)
+            else:
+                loss_joint_fused_kd = torch.zeros((), device=device)
 
             if float(lambda_reco) > 0.0:
                 if teacher_model is not None and means_t is not None and stds_t is not None:
@@ -2083,6 +2260,15 @@ def train_joint_dual(
                         kd_temperature=float(max(reco_kd_temperature, 1e-3)),
                         budget_eps=float(max(reco_budget_eps, 0.0)),
                         budget_weight_floor=float(max(reco_budget_weight_floor, 0.0)),
+                        stagea_fused_target=joint_fused_target,
+                        stagea_anchor_target=None,
+                        stagea_fused_adv_weight=float(max(reco_stagea_fused_adv_weight, 0.0)),
+                        stagea_fused_adv_power=float(max(reco_stagea_fused_adv_power, 1e-6)),
+                        stagea_fused_uncert_weight=float(max(reco_stagea_fused_uncert_weight, 0.0)),
+                        stagea_fused_adv_use_abs=bool(reco_stagea_fused_adv_use_abs),
+                        stagea_fused_kd_w_min=float(max(reco_stagea_fused_kd_w_min, 1e-6)),
+                        stagea_fused_kd_w_max=float(max(reco_stagea_fused_kd_w_max, reco_stagea_fused_kd_w_min)),
+                        stagea_lambda_delta_aux=float(max(reco_stagea_lambda_delta_aux, 0.0)),
                     )
                     loss_reco, _, reco_loss_ema_state = _compose_teacher_guided_reco_total(
                         losses_raw=reco_losses,
@@ -2117,6 +2303,7 @@ def train_joint_dual(
                 + float(lambda_rank) * loss_rank
                 + float(lambda_reco) * loss_reco
                 + float(lambda_cons) * loss_cons
+                + float(joint_fused_kd_lambda) * loss_joint_fused_kd
             )
             loss.backward()
             torch.nn.utils.clip_grad_norm_(dual_model.parameters(), 1.0)
@@ -2130,6 +2317,7 @@ def train_joint_dual(
             tr_rank += loss_rank.item() * bs
             tr_reco += loss_reco.item() * bs
             tr_cons += loss_cons.item() * bs
+            tr_fused_kd += loss_joint_fused_kd.item() * bs
             n_tr += bs
 
         sch.step()
@@ -2139,6 +2327,7 @@ def train_joint_dual(
         tr_rank /= max(n_tr, 1)
         tr_reco /= max(n_tr, 1)
         tr_cons /= max(n_tr, 1)
+        tr_fused_kd /= max(n_tr, 1)
 
         va_auc, _, _, va_fpr50 = eval_joint_model(
             reconstructor=reconstructor,
@@ -2181,7 +2370,7 @@ def train_joint_dual(
         if (ep + 1) % print_every == 0:
             print(
                 f"{stage_name} ep {ep+1}: train_loss={tr_loss:.4f} "
-                f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}) | "
+                f"(cls={tr_cls:.4f}, rank={tr_rank:.4f}, reco={tr_reco:.4f}, cons={tr_cons:.4f}, fused_kd={tr_fused_kd:.4f}) | "
                 f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, "
                 f"select={str(select_metric).lower()}, best_sel={best_sel_score:.6f}"
             )
@@ -2287,6 +2476,32 @@ def main() -> None:
         choices=["train_val_test", "fit_ref_test"],
         help="How to read Stage-A fused targets from NPZ suffixes.",
     )
+    parser.add_argument("--stageA_fused_adv_weight", type=float, default=0.0)
+    parser.add_argument("--stageA_fused_adv_power", type=float, default=1.0)
+    parser.add_argument("--stageA_fused_uncert_weight", type=float, default=0.0)
+    parser.add_argument("--stageA_fused_adv_use_abs", action="store_true")
+    parser.add_argument("--stageA_fused_kd_w_min", type=float, default=0.25)
+    parser.add_argument("--stageA_fused_kd_w_max", type=float, default=4.0)
+    parser.add_argument("--stageA_lambda_delta_aux", type=float, default=0.0)
+    parser.add_argument(
+        "--stageA_anchor_targets_npz",
+        type=str,
+        default="",
+        help="Optional NPZ providing anchor targets for Stage-A fused-advantage weighting.",
+    )
+    parser.add_argument(
+        "--stageA_anchor_targets_key",
+        type=str,
+        default="probs_anchor_overall",
+        help="Anchor-target key prefix in NPZ.",
+    )
+    parser.add_argument(
+        "--stageA_anchor_split_scheme",
+        type=str,
+        default="train_val_test",
+        choices=["train_val_test", "fit_ref_test"],
+        help="How to read Stage-A anchor targets from NPZ suffixes.",
+    )
     parser.add_argument("--disable_stageA_loss_normalization", action="store_true")
     parser.add_argument("--stageA_loss_norm_ema_decay", type=float, default=0.98)
     parser.add_argument("--stageA_loss_norm_eps", type=float, default=1e-6)
@@ -2303,6 +2518,7 @@ def main() -> None:
     parser.add_argument("--stageB_lr_dual", type=float, default=4e-4)
     parser.add_argument("--stageB_lambda_rank", type=float, default=0.0)
     parser.add_argument("--stageB_lambda_cons", type=float, default=0.0)
+    parser.add_argument("--stageB_joint_fused_kd_lambda", type=float, default=0.0)
 
     # Kept for CLI compatibility; this script always selects by val_auc.
     parser.add_argument("--selection_metric", type=str, default="auc", choices=["auc", "fpr50"])
@@ -2317,6 +2533,22 @@ def main() -> None:
     # Stage C rank term is disabled in this variant.
     parser.add_argument("--lambda_rank", type=float, default=0.0)
     parser.add_argument("--lambda_cons", type=float, default=0.06)
+    parser.add_argument("--stageC_joint_fused_kd_lambda", type=float, default=0.0)
+    parser.add_argument("--joint_fused_targets_npz", type=str, default="")
+    parser.add_argument("--joint_fused_targets_key", type=str, default="probs_fused_overall")
+    parser.add_argument(
+        "--joint_fused_split_scheme",
+        type=str,
+        default="train_val_test",
+        choices=["train_val_test", "fit_ref_test"],
+    )
+    parser.add_argument("--joint_fused_kd_temp", type=float, default=1.0)
+    parser.add_argument("--joint_fused_adv_weight", type=float, default=0.0)
+    parser.add_argument("--joint_fused_adv_power", type=float, default=1.0)
+    parser.add_argument("--joint_fused_uncert_weight", type=float, default=0.0)
+    parser.add_argument("--joint_fused_adv_use_abs", action="store_true")
+    parser.add_argument("--joint_fused_kd_w_min", type=float, default=0.25)
+    parser.add_argument("--joint_fused_kd_w_max", type=float, default=4.0)
     parser.add_argument("--corrected_weight_floor", type=float, default=1e-4)
     parser.add_argument("--use_corrected_flags", action="store_true")
     parser.add_argument("--disable_split_again", action="store_true")
@@ -2720,42 +2952,120 @@ def main() -> None:
             f"tau32={test_m['mae_tau32']:.4f}, n_added={test_m['mae_n_added']:.3f}"
         )
 
-    # Optional direct fused targets for Stage-A logit distillation.
-    stagea_fused_tr = None
-    stagea_fused_va = None
-    stagea_fused_npz_path = str(getattr(args, "stageA_fused_targets_npz", "")).strip()
-    if len(stagea_fused_npz_path) > 0:
-        fused_npz = Path(stagea_fused_npz_path).expanduser().resolve()
-        if not fused_npz.is_file():
-            raise FileNotFoundError(f"Missing --stageA_fused_targets_npz: {fused_npz}")
-        arr_fused = np.load(fused_npz)
-        key_prefix = str(getattr(args, "stageA_fused_targets_key", "probs_fused_overall")).strip()
-        scheme = str(getattr(args, "stageA_fused_split_scheme", "train_val_test")).strip().lower()
-        if scheme == "fit_ref_test":
+    def _load_split_targets_from_npz(
+        npz_path: str,
+        key_prefix: str,
+        scheme: str,
+        require_test: bool,
+        expected_train_len: int,
+        expected_val_len: int,
+        expected_test_len: int,
+        desc: str,
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray | None]:
+        p = Path(npz_path).expanduser().resolve()
+        if not p.is_file():
+            raise FileNotFoundError(f"Missing {desc} NPZ: {p}")
+        arr = np.load(p)
+        scheme_l = str(scheme).strip().lower()
+        if scheme_l == "fit_ref_test":
             ktr = f"{key_prefix}_fit"
             kva = f"{key_prefix}_ref"
+            kte = f"{key_prefix}_test"
         else:
             ktr = f"{key_prefix}_train"
             kva = f"{key_prefix}_val"
-        if ktr not in arr_fused or kva not in arr_fused:
+            kte = f"{key_prefix}_test"
+        need = [ktr, kva] + ([kte] if bool(require_test) else [])
+        miss = [k for k in need if k not in arr]
+        if len(miss) > 0:
             raise KeyError(
-                f"Missing fused target keys in {fused_npz}. "
-                f"Expected `{ktr}` and `{kva}`. Available keys: {sorted(arr_fused.files)}"
+                f"Missing keys for {desc} in {p}: {miss}. Available keys: {sorted(arr.files)}"
             )
-        stagea_fused_tr = np.asarray(arr_fused[ktr], dtype=np.float32).reshape(-1)
-        stagea_fused_va = np.asarray(arr_fused[kva], dtype=np.float32).reshape(-1)
-        if int(stagea_fused_tr.shape[0]) != int(len(train_idx)):
+        tr = np.asarray(arr[ktr], dtype=np.float32).reshape(-1)
+        va = np.asarray(arr[kva], dtype=np.float32).reshape(-1)
+        te = np.asarray(arr[kte], dtype=np.float32).reshape(-1) if bool(require_test) else None
+        if int(tr.shape[0]) != int(expected_train_len):
             raise ValueError(
-                f"Stage-A fused train length mismatch: {int(stagea_fused_tr.shape[0])} vs train split {int(len(train_idx))}."
+                f"{desc} train length mismatch: {int(tr.shape[0])} vs expected {int(expected_train_len)}."
             )
-        if int(stagea_fused_va.shape[0]) != int(len(val_idx)):
+        if int(va.shape[0]) != int(expected_val_len):
             raise ValueError(
-                f"Stage-A fused val length mismatch: {int(stagea_fused_va.shape[0])} vs val split {int(len(val_idx))}."
+                f"{desc} val length mismatch: {int(va.shape[0])} vs expected {int(expected_val_len)}."
             )
+        if te is not None and int(te.shape[0]) != int(expected_test_len):
+            raise ValueError(
+                f"{desc} test length mismatch: {int(te.shape[0])} vs expected {int(expected_test_len)}."
+            )
+        return tr, va, te
+
+    # Optional direct fused targets for Stage-A logit distillation.
+    stagea_fused_tr = None
+    stagea_fused_va = None
+    stagea_anchor_tr = None
+    stagea_anchor_va = None
+    stagea_fused_npz_path = str(getattr(args, "stageA_fused_targets_npz", "")).strip()
+    if len(stagea_fused_npz_path) > 0:
+        key_prefix = str(getattr(args, "stageA_fused_targets_key", "probs_fused_overall")).strip()
+        scheme = str(getattr(args, "stageA_fused_split_scheme", "train_val_test")).strip().lower()
+        stagea_fused_tr, stagea_fused_va, _ = _load_split_targets_from_npz(
+            npz_path=stagea_fused_npz_path,
+            key_prefix=key_prefix,
+            scheme=scheme,
+            require_test=False,
+            expected_train_len=int(len(train_idx)),
+            expected_val_len=int(len(val_idx)),
+            expected_test_len=int(len(test_idx)),
+            desc="Stage-A fused targets",
+        )
         print(
             "Stage-A fused targets loaded: "
-            f"{fused_npz} | key={key_prefix} | scheme={scheme} | "
+            f"{Path(stagea_fused_npz_path).expanduser().resolve()} | key={key_prefix} | scheme={scheme} | "
             f"train={stagea_fused_tr.shape} val={stagea_fused_va.shape}"
+        )
+
+    stagea_anchor_npz_path = str(getattr(args, "stageA_anchor_targets_npz", "")).strip()
+    if len(stagea_anchor_npz_path) > 0:
+        anchor_key_prefix = str(getattr(args, "stageA_anchor_targets_key", "probs_anchor_overall")).strip()
+        anchor_scheme = str(getattr(args, "stageA_anchor_split_scheme", "train_val_test")).strip().lower()
+        stagea_anchor_tr, stagea_anchor_va, _ = _load_split_targets_from_npz(
+            npz_path=stagea_anchor_npz_path,
+            key_prefix=anchor_key_prefix,
+            scheme=anchor_scheme,
+            require_test=False,
+            expected_train_len=int(len(train_idx)),
+            expected_val_len=int(len(val_idx)),
+            expected_test_len=int(len(test_idx)),
+            desc="Stage-A anchor targets",
+        )
+        print(
+            "Stage-A anchor targets loaded: "
+            f"{Path(stagea_anchor_npz_path).expanduser().resolve()} | key={anchor_key_prefix} | scheme={anchor_scheme} | "
+            f"train={stagea_anchor_tr.shape} val={stagea_anchor_va.shape}"
+        )
+
+    joint_fused_tr = None
+    joint_fused_va = None
+    joint_fused_te = None
+    joint_fused_npz_path = str(getattr(args, "joint_fused_targets_npz", "")).strip()
+    if len(joint_fused_npz_path) == 0 and len(stagea_fused_npz_path) > 0:
+        joint_fused_npz_path = stagea_fused_npz_path
+    if len(joint_fused_npz_path) > 0:
+        joint_key_prefix = str(getattr(args, "joint_fused_targets_key", "probs_fused_overall")).strip()
+        joint_scheme = str(getattr(args, "joint_fused_split_scheme", "train_val_test")).strip().lower()
+        joint_fused_tr, joint_fused_va, joint_fused_te = _load_split_targets_from_npz(
+            npz_path=joint_fused_npz_path,
+            key_prefix=joint_key_prefix,
+            scheme=joint_scheme,
+            require_test=True,
+            expected_train_len=int(len(train_idx)),
+            expected_val_len=int(len(val_idx)),
+            expected_test_len=int(len(test_idx)),
+            desc="Joint fused targets",
+        )
+        print(
+            "Joint fused targets loaded: "
+            f"{Path(joint_fused_npz_path).expanduser().resolve()} | key={joint_key_prefix} | scheme={joint_scheme} | "
+            f"train={joint_fused_tr.shape} val={joint_fused_va.shape} test={joint_fused_te.shape}"
         )
 
     # Stage-A teacher model can be overridden independently from STEP-1 teacher.
@@ -2784,12 +3094,14 @@ def main() -> None:
         const_off[train_idx], masks_off[train_idx], labels[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
         stagea_fused_target=stagea_fused_tr,
+        stagea_anchor_target=stagea_anchor_tr,
     )
     ds_val_reco = StageAReconstructionDataset(
         feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx], labels[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         stagea_fused_target=stagea_fused_va,
+        stagea_anchor_target=stagea_anchor_va,
     )
     dl_train_reco = DataLoader(
         ds_train_reco,
@@ -2833,6 +3145,13 @@ def main() -> None:
         loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
         loss_norm_eps=float(args.stageA_loss_norm_eps),
         reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
+        stagea_fused_adv_weight=float(args.stageA_fused_adv_weight),
+        stagea_fused_adv_power=float(args.stageA_fused_adv_power),
+        stagea_fused_uncert_weight=float(args.stageA_fused_uncert_weight),
+        stagea_fused_adv_use_abs=bool(args.stageA_fused_adv_use_abs),
+        stagea_fused_kd_w_min=float(args.stageA_fused_kd_w_min),
+        stagea_fused_kd_w_max=float(args.stageA_fused_kd_w_max),
+        stagea_lambda_delta_aux=float(args.stageA_lambda_delta_aux),
     )
 
     # Joint datasets
@@ -2841,18 +3160,21 @@ def main() -> None:
         const_off[train_idx], masks_off[train_idx],
         budget_merge_true[train_idx], budget_eff_true[train_idx],
         labels[train_idx],
+        joint_fused_target=joint_fused_tr,
     )
     ds_val_joint = JointDualDataset(
         feat_hlt_std[val_idx], feat_hlt_dual[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
         const_off[val_idx], masks_off[val_idx],
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         labels[val_idx],
+        joint_fused_target=joint_fused_va,
     )
     ds_test_joint = JointDualDataset(
         feat_hlt_std[test_idx], feat_hlt_dual[test_idx], hlt_mask[test_idx], hlt_const[test_idx],
         const_off[test_idx], masks_off[test_idx],
         budget_merge_true[test_idx], budget_eff_true[test_idx],
         labels[test_idx],
+        joint_fused_target=joint_fused_te,
     )
 
     dl_train_joint = DataLoader(
@@ -2900,6 +3222,14 @@ def main() -> None:
         corrected_use_flags=bool(args.use_corrected_flags),
         min_epochs=int(args.stageB_min_epochs),
         select_metric=selection_metric,
+        joint_fused_kd_lambda=float(args.stageB_joint_fused_kd_lambda),
+        joint_fused_kd_temp=float(args.joint_fused_kd_temp),
+        joint_fused_adv_weight=float(args.joint_fused_adv_weight),
+        joint_fused_adv_power=float(args.joint_fused_adv_power),
+        joint_fused_uncert_weight=float(args.joint_fused_uncert_weight),
+        joint_fused_adv_use_abs=bool(args.joint_fused_adv_use_abs),
+        joint_fused_kd_w_min=float(args.joint_fused_kd_w_min),
+        joint_fused_kd_w_max=float(args.joint_fused_kd_w_max),
     )
 
     # Stage B test evaluation + checkpoint snapshot (before Stage C joint finetune).
@@ -2982,6 +3312,21 @@ def main() -> None:
         reco_normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
         reco_loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
         reco_loss_norm_eps=float(args.stageA_loss_norm_eps),
+        reco_stagea_fused_adv_weight=float(args.stageA_fused_adv_weight),
+        reco_stagea_fused_adv_power=float(args.stageA_fused_adv_power),
+        reco_stagea_fused_uncert_weight=float(args.stageA_fused_uncert_weight),
+        reco_stagea_fused_adv_use_abs=bool(args.stageA_fused_adv_use_abs),
+        reco_stagea_fused_kd_w_min=float(args.stageA_fused_kd_w_min),
+        reco_stagea_fused_kd_w_max=float(args.stageA_fused_kd_w_max),
+        reco_stagea_lambda_delta_aux=float(args.stageA_lambda_delta_aux),
+        joint_fused_kd_lambda=float(args.stageC_joint_fused_kd_lambda),
+        joint_fused_kd_temp=float(args.joint_fused_kd_temp),
+        joint_fused_adv_weight=float(args.joint_fused_adv_weight),
+        joint_fused_adv_power=float(args.joint_fused_adv_power),
+        joint_fused_uncert_weight=float(args.joint_fused_uncert_weight),
+        joint_fused_adv_use_abs=bool(args.joint_fused_adv_use_abs),
+        joint_fused_kd_w_min=float(args.joint_fused_kd_w_min),
+        joint_fused_kd_w_max=float(args.joint_fused_kd_w_max),
     )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
