@@ -38,12 +38,29 @@ def _reduce_stack(arrs: List[np.ndarray], mode: str) -> np.ndarray:
     return np.asarray(out, dtype=np.float32)
 
 
+def _suffix_sort_key(s: str) -> Tuple[int, float, str]:
+    """
+    Prefer numeric ordering for suffixes like 'tpr0p500', then fallback to lexical.
+    """
+    m = re.match(r"^tpr(\d+)p(\d+)$", str(s))
+    if m is not None:
+        whole = int(m.group(1))
+        frac = int(m.group(2))
+        scale = 10 ** len(m.group(2))
+        return (0, float(whole) + float(frac) / float(scale), str(s))
+    try:
+        return (1, float(s), str(s))
+    except Exception:
+        return (2, 0.0, str(s))
+
+
 def _collect_family_split(
     arr: np.lib.npyio.NpzFile,
     family: str,
     split: str,
 ) -> Tuple[List[str], Dict[str, np.ndarray]]:
-    pat = re.compile(rf"^fused_{re.escape(family)}_{re.escape(split)}_(\d+)$")
+    # Accept flexible suffixes, e.g. tpr0p500, 0, 1, etc.
+    pat = re.compile(rf"^fused_{re.escape(family)}_{re.escape(split)}_(.+)$")
     keys = []
     out: Dict[str, np.ndarray] = {}
     for k in arr.files:
@@ -109,11 +126,14 @@ def main() -> None:
             fam_keys[split_src] = keys
             if len(by_suffix) == 0:
                 continue
-            suffixes = sorted(by_suffix.keys(), key=lambda x: int(x))
+            suffixes = sorted(by_suffix.keys(), key=_suffix_sort_key)
             if fam_suffixes is None:
                 fam_suffixes = suffixes
             else:
-                fam_suffixes = sorted(set(fam_suffixes).intersection(set(suffixes)), key=lambda x: int(x))
+                fam_suffixes = sorted(
+                    set(fam_suffixes).intersection(set(suffixes)),
+                    key=_suffix_sort_key,
+                )
             if len(fam_suffixes) == 0:
                 raise RuntimeError(f"No common TPR suffixes found for family={family} split={split_src}.")
             reduced = _reduce_stack([by_suffix[s] for s in fam_suffixes], mode=args.reduction)
