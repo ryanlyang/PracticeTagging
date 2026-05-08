@@ -131,13 +131,45 @@ def main() -> None:
     stagea_teacher_w_budget = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_BUDGET_ONLY", 0.35))
     stagea_teacher_w_set = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_SET_ONLY", 0.0))
     stagea_teacher_w_local = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_LOCAL_ONLY", 0.0))
-    stagea_teacher_ckpt = str(os.environ.get("JETCLASS_STAGEA_OFFLINE_FUSED_STUDENT_CKPT", "")).strip()
+    stagea_teacher_ckpt = str(
+        os.environ.get(
+            "JETCLASS_STAGEA_OFFLINE_TEACHER_CKPT",
+            os.environ.get("JETCLASS_STAGEA_OFFLINE_FUSED_STUDENT_CKPT", ""),
+        )
+    ).strip()
     _stagea_teacher_mode = (stagea_teacher_w > 0.0) and (len(stagea_teacher_ckpt) > 0)
     _stagea_teacher_cache: Dict[str, object] = {"model": None, "src": ""}
+    stagea_fused_targets_npz = str(os.environ.get("JETCLASS_STAGEA_FUSED_TARGETS_NPZ", "")).strip()
+    stagea_fused_targets_key = str(os.environ.get("JETCLASS_STAGEA_FUSED_TARGETS_KEY", "probs_fused_bin")).strip()
+    _stagea_fused_targets: Dict[str, np.ndarray] | None = None
+    _reco_ds_ctor_idx = 0
     if (stagea_teacher_w > 0.0) and (len(stagea_teacher_ckpt) == 0):
         print(
-            "Stage-A teacher weight > 0 but JETCLASS_STAGEA_OFFLINE_FUSED_STUDENT_CKPT is unset; "
+            "Stage-A teacher weight > 0 but JETCLASS_STAGEA_OFFLINE_TEACHER_CKPT "
+            "(or JETCLASS_STAGEA_OFFLINE_FUSED_STUDENT_CKPT) is unset; "
             "teacher-dominant Stage-A disabled."
+        )
+
+    if len(stagea_fused_targets_npz) > 0:
+        npz_path = Path(stagea_fused_targets_npz).expanduser().resolve()
+        if not npz_path.exists():
+            raise FileNotFoundError(f"JETCLASS_STAGEA_FUSED_TARGETS_NPZ not found: {npz_path}")
+        arr = np.load(npz_path)
+        ktr = f"{stagea_fused_targets_key}_train"
+        kva = f"{stagea_fused_targets_key}_val"
+        if (ktr not in arr) or (kva not in arr):
+            raise KeyError(
+                f"Missing fused target keys `{ktr}`/`{kva}` in {npz_path}. "
+                "Available keys: " + ", ".join(arr.files)
+            )
+        _stagea_fused_targets = {
+            "train": np.asarray(arr[ktr], dtype=np.float32),
+            "val": np.asarray(arr[kva], dtype=np.float32),
+        }
+        print(
+            "Stage-A fused targets loaded: "
+            f"{npz_path} | key={stagea_fused_targets_key} | "
+            f"train={_stagea_fused_targets['train'].shape} val={_stagea_fused_targets['val'].shape}"
         )
 
     def _load_stagea_teacher_model(device: torch.device):
@@ -604,6 +636,7 @@ def main() -> None:
             self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
             # 7D offline kinematic features used by frozen fused-student teacher distillation.
             self.offline_feat_kin = reco_joint.compute_features_torch(self.const_off, self.mask_off).detach()
+            self.stagea_fused_target = None
 
             n = int(feat_hlt.shape[0])
             if sample_weight_reco is None:
@@ -613,6 +646,17 @@ def main() -> None:
                 if sw.shape[0] != n:
                     raise ValueError(f"sample_weight_reco length mismatch: {sw.shape[0]} vs {n}")
             self.sample_weight_reco = torch.tensor(sw, dtype=torch.float32)
+
+            nonlocal _reco_ds_ctor_idx
+            split_tag = "train" if _reco_ds_ctor_idx == 0 else ("val" if _reco_ds_ctor_idx == 1 else None)
+            _reco_ds_ctor_idx += 1
+            if (_stagea_fused_targets is not None) and (split_tag in _stagea_fused_targets):
+                tgt = np.asarray(_stagea_fused_targets[split_tag], dtype=np.float32)
+                if tgt.shape[0] != n:
+                    raise ValueError(
+                        f"Stage-A fused target length mismatch for {split_tag}: {tgt.shape[0]} vs dataset {n}"
+                    )
+                self.stagea_fused_target = torch.tensor(tgt, dtype=torch.float32)
 
             aux = _stagea_aux_queue.pop(0) if _stagea_aux_queue else None
             ok = False
@@ -665,7 +709,7 @@ def main() -> None:
             return int(self.feat_hlt.shape[0])
 
         def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
-            return {
+            out = {
                 "feat_hlt": self.feat_hlt[i],
                 "mask_hlt": self.mask_hlt[i],
                 "const_hlt": self.const_hlt[i],
@@ -687,6 +731,9 @@ def main() -> None:
                 "parent_charge_target": self.parent_charge_target[i],
                 "parent_track_target": self.parent_track_target[i],
             }
+            if self.stagea_fused_target is not None:
+                out["stagea_fused_target"] = self.stagea_fused_target[i]
+            return out
 
     def _compose_stagea_fullinfo_losses(
         reco_out: Dict[str, torch.Tensor],
@@ -774,10 +821,15 @@ def main() -> None:
         loss_teacher = zero
         if stagea_teacher_model is not None:
             with torch.no_grad():
-                feat_off_kin = batch["offline_feat_kin"].to(device)
-                mask_off = batch["mask_off"].to(device)
-                logit_off = stagea_teacher_model(feat_off_kin, mask_off)
-                prob_off = torch.softmax(logit_off / stagea_teacher_temp, dim=1)
+                if "stagea_fused_target" in batch:
+                    prob_tgt = batch["stagea_fused_target"].to(device)
+                    prob_tgt = torch.clamp(prob_tgt, min=1e-8)
+                    prob_tgt = prob_tgt / prob_tgt.sum(dim=1, keepdim=True)
+                else:
+                    feat_off_kin = batch["offline_feat_kin"].to(device)
+                    mask_off = batch["mask_off"].to(device)
+                    logit_off = stagea_teacher_model(feat_off_kin, mask_off)
+                    prob_tgt = torch.softmax(logit_off / stagea_teacher_temp, dim=1)
 
             feat_b_kd, mask_b_kd = jetlatent.build_soft_corrected_view_confgen_ops(
                 reco_out,
@@ -789,7 +841,7 @@ def main() -> None:
             logit_corr = stagea_teacher_model(feat_corr_kin, mask_b_kd)
             loss_teacher = F.kl_div(
                 F.log_softmax(logit_corr / stagea_teacher_temp, dim=1),
-                prob_off,
+                prob_tgt,
                 reduction="batchmean",
             ) * (stagea_teacher_temp ** 2)
 
