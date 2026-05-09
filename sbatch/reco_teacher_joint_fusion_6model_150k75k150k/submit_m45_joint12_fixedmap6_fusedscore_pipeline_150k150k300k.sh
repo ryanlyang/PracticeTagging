@@ -8,7 +8,9 @@ RUN_FINAL="${RUN_FINAL:-${SCRIPT_DIR}/run_m45_joint12_fixedmap6_fusedscore_stage
 
 SCORES_NPZ="${SCORES_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/bin_gated_fusion_12_weighted_150k150k300k_valsel/bin_gated_scores.npz}"
 REPORT_JSON="${REPORT_JSON:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/bin_gated_fusion_12_weighted_150k150k300k_valsel/bin_gated_report.json}"
-FIXED_MODELS="${FIXED_MODELS:-joint_delta,dual_m17_antioverlap,offdrop_mid,joint_s01,dual_m15_offdrop_high,offdrop_high}"
+DEFAULT_FIXED_MODELS="joint_delta,dual_m17_antioverlap,offdrop_mid,joint_s01,dual_m15_offdrop_high,offdrop_high"
+# Intentionally use FIXED_MODELS_OVERRIDE (not FIXED_MODELS) so stale shell vars do not silently change the mapping.
+FIXED_MODELS="${FIXED_MODELS_OVERRIDE:-${DEFAULT_FIXED_MODELS}}"
 FIXED_PREFIX="${FIXED_PREFIX:-probs_fixedmap}"
 FIXED_REDUCTION="${FIXED_REDUCTION:-mean}"
 
@@ -16,6 +18,21 @@ TARGETS_DIR="${TARGETS_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k
 FINAL_RUN_NAME="${FINAL_RUN_NAME:-model45_joint12_fixedmap6_fusedscore_stagea_teacher_weighted_150k150k300k_seed0}"
 
 UPSTREAM_JOB_IDS="${UPSTREAM_JOB_IDS:-}"
+
+FIXED_MODELS="${FIXED_MODELS// /}"
+IFS=',' read -r -a _raw_fixed_models <<<"${FIXED_MODELS}"
+_fixed_models=()
+for m in "${_raw_fixed_models[@]}"; do
+  if [[ -n "${m}" ]]; then
+    _fixed_models+=("${m}")
+  fi
+done
+if [[ ${#_fixed_models[@]} -ne 6 ]]; then
+  echo "ERROR: fixed-map6 expects exactly 6 models, got ${#_fixed_models[@]}." >&2
+  echo "Provide FIXED_MODELS_OVERRIDE with 6 comma-separated models." >&2
+  exit 2
+fi
+FIXED_MODELS="$(IFS=,; echo "${_fixed_models[*]}")"
 
 for f in "${RUN_BUILD}" "${RUN_FINAL}"; do
   if [[ ! -f "${f}" ]]; then
@@ -46,6 +63,7 @@ echo "  final: ${job_final}"
 
 echo "============================================================"
 echo "Queued Model-45 fixed-map6 direct fused-score pipeline"
+echo "fixed models: ${FIXED_MODELS}"
 echo "build jobid: ${job_build}"
 echo "final jobid: ${job_final}"
 echo "============================================================"

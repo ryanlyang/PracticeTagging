@@ -9,7 +9,9 @@ RUN_FINAL="${RUN_FINAL:-${SCRIPT_DIR}/run_m44_joint12_fixedmap6_fusedstudent_sta
 
 SCORES_NPZ="${SCORES_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/bin_gated_fusion_12_weighted_150k150k300k_valsel/bin_gated_scores.npz}"
 REPORT_JSON="${REPORT_JSON:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/bin_gated_fusion_12_weighted_150k150k300k_valsel/bin_gated_report.json}"
-FIXED_MODELS="${FIXED_MODELS:-joint_delta,dual_m17_antioverlap,offdrop_mid,joint_s01,dual_m15_offdrop_high,offdrop_high}"
+DEFAULT_FIXED_MODELS="joint_delta,dual_m17_antioverlap,offdrop_mid,joint_s01,dual_m15_offdrop_high,offdrop_high"
+# Intentionally use FIXED_MODELS_OVERRIDE (not FIXED_MODELS) so stale shell vars do not silently change the mapping.
+FIXED_MODELS="${FIXED_MODELS_OVERRIDE:-${DEFAULT_FIXED_MODELS}}"
 FIXED_PREFIX="${FIXED_PREFIX:-probs_fixedmap}"
 FIXED_REDUCTION="${FIXED_REDUCTION:-mean}"
 
@@ -20,6 +22,21 @@ FINAL_RUN_NAME="${FINAL_RUN_NAME:-model44_joint12_fixedmap6_fusedstudent_stagea_
 TARGET_SOURCE_SPLITS_NPZ="${TARGET_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
 
 UPSTREAM_JOB_IDS="${UPSTREAM_JOB_IDS:-}"
+
+FIXED_MODELS="${FIXED_MODELS// /}"
+IFS=',' read -r -a _raw_fixed_models <<<"${FIXED_MODELS}"
+_fixed_models=()
+for m in "${_raw_fixed_models[@]}"; do
+  if [[ -n "${m}" ]]; then
+    _fixed_models+=("${m}")
+  fi
+done
+if [[ ${#_fixed_models[@]} -ne 6 ]]; then
+  echo "ERROR: fixed-map6 expects exactly 6 models, got ${#_fixed_models[@]}." >&2
+  echo "Provide FIXED_MODELS_OVERRIDE with 6 comma-separated models." >&2
+  exit 2
+fi
+FIXED_MODELS="$(IFS=,; echo "${_fixed_models[*]}")"
 
 for f in "${RUN_BUILD}" "${RUN_STUDENT}" "${RUN_FINAL}"; do
   if [[ ! -f "${f}" ]]; then
@@ -56,6 +73,7 @@ echo "  final:   ${job_final}"
 
 echo "============================================================"
 echo "Queued Model-44 fixed-map6 fused-student pipeline"
+echo "fixed models: ${FIXED_MODELS}"
 echo "build   jobid: ${job_build}"
 echo "student jobid: ${job_student}"
 echo "final   jobid: ${job_final}"
