@@ -2476,6 +2476,28 @@ def main() -> None:
         choices=["train_val_test", "fit_ref_test"],
         help="How to read Stage-A fused targets from NPZ suffixes.",
     )
+    parser.add_argument(
+        "--stageA_fused_source_splits_npz",
+        type=str,
+        default="",
+        help="Optional source data_splits.npz for exact Stage-A fused target index alignment.",
+    )
+    parser.add_argument("--stageA_fused_source_val_key", type=str, default="val_idx")
+    parser.add_argument("--stageA_fused_source_test_key", type=str, default="test_idx")
+    parser.add_argument(
+        "--stageA_fused_train_from",
+        type=str,
+        default="train",
+        choices=["train", "fit", "ref"],
+        help="Which fused partition to use for Stage-A train targets.",
+    )
+    parser.add_argument(
+        "--stageA_fused_val_from",
+        type=str,
+        default="val",
+        choices=["val", "ref", "test"],
+        help="Which fused partition to use for Stage-A val targets.",
+    )
     parser.add_argument("--stageA_fused_adv_weight", type=float, default=0.0)
     parser.add_argument("--stageA_fused_adv_power", type=float, default=1.0)
     parser.add_argument("--stageA_fused_uncert_weight", type=float, default=0.0)
@@ -2999,29 +3021,136 @@ def main() -> None:
         return tr, va, te
 
     # Optional direct fused targets for Stage-A logit distillation.
+    stagea_train_idx_sel = train_idx
+    stagea_val_idx_sel = val_idx
     stagea_fused_tr = None
     stagea_fused_va = None
     stagea_anchor_tr = None
     stagea_anchor_va = None
     stagea_fused_npz_path = str(getattr(args, "stageA_fused_targets_npz", "")).strip()
     if len(stagea_fused_npz_path) > 0:
+        fused_npz = Path(stagea_fused_npz_path).expanduser().resolve()
+        arr_fused = np.load(fused_npz)
         key_prefix = str(getattr(args, "stageA_fused_targets_key", "probs_fused_overall")).strip()
         scheme = str(getattr(args, "stageA_fused_split_scheme", "train_val_test")).strip().lower()
-        stagea_fused_tr, stagea_fused_va, _ = _load_split_targets_from_npz(
-            npz_path=stagea_fused_npz_path,
-            key_prefix=key_prefix,
-            scheme=scheme,
-            require_test=False,
-            expected_train_len=int(len(train_idx)),
-            expected_val_len=int(len(val_idx)),
-            expected_test_len=int(len(test_idx)),
-            desc="Stage-A fused targets",
-        )
+        if scheme == "fit_ref_test":
+            k_fit = f"{key_prefix}_fit"
+            k_ref = f"{key_prefix}_ref"
+            k_test = f"{key_prefix}_test"
+            k_train = k_fit
+            k_val = k_ref
+        else:
+            k_fit = f"{key_prefix}_fit" if f"{key_prefix}_fit" in arr_fused else f"{key_prefix}_train"
+            k_ref = f"{key_prefix}_ref" if f"{key_prefix}_ref" in arr_fused else f"{key_prefix}_val"
+            k_test = f"{key_prefix}_test"
+            k_train = f"{key_prefix}_train"
+            k_val = f"{key_prefix}_val"
+
+        if k_fit not in arr_fused or k_ref not in arr_fused or k_test not in arr_fused:
+            raise KeyError(
+                f"Missing fused keys in {fused_npz}. "
+                f"Need `{k_fit}`, `{k_ref}`, `{k_test}`. Available keys: {sorted(arr_fused.files)}"
+            )
+        y_fit = np.asarray(arr_fused[k_fit], dtype=np.float32).reshape(-1)
+        y_ref = np.asarray(arr_fused[k_ref], dtype=np.float32).reshape(-1)
+        y_test = np.asarray(arr_fused[k_test], dtype=np.float32).reshape(-1)
+
+        source_splits_npz = str(getattr(args, "stageA_fused_source_splits_npz", "")).strip()
+        if len(source_splits_npz) > 0:
+            src_npz = Path(source_splits_npz).expanduser().resolve()
+            src = np.load(src_npz)
+            src_val_key = str(getattr(args, "stageA_fused_source_val_key", "val_idx")).strip()
+            src_test_key = str(getattr(args, "stageA_fused_source_test_key", "test_idx")).strip()
+            if src_val_key not in src or src_test_key not in src:
+                raise KeyError(
+                    f"Missing `{src_val_key}` or `{src_test_key}` in {src_npz}. "
+                    f"Available keys: {sorted(src.files)}"
+                )
+            if "idx_fit" not in arr_fused or "idx_ref" not in arr_fused:
+                raise KeyError(
+                    f"Missing idx_fit/idx_ref in fused NPZ for source alignment: {fused_npz}"
+                )
+            src_val = np.asarray(src[src_val_key], dtype=np.int64).reshape(-1)
+            src_test = np.asarray(src[src_test_key], dtype=np.int64).reshape(-1)
+            idx_fit_local = np.asarray(arr_fused["idx_fit"], dtype=np.int64).reshape(-1)
+            idx_ref_local = np.asarray(arr_fused["idx_ref"], dtype=np.int64).reshape(-1)
+            if idx_fit_local.size == 0 or idx_ref_local.size == 0:
+                raise ValueError("idx_fit/idx_ref empty in fused NPZ.")
+            if int(idx_fit_local.max()) >= int(src_val.shape[0]) or int(idx_ref_local.max()) >= int(src_val.shape[0]):
+                raise ValueError(
+                    "idx_fit/idx_ref out of bounds for source val split: "
+                    f"fit_max={int(idx_fit_local.max())}, ref_max={int(idx_ref_local.max())}, val_len={int(src_val.shape[0])}"
+                )
+
+            train_from = str(getattr(args, "stageA_fused_train_from", "train")).strip().lower()
+            val_from = str(getattr(args, "stageA_fused_val_from", "val")).strip().lower()
+
+            if train_from == "fit":
+                stagea_train_idx_sel = src_val[idx_fit_local]
+                stagea_fused_tr = y_fit
+            elif train_from == "ref":
+                stagea_train_idx_sel = src_val[idx_ref_local]
+                stagea_fused_tr = y_ref
+            else:
+                if k_train not in arr_fused:
+                    raise KeyError(f"Missing `{k_train}` in {fused_npz} for train_from=train")
+                stagea_train_idx_sel = train_idx
+                stagea_fused_tr = np.asarray(arr_fused[k_train], dtype=np.float32).reshape(-1)
+
+            if val_from == "ref":
+                stagea_val_idx_sel = src_val[idx_ref_local]
+                stagea_fused_va = y_ref
+            elif val_from == "test":
+                stagea_val_idx_sel = src_test
+                stagea_fused_va = y_test
+            else:
+                if k_val not in arr_fused:
+                    raise KeyError(f"Missing `{k_val}` in {fused_npz} for val_from=val")
+                stagea_val_idx_sel = val_idx
+                stagea_fused_va = np.asarray(arr_fused[k_val], dtype=np.float32).reshape(-1)
+
+            print(
+                "Stage-A fused source alignment enabled: "
+                f"src={src_npz}, train_from={train_from}, val_from={val_from} | "
+                f"train={len(stagea_train_idx_sel)} val={len(stagea_val_idx_sel)}"
+            )
+        else:
+            stagea_fused_tr, stagea_fused_va, _ = _load_split_targets_from_npz(
+                npz_path=stagea_fused_npz_path,
+                key_prefix=key_prefix,
+                scheme=scheme,
+                require_test=False,
+                expected_train_len=int(len(train_idx)),
+                expected_val_len=int(len(val_idx)),
+                expected_test_len=int(len(test_idx)),
+                desc="Stage-A fused targets",
+            )
+        if stagea_fused_tr is not None and int(stagea_fused_tr.shape[0]) != int(len(stagea_train_idx_sel)):
+            raise ValueError(
+                f"Stage-A fused train length mismatch: {int(stagea_fused_tr.shape[0])} vs train idx {int(len(stagea_train_idx_sel))}"
+            )
+        if stagea_fused_va is not None and int(stagea_fused_va.shape[0]) != int(len(stagea_val_idx_sel)):
+            raise ValueError(
+                f"Stage-A fused val length mismatch: {int(stagea_fused_va.shape[0])} vs val idx {int(len(stagea_val_idx_sel))}"
+            )
         print(
             "Stage-A fused targets loaded: "
-            f"{Path(stagea_fused_npz_path).expanduser().resolve()} | key={key_prefix} | scheme={scheme} | "
-            f"train={stagea_fused_tr.shape} val={stagea_fused_va.shape}"
+            f"{fused_npz} | key={key_prefix} | scheme={scheme} | "
+            f"train={None if stagea_fused_tr is None else stagea_fused_tr.shape} "
+            f"val={None if stagea_fused_va is None else stagea_fused_va.shape}"
         )
+        try:
+            if stagea_fused_tr is not None and np.unique(labels[stagea_train_idx_sel]).size > 1:
+                auc_t = float(roc_auc_score(labels[stagea_train_idx_sel].astype(np.int64), stagea_fused_tr.astype(np.float64)))
+            else:
+                auc_t = float("nan")
+            if stagea_fused_va is not None and np.unique(labels[stagea_val_idx_sel]).size > 1:
+                auc_v = float(roc_auc_score(labels[stagea_val_idx_sel].astype(np.int64), stagea_fused_va.astype(np.float64)))
+            else:
+                auc_v = float("nan")
+            print(f"Stage-A fused target sanity AUC: train={auc_t:.4f}, val={auc_v:.4f}")
+        except Exception as e:
+            print(f"Warning: unable to compute Stage-A fused target sanity AUC ({e})")
 
     stagea_anchor_npz_path = str(getattr(args, "stageA_anchor_targets_npz", "")).strip()
     if len(stagea_anchor_npz_path) > 0:
@@ -3032,8 +3161,8 @@ def main() -> None:
             key_prefix=anchor_key_prefix,
             scheme=anchor_scheme,
             require_test=False,
-            expected_train_len=int(len(train_idx)),
-            expected_val_len=int(len(val_idx)),
+            expected_train_len=int(len(stagea_train_idx_sel)),
+            expected_val_len=int(len(stagea_val_idx_sel)),
             expected_test_len=int(len(test_idx)),
             desc="Stage-A anchor targets",
         )
@@ -3090,23 +3219,24 @@ def main() -> None:
     print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)")
     print("=" * 70)
     ds_train_reco = StageAReconstructionDataset(
-        feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-        const_off[train_idx], masks_off[train_idx], labels[train_idx],
-        budget_merge_true[train_idx], budget_eff_true[train_idx],
+        feat_hlt_std[stagea_train_idx_sel], hlt_mask[stagea_train_idx_sel], hlt_const[stagea_train_idx_sel],
+        const_off[stagea_train_idx_sel], masks_off[stagea_train_idx_sel], labels[stagea_train_idx_sel],
+        budget_merge_true[stagea_train_idx_sel], budget_eff_true[stagea_train_idx_sel],
         stagea_fused_target=stagea_fused_tr,
         stagea_anchor_target=stagea_anchor_tr,
     )
     ds_val_reco = StageAReconstructionDataset(
-        feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-        const_off[val_idx], masks_off[val_idx], labels[val_idx],
-        budget_merge_true[val_idx], budget_eff_true[val_idx],
+        feat_hlt_std[stagea_val_idx_sel], hlt_mask[stagea_val_idx_sel], hlt_const[stagea_val_idx_sel],
+        const_off[stagea_val_idx_sel], masks_off[stagea_val_idx_sel], labels[stagea_val_idx_sel],
+        budget_merge_true[stagea_val_idx_sel], budget_eff_true[stagea_val_idx_sel],
         stagea_fused_target=stagea_fused_va,
         stagea_anchor_target=stagea_anchor_va,
     )
+    stagea_train_weight = train_weight[stagea_train_idx_sel].astype(np.float32)
     dl_train_reco = DataLoader(
         ds_train_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        sampler=_build_weighted_sampler(stagea_train_weight) if bool(args.use_train_weights) else None,
         shuffle=False if bool(args.use_train_weights) else True,
         drop_last=True,
         num_workers=args.num_workers,

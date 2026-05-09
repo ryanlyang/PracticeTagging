@@ -22,6 +22,9 @@ STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
 STAGEA_FUSED_TARGETS_NPZ="${STAGEA_FUSED_TARGETS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/fused_targets_joint12_weighted_150k150k300k/fused_targets_train_val_test.npz}"
 STAGEA_FUSED_TARGETS_KEY="${STAGEA_FUSED_TARGETS_KEY:-probs_fused_overall}"
 STAGEA_FUSED_SPLIT_SCHEME="${STAGEA_FUSED_SPLIT_SCHEME:-train_val_test}"
+STAGEA_FUSED_SOURCE_SPLITS_NPZ="${STAGEA_FUSED_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
+STAGEA_FUSED_TRAIN_FROM="${STAGEA_FUSED_TRAIN_FROM:-fit}"
+STAGEA_FUSED_VAL_FROM="${STAGEA_FUSED_VAL_FROM:-test}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-600000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-150000}"
@@ -75,6 +78,9 @@ CMD=(
   --stageA_fused_targets_npz "${STAGEA_FUSED_TARGETS_NPZ}"
   --stageA_fused_targets_key "${STAGEA_FUSED_TARGETS_KEY}"
   --stageA_fused_split_scheme "${STAGEA_FUSED_SPLIT_SCHEME}"
+  --stageA_fused_source_splits_npz "${STAGEA_FUSED_SOURCE_SPLITS_NPZ}"
+  --stageA_fused_train_from "${STAGEA_FUSED_TRAIN_FROM}"
+  --stageA_fused_val_from "${STAGEA_FUSED_VAL_FROM}"
   --stageB_lambda_rank 0.0
   --stageB_lambda_cons 0.0
   --stageC_lr_dual 1e-5
@@ -96,6 +102,7 @@ echo "============================================================"
 echo "Model-42 Strategy-3 (direct fused-score Stage-A target, weighted)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Stage-A fused targets: ${STAGEA_FUSED_TARGETS_NPZ}"
+echo "Stage-A source splits: ${STAGEA_FUSED_SOURCE_SPLITS_NPZ} | train_from=${STAGEA_FUSED_TRAIN_FROM} val_from=${STAGEA_FUSED_VAL_FROM}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
