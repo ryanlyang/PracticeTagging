@@ -127,7 +127,10 @@ def main() -> None:
     # L = w_teacher * KL(teacher(corrected_kin7) || teacher(offline_kin7))
     #   + w_budget * budget (+ tiny set/local optionally).
     stagea_teacher_w = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_TEACHER", 0.0))
-    stagea_teacher_temp = float(max(1e-6, os.environ.get("JETCLASS_STAGEA_TEACHER_TEMP", 2.5)))
+    stagea_teacher_temp = max(
+        1e-6,
+        float(os.environ.get("JETCLASS_STAGEA_TEACHER_TEMP", 2.5)),
+    )
     stagea_teacher_w_budget = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_BUDGET_ONLY", 0.35))
     stagea_teacher_w_set = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_SET_ONLY", 0.0))
     stagea_teacher_w_local = float(os.environ.get("JETCLASS_STAGEA_LAMBDA_LOCAL_ONLY", 0.0))
