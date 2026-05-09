@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=16
 #SBATCH --mem=160G
-#SBATCH --time=120:00:00
+#SBATCH --time=72:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_1m250k500k_stronger_canonical_path_gentok56_ablate_lcons003_recoonlydual_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_1m250k500k_stronger_canonical_path_gentok56_ablate_lcons003_recoonlydual_%j.err
 
