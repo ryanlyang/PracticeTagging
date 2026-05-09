@@ -74,6 +74,19 @@ def _collect_family_split(
     return keys, out
 
 
+def _parse_csv_list(s: str) -> List[str]:
+    out: List[str] = []
+    for tok in str(s).split(","):
+        t = tok.strip()
+        if t:
+            out.append(t)
+    return out
+
+
+def _sanitize_name(s: str) -> str:
+    return re.sub(r"[^0-9a-zA-Z_]+", "_", str(s)).strip("_")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Build top-tagging fused targets from joint12 bin-gated scores")
     ap.add_argument("--scores_npz", type=Path, required=True, help="Path to bin_gated_scores.npz")
@@ -91,6 +104,36 @@ def main() -> None:
         default="mean",
         choices=["mean", "median"],
         help="Reduction over available TPR-specific fused scores.",
+    )
+    ap.add_argument(
+        "--report_json",
+        type=Path,
+        default=None,
+        help="Optional bin_gated_report.json. Required when building fixed-model mapping targets.",
+    )
+    ap.add_argument(
+        "--fixed_models",
+        type=str,
+        default="",
+        help="Comma-separated model names for fixed mapping (e.g. joint_delta,dual_m17_antioverlap,...).",
+    )
+    ap.add_argument(
+        "--fixed_prefix",
+        type=str,
+        default="probs_fixedmap",
+        help="Key prefix for fixed-map targets.",
+    )
+    ap.add_argument(
+        "--fixed_reduction",
+        type=str,
+        default="mean",
+        choices=["mean", "median"],
+        help="Reduction for fixed-map aggregate target over selected models.",
+    )
+    ap.add_argument(
+        "--fixed_include_per_model",
+        action="store_true",
+        help="Also emit per-model targets for selected fixed models.",
     )
     args = ap.parse_args()
 
@@ -115,6 +158,7 @@ def main() -> None:
         "reduction": str(args.reduction),
         "available_tpr_suffixes": {},
         "source_keys": {},
+        "fixed_map": {},
     }
 
     # Build per-family reductions.
@@ -172,6 +216,95 @@ def main() -> None:
     built["probs_fused_overall_train"] = built["probs_fused_overall_fit"]
     built["probs_fused_overall_val"] = built["probs_fused_overall_ref"]
 
+    fixed_models = _parse_csv_list(args.fixed_models)
+    if len(fixed_models) > 0:
+        if args.report_json is None:
+            raise ValueError("--report_json is required when --fixed_models is provided.")
+        report_json = args.report_json.expanduser().resolve()
+        if not report_json.is_file():
+            raise FileNotFoundError(f"Missing report json: {report_json}")
+
+        report = json.loads(report_json.read_text())
+        fusion_json = report.get("fusion_json", "")
+        if not isinstance(fusion_json, str) or len(fusion_json.strip()) == 0:
+            raise KeyError(f"Missing fusion_json in report: {report_json}")
+
+        # Reuse score loading logic from analyzer to avoid key drift.
+        import analyze_hlt_joint31_bin_gated_fusion as ana
+
+        y_val, y_test, scores_val, scores_test, used_paths, skipped_models = ana._load_required_scores(
+            Path(fusion_json).expanduser().resolve(),
+            required_models=fixed_models,
+            head_select_mode="first",
+            head_select_tpr=0.50,
+        )
+
+        idx_fit = np.asarray(arr["idx_fit"], dtype=np.int64).reshape(-1) if "idx_fit" in arr else None
+        idx_ref = np.asarray(arr["idx_ref"], dtype=np.int64).reshape(-1) if "idx_ref" in arr else None
+        if idx_fit is None or idx_ref is None:
+            raise KeyError(
+                f"Missing idx_fit/idx_ref in {scores_npz}; cannot build fixed-map train/val targets."
+            )
+
+        if not np.array_equal(np.asarray(y_val, dtype=np.float32).reshape(-1), labels_ref):
+            raise RuntimeError(
+                "Validation labels mismatch between report/fusion scores and bin_gated_scores.npz. "
+                f"report={report_json}"
+            )
+        if not np.array_equal(np.asarray(y_test, dtype=np.float32).reshape(-1), labels_test):
+            raise RuntimeError(
+                "Test labels mismatch between report/fusion scores and bin_gated_scores.npz. "
+                f"report={report_json}"
+            )
+
+        fit_list: List[np.ndarray] = []
+        ref_list: List[np.ndarray] = []
+        test_list: List[np.ndarray] = []
+        per_model_meta: Dict[str, str] = {}
+
+        for m in fixed_models:
+            if m not in scores_val or m not in scores_test:
+                why = skipped_models.get(m, "missing_from_score_maps")
+                raise KeyError(f"Fixed model `{m}` unavailable: {why}")
+            s_fit = np.asarray(scores_val[m], dtype=np.float32).reshape(-1)[idx_fit]
+            s_ref = np.asarray(scores_val[m], dtype=np.float32).reshape(-1)[idx_ref]
+            s_test = np.asarray(scores_test[m], dtype=np.float32).reshape(-1)
+            fit_list.append(s_fit)
+            ref_list.append(s_ref)
+            test_list.append(s_test)
+
+            if args.fixed_include_per_model:
+                km = _sanitize_name(m)
+                built[f"{args.fixed_prefix}_{km}_fit"] = s_fit
+                built[f"{args.fixed_prefix}_{km}_ref"] = s_ref
+                built[f"{args.fixed_prefix}_{km}_test"] = s_test
+                built[f"{args.fixed_prefix}_{km}_train"] = s_fit
+                built[f"{args.fixed_prefix}_{km}_val"] = s_ref
+
+            per_model_meta[m] = used_paths.get(m, "")
+
+        agg_fit = _reduce_stack(fit_list, mode=args.fixed_reduction)
+        agg_ref = _reduce_stack(ref_list, mode=args.fixed_reduction)
+        agg_test = _reduce_stack(test_list, mode=args.fixed_reduction)
+
+        pref = str(args.fixed_prefix).strip()
+        built[f"{pref}_fit"] = agg_fit
+        built[f"{pref}_ref"] = agg_ref
+        built[f"{pref}_test"] = agg_test
+        built[f"{pref}_train"] = agg_fit
+        built[f"{pref}_val"] = agg_ref
+
+        meta["fixed_map"] = {
+            "enabled": True,
+            "report_json": str(report_json),
+            "fusion_json": str(Path(fusion_json).expanduser().resolve()),
+            "models": fixed_models,
+            "prefix": pref,
+            "reduction": str(args.fixed_reduction),
+            "include_per_model": bool(args.fixed_include_per_model),
+            "used_paths": per_model_meta,
+        }
+
     out_npz = out_dir / "fused_targets_train_val_test.npz"
     np.savez_compressed(
         out_npz,
@@ -208,6 +341,11 @@ def main() -> None:
     print(f"Overall:    family={fam}, reduction={args.reduction}")
     print(f"Saved NPZ:  {out_npz}")
     print(f"Saved meta: {out_meta}")
+    if len(fixed_models) > 0:
+        print(
+            "Fixed-map targets: "
+            f"prefix={str(args.fixed_prefix).strip()}, models={','.join(fixed_models)}, reduction={args.fixed_reduction}"
+        )
 
 
 if __name__ == "__main__":
