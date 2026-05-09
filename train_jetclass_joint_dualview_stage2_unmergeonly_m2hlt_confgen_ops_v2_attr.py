@@ -19,6 +19,7 @@ from __future__ import annotations
 import importlib
 import math
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -191,11 +192,34 @@ def main() -> None:
         meta = obj.get("meta", {}) if isinstance(obj, dict) else {}
 
         input_dim = int(meta.get("input_dim", 7))
-        if "head.6.weight" in state:
-            n_classes = int(state["head.6.weight"].shape[0])
-        else:
+        # Infer class count robustly from final classifier layer.
+        # Older/newer checkpoints may expose head.{6,8}.weight (or a prefixed variant).
+        n_classes = None
+        ncls_src = None
+        for k in ("head.8.weight", "head.6.weight"):
+            if k in state:
+                n_classes = int(state[k].shape[0])
+                ncls_src = k
+                break
+        if n_classes is None:
+            pat = re.compile(r"(?:^|\\.)head\\.(\\d+)\\.weight$")
+            best_idx = -1
+            for k, v in state.items():
+                m = pat.search(str(k))
+                if m is None:
+                    continue
+                try:
+                    idx = int(m.group(1))
+                except Exception:
+                    continue
+                if idx > best_idx:
+                    best_idx = idx
+                    n_classes = int(v.shape[0])
+                    ncls_src = str(k)
+        if n_classes is None:
             raise KeyError(
-                f"Could not infer n_classes from checkpoint {ckpt_path}; expected key `head.6.weight`."
+                "Could not infer n_classes from checkpoint "
+                f"{ckpt_path}; expected a classifier key like `head.<idx>.weight`."
             )
 
         teacher_model = v2.JetClassTransformer(
@@ -216,7 +240,8 @@ def main() -> None:
         _stagea_teacher_cache["src"] = str(ckpt_path)
         print(
             "Stage-A fused-student teacher loaded: "
-            f"{ckpt_path} | input_dim={input_dim} n_classes={n_classes} temp={stagea_teacher_temp:.3f}"
+            f"{ckpt_path} | input_dim={input_dim} n_classes={n_classes} "
+            f"(from {ncls_src}) temp={stagea_teacher_temp:.3f}"
         )
         return teacher_model
 
