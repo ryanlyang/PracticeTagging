@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=96G
-#SBATCH --time=72:00:00
+#SBATCH --time=48:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_250k50k250k_v1hltplus25_fusedkd_two_teacher_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_confgen_v2attr_250k50k250k_v1hltplus25_fusedkd_two_teacher_%j.err
 
