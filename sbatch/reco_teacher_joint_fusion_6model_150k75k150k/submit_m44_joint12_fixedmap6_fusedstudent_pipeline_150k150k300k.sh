@@ -14,11 +14,22 @@ DEFAULT_FIXED_MODELS="joint_delta,dual_m17_antioverlap,offdrop_mid,joint_s01,dua
 FIXED_MODELS="${FIXED_MODELS_OVERRIDE:-${DEFAULT_FIXED_MODELS}}"
 FIXED_PREFIX="${FIXED_PREFIX:-probs_fixedmap}"
 FIXED_REDUCTION="${FIXED_REDUCTION:-mean}"
+FIXED_STRATEGY="${FIXED_STRATEGY:-greedy_global}"
+FIXED_ANCHOR_MODEL="${FIXED_ANCHOR_MODEL:-joint_delta}"
+FIXED_TARGET_TPRS="${FIXED_TARGET_TPRS:-0.50,0.30}"
+FIXED_TPR_REDUCTION="${FIXED_TPR_REDUCTION:-mean}"
+FIXED_CALIBRATION="${FIXED_CALIBRATION:-iso}"
+FIXED_W_STEP="${FIXED_W_STEP:-0.005}"
+FIXED_MAX_ADD="${FIXED_MAX_ADD:-6}"
+FIXED_MIN_IMPROVE="${FIXED_MIN_IMPROVE:-2e-7}"
+FIXED_HEAD_SELECT_MODE="${FIXED_HEAD_SELECT_MODE:-best_val_fpr}"
+FIXED_HEAD_SELECT_TPR="${FIXED_HEAD_SELECT_TPR:-0.50}"
 
-TARGETS_DIR="${TARGETS_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/fused_targets_joint12_fixedmap6_weighted_150k150k300k}"
-STUDENT_SAVE_DIR="${STUDENT_SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/offline_fixedmap6_student_joint12_weighted_150k150k300k}"
-STUDENT_RUN_NAME="${STUDENT_RUN_NAME:-toptag_offline_fixedmap6_student_joint12_weighted_150k150k300k_seed0}"
-FINAL_RUN_NAME="${FINAL_RUN_NAME:-model44_joint12_fixedmap6_fusedstudent_stagea_teacher_weighted_150k150k300k_seed0}"
+TARGETS_DIR="${TARGETS_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/fused_targets_joint12_fixedmap6_strong_weighted_150k150k300k}"
+STUDENT_SAVE_DIR="${STUDENT_SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/offline_fixedmap6_strong_student_joint12_weighted_150k150k300k}"
+STUDENT_RUN_NAME="${STUDENT_RUN_NAME:-toptag_offline_fixedmap6_strong_student_joint12_weighted_150k150k300k_seed0}"
+FINAL_SAVE_DIR="${FINAL_SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model44_joint12_fixedmap6_strong_fusedstudent_stagea_teacher_weighted_150k150k300k}"
+FINAL_RUN_NAME="${FINAL_RUN_NAME:-model44_joint12_fixedmap6_strong_fusedstudent_stagea_teacher_weighted_150k150k300k_seed0}"
 TARGET_SOURCE_SPLITS_NPZ="${TARGET_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
 
 UPSTREAM_JOB_IDS="${UPSTREAM_JOB_IDS:-}"
@@ -49,12 +60,12 @@ if [[ -n "${UPSTREAM_JOB_IDS}" ]]; then
   echo "Submitting fixed-map build job with dependency afterok:${UPSTREAM_JOB_IDS}"
   job_build=$(sbatch --parsable \
     --dependency=afterok:${UPSTREAM_JOB_IDS} \
-    --export=ALL,SCORES_NPZ="${SCORES_NPZ}",OUT_DIR="${TARGETS_DIR}",REPORT_JSON="${REPORT_JSON}",FIXED_MODELS="${FIXED_MODELS}",FIXED_PREFIX="${FIXED_PREFIX}",FIXED_REDUCTION="${FIXED_REDUCTION}" \
+    --export=ALL,SCORES_NPZ="${SCORES_NPZ}",OUT_DIR="${TARGETS_DIR}",REPORT_JSON="${REPORT_JSON}",FIXED_MODELS="${FIXED_MODELS}",FIXED_PREFIX="${FIXED_PREFIX}",FIXED_REDUCTION="${FIXED_REDUCTION}",FIXED_STRATEGY="${FIXED_STRATEGY}",FIXED_ANCHOR_MODEL="${FIXED_ANCHOR_MODEL}",FIXED_TARGET_TPRS="${FIXED_TARGET_TPRS}",FIXED_TPR_REDUCTION="${FIXED_TPR_REDUCTION}",FIXED_CALIBRATION="${FIXED_CALIBRATION}",FIXED_W_STEP="${FIXED_W_STEP}",FIXED_MAX_ADD="${FIXED_MAX_ADD}",FIXED_MIN_IMPROVE="${FIXED_MIN_IMPROVE}",FIXED_HEAD_SELECT_MODE="${FIXED_HEAD_SELECT_MODE}",FIXED_HEAD_SELECT_TPR="${FIXED_HEAD_SELECT_TPR}" \
     "${RUN_BUILD}")
 else
   echo "Submitting fixed-map build job"
   job_build=$(sbatch --parsable \
-    --export=ALL,SCORES_NPZ="${SCORES_NPZ}",OUT_DIR="${TARGETS_DIR}",REPORT_JSON="${REPORT_JSON}",FIXED_MODELS="${FIXED_MODELS}",FIXED_PREFIX="${FIXED_PREFIX}",FIXED_REDUCTION="${FIXED_REDUCTION}" \
+    --export=ALL,SCORES_NPZ="${SCORES_NPZ}",OUT_DIR="${TARGETS_DIR}",REPORT_JSON="${REPORT_JSON}",FIXED_MODELS="${FIXED_MODELS}",FIXED_PREFIX="${FIXED_PREFIX}",FIXED_REDUCTION="${FIXED_REDUCTION}",FIXED_STRATEGY="${FIXED_STRATEGY}",FIXED_ANCHOR_MODEL="${FIXED_ANCHOR_MODEL}",FIXED_TARGET_TPRS="${FIXED_TARGET_TPRS}",FIXED_TPR_REDUCTION="${FIXED_TPR_REDUCTION}",FIXED_CALIBRATION="${FIXED_CALIBRATION}",FIXED_W_STEP="${FIXED_W_STEP}",FIXED_MAX_ADD="${FIXED_MAX_ADD}",FIXED_MIN_IMPROVE="${FIXED_MIN_IMPROVE}",FIXED_HEAD_SELECT_MODE="${FIXED_HEAD_SELECT_MODE}",FIXED_HEAD_SELECT_TPR="${FIXED_HEAD_SELECT_TPR}" \
     "${RUN_BUILD}")
 fi
 echo "  build:   ${job_build}"
@@ -67,13 +78,14 @@ echo "  student: ${job_student}"
 
 job_final=$(sbatch --parsable \
   --dependency=afterok:${job_student} \
-  --export=ALL,STAGEA_TEACHER_CKPT="${STUDENT_SAVE_DIR}/${STUDENT_RUN_NAME}/teacher.pt",RUN_NAME="${FINAL_RUN_NAME}" \
+  --export=ALL,STAGEA_TEACHER_CKPT="${STUDENT_SAVE_DIR}/${STUDENT_RUN_NAME}/teacher.pt",SAVE_DIR="${FINAL_SAVE_DIR}",RUN_NAME="${FINAL_RUN_NAME}" \
   "${RUN_FINAL}")
 echo "  final:   ${job_final}"
 
 echo "============================================================"
 echo "Queued Model-44 fixed-map6 fused-student pipeline"
 echo "fixed models: ${FIXED_MODELS}"
+echo "fixed strategy: ${FIXED_STRATEGY} (anchor=${FIXED_ANCHOR_MODEL}, tprs=${FIXED_TARGET_TPRS}, cal=${FIXED_CALIBRATION}, w_step=${FIXED_W_STEP})"
 echo "build   jobid: ${job_build}"
 echo "student jobid: ${job_student}"
 echo "final   jobid: ${job_final}"

@@ -2605,6 +2605,28 @@ def main() -> None:
         default="train_val_test",
         choices=["train_val_test", "fit_ref_test"],
     )
+    parser.add_argument(
+        "--joint_fused_source_splits_npz",
+        type=str,
+        default="",
+        help="Optional source data_splits.npz for exact Joint fused-train target index alignment.",
+    )
+    parser.add_argument("--joint_fused_source_val_key", type=str, default="val_idx")
+    parser.add_argument("--joint_fused_source_test_key", type=str, default="test_idx")
+    parser.add_argument(
+        "--joint_fused_train_from",
+        type=str,
+        default="train",
+        choices=["train", "fit", "ref"],
+        help="Which fused partition to use for Joint train targets.",
+    )
+    parser.add_argument(
+        "--joint_fused_val_from",
+        type=str,
+        default="val",
+        choices=["val", "ref", "test"],
+        help="Which fused partition to use for Joint val targets.",
+    )
     parser.add_argument("--joint_fused_kd_temp", type=float, default=1.0)
     parser.add_argument("--joint_fused_adv_weight", type=float, default=0.0)
     parser.add_argument("--joint_fused_adv_power", type=float, default=1.0)
@@ -3213,6 +3235,9 @@ def main() -> None:
             f"train={stagea_anchor_tr.shape} val={stagea_anchor_va.shape}"
         )
 
+    joint_train_idx_sel = train_idx
+    joint_val_idx_sel = val_idx
+    joint_test_idx_sel = test_idx
     joint_fused_tr = None
     joint_fused_va = None
     joint_fused_te = None
@@ -3220,22 +3245,130 @@ def main() -> None:
     if len(joint_fused_npz_path) == 0 and len(stagea_fused_npz_path) > 0:
         joint_fused_npz_path = stagea_fused_npz_path
     if len(joint_fused_npz_path) > 0:
+        joint_fused_npz = Path(joint_fused_npz_path).expanduser().resolve()
+        arr_joint_fused = np.load(joint_fused_npz)
         joint_key_prefix = str(getattr(args, "joint_fused_targets_key", "probs_fused_overall")).strip()
         joint_scheme = str(getattr(args, "joint_fused_split_scheme", "train_val_test")).strip().lower()
-        joint_fused_tr, joint_fused_va, joint_fused_te = _load_split_targets_from_npz(
-            npz_path=joint_fused_npz_path,
-            key_prefix=joint_key_prefix,
-            scheme=joint_scheme,
-            require_test=True,
-            expected_train_len=int(len(train_idx)),
-            expected_val_len=int(len(val_idx)),
-            expected_test_len=int(len(test_idx)),
-            desc="Joint fused targets",
-        )
+        if joint_scheme == "fit_ref_test":
+            k_fit = f"{joint_key_prefix}_fit"
+            k_ref = f"{joint_key_prefix}_ref"
+            k_test = f"{joint_key_prefix}_test"
+            k_train = k_fit
+            k_val = k_ref
+        else:
+            k_fit = f"{joint_key_prefix}_fit" if f"{joint_key_prefix}_fit" in arr_joint_fused else f"{joint_key_prefix}_train"
+            k_ref = f"{joint_key_prefix}_ref" if f"{joint_key_prefix}_ref" in arr_joint_fused else f"{joint_key_prefix}_val"
+            k_test = f"{joint_key_prefix}_test"
+            k_train = f"{joint_key_prefix}_train"
+            k_val = f"{joint_key_prefix}_val"
+
+        if k_fit not in arr_joint_fused or k_ref not in arr_joint_fused or k_test not in arr_joint_fused:
+            raise KeyError(
+                f"Missing fused keys in {joint_fused_npz}. "
+                f"Need `{k_fit}`, `{k_ref}`, `{k_test}`. Available keys: {sorted(arr_joint_fused.files)}"
+            )
+
+        source_splits_npz = str(getattr(args, "joint_fused_source_splits_npz", "")).strip()
+        if len(source_splits_npz) > 0:
+            src_npz = Path(source_splits_npz).expanduser().resolve()
+            src = np.load(src_npz)
+            src_val_key = str(getattr(args, "joint_fused_source_val_key", "val_idx")).strip()
+            src_test_key = str(getattr(args, "joint_fused_source_test_key", "test_idx")).strip()
+            if src_val_key not in src or src_test_key not in src:
+                raise KeyError(
+                    f"Missing `{src_val_key}` or `{src_test_key}` in {src_npz}. "
+                    f"Available keys: {sorted(src.files)}"
+                )
+            if "idx_fit" not in arr_joint_fused or "idx_ref" not in arr_joint_fused:
+                raise KeyError(
+                    f"Missing idx_fit/idx_ref in fused NPZ for source alignment: {joint_fused_npz}"
+                )
+
+            src_val = np.asarray(src[src_val_key], dtype=np.int64).reshape(-1)
+            src_test = np.asarray(src[src_test_key], dtype=np.int64).reshape(-1)
+            idx_fit_local = np.asarray(arr_joint_fused["idx_fit"], dtype=np.int64).reshape(-1)
+            idx_ref_local = np.asarray(arr_joint_fused["idx_ref"], dtype=np.int64).reshape(-1)
+            if idx_fit_local.size == 0 or idx_ref_local.size == 0:
+                raise ValueError("idx_fit/idx_ref empty in fused NPZ.")
+            if int(idx_fit_local.max()) >= int(src_val.shape[0]) or int(idx_ref_local.max()) >= int(src_val.shape[0]):
+                raise ValueError(
+                    "idx_fit/idx_ref out of bounds for source val split: "
+                    f"fit_max={int(idx_fit_local.max())}, ref_max={int(idx_ref_local.max())}, val_len={int(src_val.shape[0])}"
+                )
+
+            y_fit = np.asarray(arr_joint_fused[k_fit], dtype=np.float32).reshape(-1)
+            y_ref = np.asarray(arr_joint_fused[k_ref], dtype=np.float32).reshape(-1)
+            y_test = np.asarray(arr_joint_fused[k_test], dtype=np.float32).reshape(-1)
+            train_from = str(getattr(args, "joint_fused_train_from", "train")).strip().lower()
+            val_from = str(getattr(args, "joint_fused_val_from", "val")).strip().lower()
+
+            if train_from == "fit":
+                joint_train_idx_sel = src_val[idx_fit_local]
+                joint_fused_tr = y_fit
+            elif train_from == "ref":
+                joint_train_idx_sel = src_val[idx_ref_local]
+                joint_fused_tr = y_ref
+            else:
+                if k_train not in arr_joint_fused:
+                    raise KeyError(f"Missing `{k_train}` in {joint_fused_npz} for joint_fused_train_from=train")
+                joint_train_idx_sel = train_idx
+                joint_fused_tr = np.asarray(arr_joint_fused[k_train], dtype=np.float32).reshape(-1)
+
+            if val_from == "ref":
+                joint_val_idx_sel = src_val[idx_ref_local]
+                joint_fused_va = y_ref
+            elif val_from == "test":
+                joint_val_idx_sel = src_test
+                joint_fused_va = y_test
+            else:
+                if k_val not in arr_joint_fused:
+                    raise KeyError(f"Missing `{k_val}` in {joint_fused_npz} for joint_fused_val_from=val")
+                joint_val_idx_sel = val_idx
+                joint_fused_va = np.asarray(arr_joint_fused[k_val], dtype=np.float32).reshape(-1)
+
+            # Keep evaluation split fixed to this run's test split for metric comparability.
+            if k_test in arr_joint_fused and int(np.asarray(arr_joint_fused[k_test]).reshape(-1).shape[0]) == int(len(test_idx)):
+                joint_test_idx_sel = test_idx
+                joint_fused_te = np.asarray(arr_joint_fused[k_test], dtype=np.float32).reshape(-1)
+            else:
+                joint_test_idx_sel = test_idx
+                joint_fused_te = None
+
+            print(
+                "Joint fused source alignment enabled: "
+                f"src={src_npz}, train_from={train_from}, val_from={val_from} | "
+                f"train={len(joint_train_idx_sel)} val={len(joint_val_idx_sel)} test={len(joint_test_idx_sel)}"
+            )
+        else:
+            joint_fused_tr, joint_fused_va, joint_fused_te = _load_split_targets_from_npz(
+                npz_path=joint_fused_npz_path,
+                key_prefix=joint_key_prefix,
+                scheme=joint_scheme,
+                require_test=True,
+                expected_train_len=int(len(train_idx)),
+                expected_val_len=int(len(val_idx)),
+                expected_test_len=int(len(test_idx)),
+                desc="Joint fused targets",
+            )
+
+        if joint_fused_tr is not None and int(joint_fused_tr.shape[0]) != int(len(joint_train_idx_sel)):
+            raise ValueError(
+                f"Joint fused train length mismatch: {int(joint_fused_tr.shape[0])} vs train idx {int(len(joint_train_idx_sel))}"
+            )
+        if joint_fused_va is not None and int(joint_fused_va.shape[0]) != int(len(joint_val_idx_sel)):
+            raise ValueError(
+                f"Joint fused val length mismatch: {int(joint_fused_va.shape[0])} vs val idx {int(len(joint_val_idx_sel))}"
+            )
+        if joint_fused_te is not None and int(joint_fused_te.shape[0]) != int(len(joint_test_idx_sel)):
+            raise ValueError(
+                f"Joint fused test length mismatch: {int(joint_fused_te.shape[0])} vs test idx {int(len(joint_test_idx_sel))}"
+            )
         print(
             "Joint fused targets loaded: "
-            f"{Path(joint_fused_npz_path).expanduser().resolve()} | key={joint_key_prefix} | scheme={joint_scheme} | "
-            f"train={joint_fused_tr.shape} val={joint_fused_va.shape} test={joint_fused_te.shape}"
+            f"{joint_fused_npz} | key={joint_key_prefix} | scheme={joint_scheme} | "
+            f"train={None if joint_fused_tr is None else joint_fused_tr.shape} "
+            f"val={None if joint_fused_va is None else joint_fused_va.shape} "
+            f"test={None if joint_fused_te is None else joint_fused_te.shape}"
         )
 
     # Stage-A teacher model can be overridden independently from STEP-1 teacher.
@@ -3443,31 +3576,32 @@ def main() -> None:
 
     # Joint datasets
     ds_train_joint = JointDualDataset(
-        feat_hlt_std[train_idx], feat_hlt_dual[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-        const_off[train_idx], masks_off[train_idx],
-        budget_merge_true[train_idx], budget_eff_true[train_idx],
-        labels[train_idx],
+        feat_hlt_std[joint_train_idx_sel], feat_hlt_dual[joint_train_idx_sel], hlt_mask[joint_train_idx_sel], hlt_const[joint_train_idx_sel],
+        const_off[joint_train_idx_sel], masks_off[joint_train_idx_sel],
+        budget_merge_true[joint_train_idx_sel], budget_eff_true[joint_train_idx_sel],
+        labels[joint_train_idx_sel],
         joint_fused_target=joint_fused_tr,
     )
     ds_val_joint = JointDualDataset(
-        feat_hlt_std[val_idx], feat_hlt_dual[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-        const_off[val_idx], masks_off[val_idx],
-        budget_merge_true[val_idx], budget_eff_true[val_idx],
-        labels[val_idx],
+        feat_hlt_std[joint_val_idx_sel], feat_hlt_dual[joint_val_idx_sel], hlt_mask[joint_val_idx_sel], hlt_const[joint_val_idx_sel],
+        const_off[joint_val_idx_sel], masks_off[joint_val_idx_sel],
+        budget_merge_true[joint_val_idx_sel], budget_eff_true[joint_val_idx_sel],
+        labels[joint_val_idx_sel],
         joint_fused_target=joint_fused_va,
     )
     ds_test_joint = JointDualDataset(
-        feat_hlt_std[test_idx], feat_hlt_dual[test_idx], hlt_mask[test_idx], hlt_const[test_idx],
-        const_off[test_idx], masks_off[test_idx],
-        budget_merge_true[test_idx], budget_eff_true[test_idx],
-        labels[test_idx],
+        feat_hlt_std[joint_test_idx_sel], feat_hlt_dual[joint_test_idx_sel], hlt_mask[joint_test_idx_sel], hlt_const[joint_test_idx_sel],
+        const_off[joint_test_idx_sel], masks_off[joint_test_idx_sel],
+        budget_merge_true[joint_test_idx_sel], budget_eff_true[joint_test_idx_sel],
+        labels[joint_test_idx_sel],
         joint_fused_target=joint_fused_te,
     )
 
+    joint_train_weight = train_weight[joint_train_idx_sel].astype(np.float32)
     dl_train_joint = DataLoader(
         ds_train_joint,
         batch_size=BS,
-        sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+        sampler=_build_weighted_sampler(joint_train_weight) if bool(args.use_train_weights) else None,
         shuffle=False if bool(args.use_train_weights) else True,
         drop_last=True,
         num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),

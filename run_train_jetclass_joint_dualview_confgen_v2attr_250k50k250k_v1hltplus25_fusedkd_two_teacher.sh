@@ -33,6 +33,22 @@ TEACHER_B_RUN="${TEACHER_B_RUN:-checkpoints/jetclass_joint_dualview/jetclass_joi
 # Optional: initialize student from an existing run.
 DISTILL_INIT_RUN="${DISTILL_INIT_RUN:-}"
 
+# Distillation tuning overrides (for controlled 250k ablations).
+DISTILL_WEIGHT_A="${DISTILL_WEIGHT_A:-0.50}"
+DISTILL_TEMP="${DISTILL_TEMP:-2.5}"
+DISTILL_ALPHA_KL="${DISTILL_ALPHA_KL:-1.0}"
+DISTILL_ALPHA_CE="${DISTILL_ALPHA_CE:-0.25}"
+DISTILL_PHASE2_LAMBDA_RECO="${DISTILL_PHASE2_LAMBDA_RECO:-0.20}"
+DISTILL_PHASE2_LAMBDA_CONS="${DISTILL_PHASE2_LAMBDA_CONS:-0.03}"
+
+# Reco-only auxiliary stage can be disabled for ablations.
+ENABLE_RECO_ONLY_AFTER_STAGEA="${ENABLE_RECO_ONLY_AFTER_STAGEA:-1}"
+RECO_ONLY_EPOCHS="${RECO_ONLY_EPOCHS:-60}"
+RECO_ONLY_PATIENCE="${RECO_ONLY_PATIENCE:-15}"
+RECO_ONLY_LR="${RECO_ONLY_LR:-4e-4}"
+RECO_ONLY_WARMUP_EPOCHS="${RECO_ONLY_WARMUP_EPOCHS:-3}"
+RECO_ONLY_BATCH_SIZE="${RECO_ONLY_BATCH_SIZE:-512}"
+
 set +u
 source ~/.bashrc
 set -u
@@ -140,10 +156,10 @@ CMD=(
   --enable_fused_kd_distill
   --distill_teacher_run_dir_a "${TEACHER_A_RUN}"
   --distill_teacher_run_dir_b "${TEACHER_B_RUN}"
-  --distill_teacher_weight_a 0.50
-  --distill_temp 2.5
-  --distill_alpha_kl 1.0
-  --distill_alpha_ce 0.25
+  --distill_teacher_weight_a "${DISTILL_WEIGHT_A}"
+  --distill_temp "${DISTILL_TEMP}"
+  --distill_alpha_kl "${DISTILL_ALPHA_KL}"
+  --distill_alpha_ce "${DISTILL_ALPHA_CE}"
   --distill_phase1_epochs 20
   --distill_phase1_patience 6
   --distill_phase1_min_epochs 5
@@ -153,18 +169,12 @@ CMD=(
   --distill_phase2_min_epochs 10
   --distill_phase2_lr_dual 2e-4
   --distill_phase2_lr_reco 7e-5
-  --distill_phase2_lambda_reco 0.20
-  --distill_phase2_lambda_cons 0.03
+  --distill_phase2_lambda_reco "${DISTILL_PHASE2_LAMBDA_RECO}"
+  --distill_phase2_lambda_cons "${DISTILL_PHASE2_LAMBDA_CONS}"
   --distill_phase2_lambda_attr_mode 0.04
   --distill_phase2_lambda_attr_type 0.06
   --distill_phase2_lambda_attr_charge 0.01
   --distill_phase2_lambda_attr_track 0.01
-  --train_reco_only_after_stageA
-  --reco_only_epochs 60
-  --reco_only_patience 15
-  --reco_only_lr 4e-4
-  --reco_only_warmup_epochs 3
-  --reco_only_batch_size 512
   --stageC_epochs 0
   --stageC_patience 2
   --stageC_min_epochs 0
@@ -179,6 +189,15 @@ if [[ -n "${DISTILL_INIT_RUN}" ]]; then
   CMD+=( --distill_init_run_dir "${DISTILL_INIT_RUN}" )
 fi
 
+if [[ "${ENABLE_RECO_ONLY_AFTER_STAGEA}" == "1" ]]; then
+  CMD+=( --train_reco_only_after_stageA )
+  CMD+=( --reco_only_epochs "${RECO_ONLY_EPOCHS}" )
+  CMD+=( --reco_only_patience "${RECO_ONLY_PATIENCE}" )
+  CMD+=( --reco_only_lr "${RECO_ONLY_LR}" )
+  CMD+=( --reco_only_warmup_epochs "${RECO_ONLY_WARMUP_EPOCHS}" )
+  CMD+=( --reco_only_batch_size "${RECO_ONLY_BATCH_SIZE}" )
+fi
+
 echo "============================================================"
 echo "JetClass fused-two-teacher KD distillation (v1 HLT +25%)"
 echo "Job ID: ${SLURM_JOB_ID:-N/A}"
@@ -186,6 +205,14 @@ echo "Node: ${SLURMD_NODENAME:-N/A}"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Teacher A: ${TEACHER_A_RUN}"
 echo "Teacher B: ${TEACHER_B_RUN}"
+echo "Distill mix A/B: ${DISTILL_WEIGHT_A}/$(python - <<PY
+w=float("${DISTILL_WEIGHT_A}")
+print(f"{1.0-w:.2f}")
+PY
+)"
+echo "Distill temp: ${DISTILL_TEMP} | alpha_kl=${DISTILL_ALPHA_KL} alpha_ce=${DISTILL_ALPHA_CE}"
+echo "Phase2 lambdas: reco=${DISTILL_PHASE2_LAMBDA_RECO} cons=${DISTILL_PHASE2_LAMBDA_CONS}"
+echo "Reco-only after StageA: ${ENABLE_RECO_ONLY_AFTER_STAGEA}"
 echo "Split: train=${N_TRAIN_JETS}, val=${N_VAL_JETS}, test=${N_TEST_JETS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"

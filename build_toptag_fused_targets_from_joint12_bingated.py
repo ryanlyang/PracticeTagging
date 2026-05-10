@@ -83,6 +83,21 @@ def _parse_csv_list(s: str) -> List[str]:
     return out
 
 
+def _parse_float_list(s: str, default: List[float]) -> List[float]:
+    out: List[float] = []
+    for tok in str(s).split(","):
+        t = tok.strip()
+        if not t:
+            continue
+        try:
+            out.append(float(t))
+        except Exception:
+            continue
+    if not out:
+        out = [float(x) for x in default]
+    return out
+
+
 def _sanitize_name(s: str) -> str:
     return re.sub(r"[^0-9a-zA-Z_]+", "_", str(s)).strip("_")
 
@@ -129,6 +144,70 @@ def main() -> None:
         default="mean",
         choices=["mean", "median"],
         help="Reduction for fixed-map aggregate target over selected models.",
+    )
+    ap.add_argument(
+        "--fixed_strategy",
+        type=str,
+        default="mean",
+        choices=["mean", "greedy_global"],
+        help="How to build fixed-map aggregate: plain reduction or greedy global blend over fixed models.",
+    )
+    ap.add_argument(
+        "--fixed_anchor_model",
+        type=str,
+        default="",
+        help="Anchor model for greedy_global fixed-map strategy. Default: first model in --fixed_models.",
+    )
+    ap.add_argument(
+        "--fixed_target_tprs",
+        type=str,
+        default="0.50,0.30",
+        help="Comma-separated target TPRs for greedy_global fixed-map strategy.",
+    )
+    ap.add_argument(
+        "--fixed_tpr_reduction",
+        type=str,
+        default="mean",
+        choices=["mean", "median"],
+        help="Reduction over per-TPR greedy blends for fixed-map strategy.",
+    )
+    ap.add_argument(
+        "--fixed_calibration",
+        type=str,
+        default="iso",
+        choices=["raw", "iso", "platt"],
+        help="Calibration mode before greedy blending in fixed-map strategy.",
+    )
+    ap.add_argument(
+        "--fixed_w_step",
+        type=float,
+        default=0.005,
+        help="Blend weight scan step for greedy_global fixed-map strategy.",
+    )
+    ap.add_argument(
+        "--fixed_max_add",
+        type=int,
+        default=6,
+        help="Max greedy additions for fixed-map strategy.",
+    )
+    ap.add_argument(
+        "--fixed_min_improve",
+        type=float,
+        default=2e-7,
+        help="Minimum fit-FPR improvement for accepting a greedy blend step.",
+    )
+    ap.add_argument(
+        "--fixed_head_select_mode",
+        type=str,
+        default="best_val_fpr",
+        choices=["first", "best_val_auc", "best_val_fpr"],
+        help="How to choose head keys for models with multiple output heads.",
+    )
+    ap.add_argument(
+        "--fixed_head_select_tpr",
+        type=float,
+        default=0.50,
+        help="TPR used when fixed_head_select_mode=best_val_fpr.",
     )
     ap.add_argument(
         "--fixed_include_per_model",
@@ -235,8 +314,8 @@ def main() -> None:
         y_val, y_test, scores_val, scores_test, used_paths, skipped_models = ana._load_required_scores(
             Path(fusion_json).expanduser().resolve(),
             required_models=fixed_models,
-            head_select_mode="first",
-            head_select_tpr=0.50,
+            head_select_mode=str(args.fixed_head_select_mode),
+            head_select_tpr=float(args.fixed_head_select_tpr),
         )
 
         idx_fit = np.asarray(arr["idx_fit"], dtype=np.int64).reshape(-1) if "idx_fit" in arr else None
@@ -257,9 +336,13 @@ def main() -> None:
                 f"report={report_json}"
             )
 
-        fit_list: List[np.ndarray] = []
-        ref_list: List[np.ndarray] = []
-        test_list: List[np.ndarray] = []
+        y_fit = np.asarray(y_val, dtype=np.float32).reshape(-1)[idx_fit]
+        y_ref = np.asarray(y_val, dtype=np.float32).reshape(-1)[idx_ref]
+        y_tst = np.asarray(y_test, dtype=np.float32).reshape(-1)
+
+        fit_map_raw: Dict[str, np.ndarray] = {}
+        ref_map_raw: Dict[str, np.ndarray] = {}
+        test_map_raw: Dict[str, np.ndarray] = {}
         per_model_meta: Dict[str, str] = {}
 
         for m in fixed_models:
@@ -269,9 +352,9 @@ def main() -> None:
             s_fit = np.asarray(scores_val[m], dtype=np.float32).reshape(-1)[idx_fit]
             s_ref = np.asarray(scores_val[m], dtype=np.float32).reshape(-1)[idx_ref]
             s_test = np.asarray(scores_test[m], dtype=np.float32).reshape(-1)
-            fit_list.append(s_fit)
-            ref_list.append(s_ref)
-            test_list.append(s_test)
+            fit_map_raw[m] = s_fit
+            ref_map_raw[m] = s_ref
+            test_map_raw[m] = s_test
 
             if args.fixed_include_per_model:
                 km = _sanitize_name(m)
@@ -283,9 +366,92 @@ def main() -> None:
 
             per_model_meta[m] = used_paths.get(m, "")
 
-        agg_fit = _reduce_stack(fit_list, mode=args.fixed_reduction)
-        agg_ref = _reduce_stack(ref_list, mode=args.fixed_reduction)
-        agg_test = _reduce_stack(test_list, mode=args.fixed_reduction)
+        strategy = str(args.fixed_strategy).strip().lower()
+        if strategy == "mean":
+            fit_list = [fit_map_raw[m] for m in fixed_models]
+            ref_list = [ref_map_raw[m] for m in fixed_models]
+            test_list = [test_map_raw[m] for m in fixed_models]
+            agg_fit = _reduce_stack(fit_list, mode=args.fixed_reduction)
+            agg_ref = _reduce_stack(ref_list, mode=args.fixed_reduction)
+            agg_test = _reduce_stack(test_list, mode=args.fixed_reduction)
+            fixed_details: Dict[str, object] = {
+                "strategy": strategy,
+                "reduction": str(args.fixed_reduction),
+            }
+        elif strategy == "greedy_global":
+            target_tprs = _parse_float_list(str(args.fixed_target_tprs), [0.50, 0.30])
+            anchor_model = str(args.fixed_anchor_model).strip() or str(fixed_models[0])
+            if anchor_model not in fixed_models:
+                raise ValueError(
+                    f"fixed_anchor_model={anchor_model} must be in fixed_models={fixed_models}"
+                )
+
+            blend_fit_list: List[np.ndarray] = []
+            blend_ref_list: List[np.ndarray] = []
+            blend_test_list: List[np.ndarray] = []
+            per_tpr_logs: Dict[str, List[Dict[str, object]]] = {}
+
+            for tpr in target_tprs:
+                fit_map = {}
+                cal_map = {}
+                test_map = {}
+                for m in fixed_models:
+                    sf, sr, st = ana.calibrate_scores(
+                        y_fit=y_fit,
+                        s_fit=np.asarray(fit_map_raw[m], dtype=np.float64),
+                        s_cal=np.asarray(ref_map_raw[m], dtype=np.float64),
+                        s_test=np.asarray(test_map_raw[m], dtype=np.float64),
+                        mode=str(args.fixed_calibration),
+                    )
+                    fit_map[m] = sf
+                    cal_map[m] = sr
+                    test_map[m] = st
+
+                s_fit_b, s_ref_b, s_test_b, rows_b = ana._greedy_global_blend(
+                    y_fit=np.asarray(y_fit, dtype=np.float32),
+                    s_fit_map=fit_map,
+                    s_cal_map=cal_map,
+                    s_test_map=test_map,
+                    anchor_model=anchor_model,
+                    candidates=list(fixed_models),
+                    target_tpr=float(tpr),
+                    max_add=int(min(max(1, int(args.fixed_max_add)), len(fixed_models) - 1)),
+                    w_step=float(args.fixed_w_step),
+                    min_improve=float(args.fixed_min_improve),
+                )
+                k = f"tpr{tpr:.3f}".replace(".", "p")
+                built[f"{args.fixed_prefix}_fit_{k}"] = np.asarray(s_fit_b, dtype=np.float32)
+                built[f"{args.fixed_prefix}_ref_{k}"] = np.asarray(s_ref_b, dtype=np.float32)
+                built[f"{args.fixed_prefix}_test_{k}"] = np.asarray(s_test_b, dtype=np.float32)
+                per_tpr_logs[k] = rows_b
+                blend_fit_list.append(np.asarray(s_fit_b, dtype=np.float32))
+                blend_ref_list.append(np.asarray(s_ref_b, dtype=np.float32))
+                blend_test_list.append(np.asarray(s_test_b, dtype=np.float32))
+
+            agg_fit = _reduce_stack(blend_fit_list, mode=args.fixed_tpr_reduction)
+            agg_ref = _reduce_stack(blend_ref_list, mode=args.fixed_tpr_reduction)
+            agg_test = _reduce_stack(blend_test_list, mode=args.fixed_tpr_reduction)
+
+            if not np.array_equal(np.asarray(y_ref, dtype=np.float32).reshape(-1), labels_ref):
+                raise RuntimeError("Internal fixed-map ref labels drifted unexpectedly.")
+            if not np.array_equal(np.asarray(y_tst, dtype=np.float32).reshape(-1), labels_test):
+                raise RuntimeError("Internal fixed-map test labels drifted unexpectedly.")
+
+            fixed_details = {
+                "strategy": strategy,
+                "anchor_model": anchor_model,
+                "target_tprs": [float(x) for x in target_tprs],
+                "tpr_reduction": str(args.fixed_tpr_reduction),
+                "calibration": str(args.fixed_calibration),
+                "w_step": float(args.fixed_w_step),
+                "max_add": int(args.fixed_max_add),
+                "min_improve": float(args.fixed_min_improve),
+                "head_select_mode": str(args.fixed_head_select_mode),
+                "head_select_tpr": float(args.fixed_head_select_tpr),
+                "per_tpr_logs": per_tpr_logs,
+            }
+        else:
+            raise ValueError(f"Unknown fixed_strategy: {args.fixed_strategy}")
 
         pref = str(args.fixed_prefix).strip()
         built[f"{pref}_fit"] = agg_fit
@@ -303,6 +469,7 @@ def main() -> None:
             "reduction": str(args.fixed_reduction),
             "include_per_model": bool(args.fixed_include_per_model),
             "used_paths": per_model_meta,
+            "strategy_details": fixed_details,
         }
 
     out_npz = out_dir / "fused_targets_train_val_test.npz"
@@ -344,7 +511,8 @@ def main() -> None:
     if len(fixed_models) > 0:
         print(
             "Fixed-map targets: "
-            f"prefix={str(args.fixed_prefix).strip()}, models={','.join(fixed_models)}, reduction={args.fixed_reduction}"
+            f"prefix={str(args.fixed_prefix).strip()}, models={','.join(fixed_models)}, "
+            f"strategy={str(args.fixed_strategy).strip().lower()}, reduction={args.fixed_reduction}"
         )
 
 

@@ -11,8 +11,8 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model42_joint12_fusedscore_stagea_teacher_weighted_150k150k300k_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model42_joint12_fusedscore_stagea_teacher_weighted_150k150k300k}"
+RUN_NAME="${RUN_NAME:-model42_joint12_fusedscore_stagea_teacher_v2_weighted_150k150k300k_seed0}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model42_joint12_fusedscore_stagea_teacher_v2_weighted_150k150k300k}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
@@ -23,8 +23,10 @@ STAGEA_FUSED_TARGETS_NPZ="${STAGEA_FUSED_TARGETS_NPZ:-checkpoints/reco_teacher_j
 STAGEA_FUSED_TARGETS_KEY="${STAGEA_FUSED_TARGETS_KEY:-probs_fused_overall}"
 STAGEA_FUSED_SPLIT_SCHEME="${STAGEA_FUSED_SPLIT_SCHEME:-train_val_test}"
 STAGEA_FUSED_SOURCE_SPLITS_NPZ="${STAGEA_FUSED_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
+STAGEA_FUSED_SOURCE_VAL_KEY="${STAGEA_FUSED_SOURCE_VAL_KEY:-val_idx}"
+STAGEA_FUSED_SOURCE_TEST_KEY="${STAGEA_FUSED_SOURCE_TEST_KEY:-test_idx}"
 STAGEA_FUSED_TRAIN_FROM="${STAGEA_FUSED_TRAIN_FROM:-fit}"
-STAGEA_FUSED_VAL_FROM="${STAGEA_FUSED_VAL_FROM:-test}"
+STAGEA_FUSED_VAL_FROM="${STAGEA_FUSED_VAL_FROM:-ref}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-600000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-150000}"
@@ -65,7 +67,7 @@ CMD=(
   --stageA_epochs 90
   --stageA_patience 18
   --stageA_kd_temp 2.5
-  --stageA_lambda_kd 1.0
+  --stageA_lambda_kd 0.85
   --stageA_lambda_emb 1.2
   --stageA_lambda_tok 0.6
   --stageA_lambda_phys 0.2
@@ -79,8 +81,17 @@ CMD=(
   --stageA_fused_targets_key "${STAGEA_FUSED_TARGETS_KEY}"
   --stageA_fused_split_scheme "${STAGEA_FUSED_SPLIT_SCHEME}"
   --stageA_fused_source_splits_npz "${STAGEA_FUSED_SOURCE_SPLITS_NPZ}"
+  --stageA_fused_source_val_key "${STAGEA_FUSED_SOURCE_VAL_KEY}"
+  --stageA_fused_source_test_key "${STAGEA_FUSED_SOURCE_TEST_KEY}"
   --stageA_fused_train_from "${STAGEA_FUSED_TRAIN_FROM}"
   --stageA_fused_val_from "${STAGEA_FUSED_VAL_FROM}"
+  --stageA_fused_adv_weight 1.25
+  --stageA_fused_adv_power 1.0
+  --stageA_fused_uncert_weight 0.25
+  --stageA_fused_adv_use_abs
+  --stageA_fused_kd_w_min 0.50
+  --stageA_fused_kd_w_max 2.50
+  --stageA_lambda_delta_aux 0.20
   --stageB_lambda_rank 0.0
   --stageB_lambda_cons 0.0
   --stageC_lr_dual 1e-5
@@ -99,7 +110,7 @@ if [[ -n "${STEP1_LOAD_DIR}" ]]; then
 fi
 
 echo "============================================================"
-echo "Model-42 Strategy-3 (direct fused-score Stage-A target, weighted)"
+echo "Model-42 Strategy-3 (direct fused-score Stage-A target, weighted, v2)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Stage-A fused targets: ${STAGEA_FUSED_TARGETS_NPZ}"
 echo "Stage-A source splits: ${STAGEA_FUSED_SOURCE_SPLITS_NPZ} | train_from=${STAGEA_FUSED_TRAIN_FROM} val_from=${STAGEA_FUSED_VAL_FROM}"

@@ -11,8 +11,8 @@ set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model43_joint12_fusedadv_stagea_dualkd_tuned_weighted_150k150k300k_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model43_joint12_fusedadv_stagea_dualkd_tuned_weighted_150k150k300k}"
+RUN_NAME="${RUN_NAME:-model43_joint12_fusedadv_stagea_dualkd_v2_weighted_150k150k300k_seed0}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model43_joint12_fusedadv_stagea_dualkd_v2_weighted_150k150k300k}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
@@ -22,10 +22,20 @@ STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
 FUSED_TARGETS_NPZ="${FUSED_TARGETS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/fused_targets_joint12_weighted_150k150k300k/fused_targets_train_val_test.npz}"
 FUSED_TARGETS_KEY="${FUSED_TARGETS_KEY:-probs_fused_overall}"
 FUSED_SPLIT_SCHEME="${FUSED_SPLIT_SCHEME:-train_val_test}"
-STAGEA_FUSED_UNCERT_WEIGHT="${STAGEA_FUSED_UNCERT_WEIGHT:-0.30}"
-STAGEA_FUSED_KD_W_MAX="${STAGEA_FUSED_KD_W_MAX:-3.20}"
-JOINT_FUSED_KD_W_MAX="${JOINT_FUSED_KD_W_MAX:-2.50}"
-STAGEC_JOINT_FUSED_KD_LAMBDA="${STAGEC_JOINT_FUSED_KD_LAMBDA:-0.34}"
+STAGEA_FUSED_SOURCE_SPLITS_NPZ="${STAGEA_FUSED_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
+STAGEA_FUSED_SOURCE_VAL_KEY="${STAGEA_FUSED_SOURCE_VAL_KEY:-val_idx}"
+STAGEA_FUSED_SOURCE_TEST_KEY="${STAGEA_FUSED_SOURCE_TEST_KEY:-test_idx}"
+STAGEA_FUSED_TRAIN_FROM="${STAGEA_FUSED_TRAIN_FROM:-fit}"
+STAGEA_FUSED_VAL_FROM="${STAGEA_FUSED_VAL_FROM:-ref}"
+JOINT_FUSED_SOURCE_SPLITS_NPZ="${JOINT_FUSED_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_150k150k300k/model2_joint_delta005_weighted_150k150k300k_seed0/data_splits.npz}"
+JOINT_FUSED_SOURCE_VAL_KEY="${JOINT_FUSED_SOURCE_VAL_KEY:-val_idx}"
+JOINT_FUSED_SOURCE_TEST_KEY="${JOINT_FUSED_SOURCE_TEST_KEY:-test_idx}"
+JOINT_FUSED_TRAIN_FROM="${JOINT_FUSED_TRAIN_FROM:-fit}"
+JOINT_FUSED_VAL_FROM="${JOINT_FUSED_VAL_FROM:-ref}"
+STAGEA_FUSED_UNCERT_WEIGHT="${STAGEA_FUSED_UNCERT_WEIGHT:-0.50}"
+STAGEA_FUSED_KD_W_MAX="${STAGEA_FUSED_KD_W_MAX:-4.00}"
+JOINT_FUSED_KD_W_MAX="${JOINT_FUSED_KD_W_MAX:-3.00}"
+STAGEC_JOINT_FUSED_KD_LAMBDA="${STAGEC_JOINT_FUSED_KD_LAMBDA:-0.28}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-600000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-150000}"
@@ -79,6 +89,11 @@ CMD=(
   --stageA_fused_targets_npz "${FUSED_TARGETS_NPZ}"
   --stageA_fused_targets_key "${FUSED_TARGETS_KEY}"
   --stageA_fused_split_scheme "${FUSED_SPLIT_SCHEME}"
+  --stageA_fused_source_splits_npz "${STAGEA_FUSED_SOURCE_SPLITS_NPZ}"
+  --stageA_fused_source_val_key "${STAGEA_FUSED_SOURCE_VAL_KEY}"
+  --stageA_fused_source_test_key "${STAGEA_FUSED_SOURCE_TEST_KEY}"
+  --stageA_fused_train_from "${STAGEA_FUSED_TRAIN_FROM}"
+  --stageA_fused_val_from "${STAGEA_FUSED_VAL_FROM}"
   --stageA_fused_adv_weight 2.0
   --stageA_fused_adv_power 1.0
   --stageA_fused_uncert_weight "${STAGEA_FUSED_UNCERT_WEIGHT}"
@@ -89,6 +104,11 @@ CMD=(
   --joint_fused_targets_npz "${FUSED_TARGETS_NPZ}"
   --joint_fused_targets_key "${FUSED_TARGETS_KEY}"
   --joint_fused_split_scheme "${FUSED_SPLIT_SCHEME}"
+  --joint_fused_source_splits_npz "${JOINT_FUSED_SOURCE_SPLITS_NPZ}"
+  --joint_fused_source_val_key "${JOINT_FUSED_SOURCE_VAL_KEY}"
+  --joint_fused_source_test_key "${JOINT_FUSED_SOURCE_TEST_KEY}"
+  --joint_fused_train_from "${JOINT_FUSED_TRAIN_FROM}"
+  --joint_fused_val_from "${JOINT_FUSED_VAL_FROM}"
   --joint_fused_kd_temp 1.00
   --joint_fused_adv_weight 1.00
   --joint_fused_adv_power 1.00
@@ -116,10 +136,11 @@ if [[ -n "${STEP1_LOAD_DIR}" ]]; then
 fi
 
 echo "============================================================"
-echo "Model-43 Strategy (StageA fused-adv KD + StageB/C fused KD, tuned)"
+echo "Model-43 Strategy (StageA fused-adv KD + StageB/C fused KD, v2)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Fused targets: ${FUSED_TARGETS_NPZ}"
-echo "Tuned knobs: stageA_uncert=${STAGEA_FUSED_UNCERT_WEIGHT} stageA_kd_w_max=${STAGEA_FUSED_KD_W_MAX} joint_kd_w_max=${JOINT_FUSED_KD_W_MAX} stageC_joint_fused_kd_lambda=${STAGEC_JOINT_FUSED_KD_LAMBDA}"
+echo "Source alignment: stageA(train=${STAGEA_FUSED_TRAIN_FROM},val=${STAGEA_FUSED_VAL_FROM}) joint(train=${JOINT_FUSED_TRAIN_FROM},val=${JOINT_FUSED_VAL_FROM})"
+echo "Knobs: stageA_uncert=${STAGEA_FUSED_UNCERT_WEIGHT} stageA_kd_w_max=${STAGEA_FUSED_KD_W_MAX} joint_kd_w_max=${JOINT_FUSED_KD_W_MAX} stageC_joint_fused_kd_lambda=${STAGEC_JOINT_FUSED_KD_LAMBDA}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
