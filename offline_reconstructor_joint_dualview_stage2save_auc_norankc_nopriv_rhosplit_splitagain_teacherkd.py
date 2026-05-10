@@ -238,6 +238,36 @@ def train_single_view_classifier_auc(
     return model
 
 
+def reconstruct_and_standardize_features(
+    reconstructor: nn.Module,
+    feat_hlt_std: np.ndarray,
+    mask_hlt: np.ndarray,
+    const_hlt: np.ndarray,
+    means: np.ndarray,
+    stds: np.ndarray,
+    max_constits: int,
+    device: torch.device,
+    batch_size: int,
+    weight_threshold: float,
+    use_budget_topk: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reconstruct one split and return standardized 7D features + mask."""
+    reco_const, reco_mask, *_ = reconstruct_dataset(
+        model=reconstructor,
+        feat_hlt=feat_hlt_std,
+        mask_hlt=mask_hlt,
+        const_hlt=const_hlt,
+        max_constits=int(max_constits),
+        device=device,
+        batch_size=int(batch_size),
+        weight_threshold=float(weight_threshold),
+        use_budget_topk=bool(use_budget_topk),
+    )
+    feat_reco = compute_features(reco_const, reco_mask)
+    feat_reco_std = standardize(feat_reco, reco_mask, means, stds).astype(np.float32, copy=False)
+    return feat_reco_std, reco_mask
+
+
 class JointDualDataset(Dataset):
     def __init__(
         self,
@@ -2532,6 +2562,17 @@ def main() -> None:
         action="store_true",
         help="Disable reloading the best Stage-A validation checkpoint at each stage-scale transition.",
     )
+    parser.add_argument(
+        "--train_reco_only_after_stageA",
+        action="store_true",
+        help="After Stage-A, train/evaluate a reco-only top-tagger before Stage-B dual-view training.",
+    )
+    parser.add_argument("--reco_only_epochs", type=int, default=60)
+    parser.add_argument("--reco_only_patience", type=int, default=15)
+    parser.add_argument("--reco_only_lr", type=float, default=4e-4)
+    parser.add_argument("--reco_only_weight_decay", type=float, default=1e-5)
+    parser.add_argument("--reco_only_warmup_epochs", type=int, default=3)
+    parser.add_argument("--reco_only_batch_size", type=int, default=512)
 
     # Stage B (tagger pretrain, reconstructor frozen)
     parser.add_argument("--stageB_epochs", type=int, default=45)
@@ -3284,6 +3325,122 @@ def main() -> None:
         stagea_lambda_delta_aux=float(args.stageA_lambda_delta_aux),
     )
 
+    reco_only_model = None
+    auc_reco_only = float("nan")
+    auc_reco_only_val = float("nan")
+    preds_reco_only = None
+    preds_reco_only_val = None
+    reco_only_metrics: Dict[str, object] = {"enabled": bool(args.train_reco_only_after_stageA)}
+    if bool(args.train_reco_only_after_stageA):
+        print("\n" + "=" * 70)
+        print("STEP 2B: RECO-ONLY TOP-TAGGER (FROZEN STAGE-A RECONSTRUCTOR)")
+        print("=" * 70)
+
+        reco_bs = int(max(1, int(args.reco_only_batch_size)))
+        reco_feat_tr, reco_mask_tr = reconstruct_and_standardize_features(
+            reconstructor=reconstructor,
+            feat_hlt_std=feat_hlt_std[train_idx],
+            mask_hlt=hlt_mask[train_idx],
+            const_hlt=hlt_const[train_idx],
+            means=means,
+            stds=stds,
+            max_constits=int(args.max_constits),
+            device=device,
+            batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+            weight_threshold=float(args.reco_weight_threshold),
+            use_budget_topk=not bool(args.reco_disable_budget_topk),
+        )
+        reco_feat_va, reco_mask_va = reconstruct_and_standardize_features(
+            reconstructor=reconstructor,
+            feat_hlt_std=feat_hlt_std[val_idx],
+            mask_hlt=hlt_mask[val_idx],
+            const_hlt=hlt_const[val_idx],
+            means=means,
+            stds=stds,
+            max_constits=int(args.max_constits),
+            device=device,
+            batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+            weight_threshold=float(args.reco_weight_threshold),
+            use_budget_topk=not bool(args.reco_disable_budget_topk),
+        )
+        reco_feat_te, reco_mask_te = reconstruct_and_standardize_features(
+            reconstructor=reconstructor,
+            feat_hlt_std=feat_hlt_std[test_idx],
+            mask_hlt=hlt_mask[test_idx],
+            const_hlt=hlt_const[test_idx],
+            means=means,
+            stds=stds,
+            max_constits=int(args.max_constits),
+            device=device,
+            batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+            weight_threshold=float(args.reco_weight_threshold),
+            use_budget_topk=not bool(args.reco_disable_budget_topk),
+        )
+
+        ds_train_reco_only = JetDataset(reco_feat_tr, reco_mask_tr, labels[train_idx])
+        ds_val_reco_only = JetDataset(reco_feat_va, reco_mask_va, labels[val_idx])
+        ds_test_reco_only = JetDataset(reco_feat_te, reco_mask_te, labels[test_idx])
+        dl_train_reco_only = DataLoader(
+            ds_train_reco_only,
+            batch_size=reco_bs,
+            sampler=_build_weighted_sampler(train_w_train) if bool(args.use_train_weights) else None,
+            shuffle=False if bool(args.use_train_weights) else True,
+            drop_last=True,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+        dl_val_reco_only = DataLoader(
+            ds_val_reco_only,
+            batch_size=reco_bs,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+        dl_test_reco_only = DataLoader(
+            ds_test_reco_only,
+            batch_size=reco_bs,
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+
+        reco_only_cfg = {
+            "epochs": int(args.reco_only_epochs),
+            "patience": int(args.reco_only_patience),
+            "lr": float(args.reco_only_lr),
+            "weight_decay": float(args.reco_only_weight_decay),
+            "warmup_epochs": int(args.reco_only_warmup_epochs),
+        }
+        reco_only_model = ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
+        reco_only_model = train_single_view_classifier_auc(
+            reco_only_model,
+            dl_train_reco_only,
+            dl_val_reco_only,
+            device,
+            reco_only_cfg,
+            name="RecoOnly",
+        )
+        auc_reco_only, preds_reco_only, labs_reco_only = eval_classifier(reco_only_model, dl_test_reco_only, device)
+        auc_reco_only_val, preds_reco_only_val, labs_reco_only_val = eval_classifier(reco_only_model, dl_val_reco_only, device)
+        assert np.array_equal(labs.astype(np.float32), labs_reco_only.astype(np.float32))
+        assert np.array_equal(labs_val_teacher.astype(np.float32), labs_reco_only_val.astype(np.float32))
+
+        fpr_ro, tpr_ro, _ = roc_curve(labs_reco_only, preds_reco_only)
+        fpr30_ro = fpr_at_target_tpr(fpr_ro, tpr_ro, 0.30)
+        fpr50_ro = fpr_at_target_tpr(fpr_ro, tpr_ro, 0.50)
+        print(
+            f"RecoOnly probe: AUC_test={auc_reco_only:.4f}, "
+            f"FPR@30={fpr30_ro:.6f}, FPR@50={fpr50_ro:.6f}"
+        )
+        reco_only_metrics = {
+            "enabled": True,
+            "train_cfg": reco_only_cfg,
+            "auc_val": float(auc_reco_only_val),
+            "auc_test": float(auc_reco_only),
+            "fpr30_test": float(fpr30_ro),
+            "fpr50_test": float(fpr50_ro),
+        }
+
     # Joint datasets
     ds_train_joint = JointDualDataset(
         feat_hlt_std[train_idx], feat_hlt_dual[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
@@ -3706,6 +3863,15 @@ def main() -> None:
         stageD_metrics = {"enabled": 0.0}
 
     # Final metrics
+    fpr_ro = np.array([], dtype=np.float64)
+    tpr_ro = np.array([], dtype=np.float64)
+    fpr30_reco_only = float("nan")
+    fpr50_reco_only = float("nan")
+    if preds_reco_only is not None:
+        fpr_ro, tpr_ro, _ = roc_curve(labs, preds_reco_only)
+        fpr30_reco_only = fpr_at_target_tpr(fpr_ro, tpr_ro, 0.30)
+        fpr50_reco_only = fpr_at_target_tpr(fpr_ro, tpr_ro, 0.50)
+
     fpr_t, tpr_t, _ = roc_curve(labs, preds_teacher)
     fpr_b, tpr_b, _ = roc_curve(labs, preds_baseline)
     fpr_s2, tpr_s2, _ = roc_curve(labs, preds_stage2)
@@ -3791,6 +3957,8 @@ def main() -> None:
     print("=" * 70)
     print(f"Teacher (Offline) AUC: {auc_teacher:.4f}")
     print(f"Baseline (HLT)   AUC: {auc_baseline:.4f}")
+    if preds_reco_only is not None:
+        print(f"RecoOnly (StageA probe) AUC: {auc_reco_only:.4f}")
     print(f"Stage2 (PreJoint) AUC: {auc_stage2:.4f}")
     if preds_stage2_fprsel is not None:
         print(f"Stage2 (BestValFPR50) AUC: {auc_stage2_fprsel:.4f}")
@@ -3804,6 +3972,8 @@ def main() -> None:
         f"FPR@30 Teacher/Baseline/Stage2/Joint: "
         f"{fpr30_teacher:.6f} / {fpr30_baseline:.6f} / {fpr30_stage2:.6f} / {fpr30_joint:.6f}"
     )
+    if preds_reco_only is not None:
+        print(f"FPR@30 RecoOnly: {fpr30_reco_only:.6f}")
     if preds_stage2_fprsel is not None or preds_joint_fprsel is not None:
         print(
             f"FPR@30 Stage2BestFPR / JointBestFPR: "
@@ -3813,6 +3983,8 @@ def main() -> None:
         f"FPR@50 Teacher/Baseline/Stage2/Joint: "
         f"{fpr50_teacher:.6f} / {fpr50_baseline:.6f} / {fpr50_stage2:.6f} / {fpr50_joint:.6f}"
     )
+    if preds_reco_only is not None:
+        print(f"FPR@50 RecoOnly: {fpr50_reco_only:.6f}")
     if preds_stage2_fprsel is not None or preds_joint_fprsel is not None:
         print(
             f"FPR@50 Stage2BestFPR / JointBestFPR: "
@@ -3850,21 +4022,24 @@ def main() -> None:
     )
 
     # Save val/test score arrays for downstream fusion studies.
-    np.savez_compressed(
-        save_root / "fusion_scores_val_test.npz",
-        labels_val=labs_val_teacher.astype(np.float32),
-        labels_test=labs.astype(np.float32),
-        preds_teacher_val=preds_teacher_val.astype(np.float64),
-        preds_teacher_test=preds_teacher.astype(np.float64),
-        preds_hlt_val=preds_baseline_val.astype(np.float64),
-        preds_hlt_test=preds_baseline.astype(np.float64),
-        preds_stage2_val=preds_stage2_val.astype(np.float64),
-        preds_stage2_test=preds_stage2.astype(np.float64),
-        preds_joint_val=preds_joint_val.astype(np.float64),
-        preds_joint_test=preds_joint.astype(np.float64),
-        hlt_nconst_test=hlt_mask[test_idx].sum(axis=1).astype(np.float32),
-        target_tpr=float(args.report_target_tpr),
-    )
+    fusion_dump = {
+        "labels_val": labs_val_teacher.astype(np.float32),
+        "labels_test": labs.astype(np.float32),
+        "preds_teacher_val": preds_teacher_val.astype(np.float64),
+        "preds_teacher_test": preds_teacher.astype(np.float64),
+        "preds_hlt_val": preds_baseline_val.astype(np.float64),
+        "preds_hlt_test": preds_baseline.astype(np.float64),
+        "preds_stage2_val": preds_stage2_val.astype(np.float64),
+        "preds_stage2_test": preds_stage2.astype(np.float64),
+        "preds_joint_val": preds_joint_val.astype(np.float64),
+        "preds_joint_test": preds_joint.astype(np.float64),
+        "hlt_nconst_test": hlt_mask[test_idx].sum(axis=1).astype(np.float32),
+        "target_tpr": np.array(float(args.report_target_tpr), dtype=np.float64),
+    }
+    if preds_reco_only_val is not None and preds_reco_only is not None:
+        fusion_dump["preds_reco_only_val"] = preds_reco_only_val.astype(np.float64)
+        fusion_dump["preds_reco_only_test"] = preds_reco_only.astype(np.float64)
+    np.savez_compressed(save_root / "fusion_scores_val_test.npz", **fusion_dump)
     print(f"Saved fusion score arrays to: {save_root / 'fusion_scores_val_test.npz'}")
 
     plot_lines = [
@@ -3873,6 +4048,8 @@ def main() -> None:
         (tpr_s2, fpr_s2, "-.", f"Stage2 PreJoint (AUC={auc_stage2:.3f})", "darkorange"),
         (tpr_j, fpr_j, "-.", f"Joint Dual (AUC={auc_joint:.3f})", "darkslateblue"),
     ]
+    if preds_reco_only is not None:
+        plot_lines.append((tpr_ro, fpr_ro, "-.", f"RecoOnly (AUC={auc_reco_only:.3f})", "teal"))
     if preds_stage2_fprsel is not None:
         plot_lines.append(
             (tpr_s2_fprsel, fpr_s2_fprsel, ":", f"Stage2 BestValFPR (AUC={auc_stage2_fprsel:.3f})", "peru")
@@ -3896,6 +4073,7 @@ def main() -> None:
         save_root / "results.npz",
         auc_teacher=auc_teacher,
         auc_baseline=auc_baseline,
+        auc_reco_only=auc_reco_only,
         auc_stage2=auc_stage2,
         auc_stage2_fprsel=auc_stage2_fprsel,
         auc_joint=auc_joint,
@@ -3907,6 +4085,8 @@ def main() -> None:
         tpr_baseline=tpr_b,
         fpr_stage2=fpr_s2,
         tpr_stage2=tpr_s2,
+        fpr_reco_only=fpr_ro,
+        tpr_reco_only=tpr_ro,
         fpr_stage2_fprsel=fpr_s2_fprsel,
         tpr_stage2_fprsel=tpr_s2_fprsel,
         fpr_joint=fpr_j,
@@ -3917,6 +4097,7 @@ def main() -> None:
         tpr_joint_kd=tpr_j_kd,
         fpr30_teacher=fpr30_teacher,
         fpr30_baseline=fpr30_baseline,
+        fpr30_reco_only=fpr30_reco_only,
         fpr30_stage2=fpr30_stage2,
         fpr30_stage2_fprsel=fpr30_stage2_fprsel,
         fpr30_joint=fpr30_joint,
@@ -3924,6 +4105,7 @@ def main() -> None:
         fpr30_joint_kd=fpr30_joint_kd,
         fpr50_teacher=fpr50_teacher,
         fpr50_baseline=fpr50_baseline,
+        fpr50_reco_only=fpr50_reco_only,
         fpr50_stage2=fpr50_stage2,
         fpr50_stage2_fprsel=fpr50_stage2_fprsel,
         fpr50_joint=fpr50_joint,
@@ -3967,6 +4149,7 @@ def main() -> None:
                 },
                 "jet_regressor": jet_reg_metrics,
                 "stageA_reconstructor": reco_val_metrics,
+                "stageA_reco_only_probe": reco_only_metrics,
                 "stageB_joint": stageB_metrics,
                 "stageC_joint": stageC_metrics,
                 "stageD_kd": stageD_metrics,
@@ -3987,6 +4170,7 @@ def main() -> None:
                 "test": {
                     "auc_teacher": float(auc_teacher),
                     "auc_baseline": float(auc_baseline),
+                    "auc_reco_only": float(auc_reco_only) if preds_reco_only is not None else None,
                     "auc_stage2": float(auc_stage2),
                     "auc_stage2_fprsel": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "auc_joint": float(auc_joint),
@@ -3994,6 +4178,7 @@ def main() -> None:
                     "auc_joint_kd": float(auc_joint_kd) if preds_joint_kd is not None else None,
                     "fpr30_teacher": float(fpr30_teacher),
                     "fpr30_baseline": float(fpr30_baseline),
+                    "fpr30_reco_only": float(fpr30_reco_only) if preds_reco_only is not None else None,
                     "fpr30_stage2": float(fpr30_stage2),
                     "fpr30_stage2_fprsel": float(fpr30_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr30_joint": float(fpr30_joint),
@@ -4001,6 +4186,7 @@ def main() -> None:
                     "fpr30_joint_kd": float(fpr30_joint_kd) if preds_joint_kd is not None else None,
                     "fpr50_teacher": float(fpr50_teacher),
                     "fpr50_baseline": float(fpr50_baseline),
+                    "fpr50_reco_only": float(fpr50_reco_only) if preds_reco_only is not None else None,
                     "fpr50_stage2": float(fpr50_stage2),
                     "fpr50_stage2_fprsel": float(fpr50_stage2_fprsel) if preds_stage2_fprsel is not None else None,
                     "fpr50_joint": float(fpr50_joint),
@@ -4018,6 +4204,16 @@ def main() -> None:
     if not args.skip_save_models:
         torch.save({"model": teacher.state_dict(), "auc": auc_teacher}, save_root / "teacher.pt")
         torch.save({"model": baseline.state_dict(), "auc": auc_baseline}, save_root / "baseline.pt")
+        if reco_only_model is not None:
+            torch.save(
+                {
+                    "model": reco_only_model.state_dict(),
+                    "auc": float(auc_reco_only),
+                    "fpr30": float(fpr30_reco_only),
+                    "fpr50": float(fpr50_reco_only),
+                },
+                save_root / "reco_only_stagea_probe.pt",
+            )
         if jet_regressor is not None:
             torch.save({"model": jet_regressor.state_dict(), "metrics": jet_reg_metrics}, save_root / "jet_regressor.pt")
         torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor.pt")
