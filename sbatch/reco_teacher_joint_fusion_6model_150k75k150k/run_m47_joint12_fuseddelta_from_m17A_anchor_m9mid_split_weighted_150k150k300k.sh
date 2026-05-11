@@ -28,9 +28,10 @@ RESIDUAL_TRAIN_FROM="${RESIDUAL_TRAIN_FROM:-fit}"
 RESIDUAL_VAL_FROM="${RESIDUAL_VAL_FROM:-ref}"
 RESIDUAL_TEST_FROM="${RESIDUAL_TEST_FROM:-source_test}"
 RESIDUAL_SELECT_METRIC="${RESIDUAL_SELECT_METRIC:-auc}"
+COMBO_WEIGHT_STEP="${COMBO_WEIGHT_STEP:-0.01}"
 
 ANCHOR_LOGIT_SOURCE="${ANCHOR_LOGIT_SOURCE:-reco_teacher}"
-ANCHOR_RECO_CKPT="${ANCHOR_RECO_CKPT:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model9_stageA_residual_hlt_offdrop_mid_weighted_150k150k300k/model9_stageA_residual_hlt_offdrop_mid_weighted_150k150k300k_seed0/offline_reconstructor_A_stageA.pt}"
+ANCHOR_RECO_CKPT="${ANCHOR_RECO_CKPT:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model9_stageA_residual_hlt_offdrop_mid_weighted_150k150k300k/model9_stageA_residual_hlt_offdrop_mid_weighted_150k150k300k_seed0/offline_reconstructor_stageA.pt}"
 ANCHOR_RECO_NON_STRICT="${ANCHOR_RECO_NON_STRICT:-0}"
 ANCHOR_TEACHER_SOURCE="${ANCHOR_TEACHER_SOURCE:-teacher}"
 ANCHOR_WEIGHT_THRESHOLD="${ANCHOR_WEIGHT_THRESHOLD:-0.03}"
@@ -137,6 +138,7 @@ CMD=(
   --residual_joint_lambda_reco_anchor "${RESIDUAL_JOINT_LAMBDA_RECO_ANCHOR}"
 
   --report_target_tpr 0.50
+  --combo_weight_step "${COMBO_WEIGHT_STEP}"
   --device "${DEVICE}"
 )
 
@@ -157,6 +159,7 @@ echo "Anchor scorer: ${ANCHOR_TEACHER_SOURCE}"
 echo "Fused targets: ${FUSED_TARGETS_NPZ}"
 echo "Residual split mapping: train_from=${RESIDUAL_TRAIN_FROM}, val_from=${RESIDUAL_VAL_FROM}, test_from=${RESIDUAL_TEST_FROM}"
 echo "Residual selection metric: ${RESIDUAL_SELECT_METRIC}"
+echo "Combo weight step: ${COMBO_WEIGHT_STEP}"
 echo "Joint finetune: epochs=${RESIDUAL_JOINT_EPOCHS}, patience=${RESIDUAL_JOINT_PATIENCE}"
 echo "Split (core): train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
 echo "============================================================"

@@ -1321,6 +1321,7 @@ def main() -> None:
     ap.add_argument("--fused_target_sanity_min_auc", type=float, default=0.75)
 
     ap.add_argument("--report_target_tpr", type=float, default=0.50)
+    ap.add_argument("--combo_weight_step", type=float, default=0.01)
     args = ap.parse_args()
 
     alpha_grid = parse_alpha_grid(args.residual_alpha_grid)
@@ -2276,6 +2277,82 @@ def main() -> None:
             target_tpr=float(args.report_target_tpr),
         )
 
+    # Always evaluate weighted HLT+Residual combos on the residual eval split
+    # (m42-style: val-selected -> test and test post-hoc).
+    if np.array_equal(res_val_idx, val_idx):
+        preds_hlt_base_res_val_prob = preds_baseline_val_prob.astype(np.float64)
+    else:
+        preds_hlt_base_res_val_prob = sigmoid_np(
+            predict_logits_single_view(
+                model=baseline,
+                feat=feat_hlt_std,
+                mask=hlt_mask,
+                split_idx=res_val_idx,
+                device=device,
+                batch_size=int(args.reco_eval_batch_size),
+            )
+        )
+    if np.array_equal(res_test_idx, test_idx):
+        preds_hlt_base_res_test_prob = preds_baseline_test_prob.astype(np.float64)
+    else:
+        preds_hlt_base_res_test_prob = sigmoid_np(
+            predict_logits_single_view(
+                model=baseline,
+                feat=feat_hlt_std,
+                mask=hlt_mask,
+                split_idx=res_test_idx,
+                device=device,
+                batch_size=int(args.reco_eval_batch_size),
+            )
+        )
+
+    combo_hlt_frozen_valsel = b.select_weighted_combo_on_val_and_eval_test(
+        labels_val=labels[res_val_idx].astype(np.float32),
+        preds_a_val=preds_hlt_base_res_val_prob.astype(np.float64),
+        preds_b_val=preds_residual_frozen_val_prob.astype(np.float64),
+        labels_test=labels[res_test_idx].astype(np.float32),
+        preds_a_test=preds_hlt_base_res_test_prob.astype(np.float64),
+        preds_b_test=preds_residual_frozen_test_prob.astype(np.float64),
+        name_a="hlt",
+        name_b="residual_frozen",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+    combo_hlt_frozen_test_posthoc = b.search_best_weighted_combo_at_tpr(
+        labels=labels[res_test_idx].astype(np.float32),
+        preds_a=preds_hlt_base_res_test_prob.astype(np.float64),
+        preds_b=preds_residual_frozen_test_prob.astype(np.float64),
+        name_a="hlt",
+        name_b="residual_frozen",
+        target_tpr=float(args.report_target_tpr),
+        weight_step=float(args.combo_weight_step),
+    )
+
+    combo_hlt_joint_valsel = None
+    combo_hlt_joint_test_posthoc = None
+    if alpha_eval_joint is not None:
+        combo_hlt_joint_valsel = b.select_weighted_combo_on_val_and_eval_test(
+            labels_val=labels[res_val_idx].astype(np.float32),
+            preds_a_val=preds_hlt_base_res_val_prob.astype(np.float64),
+            preds_b_val=preds_residual_joint_val_prob.astype(np.float64),
+            labels_test=labels[res_test_idx].astype(np.float32),
+            preds_a_test=preds_hlt_base_res_test_prob.astype(np.float64),
+            preds_b_test=preds_residual_joint_test_prob.astype(np.float64),
+            name_a="hlt",
+            name_b="joint",
+            target_tpr=float(args.report_target_tpr),
+            weight_step=float(args.combo_weight_step),
+        )
+        combo_hlt_joint_test_posthoc = b.search_best_weighted_combo_at_tpr(
+            labels=labels[res_test_idx].astype(np.float32),
+            preds_a=preds_hlt_base_res_test_prob.astype(np.float64),
+            preds_b=preds_residual_joint_test_prob.astype(np.float64),
+            name_a="hlt",
+            name_b="joint",
+            target_tpr=float(args.report_target_tpr),
+            weight_step=float(args.combo_weight_step),
+        )
+
     print("\n" + "=" * 70)
     print("FINAL STAGEA+RESIDUAL EVALUATION")
     print("=" * 70)
@@ -2303,6 +2380,49 @@ def main() -> None:
             f"TPR_test@thr_from_val={alpha_eval_joint['test_eval']['tpr']:.6f}, "
             f"FPR_test@TPR={float(args.report_target_tpr):.2f} exact={alpha_eval_joint['test_eval']['fpr_at_target_tpr_exact']:.6f}"
         )
+    print(
+        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+ResidualFrozen, VAL-selected -> TEST): "
+        f"w_hlt={combo_hlt_frozen_valsel['test_eval']['w_a']:.3f}, "
+        f"w_residual={combo_hlt_frozen_valsel['test_eval']['w_b']:.3f}, "
+        f"FPR_test={combo_hlt_frozen_valsel['test_eval']['fpr']:.6f}"
+    )
+    print(
+        f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+ResidualFrozen, TEST post-hoc): "
+        f"w_hlt={combo_hlt_frozen_test_posthoc['w_a']:.3f}, "
+        f"w_residual={combo_hlt_frozen_test_posthoc['w_b']:.3f}, "
+        f"FPR={combo_hlt_frozen_test_posthoc['fpr']:.6f}"
+    )
+    if combo_hlt_joint_valsel is not None and combo_hlt_joint_test_posthoc is not None:
+        print(
+            f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+Joint, VAL-selected -> TEST): "
+            f"w_hlt={combo_hlt_joint_valsel['test_eval']['w_a']:.3f}, "
+            f"w_joint={combo_hlt_joint_valsel['test_eval']['w_b']:.3f}, "
+            f"FPR_test={combo_hlt_joint_valsel['test_eval']['fpr']:.6f}"
+        )
+        print(
+            f"Best weighted combo @TPR={float(args.report_target_tpr):.2f} (HLT+Joint, TEST post-hoc): "
+            f"w_hlt={combo_hlt_joint_test_posthoc['w_a']:.3f}, "
+            f"w_joint={combo_hlt_joint_test_posthoc['w_b']:.3f}, "
+            f"FPR={combo_hlt_joint_test_posthoc['fpr']:.6f}"
+        )
+
+    # Save val/test score arrays in the standard fusion file format.
+    fusion_dump: Dict[str, np.ndarray] = {
+        "labels_val": labels[res_val_idx].astype(np.float32),
+        "labels_test": labels[res_test_idx].astype(np.float32),
+        "preds_teacher_val": preds_teacher_res_val_prob.astype(np.float64),
+        "preds_teacher_test": preds_teacher_res_test_prob.astype(np.float64),
+        "preds_hlt_val": preds_hlt_base_res_val_prob.astype(np.float64),
+        "preds_hlt_test": preds_hlt_base_res_test_prob.astype(np.float64),
+        # Map residual frozen/joint to stage2/joint keys for downstream analyzers.
+        "preds_stage2_val": preds_residual_frozen_val_prob.astype(np.float64),
+        "preds_stage2_test": preds_residual_frozen_test_prob.astype(np.float64),
+        "preds_joint_val": preds_residual_joint_val_prob.astype(np.float64),
+        "preds_joint_test": preds_residual_joint_test_prob.astype(np.float64),
+        "target_tpr": np.array(float(args.report_target_tpr), dtype=np.float64),
+    }
+    np.savez_compressed(save_root / "fusion_scores_val_test.npz", **fusion_dump)
+    print(f"Saved fusion score arrays to: {save_root / 'fusion_scores_val_test.npz'}")
 
     np.savez_compressed(
         save_root / "stageA_residual_scores.npz",
@@ -2312,8 +2432,8 @@ def main() -> None:
         preds_teacher_test=preds_teacher_res_test_prob.astype(np.float64),
         preds_anchor_val=preds_hlt_res_val_prob.astype(np.float64),
         preds_anchor_test=preds_hlt_res_test_prob.astype(np.float64),
-        preds_hlt_val=preds_hlt_res_val_prob.astype(np.float64),
-        preds_hlt_test=preds_hlt_res_test_prob.astype(np.float64),
+        preds_hlt_val=preds_hlt_base_res_val_prob.astype(np.float64),
+        preds_hlt_test=preds_hlt_base_res_test_prob.astype(np.float64),
         preds_fused_val=preds_fused_res_val_prob.astype(np.float64),
         preds_fused_test=preds_fused_res_test_prob.astype(np.float64),
         preds_reco_teacher_val=preds_reco_teacher_res_val_prob.astype(np.float64),
@@ -2399,6 +2519,11 @@ def main() -> None:
                 "residual_frozen_eval": alpha_eval_frozen,
                 "residual_joint_train": residual_joint_train_metrics,
                 "residual_joint_eval": alpha_eval_joint,
+                "combo_weight_step": float(args.combo_weight_step),
+                "best_combo_hlt_residual_frozen_val_selected_eval_test": combo_hlt_frozen_valsel,
+                "best_combo_hlt_residual_frozen_test_posthoc": combo_hlt_frozen_test_posthoc,
+                "best_combo_hlt_joint_val_selected_eval_test": combo_hlt_joint_valsel,
+                "best_combo_hlt_joint_test_posthoc": combo_hlt_joint_test_posthoc,
             },
             f,
             indent=2,

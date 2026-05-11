@@ -27,6 +27,7 @@ RESIDUAL_TRAIN_FROM="${RESIDUAL_TRAIN_FROM:-fit}"
 RESIDUAL_VAL_FROM="${RESIDUAL_VAL_FROM:-ref}"
 RESIDUAL_TEST_FROM="${RESIDUAL_TEST_FROM:-source_test}"
 RESIDUAL_SELECT_METRIC="${RESIDUAL_SELECT_METRIC:-auc}"
+COMBO_WEIGHT_STEP="${COMBO_WEIGHT_STEP:-0.01}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-600000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-150000}"
@@ -117,6 +118,7 @@ CMD=(
   --residual_joint_lambda_reco_anchor 0.02
 
   --report_target_tpr 0.50
+  --combo_weight_step "${COMBO_WEIGHT_STEP}"
   --device "${DEVICE}"
 )
 
@@ -130,6 +132,7 @@ echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "StageA load ckpt: ${STAGEA_LOAD_CKPT:-<none>}"
 echo "Fused targets: ${FUSED_TARGETS_NPZ}"
 echo "Residual split mapping: train_from=${RESIDUAL_TRAIN_FROM}, val_from=${RESIDUAL_VAL_FROM}, test_from=${RESIDUAL_TEST_FROM}"
+echo "Combo weight step: ${COMBO_WEIGHT_STEP}"
 echo "Split (core): train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
