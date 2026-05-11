@@ -34,7 +34,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 
 from evaluate_jetclass_hlt_teacher_baseline import (
@@ -176,6 +176,48 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--stageA_attr_lr", type=float, default=2e-4)
     p.add_argument("--stageA_attr_weight_decay", type=float, default=1e-5)
     p.add_argument("--stageA_attr_unfreeze_base", action="store_true")
+    p.add_argument(
+        "--enable_hlt_predclass_specialists",
+        action="store_true",
+        help="Train one reconstructor specialist per HLT-predicted class and route by baseline-HLT predictions.",
+    )
+    p.add_argument(
+        "--specialist_num_experts",
+        type=int,
+        default=10,
+        help="Number of predicted-class specialists (typically equal to number of classes).",
+    )
+    p.add_argument(
+        "--specialist_min_train_samples",
+        type=int,
+        default=2000,
+        help="Minimum train samples for a class-specific specialist; otherwise fallback to global expert.",
+    )
+    p.add_argument(
+        "--specialist_min_val_samples",
+        type=int,
+        default=500,
+        help="Minimum val samples for a class-specific specialist; otherwise fallback to global expert.",
+    )
+    p.add_argument(
+        "--specialist_finetune_epochs",
+        type=int,
+        default=12,
+        help="Per-specialist finetune epochs after global Stage-A pretrain.",
+    )
+    p.add_argument("--specialist_finetune_patience", type=int, default=4)
+    p.add_argument(
+        "--specialist_finetune_lr_scale",
+        type=float,
+        default=0.5,
+        help="Specialist LR multiplier relative to stageA_lr.",
+    )
+    p.add_argument(
+        "--specialist_route_min_conf",
+        type=float,
+        default=0.0,
+        help="If router max-prob is below threshold, route to global expert fallback.",
+    )
 
     # Stage B/C
     p.add_argument("--stageB_epochs", type=int, default=35)
@@ -308,6 +350,134 @@ class ReconstructorWithAttrHeads(nn.Module):
         out["child_charge_pred"] = torch.tanh(self.child_charge_head(h)).view(bsz, seq_len, self.attr_slots)
         out["child_track_pred"] = self.child_track_head(h).view(bsz, seq_len, self.attr_slots, 4)
         return out
+
+
+@torch.no_grad()
+def predict_class_and_confidence(
+    model: nn.Module,
+    feat: np.ndarray,
+    mask: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+) -> Tuple[np.ndarray, np.ndarray]:
+    model.eval()
+    n = int(feat.shape[0])
+    bs = int(max(1, batch_size))
+    preds: List[np.ndarray] = []
+    confs: List[np.ndarray] = []
+    for i in range(0, n, bs):
+        j = min(n, i + bs)
+        feat_t = torch.from_numpy(feat[i:j]).to(device=device, dtype=torch.float32, non_blocking=True)
+        mask_t = torch.from_numpy(mask[i:j]).to(device=device, dtype=torch.bool, non_blocking=True)
+        logits = model(feat_t, mask_t)
+        prob = torch.softmax(logits, dim=-1)
+        conf, pred = prob.max(dim=-1)
+        preds.append(pred.detach().cpu().numpy().astype(np.int64))
+        confs.append(conf.detach().cpu().numpy().astype(np.float32))
+    pred_all = np.concatenate(preds, axis=0) if preds else np.zeros((0,), dtype=np.int64)
+    conf_all = np.concatenate(confs, axis=0) if confs else np.zeros((0,), dtype=np.float32)
+    return pred_all, conf_all
+
+
+def _make_reco_subset_loader(
+    dataset: Dataset,
+    indices: np.ndarray,
+    batch_size: int,
+    shuffle: bool,
+    drop_last: bool,
+    num_workers: int,
+) -> DataLoader:
+    ds = Subset(dataset, indices.astype(np.int64).tolist())
+    return DataLoader(
+        ds,
+        batch_size=int(max(1, batch_size)),
+        shuffle=bool(shuffle),
+        drop_last=bool(drop_last),
+        num_workers=int(num_workers),
+        pin_memory=torch.cuda.is_available(),
+    )
+
+
+class RoutedSpecialistReconstructor(nn.Module):
+    """
+    Hard-routed mixture of reconstructors using frozen baseline-HLT classifier predictions.
+
+    Routing:
+      - primary: argmax class from router probabilities
+      - fallback: if max prob < min_conf, send sample to fallback expert (global)
+    """
+
+    def __init__(
+        self,
+        specialists: Sequence[nn.Module],
+        router_model: nn.Module,
+        min_confidence: float = 0.0,
+        fallback_expert_idx: int = 0,
+    ):
+        super().__init__()
+        self.specialists = nn.ModuleList(list(specialists))
+        self.router_model = router_model
+        self.min_confidence = float(max(0.0, min_confidence))
+        self.fallback_expert_idx = int(max(0, fallback_expert_idx))
+        self.num_experts = int(len(self.specialists))
+        for p in self.router_model.parameters():
+            p.requires_grad_(False)
+        self.router_model.eval()
+
+    def _route(self, feat_hlt: torch.Tensor, mask_hlt: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        with torch.no_grad():
+            logits = self.router_model(feat_hlt, mask_hlt)
+            probs = torch.softmax(logits, dim=-1)
+            conf, pred = probs.max(dim=-1)
+            if self.min_confidence > 0.0:
+                fb = torch.full_like(pred, int(self.fallback_expert_idx))
+                pred = torch.where(conf >= self.min_confidence, pred, fb)
+        return pred, conf
+
+    def forward(
+        self,
+        feat_hlt: torch.Tensor,
+        mask_hlt: torch.Tensor,
+        const_hlt: torch.Tensor,
+        stage_scale: float = 1.0,
+    ) -> Dict[str, torch.Tensor]:
+        bsz = int(feat_hlt.shape[0])
+        pred, conf = self._route(feat_hlt, mask_hlt)
+        unique_experts = torch.unique(pred, sorted=True)
+
+        per_key_parts: Dict[str, List[Tuple[torch.Tensor, torch.Tensor]]] = {}
+        for exp_id_t in unique_experts:
+            exp_id = int(exp_id_t.item())
+            if exp_id < 0 or exp_id >= self.num_experts:
+                continue
+            idx = torch.nonzero(pred == exp_id_t, as_tuple=False).squeeze(1)
+            if idx.numel() == 0:
+                continue
+            out_i = self.specialists[exp_id](
+                feat_hlt.index_select(0, idx),
+                mask_hlt.index_select(0, idx),
+                const_hlt.index_select(0, idx),
+                stage_scale=stage_scale,
+            )
+            for k, v in out_i.items():
+                if not torch.is_tensor(v):
+                    continue
+                per_key_parts.setdefault(k, []).append((idx, v))
+
+        merged: Dict[str, torch.Tensor] = {}
+        for k, parts in per_key_parts.items():
+            if not parts:
+                continue
+            idx_cat = torch.cat([p[0] for p in parts], dim=0)
+            val_cat = torch.cat([p[1] for p in parts], dim=0)
+            if int(idx_cat.numel()) != bsz:
+                raise RuntimeError(f"Routed specialist output key `{k}` missing samples: got {int(idx_cat.numel())}/{bsz}")
+            perm = torch.argsort(idx_cat)
+            merged[k] = val_cat.index_select(0, perm)
+
+        merged["router_pred_class"] = pred
+        merged["router_pred_conf"] = conf
+        return merged
 
 
 def compute_v2_attr_losses(
@@ -1608,6 +1778,65 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
 
     teacher = teacher.to(device)
     baseline = baseline.to(device)
+    specialist_mode = bool(args.enable_hlt_predclass_specialists)
+    if specialist_mode and bool(args.enable_fused_kd_distill):
+        raise ValueError("Specialist reconstructor mode is currently incompatible with --enable_fused_kd_distill.")
+    specialist_info: Dict[str, object] = {"enabled": bool(specialist_mode)}
+    tr_route_pred = va_route_pred = te_route_pred = None
+    tr_route_conf = va_route_conf = te_route_conf = None
+    if specialist_mode:
+        n_spec = int(args.specialist_num_experts)
+        if n_spec != int(n_classes):
+            raise ValueError(
+                f"--specialist_num_experts={n_spec} must match number of classes ({n_classes}) for JetClass specialists."
+            )
+        print("Computing baseline-HLT routing labels for specialist reconstructors...")
+        tr_route_pred, tr_route_conf = predict_class_and_confidence(
+            baseline,
+            tr_feat_hlt,
+            tr_hlt_mask_raw,
+            device=device,
+            batch_size=int(args.batch_size),
+        )
+        va_route_pred, va_route_conf = predict_class_and_confidence(
+            baseline,
+            va_feat_hlt,
+            va_hlt_mask_raw,
+            device=device,
+            batch_size=int(args.batch_size),
+        )
+        te_route_pred, te_route_conf = predict_class_and_confidence(
+            baseline,
+            te_feat_hlt,
+            te_hlt_mask_raw,
+            device=device,
+            batch_size=int(args.batch_size),
+        )
+        route_npz = save_root / "hlt_router_predictions.npz"
+        np.savez_compressed(
+            route_npz,
+            pred_train=tr_route_pred.astype(np.int64),
+            pred_val=va_route_pred.astype(np.int64),
+            pred_test=te_route_pred.astype(np.int64),
+            conf_train=tr_route_conf.astype(np.float32),
+            conf_val=va_route_conf.astype(np.float32),
+            conf_test=te_route_conf.astype(np.float32),
+        )
+        print(f"Saved specialist routing labels: {route_npz}")
+        train_counts = np.bincount(tr_route_pred, minlength=int(n_classes))
+        val_counts = np.bincount(va_route_pred, minlength=int(n_classes))
+        print("Specialist route counts (train/val):")
+        for ci, cname in enumerate(class_names):
+            print(f"  {cname:12s}: train={int(train_counts[ci])} val={int(val_counts[ci])}")
+        specialist_info.update(
+            {
+                "num_experts": int(n_spec),
+                "route_npz": str(route_npz),
+                "route_counts_train": train_counts.astype(int).tolist(),
+                "route_counts_val": val_counts.astype(int).tolist(),
+            }
+        )
+
     teacher_test = eval_epoch(
         teacher,
         dl_te_off,
@@ -1817,6 +2046,107 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         mode_label_smoothing=float(args.v2_mode_label_smoothing),
         track_weight=float(args.v2_track_weight),
     )
+    specialist_metrics: Dict[str, object] = {}
+    if specialist_mode:
+        print("\n" + "=" * 70)
+        print("STEP 2.6: PREDICTED-CLASS SPECIALIST RECONSTRUCTOR FINETUNE")
+        print("=" * 70)
+        if tr_route_pred is None or va_route_pred is None:
+            raise RuntimeError("Specialist mode enabled but route labels were not computed.")
+
+        specialist_models: List[nn.Module] = []
+        global_fallback_model = copy.deepcopy(reconstructor).to(device)
+        min_tr = int(max(1, args.specialist_min_train_samples))
+        min_va = int(max(1, args.specialist_min_val_samples))
+        sp_epochs = int(max(1, args.specialist_finetune_epochs))
+        sp_patience = int(max(1, args.specialist_finetune_patience))
+        sp_lr = float(args.stageA_lr) * float(max(1e-3, args.specialist_finetune_lr_scale))
+        for ci, cname in enumerate(class_names):
+            idx_tr = np.where(tr_route_pred == ci)[0].astype(np.int64)
+            idx_va = np.where(va_route_pred == ci)[0].astype(np.int64)
+            cstat: Dict[str, object] = {
+                "class_name": str(cname),
+                "train_count": int(idx_tr.size),
+                "val_count": int(idx_va.size),
+            }
+            if int(idx_tr.size) < min_tr or int(idx_va.size) < min_va:
+                specialist_models.append(copy.deepcopy(reconstructor).to(device))
+                cstat["status"] = "fallback_global"
+                cstat["reason"] = f"min_counts_not_met(tr<{min_tr} or va<{min_va})"
+                print(
+                    f"Specialist[{ci}:{cname}] fallback to global (train={idx_tr.size}, val={idx_va.size}, "
+                    f"required train>={min_tr}, val>={min_va})"
+                )
+                specialist_metrics[f"class_{ci}"] = cstat
+                continue
+
+            spec_model = copy.deepcopy(reconstructor).to(device)
+            spec_train_cfg = dict(reco_cfg["reconstructor_training"])
+            spec_train_cfg["epochs"] = int(sp_epochs)
+            spec_train_cfg["patience"] = int(sp_patience)
+            spec_train_cfg["lr"] = float(sp_lr)
+            spec_train_cfg["warmup_epochs"] = int(min(int(spec_train_cfg.get("warmup_epochs", 1)), max(1, sp_epochs // 3)))
+            spec_train_cfg["stage1_epochs"] = int(max(1, sp_epochs // 3))
+            spec_train_cfg["stage2_epochs"] = int(max(spec_train_cfg["stage1_epochs"], sp_epochs - 1))
+            spec_train_cfg["min_full_scale_epochs"] = 1
+
+            dl_tr_spec = _make_reco_subset_loader(
+                ds_tr_reco,
+                idx_tr,
+                batch_size=int(spec_train_cfg["batch_size"]),
+                shuffle=True,
+                drop_last=True,
+                num_workers=int(args.num_workers),
+            )
+            dl_va_spec = _make_reco_subset_loader(
+                ds_va_reco,
+                idx_va,
+                batch_size=int(spec_train_cfg["batch_size"]),
+                shuffle=False,
+                drop_last=False,
+                num_workers=int(args.num_workers),
+            )
+            print(
+                f"Specialist[{ci}:{cname}] finetune: train={idx_tr.size} val={idx_va.size} "
+                f"epochs={sp_epochs} lr={sp_lr:.2e}"
+            )
+            spec_model, spec_val_metrics = train_reconstructor_weighted(
+                model=spec_model,
+                train_loader=dl_tr_spec,
+                val_loader=dl_va_spec,
+                device=device,
+                train_cfg=spec_train_cfg,
+                loss_cfg=reco_cfg["loss"],
+                apply_reco_weight=False,
+                reload_best_at_stage_transition=False,
+            )
+            specialist_models.append(spec_model)
+            cstat["status"] = "trained"
+            cstat["val_metrics"] = spec_val_metrics
+            specialist_metrics[f"class_{ci}"] = cstat
+
+        fallback_idx = int(len(specialist_models))
+        specialist_models.append(global_fallback_model)
+        routed_reco = RoutedSpecialistReconstructor(
+            specialists=specialist_models,
+            router_model=baseline,
+            min_confidence=float(max(0.0, args.specialist_route_min_conf)),
+            fallback_expert_idx=fallback_idx,
+        ).to(device)
+        reconstructor = routed_reco
+        specialist_info.update(
+            {
+                "enabled": True,
+                "min_train_samples": int(min_tr),
+                "min_val_samples": int(min_va),
+                "finetune_epochs": int(sp_epochs),
+                "finetune_patience": int(sp_patience),
+                "finetune_lr": float(sp_lr),
+                "route_min_conf": float(args.specialist_route_min_conf),
+                "fallback_expert_idx": int(fallback_idx),
+                "metrics": specialist_metrics,
+            }
+        )
 
     reco_only_model = None
     reco_only_val_best: Dict[str, float] = {}
@@ -2120,6 +2450,7 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         "stageA_reconstructor": reco_val_metrics,
         "stageA_reconstructor_attr": reco_attr_metrics,
         "reco_only_val_best": reco_only_val_best,
+        "specialist_config": specialist_info,
         "distill_config": {
             "enabled": bool(args.enable_fused_kd_distill),
             "teacher_weight_a": float(args.distill_teacher_weight_a),
