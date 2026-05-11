@@ -1119,6 +1119,15 @@ def _label_target_auc(labels: np.ndarray, scores: np.ndarray) -> float:
     return float(roc_auc_score(y, s))
 
 
+def _load_model_state(path: Path) -> Tuple[Dict[str, torch.Tensor], Dict | None]:
+    raw = torch.load(path, map_location="cpu")
+    if isinstance(raw, dict) and "model" in raw and isinstance(raw["model"], dict):
+        return raw["model"], raw
+    if isinstance(raw, dict):
+        return raw, None
+    raise TypeError(f"Unsupported checkpoint format at {path}: type={type(raw)}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--train_path", type=str, default="./data")
@@ -1182,6 +1191,17 @@ def main() -> None:
     ap.add_argument("--stageA_loss_norm_ema_decay", type=float, default=0.98)
     ap.add_argument("--stageA_loss_norm_eps", type=float, default=1e-6)
     ap.add_argument("--disable_stageA_stagewise_best_reload", action="store_true")
+    ap.add_argument(
+        "--stageA_load_ckpt",
+        type=str,
+        default="",
+        help="Optional checkpoint path for pre-trained Stage-A reconstructor. If set, skip Stage-A retraining.",
+    )
+    ap.add_argument(
+        "--stageA_load_non_strict",
+        action="store_true",
+        help="Load Stage-A checkpoint with strict=False.",
+    )
 
     ap.add_argument("--stageA_lambda_delta", type=float, default=0.15)
     ap.add_argument("--stageA_delta_tau", type=float, default=0.05)
@@ -1438,6 +1458,8 @@ def main() -> None:
         "mean_target_merge": float(budget_merge_true.mean()),
         "mean_target_eff": float(budget_eff_true.mean()),
         "alpha_grid": [float(x) for x in alpha_grid],
+        "stageA_load_ckpt": str(args.stageA_load_ckpt),
+        "stageA_load_non_strict": bool(args.stageA_load_non_strict),
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
         json.dump(data_setup, f, indent=2)
@@ -1546,65 +1568,78 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (TEACHER-GUIDED RECONSTRUCTOR)")
     print("=" * 70)
-    ds_train_reco = b.StageAReconstructionDataset(
-        feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-        const_off[train_idx], masks_off[train_idx], labels[train_idx],
-        budget_merge_true[train_idx], budget_eff_true[train_idx],
-    )
-    ds_val_reco = b.StageAReconstructionDataset(
-        feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-        const_off[val_idx], masks_off[val_idx], labels[val_idx],
-        budget_merge_true[val_idx], budget_eff_true[val_idx],
-    )
-    reco_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
-    dl_train_reco = DataLoader(
-        ds_train_reco,
-        batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        shuffle=(reco_sampler is None),
-        sampler=reco_sampler,
-        drop_last=True,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-    dl_val_reco = DataLoader(
-        ds_val_reco,
-        batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-        shuffle=False,
-        num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
-    )
-
     reconstructor = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
     b.BASE_CONFIG["loss"] = cfg["loss"]
-    reconstructor, reco_val_metrics = sA.train_reconstructor_teacher_guided_stagewise_delta(
-        model=reconstructor,
-        train_loader=dl_train_reco,
-        val_loader=dl_val_reco,
-        device=device,
-        train_cfg=cfg["reconstructor_training"],
-        loss_cfg=cfg["loss"],
-        teacher_model=teacher,
-        hlt_model=baseline,
-        hlt_threshold_prob=float(hlt_thr_prob),
-        feat_means=means.astype(np.float32),
-        feat_stds=stds.astype(np.float32),
-        kd_temperature=float(args.stageA_kd_temp),
-        lambda_kd=float(args.stageA_lambda_kd),
-        lambda_emb=float(args.stageA_lambda_emb),
-        lambda_tok=float(args.stageA_lambda_tok),
-        lambda_phys=float(args.stageA_lambda_phys),
-        lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
-        lambda_delta=float(args.stageA_lambda_delta),
-        delta_tau=float(args.stageA_delta_tau),
-        delta_lambda_fp=float(args.stageA_delta_lambda_fp),
-        budget_eps=float(args.stageA_budget_eps),
-        budget_weight_floor=float(args.stageA_budget_weight_floor),
-        target_tpr_for_fpr=float(args.stageA_target_tpr),
-        normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
-        loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
-        loss_norm_eps=float(args.stageA_loss_norm_eps),
-        reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
-    )
+    stagea_load_ckpt = str(args.stageA_load_ckpt).strip()
+    if len(stagea_load_ckpt) > 0:
+        ckpt_path = Path(stagea_load_ckpt).expanduser().resolve()
+        state_dict, raw_meta = _load_model_state(ckpt_path)
+        reconstructor.load_state_dict(state_dict, strict=not bool(args.stageA_load_non_strict))
+        reco_val_metrics = {
+            "loaded_from": str(ckpt_path),
+            "strict": bool(not bool(args.stageA_load_non_strict)),
+            "checkpoint_val": raw_meta.get("val") if isinstance(raw_meta, dict) else None,
+            "skipped_stageA_train": True,
+        }
+        print(f"Loaded Stage-A reconstructor from: {ckpt_path}")
+    else:
+        ds_train_reco = b.StageAReconstructionDataset(
+            feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
+            const_off[train_idx], masks_off[train_idx], labels[train_idx],
+            budget_merge_true[train_idx], budget_eff_true[train_idx],
+        )
+        ds_val_reco = b.StageAReconstructionDataset(
+            feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
+            const_off[val_idx], masks_off[val_idx], labels[val_idx],
+            budget_merge_true[val_idx], budget_eff_true[val_idx],
+        )
+        reco_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+        dl_train_reco = DataLoader(
+            ds_train_reco,
+            batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+            shuffle=(reco_sampler is None),
+            sampler=reco_sampler,
+            drop_last=True,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+        dl_val_reco = DataLoader(
+            ds_val_reco,
+            batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+            shuffle=False,
+            num_workers=args.num_workers,
+            pin_memory=torch.cuda.is_available(),
+        )
+
+        reconstructor, reco_val_metrics = sA.train_reconstructor_teacher_guided_stagewise_delta(
+            model=reconstructor,
+            train_loader=dl_train_reco,
+            val_loader=dl_val_reco,
+            device=device,
+            train_cfg=cfg["reconstructor_training"],
+            loss_cfg=cfg["loss"],
+            teacher_model=teacher,
+            hlt_model=baseline,
+            hlt_threshold_prob=float(hlt_thr_prob),
+            feat_means=means.astype(np.float32),
+            feat_stds=stds.astype(np.float32),
+            kd_temperature=float(args.stageA_kd_temp),
+            lambda_kd=float(args.stageA_lambda_kd),
+            lambda_emb=float(args.stageA_lambda_emb),
+            lambda_tok=float(args.stageA_lambda_tok),
+            lambda_phys=float(args.stageA_lambda_phys),
+            lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
+            lambda_delta=float(args.stageA_lambda_delta),
+            delta_tau=float(args.stageA_delta_tau),
+            delta_lambda_fp=float(args.stageA_delta_lambda_fp),
+            budget_eps=float(args.stageA_budget_eps),
+            budget_weight_floor=float(args.stageA_budget_weight_floor),
+            target_tpr_for_fpr=float(args.stageA_target_tpr),
+            normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
+            loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
+            loss_norm_eps=float(args.stageA_loss_norm_eps),
+            reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
+        )
 
     print("\n" + "=" * 70)
     print("STEP 3: STAGE A SOFT-RECO EVAL")

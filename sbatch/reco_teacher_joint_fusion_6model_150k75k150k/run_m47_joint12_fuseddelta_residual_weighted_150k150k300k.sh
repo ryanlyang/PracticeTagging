@@ -18,6 +18,7 @@ DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-6}"
 
 TRAIN_PATH="${TRAIN_PATH:-./data/train_quarter.h5}"
+STAGEA_LOAD_CKPT="${STAGEA_LOAD_CKPT:-}"
 FUSED_TARGETS_NPZ="${FUSED_TARGETS_NPZ:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/fused_targets_joint12_weighted_150k150k300k/fused_targets_train_val_test.npz}"
 FUSED_TARGETS_KEY="${FUSED_TARGETS_KEY:-probs_fused_overall}"
 FUSED_SPLIT_SCHEME="${FUSED_SPLIT_SCHEME:-train_val_test}"
@@ -118,9 +119,14 @@ CMD=(
   --device "${DEVICE}"
 )
 
+if [[ -n "${STAGEA_LOAD_CKPT}" ]]; then
+  CMD+=(--stageA_load_ckpt "${STAGEA_LOAD_CKPT}")
+fi
+
 echo "============================================================"
 echo "Model-47 Joint12 fused-delta residual (weighted)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
+echo "StageA load ckpt: ${STAGEA_LOAD_CKPT:-<none>}"
 echo "Fused targets: ${FUSED_TARGETS_NPZ}"
 echo "Residual split mapping: train_from=${RESIDUAL_TRAIN_FROM}, val_from=${RESIDUAL_VAL_FROM}, test_from=${RESIDUAL_TEST_FROM}"
 echo "Split (core): train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
