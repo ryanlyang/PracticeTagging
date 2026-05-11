@@ -9,8 +9,8 @@ Pipeline:
 2) Train Stage-A reconstructor with teacher-guided losses (s09-style supported,
    stagewise best-reload between scale phases).
 3) Freeze reconstructor, build corrected view, and train residual head to predict
-   r* = fused_logit - hlt_logit (with robust split alignment support).
-4) Compose final score as hlt_logit + alpha * r_hat, where alpha is selected on val.
+   r* = fused_logit - anchor_logit (with robust split alignment support).
+4) Compose final score as anchor_logit + alpha * r_hat, where alpha is selected on val.
 5) Optional light joint finetune of (reconstructor + residual head) with anchor.
 
 Outputs:
@@ -1210,6 +1210,43 @@ def main() -> None:
     ap.add_argument("--added_target_scale", type=float, default=0.90)
     ap.add_argument("--reco_weight_threshold", type=float, default=0.03)
     ap.add_argument("--reco_eval_batch_size", type=int, default=256)
+    ap.add_argument(
+        "--anchor_logit_source",
+        type=str,
+        default="hlt",
+        choices=["hlt", "reco_teacher"],
+        help=(
+            "Anchor-logit source for residual target and composition. "
+            "`hlt` uses baseline(HLT); `reco_teacher` builds corrected view from "
+            "--anchor_reco_ckpt and scores it with teacher/baseline."
+        ),
+    )
+    ap.add_argument(
+        "--anchor_reco_ckpt",
+        type=str,
+        default="",
+        help="Stage-A reconstructor checkpoint used when --anchor_logit_source=reco_teacher.",
+    )
+    ap.add_argument(
+        "--anchor_reco_non_strict",
+        action="store_true",
+        help="Load --anchor_reco_ckpt with strict=False.",
+    )
+    ap.add_argument(
+        "--anchor_teacher_source",
+        type=str,
+        default="teacher",
+        choices=["teacher", "baseline"],
+        help="Scorer model for anchor corrected view when --anchor_logit_source=reco_teacher.",
+    )
+    ap.add_argument(
+        "--anchor_weight_threshold",
+        type=float,
+        default=-1.0,
+        help=(
+            "Weight floor for anchor corrected view. If <0, fall back to --reco_weight_threshold."
+        ),
+    )
 
     ap.add_argument("--residual_epochs", type=int, default=45)
     ap.add_argument("--residual_patience", type=int, default=12)
@@ -1693,16 +1730,88 @@ def main() -> None:
     if len(str(args.fused_targets_npz).strip()) == 0:
         raise ValueError("--fused_targets_npz is required for fused-delta residual training.")
 
-    # Precompute anchor logits (HLT baseline).
+    # Precompute anchor logits for residual target/composition.
     all_idx = np.arange(len(labels), dtype=np.int64)
-    hlt_logits_all = predict_logits_single_view(
-        model=baseline,
-        feat=feat_hlt_std,
-        mask=hlt_mask,
-        split_idx=all_idx,
-        device=device,
-        batch_size=int(args.reco_eval_batch_size),
+    anchor_source = str(args.anchor_logit_source).strip().lower()
+    anchor_weight_floor = (
+        float(args.anchor_weight_threshold)
+        if float(args.anchor_weight_threshold) >= 0.0
+        else float(args.reco_weight_threshold)
     )
+    anchor_logits_all: np.ndarray
+    anchor_meta: Dict[str, object] = {
+        "source": str(anchor_source),
+        "weight_floor": float(anchor_weight_floor),
+    }
+    if anchor_source == "hlt":
+        anchor_logits_all = predict_logits_single_view(
+            model=baseline,
+            feat=feat_hlt_std,
+            mask=hlt_mask,
+            split_idx=all_idx,
+            device=device,
+            batch_size=int(args.reco_eval_batch_size),
+        )
+        anchor_meta["scorer"] = "baseline_hlt"
+        print("Residual anchor logits: source=hlt (baseline single-view logits)")
+    else:
+        anchor_ckpt = str(args.anchor_reco_ckpt).strip()
+        if len(anchor_ckpt) == 0:
+            raise ValueError(
+                "--anchor_reco_ckpt is required when --anchor_logit_source=reco_teacher."
+            )
+        anchor_ckpt_p = Path(anchor_ckpt).expanduser().resolve()
+        anchor_reconstructor = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
+        anchor_state, _anchor_raw = _load_model_state(anchor_ckpt_p)
+        anchor_reconstructor.load_state_dict(
+            anchor_state,
+            strict=not bool(args.anchor_reco_non_strict),
+        )
+        feat_anchor_corr_all, mask_anchor_corr_all = b.build_corrected_view_numpy(
+            reconstructor=anchor_reconstructor,
+            feat_hlt=feat_hlt_std,
+            mask_hlt=hlt_mask,
+            const_hlt=hlt_const,
+            device=device,
+            batch_size=int(args.reco_eval_batch_size),
+            corrected_weight_floor=float(anchor_weight_floor),
+            corrected_use_flags=False,
+        )
+        scorer_name = str(args.anchor_teacher_source).strip().lower()
+        scorer_model = teacher if scorer_name == "teacher" else baseline
+        anchor_logits_all = predict_logits_single_view(
+            model=scorer_model,
+            feat=feat_anchor_corr_all,
+            mask=mask_anchor_corr_all,
+            split_idx=all_idx,
+            device=device,
+            batch_size=int(args.reco_eval_batch_size),
+        )
+        anchor_meta.update(
+            {
+                "scorer": str(scorer_name),
+                "anchor_reco_ckpt": str(anchor_ckpt_p),
+                "anchor_reco_non_strict": bool(args.anchor_reco_non_strict),
+            }
+        )
+        anchor_val_stats = auc_and_fpr_at_target(
+            labels=labels[val_idx].astype(np.float32),
+            scores=sigmoid_np(anchor_logits_all[val_idx]),
+            target_tpr=float(args.report_target_tpr),
+        )
+        anchor_test_stats = auc_and_fpr_at_target(
+            labels=labels[test_idx].astype(np.float32),
+            scores=sigmoid_np(anchor_logits_all[test_idx]),
+            target_tpr=float(args.report_target_tpr),
+        )
+        anchor_meta["core_val"] = anchor_val_stats
+        anchor_meta["core_test"] = anchor_test_stats
+        print(
+            "Residual anchor logits: source=reco_teacher | "
+            f"reco_ckpt={anchor_ckpt_p} | scorer={scorer_name} | "
+            f"val_auc={anchor_val_stats['auc']:.4f} val_fpr50={anchor_val_stats['fpr_at_target_tpr']:.6f} | "
+            f"test_auc={anchor_test_stats['auc']:.4f} test_fpr50={anchor_test_stats['fpr_at_target_tpr']:.6f}"
+        )
 
     # Load fused probability targets (with optional exact source-split alignment).
     fused_npz = Path(args.fused_targets_npz).expanduser().resolve()
@@ -1884,14 +1993,14 @@ def main() -> None:
     ds_train_res = ResidualDataset(
         feat_corr_all[res_train_idx],
         mask_corr_all[res_train_idx],
-        hlt_logits_all[res_train_idx],
+        anchor_logits_all[res_train_idx],
         fused_logits_tr,
         labels[res_train_idx],
     )
     ds_val_res = ResidualDataset(
         feat_corr_all[res_val_idx],
         mask_corr_all[res_val_idx],
-        hlt_logits_all[res_val_idx],
+        anchor_logits_all[res_val_idx],
         fused_logits_va,
         labels[res_val_idx],
     )
@@ -1945,20 +2054,20 @@ def main() -> None:
 
     alpha_eval_frozen = select_alpha_on_val_and_eval_test(
         labels_val=labels[res_val_idx].astype(np.float32),
-        hlt_logits_val=hlt_logits_all[res_val_idx],
+        hlt_logits_val=anchor_logits_all[res_val_idx],
         rhat_val=rhat_val_frozen,
         labels_test=labels[res_test_idx].astype(np.float32),
-        hlt_logits_test=hlt_logits_all[res_test_idx],
+        hlt_logits_test=anchor_logits_all[res_test_idx],
         rhat_test=rhat_test_frozen,
         alpha_grid=alpha_grid,
         target_tpr=float(args.report_target_tpr),
     )
 
     preds_residual_frozen_val_prob = sigmoid_np(
-        hlt_logits_all[res_val_idx] + float(alpha_eval_frozen["selection"]["alpha"]) * rhat_val_frozen
+        anchor_logits_all[res_val_idx] + float(alpha_eval_frozen["selection"]["alpha"]) * rhat_val_frozen
     )
     preds_residual_frozen_test_prob = sigmoid_np(
-        hlt_logits_all[res_test_idx] + float(alpha_eval_frozen["selection"]["alpha"]) * rhat_test_frozen
+        anchor_logits_all[res_test_idx] + float(alpha_eval_frozen["selection"]["alpha"]) * rhat_test_frozen
     )
 
     # Optional light joint stage.
@@ -1981,7 +2090,7 @@ def main() -> None:
             labels=labels[res_train_idx],
             budget_merge_true=budget_merge_true[res_train_idx],
             budget_eff_true=budget_eff_true[res_train_idx],
-            hlt_logit=hlt_logits_all[res_train_idx],
+            hlt_logit=anchor_logits_all[res_train_idx],
             teacher_logit=fused_logits_tr,
         )
         ds_val_joint = ResidualJointDataset(
@@ -1993,7 +2102,7 @@ def main() -> None:
             labels=labels[res_val_idx],
             budget_merge_true=budget_merge_true[res_val_idx],
             budget_eff_true=budget_eff_true[res_val_idx],
-            hlt_logit=hlt_logits_all[res_val_idx],
+            hlt_logit=anchor_logits_all[res_val_idx],
             teacher_logit=fused_logits_va,
         )
 
@@ -2072,24 +2181,24 @@ def main() -> None:
 
         alpha_eval_joint = select_alpha_on_val_and_eval_test(
             labels_val=labels[res_val_idx].astype(np.float32),
-            hlt_logits_val=hlt_logits_all[res_val_idx],
+            hlt_logits_val=anchor_logits_all[res_val_idx],
             rhat_val=rhat_val_joint,
             labels_test=labels[res_test_idx].astype(np.float32),
-            hlt_logits_test=hlt_logits_all[res_test_idx],
+            hlt_logits_test=anchor_logits_all[res_test_idx],
             rhat_test=rhat_test_joint,
             alpha_grid=alpha_grid,
             target_tpr=float(args.report_target_tpr),
         )
 
         preds_residual_joint_val_prob = sigmoid_np(
-            hlt_logits_all[res_val_idx] + float(alpha_eval_joint["selection"]["alpha"]) * rhat_val_joint
+            anchor_logits_all[res_val_idx] + float(alpha_eval_joint["selection"]["alpha"]) * rhat_val_joint
         )
         preds_residual_joint_test_prob = sigmoid_np(
-            hlt_logits_all[res_test_idx] + float(alpha_eval_joint["selection"]["alpha"]) * rhat_test_joint
+            anchor_logits_all[res_test_idx] + float(alpha_eval_joint["selection"]["alpha"]) * rhat_test_joint
         )
 
-    preds_hlt_res_val_prob = sigmoid_np(hlt_logits_all[res_val_idx])
-    preds_hlt_res_test_prob = sigmoid_np(hlt_logits_all[res_test_idx])
+    preds_hlt_res_val_prob = sigmoid_np(anchor_logits_all[res_val_idx])
+    preds_hlt_res_test_prob = sigmoid_np(anchor_logits_all[res_test_idx])
     preds_fused_res_val_prob = fused_prob_va.astype(np.float64)
     preds_fused_res_test_prob = fused_prob_te.astype(np.float64)
     fused_direct_val = auc_and_fpr_at_target(
@@ -2172,6 +2281,7 @@ def main() -> None:
     print("=" * 70)
     print(f"Teacher (Offline) AUC [core test split]: {auc_teacher:.4f}")
     print(f"Baseline (HLT)   AUC [core test split]: {auc_baseline:.4f}")
+    print(f"Residual anchor source: {anchor_meta.get('source', 'hlt')} ({anchor_meta.get('scorer', 'baseline_hlt')})")
     print(f"RecoTeacher Soft AUC [core val/test]: {auc_reco_teacher_val:.4f} / {auc_reco_teacher_test:.4f}")
     print(
         f"Fused target direct [residual eval split] -> "
@@ -2200,6 +2310,8 @@ def main() -> None:
         labels_test=labels[res_test_idx].astype(np.float32),
         preds_teacher_val=preds_teacher_res_val_prob.astype(np.float64),
         preds_teacher_test=preds_teacher_res_test_prob.astype(np.float64),
+        preds_anchor_val=preds_hlt_res_val_prob.astype(np.float64),
+        preds_anchor_test=preds_hlt_res_test_prob.astype(np.float64),
         preds_hlt_val=preds_hlt_res_val_prob.astype(np.float64),
         preds_hlt_test=preds_hlt_res_test_prob.astype(np.float64),
         preds_fused_val=preds_fused_res_val_prob.astype(np.float64),
@@ -2276,6 +2388,7 @@ def main() -> None:
                     "delta_ref_val_tpr": float(hlt_thr_tpr),
                     "delta_ref_val_fpr": float(hlt_thr_fpr),
                 },
+                "residual_anchor": anchor_meta,
                 "reco_teacher_soft": {
                     "auc_val": float(auc_reco_teacher_val),
                     "auc_test": float(auc_reco_teacher_test),
