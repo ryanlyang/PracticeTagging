@@ -214,6 +214,14 @@ def main() -> None:
         action="store_true",
         help="Also emit per-model targets for selected fixed models.",
     )
+    ap.add_argument(
+        "--allow_fit_ref_overlap",
+        action="store_true",
+        help=(
+            "Allow overlapping idx_fit/idx_ref from scores NPZ. "
+            "Default is strict (raise) to prevent train/val leakage in downstream KD training."
+        ),
+    )
     args = ap.parse_args()
 
     scores_npz = args.scores_npz.expanduser().resolve()
@@ -239,6 +247,25 @@ def main() -> None:
         "source_keys": {},
         "fixed_map": {},
     }
+
+    if "idx_fit" in arr and "idx_ref" in arr:
+        idx_fit = np.asarray(arr["idx_fit"], dtype=np.int64).reshape(-1)
+        idx_ref = np.asarray(arr["idx_ref"], dtype=np.int64).reshape(-1)
+        overlap = int(np.intersect1d(idx_fit, idx_ref, assume_unique=False).size)
+        equal = bool(np.array_equal(idx_fit, idx_ref))
+        meta["fit_ref_split"] = {
+            "n_fit": int(idx_fit.size),
+            "n_ref": int(idx_ref.size),
+            "overlap": int(overlap),
+            "equal": bool(equal),
+        }
+        if (equal or overlap > 0) and not bool(args.allow_fit_ref_overlap):
+            raise ValueError(
+                "Detected overlapping idx_fit/idx_ref in bin-gated scores NPZ. "
+                "This causes train/val leakage for distillation workflows. "
+                "Rerun analyze with --selection_mode split (recommended), or pass "
+                "--allow_fit_ref_overlap to bypass."
+            )
 
     # Build per-family reductions.
     for family in ("bin", "global"):

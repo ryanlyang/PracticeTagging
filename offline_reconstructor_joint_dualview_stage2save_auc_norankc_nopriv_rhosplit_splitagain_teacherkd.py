@@ -2512,6 +2512,14 @@ def main() -> None:
         default="",
         help="Optional source data_splits.npz for exact Stage-A fused target index alignment.",
     )
+    parser.add_argument(
+        "--allow_fused_fit_ref_overlap",
+        action="store_true",
+        help=(
+            "Allow overlapping idx_fit/idx_ref in fused-target NPZ when using source alignment. "
+            "Default is strict (raise) to prevent train/val leakage."
+        ),
+    )
     parser.add_argument("--stageA_fused_source_val_key", type=str, default="val_idx")
     parser.add_argument("--stageA_fused_source_test_key", type=str, default="test_idx")
     parser.add_argument(
@@ -3083,6 +3091,25 @@ def main() -> None:
             )
         return tr, va, te
 
+    def _assert_fused_fit_ref_disjoint(
+        idx_fit_local: np.ndarray,
+        idx_ref_local: np.ndarray,
+        context: str,
+    ) -> None:
+        overlap = int(np.intersect1d(idx_fit_local, idx_ref_local, assume_unique=False).size)
+        equal = bool(np.array_equal(idx_fit_local, idx_ref_local))
+        if (equal or overlap > 0) and not bool(getattr(args, "allow_fused_fit_ref_overlap", False)):
+            raise ValueError(
+                f"{context}: fused idx_fit/idx_ref overlap detected (equal={equal}, overlap={overlap}). "
+                "Rerun fusion analyze with --selection_mode split (recommended), or pass "
+                "--allow_fused_fit_ref_overlap to bypass."
+            )
+        if equal or overlap > 0:
+            print(
+                f"WARNING: {context}: allowing fused idx_fit/idx_ref overlap "
+                f"(equal={equal}, overlap={overlap}) due to --allow_fused_fit_ref_overlap."
+            )
+
     # Optional direct fused targets for Stage-A logit distillation.
     stagea_train_idx_sel = train_idx
     stagea_val_idx_sel = val_idx
@@ -3139,6 +3166,11 @@ def main() -> None:
             idx_ref_local = np.asarray(arr_fused["idx_ref"], dtype=np.int64).reshape(-1)
             if idx_fit_local.size == 0 or idx_ref_local.size == 0:
                 raise ValueError("idx_fit/idx_ref empty in fused NPZ.")
+            _assert_fused_fit_ref_disjoint(
+                idx_fit_local=idx_fit_local,
+                idx_ref_local=idx_ref_local,
+                context="Stage-A fused source alignment",
+            )
             if int(idx_fit_local.max()) >= int(src_val.shape[0]) or int(idx_ref_local.max()) >= int(src_val.shape[0]):
                 raise ValueError(
                     "idx_fit/idx_ref out of bounds for source val split: "
@@ -3290,6 +3322,11 @@ def main() -> None:
             idx_ref_local = np.asarray(arr_joint_fused["idx_ref"], dtype=np.int64).reshape(-1)
             if idx_fit_local.size == 0 or idx_ref_local.size == 0:
                 raise ValueError("idx_fit/idx_ref empty in fused NPZ.")
+            _assert_fused_fit_ref_disjoint(
+                idx_fit_local=idx_fit_local,
+                idx_ref_local=idx_ref_local,
+                context="Joint fused source alignment",
+            )
             if int(idx_fit_local.max()) >= int(src_val.shape[0]) or int(idx_ref_local.max()) >= int(src_val.shape[0]):
                 raise ValueError(
                     "idx_fit/idx_ref out of bounds for source val split: "

@@ -1220,7 +1220,7 @@ def main() -> None:
     ap.add_argument("--residual_lambda_kd", type=float, default=0.2)
     ap.add_argument("--residual_lambda_cls", type=float, default=0.1)
     ap.add_argument("--residual_kd_temp", type=float, default=2.5)
-    ap.add_argument("--residual_select_metric", type=str, choices=["fpr50", "auc"], default="fpr50")
+    ap.add_argument("--residual_select_metric", type=str, choices=["fpr50", "auc"], default="auc")
     ap.add_argument("--residual_alpha_grid", type=str, default="0.0,0.25,0.5,0.75,1.0,1.25,1.5")
 
     ap.add_argument("--residual_joint_epochs", type=int, default=0)
@@ -1249,6 +1249,14 @@ def main() -> None:
         type=str,
         default="",
         help="Optional source data_splits.npz for exact fit/ref/test -> absolute-jet index alignment.",
+    )
+    ap.add_argument(
+        "--allow_fused_fit_ref_overlap",
+        action="store_true",
+        help=(
+            "Allow overlapping idx_fit/idx_ref in fused-target NPZ when using source alignment. "
+            "Default is strict (raise) to prevent train/val leakage."
+        ),
     )
     ap.add_argument("--fused_source_val_key", type=str, default="val_idx")
     ap.add_argument("--fused_source_test_key", type=str, default="test_idx")
@@ -1747,6 +1755,20 @@ def main() -> None:
         idx_ref_local = np.asarray(arr_fused["idx_ref"], dtype=np.int64).reshape(-1)
         if idx_fit_local.size == 0 or idx_ref_local.size == 0:
             raise ValueError("idx_fit/idx_ref empty in fused NPZ.")
+        overlap_local = int(np.intersect1d(idx_fit_local, idx_ref_local, assume_unique=False).size)
+        equal_local = bool(np.array_equal(idx_fit_local, idx_ref_local))
+        if (equal_local or overlap_local > 0) and not bool(args.allow_fused_fit_ref_overlap):
+            raise ValueError(
+                "Fused target split leakage detected: idx_fit/idx_ref overlap in fused NPZ. "
+                "Rerun fusion analyze with --selection_mode split (recommended), or pass "
+                "--allow_fused_fit_ref_overlap to bypass."
+            )
+        if equal_local or overlap_local > 0:
+            print(
+                "WARNING: allowing fused idx_fit/idx_ref overlap "
+                f"(equal={equal_local}, overlap={overlap_local}) due to "
+                "--allow_fused_fit_ref_overlap."
+            )
         if int(idx_fit_local.max()) >= int(src_val.shape[0]) or int(idx_ref_local.max()) >= int(src_val.shape[0]):
             raise ValueError(
                 "idx_fit/idx_ref out of bounds for source val split: "

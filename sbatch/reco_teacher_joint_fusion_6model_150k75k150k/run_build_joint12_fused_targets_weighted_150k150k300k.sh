@@ -31,6 +31,7 @@ FIXED_MIN_IMPROVE="${FIXED_MIN_IMPROVE:-2e-7}"
 FIXED_HEAD_SELECT_MODE="${FIXED_HEAD_SELECT_MODE:-best_val_fpr}"
 FIXED_HEAD_SELECT_TPR="${FIXED_HEAD_SELECT_TPR:-0.50}"
 FIXED_INCLUDE_PER_MODEL="${FIXED_INCLUDE_PER_MODEL:-0}"
+ALLOW_FIT_REF_OVERLAP="${ALLOW_FIT_REF_OVERLAP:-0}"
 
 set +u
 source ~/.bashrc
@@ -70,6 +71,10 @@ if [[ -n "${FIXED_MODELS}" ]]; then
   if [[ "${FIXED_INCLUDE_PER_MODEL}" == "1" ]]; then
     CMD+=(--fixed_include_per_model)
   fi
+fi
+
+if [[ "${ALLOW_FIT_REF_OVERLAP}" == "1" ]]; then
+  CMD+=(--allow_fit_ref_overlap)
 fi
 
 echo "============================================================"

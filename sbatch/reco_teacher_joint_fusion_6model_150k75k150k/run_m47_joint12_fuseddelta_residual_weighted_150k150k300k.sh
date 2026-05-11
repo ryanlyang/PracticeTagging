@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --mem=80G
-#SBATCH --time=24:00:00
+#SBATCH --time=11:00:00
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m47_joint12_fuseddelta_residual_weighted_150k150k300k_%j.out
 #SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m47_joint12_fuseddelta_residual_weighted_150k150k300k_%j.err
 
@@ -26,6 +26,7 @@ FUSED_SOURCE_SPLITS_NPZ="${FUSED_SOURCE_SPLITS_NPZ:-checkpoints/reco_teacher_joi
 RESIDUAL_TRAIN_FROM="${RESIDUAL_TRAIN_FROM:-fit}"
 RESIDUAL_VAL_FROM="${RESIDUAL_VAL_FROM:-ref}"
 RESIDUAL_TEST_FROM="${RESIDUAL_TEST_FROM:-source_test}"
+RESIDUAL_SELECT_METRIC="${RESIDUAL_SELECT_METRIC:-auc}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-600000}"
 N_TRAIN_SPLIT="${N_TRAIN_SPLIT:-150000}"
@@ -104,7 +105,7 @@ CMD=(
   --residual_lambda_kd 0.2
   --residual_lambda_cls 0.1
   --residual_kd_temp 2.5
-  --residual_select_metric fpr50
+  --residual_select_metric "${RESIDUAL_SELECT_METRIC}"
   --residual_alpha_grid 0.0,0.25,0.5,0.75,1.0,1.25,1.5,2.0
 
   --residual_joint_epochs 12
