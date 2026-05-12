@@ -185,6 +185,34 @@ def auc_and_fpr_at_target(labels: np.ndarray, scores: np.ndarray, target_tpr: fl
     return {"auc": auc, "fpr_at_target_tpr": fpr_at}
 
 
+def infer_model_input_dim(model: nn.Module) -> int:
+    if hasattr(model, "input_dim"):
+        try:
+            return int(getattr(model, "input_dim"))
+        except Exception:
+            pass
+    for key, value in model.state_dict().items():
+        if key.endswith("input_proj.weight") and isinstance(value, torch.Tensor) and value.ndim == 2:
+            return int(value.shape[1])
+    raise RuntimeError("Could not infer model input dim from model attributes/state_dict.")
+
+
+def adapt_feat_dim_for_model(feat: np.ndarray, expected_dim: int, tag: str) -> np.ndarray:
+    cur_dim = int(feat.shape[-1])
+    exp_dim = int(expected_dim)
+    if cur_dim == exp_dim:
+        return feat
+    if cur_dim > exp_dim:
+        print(
+            f"Info: adapting feature dim for {tag}: using first {exp_dim} of {cur_dim} channels."
+        )
+        return feat[..., :exp_dim]
+    raise ValueError(
+        f"Feature dim mismatch for {tag}: got {cur_dim}, expected {exp_dim}. "
+        "Cannot up-project features automatically."
+    )
+
+
 @torch.no_grad()
 def predict_logits_single_view(
     model: nn.Module,
@@ -1745,15 +1773,24 @@ def main() -> None:
         "weight_floor": float(anchor_weight_floor),
     }
     if anchor_source == "hlt":
+        baseline_in_dim = infer_model_input_dim(baseline)
+        feat_hlt_for_anchor = adapt_feat_dim_for_model(
+            feat=feat_hlt_std,
+            expected_dim=baseline_in_dim,
+            tag="hlt anchor scorer",
+        )
         anchor_logits_all = predict_logits_single_view(
             model=baseline,
-            feat=feat_hlt_std,
+            feat=feat_hlt_for_anchor,
             mask=hlt_mask,
             split_idx=all_idx,
             device=device,
             batch_size=int(args.reco_eval_batch_size),
         )
         anchor_meta["scorer"] = "baseline_hlt"
+        anchor_meta["scorer_input_dim"] = int(baseline_in_dim)
+        anchor_meta["anchor_feat_dim_raw"] = int(feat_hlt_std.shape[-1])
+        anchor_meta["anchor_feat_dim_used"] = int(feat_hlt_for_anchor.shape[-1])
         print("Residual anchor logits: source=hlt (baseline single-view logits)")
     else:
         anchor_ckpt = str(args.anchor_reco_ckpt).strip()
@@ -1780,9 +1817,15 @@ def main() -> None:
         )
         scorer_name = str(args.anchor_teacher_source).strip().lower()
         scorer_model = teacher if scorer_name == "teacher" else baseline
+        scorer_in_dim = infer_model_input_dim(scorer_model)
+        feat_anchor_for_score = adapt_feat_dim_for_model(
+            feat=feat_anchor_corr_all,
+            expected_dim=scorer_in_dim,
+            tag=f"reco_teacher anchor scorer={scorer_name}",
+        )
         anchor_logits_all = predict_logits_single_view(
             model=scorer_model,
-            feat=feat_anchor_corr_all,
+            feat=feat_anchor_for_score,
             mask=mask_anchor_corr_all,
             split_idx=all_idx,
             device=device,
@@ -1793,6 +1836,9 @@ def main() -> None:
                 "scorer": str(scorer_name),
                 "anchor_reco_ckpt": str(anchor_ckpt_p),
                 "anchor_reco_non_strict": bool(args.anchor_reco_non_strict),
+                "scorer_input_dim": int(scorer_in_dim),
+                "anchor_feat_dim_raw": int(feat_anchor_corr_all.shape[-1]),
+                "anchor_feat_dim_used": int(feat_anchor_for_score.shape[-1]),
             }
         )
         anchor_val_stats = auc_and_fpr_at_target(
