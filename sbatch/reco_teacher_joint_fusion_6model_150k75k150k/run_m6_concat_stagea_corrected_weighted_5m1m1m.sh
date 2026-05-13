@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:a100:1
-#SBATCH --mem=320G
+#SBATCH --mem=500G
 #SBATCH --time=18-00:00:00
 #SBATCH --requeue
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m6_concat_weighted_5m1m1m_%j.out
@@ -28,7 +28,7 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
-MAX_CONCAT_CONSTITS="${MAX_CONCAT_CONSTITS:-140}"
+MAX_CONCAT_CONSTITS="${MAX_CONCAT_CONSTITS:-200}"
 
 set +u
 source ~/.bashrc
