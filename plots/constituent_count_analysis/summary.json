@@ -1,0 +1,94 @@
+{
+  "config": {
+    "atlas_h5": "/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/data/train.h5",
+    "canonical_map_csv": "/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/a_download_checkpoints/filename_vs_canonical_all_job21272179/filename_to_canonical_label_fraction_long.csv",
+    "h5_batch_size": 20000,
+    "jetclass_per_file_max_jets": 8000,
+    "jetclass_step_size": 5000,
+    "jetclass_tar": "/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/data/JetClass_Pythia_train_100M_part0.tar",
+    "target_jets": 2000000
+  },
+  "equivalent_mapping": {
+    "background": {
+      "jetclass": "ZJetsToNuNu",
+      "train_h5": "Background"
+    },
+    "top": {
+      "jetclass": "TTBar",
+      "train_h5": "Top"
+    }
+  },
+  "equivalent_means": {
+    "jetclass_background_like": 35.263545,
+    "jetclass_top_like": 50.898825,
+    "train_h5_background": 52.47149804990602,
+    "train_h5_top": 59.281042631737485
+  },
+  "jetclass": {
+    "HToBB": {
+      "avg_constituents": 42.030585,
+      "canonical_class": "Hbb",
+      "n_jets": 200000
+    },
+    "HToCC": {
+      "avg_constituents": 38.36316,
+      "canonical_class": "Hcc",
+      "n_jets": 200000
+    },
+    "HToGG": {
+      "avg_constituents": 56.34949,
+      "canonical_class": "Hgg",
+      "n_jets": 200000
+    },
+    "HToWW2Q1L": {
+      "avg_constituents": 28.40285,
+      "canonical_class": "Hqql",
+      "n_jets": 200000
+    },
+    "HToWW4Q": {
+      "avg_constituents": 48.4935,
+      "canonical_class": "H4q",
+      "n_jets": 200000
+    },
+    "TTBar": {
+      "avg_constituents": 50.898825,
+      "canonical_class": "Tbqq",
+      "n_jets": 200000
+    },
+    "TTBarLep": {
+      "avg_constituents": 27.63326,
+      "canonical_class": "Tbl",
+      "n_jets": 200000
+    },
+    "WToQQ": {
+      "avg_constituents": 32.192145,
+      "canonical_class": "Wqq",
+      "n_jets": 200000
+    },
+    "ZJetsToNuNu": {
+      "avg_constituents": 35.263545,
+      "canonical_class": "QCD",
+      "n_jets": 200000
+    },
+    "ZToQQ": {
+      "avg_constituents": 33.85699,
+      "canonical_class": "Zqq",
+      "n_jets": 200000
+    }
+  },
+  "plots": {
+    "equivalent_bar": "/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/plots/constituent_count_analysis/equivalent_class_comparison.png",
+    "jetclass_bar": "/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/plots/constituent_count_analysis/jetclass_avg_constituents_by_class.png",
+    "trainh5_bar": "/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/plots/constituent_count_analysis/trainh5_avg_constituents_by_class.png"
+  },
+  "train_h5": {
+    "Background": {
+      "avg_constituents": 52.47149804990602,
+      "n_jets": 1000721
+    },
+    "Top": {
+      "avg_constituents": 59.281042631737485,
+      "n_jets": 999279
+    }
+  }
+}

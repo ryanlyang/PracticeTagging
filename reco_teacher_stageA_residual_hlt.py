@@ -1198,7 +1198,12 @@ def main() -> None:
     ap.add_argument("--residual_joint_lambda_reco_anchor", type=float, default=0.02)
 
     ap.add_argument("--report_target_tpr", type=float, default=0.50)
+    # Backward-compatibility: some sbatch runners still pass this legacy flag.
+    ap.add_argument("--step1_load_dir", type=str, default="")
     args = ap.parse_args()
+
+    if len(str(args.step1_load_dir).strip()) > 0:
+        print(f"Info: --step1_load_dir is ignored by this runner (got: {args.step1_load_dir}).")
 
     alpha_grid = parse_alpha_grid(args.residual_alpha_grid)
 
