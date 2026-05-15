@@ -11,6 +11,7 @@ set -euo pipefail
 
 PARTITION="${PARTITION:-tier3}"
 TIME_LIMIT="${TIME_LIMIT:-5-00:00:00}"
+MEM_LIMIT="${MEM_LIMIT:-}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/jetclass_joint_dualview}"
 
 RUNNER_V1="${RUNNER_V1:-run_train_jetclass_joint_dualview_confgen_v2attr_250k50k250k_stronger_canonical_v1hlt_hltplus25.sh}"
@@ -52,10 +53,15 @@ submit_job() {
   local runner="$1"
   local export_kv="$2"
   local dep="${3:-}"
+  local mem_args=()
+  if [[ -n "${MEM_LIMIT}" ]]; then
+    mem_args=(--mem="${MEM_LIMIT}")
+  fi
   if [[ -n "${dep}" ]]; then
     sbatch --parsable \
       --partition="${PARTITION}" \
       --time="${TIME_LIMIT}" \
+      "${mem_args[@]}" \
       --dependency="${dep}" \
       --export="ALL,${export_kv}" \
       "${runner}"
@@ -63,6 +69,7 @@ submit_job() {
     sbatch --parsable \
       --partition="${PARTITION}" \
       --time="${TIME_LIMIT}" \
+      "${mem_args[@]}" \
       --export="ALL,${export_kv}" \
       "${runner}"
   fi
@@ -145,6 +152,7 @@ echo "============================================================"
 echo "Queued JetClass 16-model pipeline"
 echo "Partition:   ${PARTITION}"
 echo "Time limit:  ${TIME_LIMIT}"
+echo "Mem limit:   ${MEM_LIMIT:-runner-default}"
 echo "Fusion job:  ${jfuse}"
 echo "Fusion out:  ${OUT_DIR}"
 echo "Dependency:  ${dep_all}"
