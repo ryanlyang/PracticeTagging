@@ -591,6 +591,95 @@ def _simplex_grid(n_models: int, step: float) -> np.ndarray:
     return arr
 
 
+def _n_simplex_grid_candidates(n_models: int, step: float) -> int:
+    if n_models < 2:
+        raise ValueError("Need at least 2 models for weight search.")
+    k = int(round(1.0 / float(step)))
+    if k <= 0:
+        raise ValueError(f"Invalid step `{step}`")
+    return int(math.comb(k + n_models - 1, n_models - 1))
+
+
+def _sample_simplex_dirichlet(n_models: int, n_samples: int, seed: int) -> np.ndarray:
+    if n_models < 2:
+        raise ValueError("Need at least 2 models for weight search.")
+    n = int(max(1, n_samples))
+    rng = np.random.default_rng(int(seed))
+    sampled = rng.dirichlet(alpha=np.ones((n_models,), dtype=np.float64), size=n)
+    # Include deterministic anchors to avoid missing edge solutions.
+    uniform = np.full((1, n_models), 1.0 / float(n_models), dtype=np.float64)
+    onehots = np.eye(n_models, dtype=np.float64)
+    return np.concatenate([uniform, onehots, sampled], axis=0)
+
+
+def _build_weight_candidates(
+    n_models: int,
+    step: float,
+    mode: str,
+    max_candidates: int,
+    random_samples: int,
+    random_seed: int,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    m = str(mode).lower().strip()
+    if m not in {"auto", "grid", "dirichlet"}:
+        raise ValueError(f"Unsupported weight search mode `{mode}`")
+
+    grid_count = _n_simplex_grid_candidates(n_models=n_models, step=step)
+    max_c = int(max(1, max_candidates))
+    info: Dict[str, object] = {
+        "requested_mode": m,
+        "grid_candidate_count": int(grid_count),
+        "max_weight_candidates": int(max_c),
+    }
+
+    if m == "grid":
+        if grid_count > max_c:
+            raise ValueError(
+                f"Grid search would generate {grid_count} candidates "
+                f"(n_models={n_models}, step={step}), exceeding --max_weight_candidates={max_c}. "
+                "Use --weight_search_mode dirichlet, increase step, or raise max_weight_candidates."
+            )
+        w = _simplex_grid(n_models=n_models, step=step)
+        info.update({"strategy": "grid", "actual_candidate_count": int(w.shape[0])})
+        return w, info
+
+    if m == "dirichlet":
+        w = _sample_simplex_dirichlet(
+            n_models=n_models,
+            n_samples=int(max(1, random_samples)),
+            seed=int(random_seed),
+        )
+        info.update(
+            {
+                "strategy": "dirichlet",
+                "actual_candidate_count": int(w.shape[0]),
+                "dirichlet_samples": int(max(1, random_samples)),
+                "dirichlet_seed": int(random_seed),
+            }
+        )
+        return w, info
+
+    if grid_count <= max_c:
+        w = _simplex_grid(n_models=n_models, step=step)
+        info.update({"strategy": "grid_auto", "actual_candidate_count": int(w.shape[0])})
+        return w, info
+
+    w = _sample_simplex_dirichlet(
+        n_models=n_models,
+        n_samples=int(max(1, random_samples)),
+        seed=int(random_seed),
+    )
+    info.update(
+        {
+            "strategy": "dirichlet_auto",
+            "actual_candidate_count": int(w.shape[0]),
+            "dirichlet_samples": int(max(1, random_samples)),
+            "dirichlet_seed": int(random_seed),
+        }
+    )
+    return w, info
+
+
 def _to_float_dict(d: Dict[str, object]) -> Dict[str, object]:
     out: Dict[str, object] = {}
     for k, v in d.items():
@@ -672,6 +761,26 @@ def main() -> None:
     ap.add_argument("--batch_size", type=int, default=512)
     ap.add_argument("--num_workers", type=int, default=8)
     ap.add_argument("--weight_step", type=float, default=0.05, help="Simplex grid step for weighted averages.")
+    ap.add_argument(
+        "--weight_search_mode",
+        type=str,
+        default="auto",
+        choices=["auto", "grid", "dirichlet"],
+        help="Weight search strategy: exact grid, sampled dirichlet, or auto fallback.",
+    )
+    ap.add_argument(
+        "--max_weight_candidates",
+        type=int,
+        default=200000,
+        help="Maximum exact grid candidates allowed before refusing/falling back.",
+    )
+    ap.add_argument(
+        "--weight_random_samples",
+        type=int,
+        default=2000,
+        help="Dirichlet samples when using sampled search mode.",
+    )
+    ap.add_argument("--weight_random_seed", type=int, default=52)
     ap.add_argument(
         "--optimize_for",
         type=str,
@@ -839,7 +948,14 @@ def main() -> None:
     p_uni_val = _fuse_probs(weights_uniform, probs_val_cal)
     p_uni_test = _fuse_probs(weights_uniform, probs_test_cal)
 
-    weights_grid = _simplex_grid(n_models=n_models, step=float(args.weight_step))
+    weights_grid, weight_search_info = _build_weight_candidates(
+        n_models=n_models,
+        step=float(args.weight_step),
+        mode=str(args.weight_search_mode),
+        max_candidates=int(args.max_weight_candidates),
+        random_samples=int(args.weight_random_samples),
+        random_seed=int(args.weight_random_seed),
+    )
 
     w_prob, w_prob_search_info = _search_best_weights(
         weights_grid=weights_grid,
@@ -954,7 +1070,9 @@ def main() -> None:
         "test_size": int(len(y_test)),
         "optimize_for": str(args.optimize_for),
         "weight_step": float(args.weight_step),
+        "weight_search_mode": str(args.weight_search_mode),
         "n_weight_candidates": int(weights_grid.shape[0]),
+        "weight_search_info": weight_search_info,
         "stack_features": str(args.stack_features),
         "stack_Cs": [float(c) for c in args.stack_Cs],
         "stack_cv": int(args.stack_cv),
@@ -994,7 +1112,11 @@ def main() -> None:
     print(f"Models ({len(loaded_models)}):")
     for lm in loaded_models:
         print(f"  - {lm.name:16s} kind={lm.kind:16s} run={lm.run_dir}")
-    print(f"Objective: {args.optimize_for} | weight_step={args.weight_step} | weight_candidates={weights_grid.shape[0]}")
+    print(
+        f"Objective: {args.optimize_for} | weight_step={args.weight_step} | "
+        f"weight_search={weight_search_info.get('strategy', 'unknown')} | "
+        f"weight_candidates={weights_grid.shape[0]}"
+    )
     print("------------------------------------------------------------")
     for name, info in method_metrics.items():
         mv = info["val"]

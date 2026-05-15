@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=12
-#SBATCH --mem=96G
+#SBATCH --mem=128G
 #SBATCH --time=5-00:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_sixteen_model_stacked_fusion_250k_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_sixteen_model_stacked_fusion_250k_%j.err
@@ -14,14 +14,18 @@ DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 SAVE_ROOT="${SAVE_ROOT:-checkpoints/jetclass_joint_dualview}"
 OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/fusion_reports/sixteen_model_250k_stacked_acc}"
 DEVICE="${DEVICE:-cuda}"
-BATCH_SIZE="${BATCH_SIZE:-512}"
+BATCH_SIZE="${BATCH_SIZE:-256}"
 NUM_WORKERS="${NUM_WORKERS:-8}"
 OPTIMIZE_FOR="${OPTIMIZE_FOR:-acc}"
 WEIGHT_STEP="${WEIGHT_STEP:-0.05}"
+WEIGHT_SEARCH_MODE="${WEIGHT_SEARCH_MODE:-auto}"
+MAX_WEIGHT_CANDIDATES="${MAX_WEIGHT_CANDIDATES:-200000}"
+WEIGHT_RANDOM_SAMPLES="${WEIGHT_RANDOM_SAMPLES:-2000}"
+WEIGHT_RANDOM_SEED="${WEIGHT_RANDOM_SEED:-52}"
 STACK_FEATURES="${STACK_FEATURES:-logits_probs}"
 STACK_CV="${STACK_CV:-5}"
 STACK_MAX_ITER="${STACK_MAX_ITER:-2000}"
-STACK_N_JOBS="${STACK_N_JOBS:--1}"
+STACK_N_JOBS="${STACK_N_JOBS:-1}"
 STACK_CS="${STACK_CS:-0.03 0.1 0.3 1.0 3.0 10.0}"
 
 # Exactly 16 model specs, each in form:
@@ -83,6 +87,10 @@ CMD=(
   --batch_size "${BATCH_SIZE}"
   --num_workers "${NUM_WORKERS}"
   --weight_step "${WEIGHT_STEP}"
+  --weight_search_mode "${WEIGHT_SEARCH_MODE}"
+  --max_weight_candidates "${MAX_WEIGHT_CANDIDATES}"
+  --weight_random_samples "${WEIGHT_RANDOM_SAMPLES}"
+  --weight_random_seed "${WEIGHT_RANDOM_SEED}"
   --optimize_for "${OPTIMIZE_FOR}"
   --stack_features "${STACK_FEATURES}"
   --stack_cv "${STACK_CV}"
