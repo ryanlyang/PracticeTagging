@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import json
 import random
 from pathlib import Path
@@ -2675,6 +2676,11 @@ def main() -> None:
     parser.add_argument("--stageA_epochs", type=int, default=90)
     parser.add_argument("--stageA_patience", type=int, default=18)
     parser.add_argument(
+        "--stageA_pin_memory",
+        action="store_true",
+        help="Enable pin_memory for Stage-A reconstruction DataLoaders (disabled by default to reduce host RAM).",
+    )
+    parser.add_argument(
         "--disable_stageA_stagewise_best_reload",
         action="store_true",
         help="Disable reloading the best Stage-A validation checkpoint at each stage-scale transition.",
@@ -3732,6 +3738,18 @@ def main() -> None:
             f"tau32={test_m['mae_tau32']:.4f}, n_added={test_m['mae_n_added']:.3f}"
         )
 
+    # Memory-only safety: free heavy STEP-1 datasets/loaders before Stage-A.
+    # This does not change training targets/losses; it only reduces host RAM pressure.
+    del ds_train_off, ds_val_off, ds_test_off
+    del ds_train_hlt, ds_val_hlt, ds_test_hlt
+    del dl_train_off, dl_val_off, dl_test_off
+    del dl_train_hlt, dl_val_hlt, dl_test_hlt
+    if external_test_step1:
+        del feat_off_test, feat_hlt_test, feat_off_test_std, feat_hlt_test_std
+        del const_off_test, hlt_const_test, hlt_mask_test, masks_off_test, raw_mask_test
+        del labels_test_ref, test_weight_ref
+    gc.collect()
+
     # Stage A: reconstructor pretrain
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)")
@@ -3756,14 +3774,14 @@ def main() -> None:
         shuffle=False if reco_sampler is not None else True,
         drop_last=True,
         num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=(torch.cuda.is_available() and bool(args.stageA_pin_memory)),
     )
     dl_val_reco = DataLoader(
         ds_val_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=(torch.cuda.is_available() and bool(args.stageA_pin_memory)),
     )
 
     reconstructor = OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)

@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:a100:1
-#SBATCH --mem=320G
+#SBATCH --mem=370G
 #SBATCH --time=18-00:00:00
 #SBATCH --requeue
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m2_joint_delta005_weighted_5m1m1m_%j.out
@@ -17,7 +17,7 @@ RUN_NAME="${RUN_NAME:-model2_joint_delta005_weighted_5m1m1m_seed0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model2_joint_delta005_weighted_5m1m1m}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
-NUM_WORKERS="${NUM_WORKERS:-6}"
+NUM_WORKERS="${NUM_WORKERS:-1}"
 TRAIN_PATH="${TRAIN_PATH:-./data/train_quarter.h5}"
 
 N_TRAIN_JETS="${N_TRAIN_JETS:-7000000}"
@@ -27,6 +27,8 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
+STAGEA_EPOCHS="${STAGEA_EPOCHS:-55}"
+STAGEA_PATIENCE="${STAGEA_PATIENCE:-10}"
 
 set +u
 source ~/.bashrc
@@ -58,6 +60,8 @@ CMD=(
   --max_constits "${MAX_CONSTITS}"
   --num_workers "${NUM_WORKERS}"
   --seed "${SEED}"
+  --stageA_epochs "${STAGEA_EPOCHS}"
+  --stageA_patience "${STAGEA_PATIENCE}"
   --selection_metric auc
   --val_selection_mode unweighted
   --stageB_lambda_rank 0.0
