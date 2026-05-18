@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -1134,6 +1135,11 @@ def main() -> None:
 
     ap.add_argument("--stageA_epochs", type=int, default=90)
     ap.add_argument("--stageA_patience", type=int, default=18)
+    ap.add_argument(
+        "--stageA_pin_memory",
+        action="store_true",
+        help="Enable pin_memory for Stage-A reconstruction DataLoaders (disabled by default to reduce host RAM).",
+    )
     ap.add_argument("--stageA_kd_temp", type=float, default=2.5)
     ap.add_argument("--stageA_lambda_kd", type=float, default=1.0)
     ap.add_argument("--stageA_lambda_emb", type=float, default=1.2)
@@ -1239,7 +1245,7 @@ def main() -> None:
     sample_weight = np.asarray(
         all_weights_full[args.offset_jets: args.offset_jets + args.n_train_jets],
         dtype=np.float32,
-    )
+    ).copy()
     sample_weight = np.nan_to_num(sample_weight, nan=0.0, posinf=0.0, neginf=0.0)
     sample_weight = np.clip(sample_weight, 0.0, None)
 
@@ -1247,6 +1253,9 @@ def main() -> None:
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
     const_off = const_raw.copy()
     const_off[~masks_off] = 0.0
+    # Free full-collection arrays once sliced/canonicalized views are materialized.
+    del all_const_full, all_labels_full, all_weights_full, const_raw, raw_mask
+    gc.collect()
 
     print("Generating pseudo-HLT...")
     hlt_const, hlt_mask, hlt_stats, _budget_truth = b.apply_hlt_effects_realistic_nomap(
@@ -1325,6 +1334,9 @@ def main() -> None:
 
     means_concat, stds_concat = b.get_stats(feat_concat, mask_concat, train_idx)
     feat_concat_std = b.standardize(feat_concat, mask_concat, means_concat, stds_concat)
+    # Raw features are no longer needed after standardization.
+    del feat_off, feat_hlt, feat_concat
+    gc.collect()
 
     data_setup = {
         "train_path_arg": str(args.train_path),
@@ -1478,6 +1490,18 @@ def main() -> None:
         f"threshold_prob={hlt_thr_prob:.6f}, val_tpr={hlt_thr_tpr:.6f}, val_fpr={hlt_thr_fpr:.6f}"
     )
 
+    # Memory-only cleanup: free STEP-1 datasets/loaders and STEP-1-only feature tensors.
+    del ds_train_hlt, ds_val_hlt, ds_test_hlt
+    del dl_train_hlt, dl_val_hlt, dl_test_hlt
+    del ds_train_concat, ds_val_concat, ds_test_concat
+    del dl_train_concat, dl_val_concat, dl_test_concat
+    del feat_concat_std
+    if bool(args.force_m5_step1):
+        del ds_train_off, ds_val_off, ds_test_off
+        del dl_train_off, dl_val_off, dl_test_off
+    del feat_off_std
+    gc.collect()
+
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (CONCAT-TEACHER-GUIDED RECONSTRUCTOR PRETRAIN)")
     print("=" * 70)
@@ -1513,15 +1537,18 @@ def main() -> None:
         sampler=reco_sampler,
         drop_last=True,
         num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=(torch.cuda.is_available() and bool(args.stageA_pin_memory)),
     )
     dl_val_reco = DataLoader(
         ds_val_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
         shuffle=False,
         num_workers=args.num_workers,
-        pin_memory=torch.cuda.is_available(),
+        pin_memory=(torch.cuda.is_available() and bool(args.stageA_pin_memory)),
     )
+    # const_concat/mask_concat are now embedded inside Stage-A dataset tensors.
+    del const_concat, mask_concat
+    gc.collect()
 
     reconstructor = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
     b.BASE_CONFIG["loss"] = cfg["loss"]
@@ -1588,6 +1615,9 @@ def main() -> None:
         weight_floor=float(args.reco_weight_threshold),
         target_tpr=float(args.report_target_tpr),
     )
+    # Stage-A dataloaders/datasets are no longer needed after soft-reco evaluation.
+    del ds_train_reco, ds_val_reco, dl_train_reco, dl_val_reco
+    gc.collect()
 
     print("\n" + "=" * 70)
     print("STEP 4: CORRECTED-ONLY TAGGER (FROZEN STAGE-A RECONSTRUCTOR)")
