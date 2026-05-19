@@ -1612,6 +1612,16 @@ def main() -> None:
         action="store_true",
         help="Stop after STEP 3 and save STEP 1 + Reco-A/B checkpoints (skip dual-view stages).",
     )
+    ap.add_argument(
+        "--train_only_recoA",
+        action="store_true",
+        help="Train/load only Reco-A (STEP 2), skip Reco-B + dual-view stages, then save and exit.",
+    )
+    ap.add_argument(
+        "--train_only_recoB",
+        action="store_true",
+        help="Train/load only Reco-B (STEP 3), skip Reco-A + dual-view stages, then save and exit.",
+    )
     ap.add_argument("--n_train_jets", type=int, default=375000)
     ap.add_argument("--offset_jets", type=int, default=0)
     ap.add_argument("--max_constits", type=int, default=100)
@@ -1739,6 +1749,11 @@ def main() -> None:
 
     if bool(args.teacher_use_anti_overlap) and bool(args.teacher_use_offline_dropout):
         raise ValueError("Use either --teacher_use_anti_overlap or --teacher_use_offline_dropout, not both.")
+    if bool(args.train_only_recoA) and bool(args.train_only_recoB):
+        raise ValueError("Use at most one of --train_only_recoA and --train_only_recoB.")
+
+    train_only_reco_a = bool(args.train_only_recoA)
+    train_only_reco_b = bool(args.train_only_recoB)
 
     set_seed(int(args.seed))
     b.set_seed(int(args.seed))
@@ -2159,73 +2174,78 @@ def main() -> None:
     print("STEP 2: TRAIN RECO-A (TEACHER-GUIDED STAGE-A)")
     print("=" * 70)
     reco_a_load_ckpt = str(getattr(args, "load_recoA_ckpt", "")).strip()
-    reco_a = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
-    if reco_a_load_ckpt:
-        reco_a_state = _load_checkpoint_model_state(reco_a_load_ckpt, device)
-        reco_a.load_state_dict(reco_a_state, strict=True)
-        reco_a_val_metrics = {"loaded_ckpt": str(Path(reco_a_load_ckpt).resolve())}
-        print(f"STEP 2: loaded Reco-A checkpoint from {Path(reco_a_load_ckpt).resolve()}")
+    reco_a = None
+    if train_only_reco_b:
+        reco_a_val_metrics = {"skipped": True, "reason": "train_only_recoB"}
+        print("STEP 2: skipped Reco-A due to --train_only_recoB")
     else:
-        ds_train_reco_a = b.StageAReconstructionDataset(
-            feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
-            const_off_stageA[train_idx], masks_off_stageA[train_idx], labels[train_idx],
-            budget_merge_true_stageA[train_idx], budget_eff_true_stageA[train_idx],
-        )
-        ds_val_reco_a = b.StageAReconstructionDataset(
-            feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
-            const_off_stageA[val_idx], masks_off_stageA[val_idx], labels[val_idx],
-            budget_merge_true_stageA[val_idx], budget_eff_true_stageA[val_idx],
-        )
-        reco_a_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
-        dl_train_reco_a = DataLoader(
-            ds_train_reco_a,
-            batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-            shuffle=(reco_a_sampler is None),
-            sampler=reco_a_sampler,
-            drop_last=True,
-            num_workers=args.num_workers,
-            pin_memory=loader_pin_memory,
-        )
-        dl_val_reco_a = DataLoader(
-            ds_val_reco_a,
-            batch_size=int(cfg["reconstructor_training"]["batch_size"]),
-            shuffle=False,
-            num_workers=args.num_workers,
-            pin_memory=loader_pin_memory,
-        )
+        reco_a = b.OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
+        if reco_a_load_ckpt:
+            reco_a_state = _load_checkpoint_model_state(reco_a_load_ckpt, device)
+            reco_a.load_state_dict(reco_a_state, strict=True)
+            reco_a_val_metrics = {"loaded_ckpt": str(Path(reco_a_load_ckpt).resolve())}
+            print(f"STEP 2: loaded Reco-A checkpoint from {Path(reco_a_load_ckpt).resolve()}")
+        else:
+            ds_train_reco_a = b.StageAReconstructionDataset(
+                feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
+                const_off_stageA[train_idx], masks_off_stageA[train_idx], labels[train_idx],
+                budget_merge_true_stageA[train_idx], budget_eff_true_stageA[train_idx],
+            )
+            ds_val_reco_a = b.StageAReconstructionDataset(
+                feat_hlt_std[val_idx], hlt_mask[val_idx], hlt_const[val_idx],
+                const_off_stageA[val_idx], masks_off_stageA[val_idx], labels[val_idx],
+                budget_merge_true_stageA[val_idx], budget_eff_true_stageA[val_idx],
+            )
+            reco_a_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+            dl_train_reco_a = DataLoader(
+                ds_train_reco_a,
+                batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+                shuffle=(reco_a_sampler is None),
+                sampler=reco_a_sampler,
+                drop_last=True,
+                num_workers=args.num_workers,
+                pin_memory=loader_pin_memory,
+            )
+            dl_val_reco_a = DataLoader(
+                ds_val_reco_a,
+                batch_size=int(cfg["reconstructor_training"]["batch_size"]),
+                shuffle=False,
+                num_workers=args.num_workers,
+                pin_memory=loader_pin_memory,
+            )
 
-        b.BASE_CONFIG["loss"] = cfg["loss"]
-        reco_a, reco_a_val_metrics = sA.train_reconstructor_teacher_guided_stagewise_delta(
-            model=reco_a,
-            train_loader=dl_train_reco_a,
-            val_loader=dl_val_reco_a,
-            device=device,
-            train_cfg=cfg["reconstructor_training"],
-            loss_cfg=cfg["loss"],
-            teacher_model=teacher,
-            hlt_model=baseline,
-            hlt_threshold_prob=float(hlt_thr_prob),
-            feat_means=means.astype(np.float32),
-            feat_stds=stds.astype(np.float32),
-            kd_temperature=float(args.stageA_kd_temp),
-            lambda_kd=float(args.stageA_lambda_kd),
-            lambda_emb=float(args.stageA_lambda_emb),
-            lambda_tok=float(args.stageA_lambda_tok),
-            lambda_phys=float(args.stageA_lambda_phys),
-            lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
-            lambda_delta=float(args.stageA_lambda_delta),
-            delta_tau=float(args.stageA_delta_tau),
-            delta_lambda_fp=float(args.stageA_delta_lambda_fp),
-            budget_eps=float(args.stageA_budget_eps),
-            budget_weight_floor=float(args.stageA_budget_weight_floor),
-            target_tpr_for_fpr=float(args.stageA_target_tpr),
-            normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
-            loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
-            loss_norm_eps=float(args.stageA_loss_norm_eps),
-            reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
-        )
-        del ds_train_reco_a, ds_val_reco_a, dl_train_reco_a, dl_val_reco_a
-        gc.collect()
+            b.BASE_CONFIG["loss"] = cfg["loss"]
+            reco_a, reco_a_val_metrics = sA.train_reconstructor_teacher_guided_stagewise_delta(
+                model=reco_a,
+                train_loader=dl_train_reco_a,
+                val_loader=dl_val_reco_a,
+                device=device,
+                train_cfg=cfg["reconstructor_training"],
+                loss_cfg=cfg["loss"],
+                teacher_model=teacher,
+                hlt_model=baseline,
+                hlt_threshold_prob=float(hlt_thr_prob),
+                feat_means=means.astype(np.float32),
+                feat_stds=stds.astype(np.float32),
+                kd_temperature=float(args.stageA_kd_temp),
+                lambda_kd=float(args.stageA_lambda_kd),
+                lambda_emb=float(args.stageA_lambda_emb),
+                lambda_tok=float(args.stageA_lambda_tok),
+                lambda_phys=float(args.stageA_lambda_phys),
+                lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
+                lambda_delta=float(args.stageA_lambda_delta),
+                delta_tau=float(args.stageA_delta_tau),
+                delta_lambda_fp=float(args.stageA_delta_lambda_fp),
+                budget_eps=float(args.stageA_budget_eps),
+                budget_weight_floor=float(args.stageA_budget_weight_floor),
+                target_tpr_for_fpr=float(args.stageA_target_tpr),
+                normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
+                loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
+                loss_norm_eps=float(args.stageA_loss_norm_eps),
+                reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
+            )
+            del ds_train_reco_a, ds_val_reco_a, dl_train_reco_a, dl_val_reco_a
+            gc.collect()
 
     print("\n" + "=" * 70)
     if bool(args.recoB_strict_m2_mode):
@@ -2253,62 +2273,74 @@ def main() -> None:
     }
 
     reco_b_load_ckpt = str(getattr(args, "load_recoB_ckpt", "")).strip()
-    reco_b = m2mod.OfflineReconstructor(input_dim=7, **m2mod.BASE_CONFIG["reconstructor_model"]).to(device)
-    if bool(strict_m2_budget):
-        reco_b = m2mod.wrap_reconstructor_unmerge_only(reco_b)
-    if reco_b_load_ckpt:
-        reco_b_state = _load_checkpoint_model_state(reco_b_load_ckpt, device)
-        reco_b.load_state_dict(reco_b_state, strict=True)
-        reco_b_metrics = {"loaded_ckpt": str(Path(reco_b_load_ckpt).resolve())}
-        print(f"STEP 3: loaded Reco-B checkpoint from {Path(reco_b_load_ckpt).resolve()}")
+    reco_b = None
+    if train_only_reco_a:
+        reco_b_metrics = {"skipped": True, "reason": "train_only_recoA"}
+        print("STEP 3: skipped Reco-B due to --train_only_recoA")
     else:
-        reco_b, reco_b_metrics = train_reco_b_masked_m2(
-            model=reco_b,
-            feat_hlt_std=feat_hlt_std,
-            hlt_mask=hlt_mask,
-            hlt_const=hlt_const,
-            const_off=const_off_target,
-            masks_off=masks_off_target,
-            train_idx=train_idx,
-            val_idx=val_idx,
-            device=device,
-            num_workers=int(args.num_workers),
-            cfg=cfg_reco_b,
-            rho=float(rho),
-            drop_prob=float(target_drop_prob_for_reco_b),
-            drop_num_banks=int(args.target_drop_num_banks),
-            drop_bank_cycle_epochs=int(args.target_drop_bank_cycle_epochs),
-            seed=int(args.seed),
-            ratio_eps=float(args.recoB_ratio_count_eps),
-            ratio_under_lambda=float(args.recoB_ratio_count_under_lambda),
-            ratio_over_lambda=float(args.recoB_ratio_count_over_lambda),
-            ratio_margin_base=float(args.recoB_ratio_count_over_margin_base),
-            ratio_margin_scale=float(args.recoB_ratio_count_over_margin_scale),
-            ratio_gamma=float(args.recoB_ratio_count_over_ratio_gamma),
-            ratio_over_floor=float(args.recoB_ratio_count_over_lambda_floor),
-            target_mode=str(target_mode),
-            max_constits=int(args.max_constits),
-            concat_offline_token_weight=float(args.recoB_concat_offline_token_weight),
-            concat_hlt_token_weight=float(args.recoB_concat_hlt_token_weight),
-            concat_added_min_frac=float(args.recoB_concat_added_min_frac),
-            concat_added_min_hinge_lambda=float(args.recoB_concat_added_min_hinge_lambda),
-            recoB_reload_best_at_stage_transition=not bool(args.disable_recoB_stagewise_best_reload),
-            use_ratio_budget=not bool(args.disable_recoB_ratio_budget),
-            strict_m2_budget=bool(strict_m2_budget),
-            feature_ablation_mode=str(feature_ablation_mode),
-            train_sample_weight=sw_train if bool(args.use_train_weights) else None,
-            loader_pin_memory=loader_pin_memory,
-        )
+        reco_b = m2mod.OfflineReconstructor(input_dim=7, **m2mod.BASE_CONFIG["reconstructor_model"]).to(device)
+        if bool(strict_m2_budget):
+            reco_b = m2mod.wrap_reconstructor_unmerge_only(reco_b)
+        if reco_b_load_ckpt:
+            reco_b_state = _load_checkpoint_model_state(reco_b_load_ckpt, device)
+            reco_b.load_state_dict(reco_b_state, strict=True)
+            reco_b_metrics = {"loaded_ckpt": str(Path(reco_b_load_ckpt).resolve())}
+            print(f"STEP 3: loaded Reco-B checkpoint from {Path(reco_b_load_ckpt).resolve()}")
+        else:
+            reco_b, reco_b_metrics = train_reco_b_masked_m2(
+                model=reco_b,
+                feat_hlt_std=feat_hlt_std,
+                hlt_mask=hlt_mask,
+                hlt_const=hlt_const,
+                const_off=const_off_target,
+                masks_off=masks_off_target,
+                train_idx=train_idx,
+                val_idx=val_idx,
+                device=device,
+                num_workers=int(args.num_workers),
+                cfg=cfg_reco_b,
+                rho=float(rho),
+                drop_prob=float(target_drop_prob_for_reco_b),
+                drop_num_banks=int(args.target_drop_num_banks),
+                drop_bank_cycle_epochs=int(args.target_drop_bank_cycle_epochs),
+                seed=int(args.seed),
+                ratio_eps=float(args.recoB_ratio_count_eps),
+                ratio_under_lambda=float(args.recoB_ratio_count_under_lambda),
+                ratio_over_lambda=float(args.recoB_ratio_count_over_lambda),
+                ratio_margin_base=float(args.recoB_ratio_count_over_margin_base),
+                ratio_margin_scale=float(args.recoB_ratio_count_over_margin_scale),
+                ratio_gamma=float(args.recoB_ratio_count_over_ratio_gamma),
+                ratio_over_floor=float(args.recoB_ratio_count_over_lambda_floor),
+                target_mode=str(target_mode),
+                max_constits=int(args.max_constits),
+                concat_offline_token_weight=float(args.recoB_concat_offline_token_weight),
+                concat_hlt_token_weight=float(args.recoB_concat_hlt_token_weight),
+                concat_added_min_frac=float(args.recoB_concat_added_min_frac),
+                concat_added_min_hinge_lambda=float(args.recoB_concat_added_min_hinge_lambda),
+                recoB_reload_best_at_stage_transition=not bool(args.disable_recoB_stagewise_best_reload),
+                use_ratio_budget=not bool(args.disable_recoB_ratio_budget),
+                strict_m2_budget=bool(strict_m2_budget),
+                feature_ablation_mode=str(feature_ablation_mode),
+                train_sample_weight=sw_train if bool(args.use_train_weights) else None,
+                loader_pin_memory=loader_pin_memory,
+            )
 
-    if bool(args.stop_after_reco_pretrain):
+    if bool(args.stop_after_reco_pretrain) or train_only_reco_a or train_only_reco_b:
+        exit_mode = "stop_after_reco_pretrain"
+        if train_only_reco_a:
+            exit_mode = "train_only_recoA"
+        elif train_only_reco_b:
+            exit_mode = "train_only_recoB"
         if not args.skip_save_models:
             torch.save({"model": teacher.state_dict(), "auc": float(auc_teacher_test)}, save_root / "teacher.pt")
             torch.save({"model": baseline.state_dict(), "auc": float(auc_hlt_test)}, save_root / "baseline.pt")
-            torch.save({"model": reco_a.state_dict(), "val": reco_a_val_metrics}, save_root / "offline_reconstructor_A_stageA.pt")
-            torch.save({"model": reco_b.state_dict(), "val": reco_b_metrics}, save_root / "offline_reconstructor_B_stageA.pt")
+            if reco_a is not None:
+                torch.save({"model": reco_a.state_dict(), "val": reco_a_val_metrics}, save_root / "offline_reconstructor_A_stageA.pt")
+            if reco_b is not None:
+                torch.save({"model": reco_b.state_dict(), "val": reco_b_metrics}, save_root / "offline_reconstructor_B_stageA.pt")
         reco_only_report = {
             "variant": "m9_dualreco_dualview_offdrop",
-            "mode": "stop_after_reco_pretrain",
+            "mode": str(exit_mode),
             "rho": float(rho),
             "teacher": {"auc_val": float(auc_teacher_val), "auc_test": float(auc_teacher_test)},
             "hlt": {"auc_val": float(auc_hlt_val), "auc_test": float(auc_hlt_test)},
@@ -2325,6 +2357,8 @@ def main() -> None:
             },
             "loaded_recoA_ckpt": str(reco_a_load_ckpt),
             "loaded_recoB_ckpt": str(reco_b_load_ckpt),
+            "train_only_recoA": bool(train_only_reco_a),
+            "train_only_recoB": bool(train_only_reco_b),
         }
         with open(save_root / "dualreco_dualview_metrics_reco_only.json", "w", encoding="utf-8") as f:
             json.dump(reco_only_report, f, indent=2)

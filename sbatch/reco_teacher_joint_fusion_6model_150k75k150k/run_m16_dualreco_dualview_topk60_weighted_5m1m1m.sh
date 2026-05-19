@@ -28,6 +28,11 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
+LOAD_RECO_A_CKPT="${LOAD_RECO_A_CKPT:-}"
+LOAD_RECO_B_CKPT="${LOAD_RECO_B_CKPT:-}"
+TRAIN_ONLY_RECOA="${TRAIN_ONLY_RECOA:-0}"
+TRAIN_ONLY_RECOB="${TRAIN_ONLY_RECOB:-0}"
+STOP_AFTER_RECO_PRETRAIN="${STOP_AFTER_RECO_PRETRAIN:-0}"
 TARGET_TOPK="${TARGET_TOPK:-60}"
 
 RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
@@ -139,6 +144,22 @@ CMD=(
   --step1_load_dir "${STEP1_LOAD_DIR}"
   --device "${DEVICE}"
 )
+
+if [[ "${TRAIN_ONLY_RECOA}" == "1" ]]; then
+  CMD+=(--train_only_recoA)
+fi
+if [[ "${TRAIN_ONLY_RECOB}" == "1" ]]; then
+  CMD+=(--train_only_recoB)
+fi
+if [[ "${STOP_AFTER_RECO_PRETRAIN}" == "1" ]]; then
+  CMD+=(--stop_after_reco_pretrain)
+fi
+if [[ -n "${LOAD_RECO_A_CKPT}" ]]; then
+  CMD+=(--load_recoA_ckpt "${LOAD_RECO_A_CKPT}")
+fi
+if [[ -n "${LOAD_RECO_B_CKPT}" ]]; then
+  CMD+=(--load_recoB_ckpt "${LOAD_RECO_B_CKPT}")
+fi
 
 echo "============================================================"
 echo "Model-16 dual-reco dualview top-k60 (no residual head, val-AUC selection)"
