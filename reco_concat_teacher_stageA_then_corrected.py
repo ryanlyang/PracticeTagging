@@ -92,9 +92,9 @@ def build_concat_constituents(
         const_cat = np.concatenate([const_cat, pad_const], axis=1)
         mask_cat = np.concatenate([mask_cat, pad_mask], axis=1)
 
-    const_cat = const_cat.copy()
+    # `const_cat` is already materialized by concatenate/pad; avoid an extra full copy.
     const_cat[~mask_cat] = 0.0
-    return const_cat.astype(np.float32), mask_cat.astype(bool)
+    return const_cat.astype(np.float32, copy=False), mask_cat.astype(bool, copy=False)
 
 
 class StageAConcatTeacherDataset(Dataset):
@@ -111,16 +111,17 @@ class StageAConcatTeacherDataset(Dataset):
         budget_merge_true: np.ndarray,
         budget_eff_true: np.ndarray,
     ):
-        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
-        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
-        self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
-        self.const_off = torch.tensor(const_off, dtype=torch.float32)
-        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
-        self.const_teacher = torch.tensor(const_teacher, dtype=torch.float32)
-        self.mask_teacher = torch.tensor(mask_teacher, dtype=torch.bool)
-        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
-        self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
-        self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+        # Memory-only path: share host memory with NumPy arrays (no tensor copy).
+        self.feat_hlt = torch.from_numpy(np.asarray(feat_hlt, dtype=np.float32))
+        self.mask_hlt = torch.from_numpy(np.asarray(mask_hlt, dtype=np.bool_))
+        self.const_hlt = torch.from_numpy(np.asarray(const_hlt, dtype=np.float32))
+        self.const_off = torch.from_numpy(np.asarray(const_off, dtype=np.float32))
+        self.mask_off = torch.from_numpy(np.asarray(mask_off, dtype=np.bool_))
+        self.const_teacher = torch.from_numpy(np.asarray(const_teacher, dtype=np.float32))
+        self.mask_teacher = torch.from_numpy(np.asarray(mask_teacher, dtype=np.bool_))
+        self.labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
+        self.budget_merge_true = torch.from_numpy(np.asarray(budget_merge_true, dtype=np.float32))
+        self.budget_eff_true = torch.from_numpy(np.asarray(budget_eff_true, dtype=np.float32))
 
     def __len__(self) -> int:
         return self.feat_hlt.shape[0]

@@ -282,15 +282,16 @@ class JointDualDataset(Dataset):
         labels: np.ndarray,
         joint_fused_target: np.ndarray | None = None,
     ):
-        self.feat_hlt_reco = torch.tensor(feat_hlt_reco, dtype=torch.float32)
-        self.feat_hlt_dual = torch.tensor(feat_hlt_dual, dtype=torch.float32)
-        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
-        self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
-        self.const_off = torch.tensor(const_off, dtype=torch.float32)
-        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
-        self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
-        self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
-        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
+        # Memory-only path: avoid full NumPy->Torch copies.
+        self.feat_hlt_reco = torch.from_numpy(np.asarray(feat_hlt_reco, dtype=np.float32))
+        self.feat_hlt_dual = torch.from_numpy(np.asarray(feat_hlt_dual, dtype=np.float32))
+        self.mask_hlt = torch.from_numpy(np.asarray(mask_hlt, dtype=np.bool_))
+        self.const_hlt = torch.from_numpy(np.asarray(const_hlt, dtype=np.float32))
+        self.const_off = torch.from_numpy(np.asarray(const_off, dtype=np.float32))
+        self.mask_off = torch.from_numpy(np.asarray(mask_off, dtype=np.bool_))
+        self.budget_merge_true = torch.from_numpy(np.asarray(budget_merge_true, dtype=np.float32))
+        self.budget_eff_true = torch.from_numpy(np.asarray(budget_eff_true, dtype=np.float32))
+        self.labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
         self.joint_fused_target = None
         if joint_fused_target is not None:
             tgt = np.asarray(joint_fused_target, dtype=np.float32).reshape(-1)
@@ -299,7 +300,7 @@ class JointDualDataset(Dataset):
                     "joint_fused_target length mismatch: "
                     f"{int(tgt.shape[0])} vs labels {int(self.labels.shape[0])}"
                 )
-            self.joint_fused_target = torch.tensor(tgt, dtype=torch.float32)
+            self.joint_fused_target = torch.from_numpy(np.asarray(tgt, dtype=np.float32))
 
     def __len__(self) -> int:
         return self.feat_hlt_reco.shape[0]
@@ -335,14 +336,14 @@ class StageAReconstructionDataset(Dataset):
         stagea_fused_target: Optional[np.ndarray] = None,
         stagea_anchor_target: Optional[np.ndarray] = None,
     ):
-        self.feat_hlt = torch.tensor(feat_hlt, dtype=torch.float32)
-        self.mask_hlt = torch.tensor(mask_hlt, dtype=torch.bool)
-        self.const_hlt = torch.tensor(const_hlt, dtype=torch.float32)
-        self.const_off = torch.tensor(const_off, dtype=torch.float32)
-        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
-        self.labels = torch.tensor(labels.astype(np.float32), dtype=torch.float32)
-        self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
-        self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+        self.feat_hlt = torch.from_numpy(np.asarray(feat_hlt, dtype=np.float32))
+        self.mask_hlt = torch.from_numpy(np.asarray(mask_hlt, dtype=np.bool_))
+        self.const_hlt = torch.from_numpy(np.asarray(const_hlt, dtype=np.float32))
+        self.const_off = torch.from_numpy(np.asarray(const_off, dtype=np.float32))
+        self.mask_off = torch.from_numpy(np.asarray(mask_off, dtype=np.bool_))
+        self.labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
+        self.budget_merge_true = torch.from_numpy(np.asarray(budget_merge_true, dtype=np.float32))
+        self.budget_eff_true = torch.from_numpy(np.asarray(budget_eff_true, dtype=np.float32))
         self.stagea_fused_target = None
         if stagea_fused_target is not None:
             tgt = np.asarray(stagea_fused_target, dtype=np.float32).reshape(-1)
@@ -351,7 +352,7 @@ class StageAReconstructionDataset(Dataset):
                     "stagea_fused_target length mismatch: "
                     f"{int(tgt.shape[0])} vs labels {int(self.labels.shape[0])}"
                 )
-            self.stagea_fused_target = torch.tensor(tgt, dtype=torch.float32)
+            self.stagea_fused_target = torch.from_numpy(np.asarray(tgt, dtype=np.float32))
         self.stagea_anchor_target = None
         if stagea_anchor_target is not None:
             tgt_anchor = np.asarray(stagea_anchor_target, dtype=np.float32).reshape(-1)
@@ -360,7 +361,7 @@ class StageAReconstructionDataset(Dataset):
                     "stagea_anchor_target length mismatch: "
                     f"{int(tgt_anchor.shape[0])} vs labels {int(self.labels.shape[0])}"
                 )
-            self.stagea_anchor_target = torch.tensor(tgt_anchor, dtype=torch.float32)
+            self.stagea_anchor_target = torch.from_numpy(np.asarray(tgt_anchor, dtype=np.float32))
 
     def __len__(self) -> int:
         return self.feat_hlt.shape[0]

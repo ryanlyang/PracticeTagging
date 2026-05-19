@@ -554,9 +554,10 @@ def plot_response_resolution(records_a, records_b, label_a, label_b, out_path):
 
 class JetDataset(Dataset):
     def __init__(self, feat, mask, labels):
-        self.feat = torch.tensor(feat, dtype=torch.float32)
-        self.mask = torch.tensor(mask, dtype=torch.bool)
-        self.labels = torch.tensor(labels, dtype=torch.float32)
+        # Memory-only path: avoid full NumPy->Torch copies.
+        self.feat = torch.from_numpy(np.asarray(feat, dtype=np.float32))
+        self.mask = torch.from_numpy(np.asarray(mask, dtype=np.bool_))
+        self.labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
 
     def __len__(self):
         return len(self.labels)
@@ -567,11 +568,11 @@ class JetDataset(Dataset):
 
 class DualViewJetDataset(Dataset):
     def __init__(self, feat_a, mask_a, feat_b, mask_b, labels):
-        self.feat_a = torch.tensor(feat_a, dtype=torch.float32)
-        self.mask_a = torch.tensor(mask_a, dtype=torch.bool)
-        self.feat_b = torch.tensor(feat_b, dtype=torch.float32)
-        self.mask_b = torch.tensor(mask_b, dtype=torch.bool)
-        self.labels = torch.tensor(labels, dtype=torch.float32)
+        self.feat_a = torch.from_numpy(np.asarray(feat_a, dtype=np.float32))
+        self.mask_a = torch.from_numpy(np.asarray(mask_a, dtype=np.bool_))
+        self.feat_b = torch.from_numpy(np.asarray(feat_b, dtype=np.float32))
+        self.mask_b = torch.from_numpy(np.asarray(mask_b, dtype=np.bool_))
+        self.labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
 
     def __len__(self):
         return len(self.labels)
@@ -588,9 +589,9 @@ class DualViewJetDataset(Dataset):
 
 class MergeCountDataset(Dataset):
     def __init__(self, feat, mask, count_label):
-        self.feat = torch.tensor(feat, dtype=torch.float32)
-        self.mask = torch.tensor(mask, dtype=torch.bool)
-        self.label = torch.tensor(count_label, dtype=torch.long)
+        self.feat = torch.from_numpy(np.asarray(feat, dtype=np.float32))
+        self.mask = torch.from_numpy(np.asarray(mask, dtype=np.bool_))
+        self.label = torch.from_numpy(np.asarray(count_label, dtype=np.int64))
 
     def __len__(self):
         return len(self.feat)
@@ -601,11 +602,11 @@ class MergeCountDataset(Dataset):
 
 class UnmergeKDDataset(Dataset):
     def __init__(self, feat_unmerged, mask_unmerged, feat_off, mask_off, labels):
-        self.unmerged = torch.tensor(feat_unmerged, dtype=torch.float32)
-        self.mask_unmerged = torch.tensor(mask_unmerged, dtype=torch.bool)
-        self.off = torch.tensor(feat_off, dtype=torch.float32)
-        self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
-        self.labels = torch.tensor(labels, dtype=torch.float32)
+        self.unmerged = torch.from_numpy(np.asarray(feat_unmerged, dtype=np.float32))
+        self.mask_unmerged = torch.from_numpy(np.asarray(mask_unmerged, dtype=np.bool_))
+        self.off = torch.from_numpy(np.asarray(feat_off, dtype=np.float32))
+        self.mask_off = torch.from_numpy(np.asarray(mask_off, dtype=np.bool_))
+        self.labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
 
     def __len__(self):
         return len(self.labels)
