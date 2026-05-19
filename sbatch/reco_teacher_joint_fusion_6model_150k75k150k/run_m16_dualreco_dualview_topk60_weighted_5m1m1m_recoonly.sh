@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=m15hw
+#SBATCH --job-name=m16wr
 #SBATCH --partition=tier3
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=320G
 #SBATCH --time=18-00:00:00
 #SBATCH --requeue
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_high_weighted_5m1m1m_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_high_weighted_5m1m1m_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m16_dualreco_topk60_recoonly_weighted_5m1m1m_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m16_dualreco_topk60_recoonly_weighted_5m1m1m_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model15_dualreco_dualview_offdrop_high_weighted_5m1m1m_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_high_weighted_5m1m1m}"
+RUN_NAME="${RUN_NAME:-model16_dualreco_dualview_topk60_weighted_5m1m1m_seed0_recoonly}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model16_dualreco_dualview_topk60_weighted_5m1m1m_recoonly}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
@@ -28,14 +28,14 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
+TARGET_TOPK="${TARGET_TOPK:-60}"
 
-OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.70}"
 RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
-RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.25}"
-RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-2.0}"
-RATIO_COUNT_MARGIN_SCALE="${RATIO_COUNT_MARGIN_SCALE:-6.0}"
-RATIO_COUNT_GAMMA="${RATIO_COUNT_GAMMA:-0.70}"
-RATIO_COUNT_OVER_FLOOR="${RATIO_COUNT_OVER_FLOOR:-0.05}"
+RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.20}"
+RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-3.0}"
+RATIO_COUNT_MARGIN_SCALE="${RATIO_COUNT_MARGIN_SCALE:-8.0}"
+RATIO_COUNT_GAMMA="${RATIO_COUNT_GAMMA:-0.80}"
+RATIO_COUNT_OVER_FLOOR="${RATIO_COUNT_OVER_FLOOR:-0.03}"
 RATIO_COUNT_EPS="${RATIO_COUNT_EPS:-0.015}"
 
 set +u
@@ -69,37 +69,29 @@ CMD=(
   --num_workers "${NUM_WORKERS}"
   --seed "${SEED}"
 
-  --teacher_use_offline_dropout
-  --teacher_drop_prob_max "${OFFDROP_PROB_MAX}"
-  --teacher_drop_warmup_epochs 20
-  --teacher_drop_mode deterministic_bank
-  --teacher_drop_num_banks 3
-  --teacher_drop_bank_cycle_epochs 1
-  --teacher_lambda_drop_cls 1.0
-  --teacher_use_consistency
-  --teacher_consistency_temp 2.0
-  --teacher_lambda_consistency 0.2
+  --target_mode topk
+  --offline_target_topk_pt "${TARGET_TOPK}"
 
   --stageA_epochs 90
   --stageA_patience 18
   --stageA_kd_temp 2.5
-  --stageA_lambda_kd 5.0
-  --stageA_lambda_emb 0.0
-  --stageA_lambda_tok 0.0
-  --stageA_lambda_phys 0.05
-  --stageA_lambda_budget_hinge 1.0
+  --stageA_lambda_kd 1.0
+  --stageA_lambda_emb 1.2
+  --stageA_lambda_tok 0.6
+  --stageA_lambda_phys 0.2
+  --stageA_lambda_budget_hinge 0.03
   --stageA_budget_eps 0.015
   --stageA_budget_weight_floor 1e-4
   --stageA_target_tpr 0.50
-  --stageA_lambda_delta 0.15
+  --stageA_lambda_delta 0.00
   --stageA_delta_tau 0.05
   --stageA_delta_lambda_fp 3.0
   --stageA_loss_norm_ema_decay 0.98
   --stageA_loss_norm_eps 1e-6
   --added_target_scale 0.90
 
-  --target_drop_prob_max "${OFFDROP_PROB_MAX}"
-  --target_drop_num_banks 3
+  --target_drop_prob_max 0.0
+  --target_drop_num_banks 1
   --target_drop_bank_cycle_epochs 1
   --recoB_epochs 90
   --recoB_patience 18
@@ -145,15 +137,17 @@ CMD=(
 
   --report_target_tpr 0.50
   --step1_load_dir "${STEP1_LOAD_DIR}"
+  --stop_after_reco_pretrain
   --device "${DEVICE}"
 )
 
 echo "============================================================"
-echo "Model-15 HIGH dual-reco dualview (weighted)"
+echo "Model-16 dual-reco dualview top-k60 reco-only pretrain (weighted)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
-echo "Train path: ${TRAIN_PATH}"
+echo "Train path: ${TRAIN_PATH} (weighted)"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
-echo "offdrop_prob_max=${OFFDROP_PROB_MAX}"
+echo "target_mode=topk, offline_target_topk_pt=${TARGET_TOPK}"
+echo "recoB ratio-count budget: under=${RATIO_COUNT_UNDER_LAMBDA} over=${RATIO_COUNT_OVER_LAMBDA} margin_base=${RATIO_COUNT_MARGIN_BASE} margin_scale=${RATIO_COUNT_MARGIN_SCALE} gamma=${RATIO_COUNT_GAMMA} floor=${RATIO_COUNT_OVER_FLOOR} eps=${RATIO_COUNT_EPS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo

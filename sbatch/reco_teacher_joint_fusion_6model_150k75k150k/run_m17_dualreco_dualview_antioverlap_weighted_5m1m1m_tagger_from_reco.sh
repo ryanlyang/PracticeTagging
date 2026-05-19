@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=m15hw
+#SBATCH --job-name=m17aot
 #SBATCH --partition=tier3
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=320G
 #SBATCH --time=18-00:00:00
 #SBATCH --requeue
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_high_weighted_5m1m1m_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_high_weighted_5m1m1m_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m17_dualreco_antioverlap_tagger_from_reco_weighted_5m1m1m_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m17_dualreco_antioverlap_tagger_from_reco_weighted_5m1m1m_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model15_dualreco_dualview_offdrop_high_weighted_5m1m1m_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_high_weighted_5m1m1m}"
+RUN_NAME="${RUN_NAME:-model17_dualreco_dualview_antioverlap_weighted_5m1m1m_seed0_from_recoonly}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model17_dualreco_dualview_antioverlap_weighted_5m1m1m_from_recoonly}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
@@ -27,9 +27,12 @@ N_VAL_SPLIT="${N_VAL_SPLIT:-1000000}"
 N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
-STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
+RECO_PRETRAIN_DIR="${RECO_PRETRAIN_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model17_dualreco_dualview_antioverlap_weighted_5m1m1m_recoonly/model17_dualreco_dualview_antioverlap_weighted_5m1m1m_seed0_recoonly}"
+STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-${RECO_PRETRAIN_DIR}}"
+LOAD_RECO_A_CKPT="${LOAD_RECO_A_CKPT:-${RECO_PRETRAIN_DIR}/offline_reconstructor_A_stageA.pt}"
+LOAD_RECO_B_CKPT="${LOAD_RECO_B_CKPT:-${RECO_PRETRAIN_DIR}/offline_reconstructor_B_stageA.pt}"
 
-OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.70}"
+OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.0}"
 RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
 RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.25}"
 RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-2.0}"
@@ -37,6 +40,11 @@ RATIO_COUNT_MARGIN_SCALE="${RATIO_COUNT_MARGIN_SCALE:-6.0}"
 RATIO_COUNT_GAMMA="${RATIO_COUNT_GAMMA:-0.70}"
 RATIO_COUNT_OVER_FLOOR="${RATIO_COUNT_OVER_FLOOR:-0.05}"
 RATIO_COUNT_EPS="${RATIO_COUNT_EPS:-0.015}"
+
+TEACHER_ANTI_LAMBDA="${TEACHER_ANTI_LAMBDA:-0.02}"
+TEACHER_ANTI_TAU="${TEACHER_ANTI_TAU:-0.05}"
+TEACHER_ANTI_BETA="${TEACHER_ANTI_BETA:-0.10}"
+TEACHER_ANTI_WARMUP_EPOCHS="${TEACHER_ANTI_WARMUP_EPOCHS:-12}"
 
 set +u
 source ~/.bashrc
@@ -52,6 +60,23 @@ export PYTHONHASHSEED="${SEED}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 mkdir -p "${SAVE_DIR}"
+
+if [[ ! -f "${STEP1_LOAD_DIR}/teacher.pt" ]]; then
+  echo "ERROR: Missing teacher checkpoint: ${STEP1_LOAD_DIR}/teacher.pt" >&2
+  exit 2
+fi
+if [[ ! -f "${STEP1_LOAD_DIR}/baseline.pt" ]]; then
+  echo "ERROR: Missing baseline checkpoint: ${STEP1_LOAD_DIR}/baseline.pt" >&2
+  exit 2
+fi
+if [[ ! -f "${LOAD_RECO_A_CKPT}" ]]; then
+  echo "ERROR: Missing reco-A checkpoint: ${LOAD_RECO_A_CKPT}" >&2
+  exit 2
+fi
+if [[ ! -f "${LOAD_RECO_B_CKPT}" ]]; then
+  echo "ERROR: Missing reco-B checkpoint: ${LOAD_RECO_B_CKPT}" >&2
+  exit 2
+fi
 
 CMD=(
   python train_m9_dualreco_dualview_offdrop.py
@@ -69,16 +94,13 @@ CMD=(
   --num_workers "${NUM_WORKERS}"
   --seed "${SEED}"
 
-  --teacher_use_offline_dropout
-  --teacher_drop_prob_max "${OFFDROP_PROB_MAX}"
-  --teacher_drop_warmup_epochs 20
-  --teacher_drop_mode deterministic_bank
-  --teacher_drop_num_banks 3
-  --teacher_drop_bank_cycle_epochs 1
-  --teacher_lambda_drop_cls 1.0
-  --teacher_use_consistency
-  --teacher_consistency_temp 2.0
-  --teacher_lambda_consistency 0.2
+  --target_mode offdrop
+
+  --teacher_use_anti_overlap
+  --teacher_anti_lambda "${TEACHER_ANTI_LAMBDA}"
+  --teacher_anti_tau "${TEACHER_ANTI_TAU}"
+  --teacher_anti_beta "${TEACHER_ANTI_BETA}"
+  --teacher_anti_warmup_epochs "${TEACHER_ANTI_WARMUP_EPOCHS}"
 
   --stageA_epochs 90
   --stageA_patience 18
@@ -99,7 +121,7 @@ CMD=(
   --added_target_scale 0.90
 
   --target_drop_prob_max "${OFFDROP_PROB_MAX}"
-  --target_drop_num_banks 3
+  --target_drop_num_banks 1
   --target_drop_bank_cycle_epochs 1
   --recoB_epochs 90
   --recoB_patience 18
@@ -116,6 +138,8 @@ CMD=(
   --recoB_ratio_count_over_ratio_gamma "${RATIO_COUNT_GAMMA}"
   --recoB_ratio_count_over_lambda_floor "${RATIO_COUNT_OVER_FLOOR}"
   --recoB_ratio_count_eps "${RATIO_COUNT_EPS}"
+
+  --disable_recoB_ratio_budget
 
   --corrected_weight_floor 0.03
   --reco_eval_batch_size 256
@@ -145,15 +169,18 @@ CMD=(
 
   --report_target_tpr 0.50
   --step1_load_dir "${STEP1_LOAD_DIR}"
+  --load_recoA_ckpt "${LOAD_RECO_A_CKPT}"
+  --load_recoB_ckpt "${LOAD_RECO_B_CKPT}"
   --device "${DEVICE}"
 )
 
 echo "============================================================"
-echo "Model-15 HIGH dual-reco dualview (weighted)"
+echo "Model-17 dual-reco dualview anti-overlap tagger-from-reco (weighted)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
-echo "Train path: ${TRAIN_PATH}"
+echo "Train path: ${TRAIN_PATH} (weighted)"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
-echo "offdrop_prob_max=${OFFDROP_PROB_MAX}"
+echo "teacher_mode=anti_overlap, lambda=${TEACHER_ANTI_LAMBDA}, tau=${TEACHER_ANTI_TAU}, beta=${TEACHER_ANTI_BETA}, warmup=${TEACHER_ANTI_WARMUP_EPOCHS}"
+echo "target_mode=offdrop, target_drop_prob_max=${OFFDROP_PROB_MAX}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo

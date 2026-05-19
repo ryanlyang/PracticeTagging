@@ -1,20 +1,20 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=m15hw
+#SBATCH --job-name=m15mwr
 #SBATCH --partition=tier3
 #SBATCH --cpus-per-task=8
 #SBATCH --gres=gpu:a100:1
 #SBATCH --mem=320G
 #SBATCH --time=18-00:00:00
 #SBATCH --requeue
-#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_high_weighted_5m1m1m_%j.out
-#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_high_weighted_5m1m1m_%j.err
+#SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_mid_recoonly_weighted_5m1m1m_%j.out
+#SBATCH --error=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/m15_dualreco_offdrop_mid_recoonly_weighted_5m1m1m_%j.err
 
 set -euo pipefail
 
 mkdir -p offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k
 
-RUN_NAME="${RUN_NAME:-model15_dualreco_dualview_offdrop_high_weighted_5m1m1m_seed0}"
-SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_high_weighted_5m1m1m}"
+RUN_NAME="${RUN_NAME:-model15_dualreco_dualview_offdrop_mid_weighted_5m1m1m_seed0_recoonly}"
+SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model15_dualreco_dualview_offdrop_mid_weighted_5m1m1m_recoonly}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-1}"
@@ -29,7 +29,7 @@ OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
 
-OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.70}"
+OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.50}"
 RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
 RATIO_COUNT_OVER_LAMBDA="${RATIO_COUNT_OVER_LAMBDA:-0.25}"
 RATIO_COUNT_MARGIN_BASE="${RATIO_COUNT_MARGIN_BASE:-2.0}"
@@ -145,15 +145,16 @@ CMD=(
 
   --report_target_tpr 0.50
   --step1_load_dir "${STEP1_LOAD_DIR}"
+  --stop_after_reco_pretrain
   --device "${DEVICE}"
 )
 
 echo "============================================================"
-echo "Model-15 HIGH dual-reco dualview (weighted)"
+echo "Model-15 MID dual-reco reco-only pretrain"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
-echo "Train path: ${TRAIN_PATH}"
+echo "Train path: ${TRAIN_PATH} (weighted)"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
-echo "offdrop_prob_max=${OFFDROP_PROB_MAX}"
+echo "offdrop_prob_max=${OFFDROP_PROB_MAX} (teacher + recoB target)"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
