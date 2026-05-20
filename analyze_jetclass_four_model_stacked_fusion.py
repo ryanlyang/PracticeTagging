@@ -177,7 +177,7 @@ def _load_state_dict_from_run_dir(
 
 
 def _check_run_compat(ref: SimpleNamespace, other: SimpleNamespace, label: str) -> None:
-    keys = (
+    strict_keys = (
         "feature_mode",
         "feature_preprocessing",
         "class_assignment",
@@ -186,6 +186,16 @@ def _check_run_compat(ref: SimpleNamespace, other: SimpleNamespace, label: str) 
         "n_val_jets",
         "n_test_jets",
         "max_constits",
+    )
+    for k in strict_keys:
+        if str(getattr(ref, k)) != str(getattr(other, k)):
+            raise ValueError(
+                f"Run mismatch with {label} for `{k}`: ref={getattr(ref, k)} vs other={getattr(other, k)}"
+            )
+
+    # HLT corruption profile differences are allowed for fusion ablation families.
+    # We evaluate all models on the same reference HLT view (from `ref`) for comparability.
+    hlt_keys = (
         "hlt_pt_threshold",
         "merge_prob_scale",
         "reassign_scale",
@@ -195,11 +205,18 @@ def _check_run_compat(ref: SimpleNamespace, other: SimpleNamespace, label: str) 
         "eff_turnon_pt",
         "eff_width_pt",
     )
-    for k in keys:
-        if str(getattr(ref, k)) != str(getattr(other, k)):
-            raise ValueError(
-                f"Run mismatch with {label} for `{k}`: ref={getattr(ref, k)} vs other={getattr(other, k)}"
-            )
+    mismatches: List[str] = []
+    for k in hlt_keys:
+        rv = getattr(ref, k, None)
+        ov = getattr(other, k, None)
+        if str(rv) != str(ov):
+            mismatches.append(f"{k}: ref={rv} vs other={ov}")
+    if mismatches:
+        print(
+            f"[compat-warning] HLT profile mismatch for {label}; "
+            "using reference-run HLT profile for fusion eval. "
+            + "; ".join(mismatches)
+        )
 
 
 def _build_eval_data(
