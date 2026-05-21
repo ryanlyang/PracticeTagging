@@ -3282,7 +3282,9 @@ def main() -> None:
             labels[test_idx],
             sample_weight=test_weight_ref,
         )
-    off_sampler = _build_weighted_sampler(train_w_train if bool(args.use_train_weights) else None)
+    # Keep STEP-1 truly m5-style when requested: no weighted sampling if force_m5_step1.
+    step1_use_weighted_sampler = bool(args.use_train_weights) and (not bool(args.force_m5_step1))
+    off_sampler = _build_weighted_sampler(train_w_train if step1_use_weighted_sampler else None)
     dl_train_off = DataLoader(
         ds_train_off,
         batch_size=BS,
@@ -3348,7 +3350,7 @@ def main() -> None:
             labels[test_idx],
             sample_weight=test_weight_ref,
         )
-    hlt_sampler = _build_weighted_sampler(train_w_train if bool(args.use_train_weights) else None)
+    hlt_sampler = _build_weighted_sampler(train_w_train if step1_use_weighted_sampler else None)
     dl_train_hlt = DataLoader(
         ds_train_hlt,
         batch_size=BS,
@@ -3754,6 +3756,11 @@ def main() -> None:
     print("\n" + "=" * 70)
     print("STEP 2: STAGE A (RECONSTRUCTOR PRETRAIN)")
     print("=" * 70)
+    use_reco_weighting_all_stages = bool(args.disc_weight_enable or args.use_train_weights)
+    use_cls_weighting_all_stages = bool(args.use_train_weights)
+    if bool(args.disc_weight_enable) and float(args.disc_cls_lambda) > 0.0:
+        use_cls_weighting_all_stages = True
+
     ds_train_reco = WeightedReconstructionDataset(
         feat_hlt_std[train_idx], hlt_mask[train_idx], hlt_const[train_idx],
         const_off[train_idx], masks_off[train_idx],
@@ -3766,7 +3773,9 @@ def main() -> None:
         budget_merge_true[val_idx], budget_eff_true[val_idx],
         sample_weight_reco=sample_weight_reco_val,
     )
-    reco_sampler = _build_weighted_sampler(sample_weight_reco if bool(args.use_train_weights) else None)
+    # Avoid double-counting train weights: if loss uses per-sample weights, do not also weighted-sample.
+    reco_use_weighted_sampler = bool(args.use_train_weights) and (not bool(use_reco_weighting_all_stages))
+    reco_sampler = _build_weighted_sampler(sample_weight_reco if reco_use_weighted_sampler else None)
     dl_train_reco = DataLoader(
         ds_train_reco,
         batch_size=int(cfg["reconstructor_training"]["batch_size"]),
@@ -3788,10 +3797,6 @@ def main() -> None:
     reconstructor = wrap_reconstructor_unmerge_only(reconstructor)
     # compute_reconstruction_losses reads BASE_CONFIG["loss"], so sync it to our working config.
     BASE_CONFIG["loss"] = cfg["loss"]
-    use_reco_weighting_all_stages = bool(args.disc_weight_enable or args.use_train_weights)
-    use_cls_weighting_all_stages = bool(args.use_train_weights)
-    if bool(args.disc_weight_enable) and float(args.disc_cls_lambda) > 0.0:
-        use_cls_weighting_all_stages = True
     val_selection_mode = str(args.val_selection_mode).strip().lower()
     if val_selection_mode == "weighted":
         use_weighted_val_selection_all_stages = True
@@ -3799,9 +3804,18 @@ def main() -> None:
         use_weighted_val_selection_all_stages = False
     else:
         use_weighted_val_selection_all_stages = bool(args.disc_weight_enable or args.use_train_weights)
+    joint_use_weighted_sampler = bool(args.use_train_weights) and (not bool(use_cls_weighting_all_stages))
     print(
         "Val selection mode: "
         f"{val_selection_mode} -> weighted_selection={bool(use_weighted_val_selection_all_stages)}"
+    )
+    print(
+        "Weighting mode: "
+        f"step1_sampler={'on' if step1_use_weighted_sampler else 'off'}, "
+        f"reco_loss_weight={'on' if use_reco_weighting_all_stages else 'off'}, "
+        f"reco_sampler={'on' if reco_use_weighted_sampler else 'off'}, "
+        f"cls_loss_weight={'on' if use_cls_weighting_all_stages else 'off'}, "
+        f"joint_sampler={'on' if joint_use_weighted_sampler else 'off'}"
     )
 
     reconstructor, reco_val_metrics = train_reconstructor_weighted(
@@ -3854,12 +3868,13 @@ def main() -> None:
         sample_weight_reco=np.ones((len(test_idx),), dtype=np.float32),
     )
 
-    joint_sampler = _build_weighted_sampler(sample_weight_cls if bool(args.use_train_weights) else None)
+    # Avoid double-counting train weights in Stage-B/C classifier updates.
+    joint_sampler = _build_weighted_sampler(sample_weight_cls if joint_use_weighted_sampler else None)
     dl_train_joint = DataLoader(
         ds_train_joint, batch_size=BS, sampler=joint_sampler, shuffle=False if joint_sampler is not None else True, drop_last=True,
         num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),
     )
-    stageb_sampler = _build_weighted_sampler(stageb_w_cls if bool(args.use_train_weights) else None)
+    stageb_sampler = _build_weighted_sampler(stageb_w_cls if joint_use_weighted_sampler else None)
     dl_train_joint_stageb = DataLoader(
         ds_train_joint_stageb, batch_size=BS, sampler=stageb_sampler, shuffle=False if stageb_sampler is not None else True, drop_last=True,
         num_workers=args.num_workers, pin_memory=torch.cuda.is_available(),
