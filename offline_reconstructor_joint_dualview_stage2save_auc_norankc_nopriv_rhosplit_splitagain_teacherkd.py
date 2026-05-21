@@ -1306,6 +1306,17 @@ def eval_joint_model(
     labs = np.concatenate(labs) if labs else np.zeros(0, dtype=np.float32)
     if preds.size == 0:
         return float("nan"), preds, labs, float("nan")
+
+    # Robustness: avoid hard crashes if non-finite scores appear.
+    bad_pred = ~np.isfinite(preds)
+    if np.any(bad_pred):
+        n_bad = int(bad_pred.sum())
+        print(f"[warn] eval_joint_model: replacing {n_bad} non-finite predictions with finite defaults.")
+        preds = np.nan_to_num(preds, nan=0.5, posinf=1.0, neginf=0.0)
+    if np.any(~np.isfinite(labs)):
+        labs = np.nan_to_num(labs, nan=0.0, posinf=1.0, neginf=0.0)
+
+    preds = np.clip(preds, 0.0, 1.0)
     auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else float("nan")
     fpr, tpr, _ = roc_curve(labs, preds)
     fpr50 = fpr_at_target_tpr(fpr, tpr, 0.50)
@@ -2215,6 +2226,7 @@ def train_joint_dual(
         tr_cons = 0.0
         tr_fused_kd = 0.0
         n_tr = 0
+        n_skipped_nonfinite = 0
 
         for batch in train_loader:
             feat_hlt_reco = batch["feat_hlt_reco"].to(device)
@@ -2336,6 +2348,13 @@ def train_joint_dual(
                 + float(lambda_cons) * loss_cons
                 + float(joint_fused_kd_lambda) * loss_joint_fused_kd
             )
+            if not torch.isfinite(loss):
+                n_skipped_nonfinite += 1
+                print(
+                    f"[warn] {stage_name} ep {ep+1}: non-finite loss encountered; "
+                    "skipping batch update."
+                )
+                continue
             loss.backward()
             torch.nn.utils.clip_grad_norm_(dual_model.parameters(), 1.0)
             if not freeze_reconstructor:
@@ -2359,6 +2378,8 @@ def train_joint_dual(
         tr_reco /= max(n_tr, 1)
         tr_cons /= max(n_tr, 1)
         tr_fused_kd /= max(n_tr, 1)
+        if n_skipped_nonfinite > 0:
+            print(f"[warn] {stage_name} ep {ep+1}: skipped_nonfinite_batches={n_skipped_nonfinite}")
 
         va_auc, _, _, va_fpr50 = eval_joint_model(
             reconstructor=reconstructor,
@@ -3495,6 +3516,24 @@ def main() -> None:
         stagea_fused_kd_w_max=float(args.stageA_fused_kd_w_max),
         stagea_lambda_delta_aux=float(args.stageA_lambda_delta_aux),
     )
+
+    # Crash-safety: persist STEP-1/STEP-2 artifacts immediately after Stage-A finishes.
+    if not args.skip_save_models:
+        try:
+            torch.save({"model": teacher.state_dict(), "auc": auc_teacher}, save_root / "teacher.pt")
+            torch.save({"model": baseline.state_dict(), "auc": auc_baseline}, save_root / "baseline.pt")
+            torch.save(
+                {"model": reconstructor.state_dict(), "val": reco_val_metrics},
+                save_root / "offline_reconstructor_stageA.pt",
+            )
+            print(
+                "Saved early Stage-A checkpoints: "
+                f"{save_root / 'teacher.pt'}, "
+                f"{save_root / 'baseline.pt'}, "
+                f"{save_root / 'offline_reconstructor_stageA.pt'}"
+            )
+        except Exception as e:
+            print(f"[warn] Failed to save early Stage-A checkpoints: {e}")
 
     reco_only_model = None
     auc_reco_only = float("nan")
