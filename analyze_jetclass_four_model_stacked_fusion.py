@@ -80,10 +80,12 @@ except Exception as _exc:  # pragma: no cover
 _IMPORT_ERROR = None
 try:
     import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_confgen_ops as confgen_ops
+    import offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_hybrid_ops as hybrid_ops
     import train_jetclass_joint_dualview_stage2_unmergeonly_v2_attr as v2
     from offline_reconstructor_no_gt_local30kv2 import CONFIG as BASE_RECO_CONFIG
 except Exception as _exc:  # pragma: no cover
     confgen_ops = None
+    hybrid_ops = None
     v2 = None
     BASE_RECO_CONFIG = None
     _IMPORT_ERROR = _exc
@@ -345,6 +347,7 @@ def _build_reconstructor_with_attrs(
     run_args: SimpleNamespace,
     input_dim: int,
     device: torch.device,
+    reco_family: str = "confgen_ops",
 ) -> torch.nn.Module:
     reco_cfg = copy.deepcopy(BASE_RECO_CONFIG)
     reco_defaults = reco_cfg["reconstructor_model"]
@@ -360,10 +363,16 @@ def _build_reconstructor_with_attrs(
         _get_attr(run_args, "reco_max_generated_tokens", reco_defaults["max_generated_tokens"])
     )
 
-    base_reco = confgen_ops.OfflineReconstructorConfidenceHybridOps(
-        input_dim=int(input_dim),
-        **reco_cfg["reconstructor_model"],
-    ).to(device)
+    if str(reco_family) == "hybrid_ops":
+        base_reco = hybrid_ops.OfflineReconstructorHybridOps(
+            input_dim=int(input_dim),
+            **reco_cfg["reconstructor_model"],
+        ).to(device)
+    else:
+        base_reco = confgen_ops.OfflineReconstructorConfidenceHybridOps(
+            input_dim=int(input_dim),
+            **reco_cfg["reconstructor_model"],
+        ).to(device)
     reco = v2.ReconstructorWithAttrHeads(
         base=base_reco,
         input_dim=int(input_dim),
@@ -371,6 +380,47 @@ def _build_reconstructor_with_attrs(
         attr_slots=int(_get_attr(run_args, "v2_attr_slots", 2)),
     ).to(device)
     return reco
+
+
+def _detect_reco_family_from_state_dict(sd: Dict[str, torch.Tensor]) -> str:
+    keys = tuple(sd.keys())
+    # Confgen-op-specific heads.
+    if (
+        "base.gate_temperature" in sd
+        or any(k.startswith("base.op_gate_head.") for k in keys)
+        or any(k.startswith("base.gen_seed_head.") for k in keys)
+    ):
+        return "confgen_ops"
+    # Hybrid-ops-specific heads.
+    if (
+        any(k.startswith("base.split_exist_head.") for k in keys)
+        or any(k.startswith("base.split_uplift_head.") for k in keys)
+        or any(k.startswith("base.split_child_exist_head.") for k in keys)
+        or any(k.startswith("base.gen_attn.") for k in keys)
+    ):
+        return "hybrid_ops"
+    # Default to confgen for older checkpoints that may not expose discriminative keys.
+    return "confgen_ops"
+
+
+def _build_soft_corrected_view(
+    reco_family: str,
+    reco_out: Dict[str, torch.Tensor],
+    corrected_weight_floor: float,
+) -> Tuple[torch.Tensor, torch.Tensor]:
+    if str(reco_family) == "hybrid_ops":
+        return hybrid_ops.build_soft_corrected_view_hybrid_ops(
+            reco_out,
+            weight_floor=float(corrected_weight_floor),
+            scale_features_by_weight=True,
+            include_flags=False,
+        )
+    return confgen_ops.build_soft_corrected_view_confgen_ops(
+        reco_out,
+        weight_floor=float(corrected_weight_floor),
+        scale_features_by_weight=True,
+        include_flags=False,
+    )
 
 
 def _build_dual_model(
@@ -443,12 +493,20 @@ def _load_model_for_spec(
         )
 
     if spec.kind in {"stage2", "joint", "reco_only_stagea"}:
-        reco = _build_reconstructor_with_attrs(run_args, input_dim, device)
         reco_sd, reco_src = _load_state_dict_from_run_dir(
             run_dir,
             ("offline_reconstructor_stage2.pt", "offline_reconstructor.pt"),
         )
-        reco.load_state_dict(reco_sd, strict=True)
+        reco_family = _detect_reco_family_from_state_dict(reco_sd)
+        reco = _build_reconstructor_with_attrs(run_args, input_dim, device, reco_family=reco_family)
+        try:
+            reco.load_state_dict(reco_sd, strict=True)
+        except RuntimeError as e:
+            print(
+                f"[load-warning] strict reco load failed for {spec.name} "
+                f"(family={reco_family}); retrying strict=False. Error: {e}"
+            )
+            reco.load_state_dict(reco_sd, strict=False)
         reco.eval()
 
         if spec.kind == "reco_only_stagea":
@@ -465,12 +523,7 @@ def _load_model_for_spec(
                 m = batch["mask_hlt"].to(device)
                 c4 = batch["const_hlt4"].to(device)
                 reco_out = reco(x, m, c4, stage_scale=1.0)
-                feat_b, mask_b = confgen_ops.build_soft_corrected_view_confgen_ops(
-                    reco_out,
-                    weight_floor=float(corrected_weight_floor),
-                    scale_features_by_weight=True,
-                    include_flags=False,
-                )
+                feat_b, mask_b = _build_soft_corrected_view(reco_family, reco_out, float(corrected_weight_floor))
                 return clf(feat_b, mask_b)
 
             return LoadedModel(
@@ -478,7 +531,7 @@ def _load_model_for_spec(
                 kind=spec.kind,
                 run_dir=run_dir,
                 predict_logits=_predict,
-                sources={"reco_ckpt": str(reco_src), "classifier_ckpt": str(clf_src)},
+                sources={"reco_ckpt": str(reco_src), "reco_family": reco_family, "classifier_ckpt": str(clf_src)},
                 args=run_args,
             )
 
@@ -496,12 +549,7 @@ def _load_model_for_spec(
             m = batch["mask_hlt"].to(device)
             c4 = batch["const_hlt4"].to(device)
             reco_out = reco(x, m, c4, stage_scale=1.0)
-            feat_b, mask_b = confgen_ops.build_soft_corrected_view_confgen_ops(
-                reco_out,
-                weight_floor=float(corrected_weight_floor),
-                scale_features_by_weight=True,
-                include_flags=False,
-            )
+            feat_b, mask_b = _build_soft_corrected_view(reco_family, reco_out, float(corrected_weight_floor))
             return dual(x, m, feat_b, mask_b)
 
         return LoadedModel(
@@ -509,7 +557,7 @@ def _load_model_for_spec(
             kind=spec.kind,
             run_dir=run_dir,
             predict_logits=_predict,
-            sources={"reco_ckpt": str(reco_src), "dual_ckpt": str(dual_src)},
+            sources={"reco_ckpt": str(reco_src), "reco_family": reco_family, "dual_ckpt": str(dual_src)},
             args=run_args,
         )
 
