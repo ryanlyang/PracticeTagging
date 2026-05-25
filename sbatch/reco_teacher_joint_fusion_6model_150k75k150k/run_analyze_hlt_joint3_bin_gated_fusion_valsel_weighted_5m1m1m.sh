@@ -91,21 +91,92 @@ python - <<'PY'
 import json
 from pathlib import Path
 import os
+import numpy as np
 
 out_dir = Path(os.environ["OUT_DIR"]).resolve()
 out_dir.mkdir(parents=True, exist_ok=True)
 fusion_json = Path(os.environ["FUSION_JSON"]).resolve()
+m4_npz = Path(os.environ["M4_NPZ"]).resolve()
+m9mid_npz = Path(os.environ["M9MID_NPZ"]).resolve()
+m9high_npz = Path(os.environ["M9HIGH_NPZ"]).resolve()
+
+
+def _first_key(z: np.lib.npyio.NpzFile, keys):
+    for k in keys:
+        if k in z:
+            return k
+    raise KeyError(f"None of keys found: {keys}")
+
+
+z_mid = np.load(m9mid_npz)
+y_val = np.asarray(z_mid["labels_val"], dtype=np.float32)
+y_test = np.asarray(z_mid["labels_test"], dtype=np.float32)
+
+k_joint_val = _first_key(
+    z_mid,
+    ["preds_residual_joint_val", "preds_residual_frozen_val", "preds_reco_teacher_val", "preds_hlt_val"],
+)
+k_joint_test = _first_key(
+    z_mid,
+    ["preds_residual_joint_test", "preds_residual_frozen_test", "preds_reco_teacher_test", "preds_hlt_test"],
+)
+k_hlt_val_mid = _first_key(z_mid, ["preds_hlt_val"])
+k_hlt_test_mid = _first_key(z_mid, ["preds_hlt_test"])
+
+preds_joint_val = np.asarray(z_mid[k_joint_val], dtype=np.float64)
+preds_joint_test = np.asarray(z_mid[k_joint_test], dtype=np.float64)
+preds_hlt_val = np.asarray(z_mid[k_hlt_val_mid], dtype=np.float64)
+preds_hlt_test = np.asarray(z_mid[k_hlt_test_mid], dtype=np.float64)
+
+preds_teacher_val = None
+preds_teacher_test = None
+if "preds_teacher_val" in z_mid and "preds_teacher_test" in z_mid:
+    preds_teacher_val = np.asarray(z_mid["preds_teacher_val"], dtype=np.float64)
+    preds_teacher_test = np.asarray(z_mid["preds_teacher_test"], dtype=np.float64)
+
+# Optional HLT/teacher override from STEP1 artifact (only if labels match).
+if str(os.environ.get("STEP1_REF_USE", "0")) == "1":
+    step1_npz = Path(os.environ["STEP1_REF_NPZ"]).resolve()
+    z_ref = np.load(step1_npz)
+    if "labels_val" in z_ref and "labels_test" in z_ref:
+        yv_ref = np.asarray(z_ref["labels_val"], dtype=np.float32)
+        yt_ref = np.asarray(z_ref["labels_test"], dtype=np.float32)
+        if np.array_equal(y_val, yv_ref) and np.array_equal(y_test, yt_ref):
+            if "preds_hlt_val" in z_ref and "preds_hlt_test" in z_ref:
+                preds_hlt_val = np.asarray(z_ref["preds_hlt_val"], dtype=np.float64)
+                preds_hlt_test = np.asarray(z_ref["preds_hlt_test"], dtype=np.float64)
+            if "preds_teacher_val" in z_ref and "preds_teacher_test" in z_ref:
+                preds_teacher_val = np.asarray(z_ref["preds_teacher_val"], dtype=np.float64)
+                preds_teacher_test = np.asarray(z_ref["preds_teacher_test"], dtype=np.float64)
+            print(f"[prep] using STEP1 HLT/teacher override from: {step1_npz}")
+        else:
+            print(f"[prep] STEP1 labels mismatch; keeping HLT/teacher from m9mid: {step1_npz}")
+
+joint_compat_npz = out_dir / "joint_delta_compat_from_offdrop_mid.npz"
+save_pack = {
+    "labels_val": y_val.astype(np.float32),
+    "labels_test": y_test.astype(np.float32),
+    "preds_hlt_val": preds_hlt_val.astype(np.float64),
+    "preds_hlt_test": preds_hlt_test.astype(np.float64),
+    "preds_joint_val": preds_joint_val.astype(np.float64),
+    "preds_joint_test": preds_joint_test.astype(np.float64),
+}
+if preds_teacher_val is not None and preds_teacher_test is not None:
+    save_pack["preds_teacher_val"] = preds_teacher_val.astype(np.float64)
+    save_pack["preds_teacher_test"] = preds_teacher_test.astype(np.float64)
+np.savez_compressed(joint_compat_npz, **save_pack)
+print(
+    "[prep] wrote joint_delta compatibility npz: "
+    f"{joint_compat_npz} (joint keys: val={k_joint_val}, test={k_joint_test})"
+)
 
 score_files = {
-    "corrected_s01": str(Path(os.environ["M4_NPZ"]).resolve()),
-    "offdrop_mid": str(Path(os.environ["M9MID_NPZ"]).resolve()),
-    "offdrop_high": str(Path(os.environ["M9HIGH_NPZ"]).resolve()),
+    # analyze_hlt_joint31_* requires this key as its base score source.
+    "joint_delta": str(joint_compat_npz),
+    "corrected_s01": str(m4_npz),
+    "offdrop_mid": str(m9mid_npz),
+    "offdrop_high": str(m9high_npz),
 }
-
-if str(os.environ.get("STEP1_REF_USE", "0")) == "1":
-    step1_npz = str(Path(os.environ["STEP1_REF_NPZ"]).resolve())
-    score_files["hlt"] = step1_npz
-    score_files["teacher"] = step1_npz
 
 fusion = {"run_dirs": {"score_files": score_files}}
 fusion_json.write_text(json.dumps(fusion, indent=2), encoding="utf-8")
