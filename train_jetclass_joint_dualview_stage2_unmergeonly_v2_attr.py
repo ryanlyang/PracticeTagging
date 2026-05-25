@@ -39,6 +39,7 @@ from tqdm import tqdm
 
 from evaluate_jetclass_hlt_teacher_baseline import (
     CANONICAL_CLASS_ORDER,
+    CLASS_NAME_ALIASES,
     HLTParams,
     JetClassTransformer,
     JetDataset,
@@ -103,6 +104,15 @@ def parse_args() -> argparse.Namespace:
         default="canonical_labels",
         choices=["filename", "canonical_labels"],
         help="Use filename classes or canonical label_* branches for class assignment.",
+    )
+    p.add_argument(
+        "--include_classes",
+        type=str,
+        default="",
+        help=(
+            "Optional comma-separated class filter (e.g. 'QCD,Tbqq'). "
+            "When set, the run trains/evaluates only these classes."
+        ),
     )
     p.add_argument("--max_constits", type=int, default=128)
     p.add_argument("--train_files_per_class", type=int, default=8)
@@ -305,6 +315,37 @@ def parse_args() -> argparse.Namespace:
 
     p.add_argument("--skip_save_models", action="store_true")
     return p.parse_args()
+
+
+def _resolve_included_classes(raw: str, available: Sequence[str]) -> List[str]:
+    txt = str(raw).strip()
+    if not txt:
+        return []
+    parts = [p.strip() for p in txt.replace(";", ",").split(",") if p.strip()]
+    if not parts:
+        return []
+
+    alias = {str(k).lower(): str(v) for k, v in CLASS_NAME_ALIASES.items()}
+    avail_map = {str(c).lower(): str(c) for c in available}
+
+    resolved: List[str] = []
+    unknown: List[str] = []
+    for token in parts:
+        canon = alias.get(token.lower(), token)
+        matched = avail_map.get(str(canon).lower())
+        if matched is None:
+            unknown.append(token)
+            continue
+        if matched not in resolved:
+            resolved.append(matched)
+
+    if unknown:
+        raise ValueError(
+            "Unknown include_classes entries: "
+            + ", ".join(unknown)
+            + f". Available classes: {list(available)}"
+        )
+    return resolved
 
 
 class ReconstructorWithAttrHeads(nn.Module):
@@ -1544,6 +1585,17 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         class_names = list(CANONICAL_CLASS_ORDER)
     else:
         class_names = sorted(files_by_class.keys())
+
+    include_classes = _resolve_included_classes(str(getattr(args, "include_classes", "")), class_names)
+    if include_classes:
+        include_set = set(include_classes)
+        class_names = [c for c in class_names if c in include_set]
+        if len(class_names) < 2:
+            raise ValueError(
+                f"include_classes resolved to <2 classes: {class_names}. Need at least 2."
+            )
+        print(f"Class filter enabled via include_classes: {class_names}")
+
     class_to_idx = {c: i for i, c in enumerate(class_names)}
     n_classes = len(class_names)
     print("Classes:")
@@ -1553,8 +1605,18 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         else:
             print(f"  {c:12s} : label_* branch")
 
+    if include_classes:
+        split_source = {c: files_by_class[c] for c in class_names if c in files_by_class}
+        if len(split_source) == 0:
+            raise RuntimeError(
+                "No source files found for selected include_classes. "
+                f"Requested={class_names} available_file_prefixes={sorted(files_by_class.keys())}"
+            )
+    else:
+        split_source = files_by_class
+
     tr_files, va_files, te_files = split_files_by_class(
-        files_by_class,
+        split_source,
         n_train=int(args.train_files_per_class),
         n_val=int(args.val_files_per_class),
         n_test=int(args.test_files_per_class),
@@ -2398,6 +2460,7 @@ def run(args: argparse.Namespace) -> Dict[str, object]:
         "feature_preprocessing": str(args.feature_preprocessing),
         "feature_standardization_mode": str(standardization_mode),
         "class_assignment": str(args.class_assignment),
+        "include_classes": class_names,
         "hlt_params": {
             "hlt_pt_threshold": float(args.hlt_pt_threshold),
             "merge_prob_scale": float(args.merge_prob_scale),
