@@ -17,7 +17,7 @@ RUN_NAME="${RUN_NAME:-model6_concat_stagea_corrected_weighted_5m1m1m_seed0}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model6_concat_stagea_corrected_weighted_5m1m1m}"
 SEED="${SEED:-0}"
 DEVICE="${DEVICE:-cuda}"
-NUM_WORKERS="${NUM_WORKERS:-2}"
+NUM_WORKERS="${NUM_WORKERS:-1}"
 
 TRAIN_PATH="${TRAIN_PATH:-./data/train_quarter.h5}"
 

@@ -110,34 +110,63 @@ class StageAConcatTeacherDataset(Dataset):
         labels: np.ndarray,
         budget_merge_true: np.ndarray,
         budget_eff_true: np.ndarray,
+        indices: np.ndarray,
     ):
-        # Memory-only path: share host memory with NumPy arrays (no tensor copy).
-        self.feat_hlt = torch.from_numpy(np.asarray(feat_hlt, dtype=np.float32))
-        self.mask_hlt = torch.from_numpy(np.asarray(mask_hlt, dtype=np.bool_))
-        self.const_hlt = torch.from_numpy(np.asarray(const_hlt, dtype=np.float32))
-        self.const_off = torch.from_numpy(np.asarray(const_off, dtype=np.float32))
-        self.mask_off = torch.from_numpy(np.asarray(mask_off, dtype=np.bool_))
-        self.const_teacher = torch.from_numpy(np.asarray(const_teacher, dtype=np.float32))
-        self.mask_teacher = torch.from_numpy(np.asarray(mask_teacher, dtype=np.bool_))
-        self.labels = torch.from_numpy(np.asarray(labels, dtype=np.float32))
-        self.budget_merge_true = torch.from_numpy(np.asarray(budget_merge_true, dtype=np.float32))
-        self.budget_eff_true = torch.from_numpy(np.asarray(budget_eff_true, dtype=np.float32))
+        # Memory-only path: keep full arrays and index lazily in __getitem__.
+        self.feat_hlt = np.asarray(feat_hlt, dtype=np.float32)
+        self.mask_hlt = np.asarray(mask_hlt, dtype=np.bool_)
+        self.const_hlt = np.asarray(const_hlt, dtype=np.float32)
+        self.const_off = np.asarray(const_off, dtype=np.float32)
+        self.mask_off = np.asarray(mask_off, dtype=np.bool_)
+        self.const_teacher = np.asarray(const_teacher, dtype=np.float32)
+        self.mask_teacher = np.asarray(mask_teacher, dtype=np.bool_)
+        self.labels = np.asarray(labels, dtype=np.float32)
+        self.budget_merge_true = np.asarray(budget_merge_true, dtype=np.float32)
+        self.budget_eff_true = np.asarray(budget_eff_true, dtype=np.float32)
+        self.indices = np.asarray(indices, dtype=np.int64)
 
     def __len__(self) -> int:
-        return self.feat_hlt.shape[0]
+        return self.indices.shape[0]
 
     def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        j = int(self.indices[i])
         return {
-            "feat_hlt": self.feat_hlt[i],
-            "mask_hlt": self.mask_hlt[i],
-            "const_hlt": self.const_hlt[i],
-            "const_off": self.const_off[i],
-            "mask_off": self.mask_off[i],
-            "const_teacher": self.const_teacher[i],
-            "mask_teacher": self.mask_teacher[i],
-            "label": self.labels[i],
-            "budget_merge_true": self.budget_merge_true[i],
-            "budget_eff_true": self.budget_eff_true[i],
+            "feat_hlt": torch.from_numpy(self.feat_hlt[j]),
+            "mask_hlt": torch.from_numpy(self.mask_hlt[j]),
+            "const_hlt": torch.from_numpy(self.const_hlt[j]),
+            "const_off": torch.from_numpy(self.const_off[j]),
+            "mask_off": torch.from_numpy(self.mask_off[j]),
+            "const_teacher": torch.from_numpy(self.const_teacher[j]),
+            "mask_teacher": torch.from_numpy(self.mask_teacher[j]),
+            "label": torch.tensor(float(self.labels[j]), dtype=torch.float32),
+            "budget_merge_true": torch.tensor(float(self.budget_merge_true[j]), dtype=torch.float32),
+            "budget_eff_true": torch.tensor(float(self.budget_eff_true[j]), dtype=torch.float32),
+        }
+
+
+class IndexedJetDataset(Dataset):
+    def __init__(
+        self,
+        feat: np.ndarray,
+        mask: np.ndarray,
+        labels: np.ndarray,
+        indices: np.ndarray,
+    ):
+        # Memory-only path: avoid advanced-index split copies.
+        self.feat = np.asarray(feat, dtype=np.float32)
+        self.mask = np.asarray(mask, dtype=np.bool_)
+        self.labels = np.asarray(labels, dtype=np.float32)
+        self.indices = np.asarray(indices, dtype=np.int64)
+
+    def __len__(self) -> int:
+        return self.indices.shape[0]
+
+    def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+        j = int(self.indices[i])
+        return {
+            "feat": torch.from_numpy(self.feat[j]),
+            "mask": torch.from_numpy(self.mask[j]),
+            "label": torch.tensor(float(self.labels[j]), dtype=torch.float32),
         }
 
 
@@ -195,6 +224,45 @@ def eval_teacher_on_soft_reco_split(
     fpr, tpr, _ = roc_curve(labs, preds)
     fpr_at = float(b.fpr_at_target_tpr(fpr, tpr, float(target_tpr)))
     return auc, preds, labs, fpr_at
+
+
+@torch.no_grad()
+def build_corrected_view_for_split(
+    reconstructor: nn.Module,
+    feat_hlt_std: np.ndarray,
+    hlt_mask: np.ndarray,
+    hlt_const: np.ndarray,
+    split_idx: np.ndarray,
+    device: torch.device,
+    batch_size: int,
+    corrected_weight_floor: float,
+    corrected_use_flags: bool,
+) -> Tuple[np.ndarray, np.ndarray]:
+    idx = np.asarray(split_idx, dtype=np.int64)
+    n = int(idx.shape[0])
+    seq_len = int(feat_hlt_std.shape[1])
+    out_dim = 12 if corrected_use_flags else 10
+
+    feat_b = np.zeros((n, seq_len, out_dim), dtype=np.float32)
+    mask_b = np.zeros((n, seq_len), dtype=bool)
+
+    reconstructor.eval()
+    for start in range(0, n, int(batch_size)):
+        end = min(start + int(batch_size), n)
+        sl = idx[start:end]
+        x = torch.tensor(feat_hlt_std[sl], dtype=torch.float32, device=device)
+        m = torch.tensor(hlt_mask[sl], dtype=torch.bool, device=device)
+        c = torch.tensor(hlt_const[sl], dtype=torch.float32, device=device)
+        reco_out = reconstructor(x, m, c, stage_scale=1.0)
+        fb, mb = b.build_soft_corrected_view(
+            reco_out,
+            weight_floor=float(corrected_weight_floor),
+            scale_features_by_weight=True,
+            include_flags=bool(corrected_use_flags),
+        )
+        feat_b[start:end] = fb.detach().cpu().numpy()
+        mask_b[start:end] = mb.detach().cpu().numpy()
+    return feat_b, mask_b
 
 
 def _compute_concat_teacher_guided_reco_losses(
@@ -1382,9 +1450,9 @@ def main() -> None:
     print("=" * 70)
     bs_cls = int(cfg["training"]["batch_size"])
 
-    ds_train_hlt = b.JetDataset(feat_hlt_std[train_idx], hlt_mask[train_idx], labels[train_idx])
-    ds_val_hlt = b.JetDataset(feat_hlt_std[val_idx], hlt_mask[val_idx], labels[val_idx])
-    ds_test_hlt = b.JetDataset(feat_hlt_std[test_idx], hlt_mask[test_idx], labels[test_idx])
+    ds_train_hlt = IndexedJetDataset(feat_hlt_std, hlt_mask, labels, train_idx)
+    ds_val_hlt = IndexedJetDataset(feat_hlt_std, hlt_mask, labels, val_idx)
+    ds_test_hlt = IndexedJetDataset(feat_hlt_std, hlt_mask, labels, test_idx)
     hlt_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_hlt = DataLoader(
         ds_train_hlt,
@@ -1421,9 +1489,9 @@ def main() -> None:
     auc_hlt_val, preds_hlt_val, labs_hlt_val = b.eval_classifier(baseline, dl_val_hlt, device)
 
     if bool(args.force_m5_step1):
-        ds_train_off = b.JetDataset(feat_off_std[train_idx], masks_off[train_idx], labels[train_idx])
-        ds_val_off = b.JetDataset(feat_off_std[val_idx], masks_off[val_idx], labels[val_idx])
-        ds_test_off = b.JetDataset(feat_off_std[test_idx], masks_off[test_idx], labels[test_idx])
+        ds_train_off = IndexedJetDataset(feat_off_std, masks_off, labels, train_idx)
+        ds_val_off = IndexedJetDataset(feat_off_std, masks_off, labels, val_idx)
+        ds_test_off = IndexedJetDataset(feat_off_std, masks_off, labels, test_idx)
         off_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
         dl_train_off = DataLoader(
             ds_train_off,
@@ -1452,9 +1520,9 @@ def main() -> None:
             f"(val/test): {float(auc_teacher_val):.4f} / {float(auc_teacher_test):.4f}"
         )
 
-    ds_train_concat = b.JetDataset(feat_concat_std[train_idx], mask_concat[train_idx], labels[train_idx])
-    ds_val_concat = b.JetDataset(feat_concat_std[val_idx], mask_concat[val_idx], labels[val_idx])
-    ds_test_concat = b.JetDataset(feat_concat_std[test_idx], mask_concat[test_idx], labels[test_idx])
+    ds_train_concat = IndexedJetDataset(feat_concat_std, mask_concat, labels, train_idx)
+    ds_val_concat = IndexedJetDataset(feat_concat_std, mask_concat, labels, val_idx)
+    ds_test_concat = IndexedJetDataset(feat_concat_std, mask_concat, labels, test_idx)
     concat_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_concat = DataLoader(
         ds_train_concat,
@@ -1507,28 +1575,30 @@ def main() -> None:
     print("STEP 2: STAGE A (CONCAT-TEACHER-GUIDED RECONSTRUCTOR PRETRAIN)")
     print("=" * 70)
     ds_train_reco = StageAConcatTeacherDataset(
-        feat_hlt=feat_hlt_std[train_idx],
-        mask_hlt=hlt_mask[train_idx],
-        const_hlt=hlt_const[train_idx],
-        const_off=const_off[train_idx],
-        mask_off=masks_off[train_idx],
-        const_teacher=const_concat[train_idx],
-        mask_teacher=mask_concat[train_idx],
-        labels=labels[train_idx],
-        budget_merge_true=budget_merge_true[train_idx],
-        budget_eff_true=budget_eff_true[train_idx],
+        feat_hlt=feat_hlt_std,
+        mask_hlt=hlt_mask,
+        const_hlt=hlt_const,
+        const_off=const_off,
+        mask_off=masks_off,
+        const_teacher=const_concat,
+        mask_teacher=mask_concat,
+        labels=labels,
+        budget_merge_true=budget_merge_true,
+        budget_eff_true=budget_eff_true,
+        indices=train_idx,
     )
     ds_val_reco = StageAConcatTeacherDataset(
-        feat_hlt=feat_hlt_std[val_idx],
-        mask_hlt=hlt_mask[val_idx],
-        const_hlt=hlt_const[val_idx],
-        const_off=const_off[val_idx],
-        mask_off=masks_off[val_idx],
-        const_teacher=const_concat[val_idx],
-        mask_teacher=mask_concat[val_idx],
-        labels=labels[val_idx],
-        budget_merge_true=budget_merge_true[val_idx],
-        budget_eff_true=budget_eff_true[val_idx],
+        feat_hlt=feat_hlt_std,
+        mask_hlt=hlt_mask,
+        const_hlt=hlt_const,
+        const_off=const_off,
+        mask_off=masks_off,
+        const_teacher=const_concat,
+        mask_teacher=mask_concat,
+        labels=labels,
+        budget_merge_true=budget_merge_true,
+        budget_eff_true=budget_eff_true,
+        indices=val_idx,
     )
     reco_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_reco = DataLoader(
@@ -1624,42 +1694,115 @@ def main() -> None:
     print("STEP 4: CORRECTED-ONLY TAGGER (FROZEN STAGE-A RECONSTRUCTOR)")
     print("=" * 70)
     corrected_use_flags = bool(args.use_corrected_flags)
-    feat_corr_all, mask_corr_all = b.build_corrected_view_numpy(
-        reconstructor=reconstructor,
-        feat_hlt=feat_hlt_std,
-        mask_hlt=hlt_mask,
-        const_hlt=hlt_const,
-        device=device,
-        batch_size=int(bs_cls),
-        corrected_weight_floor=float(args.reco_weight_threshold),
-        corrected_use_flags=corrected_use_flags,
-    )
+    feat_corr_all = None
+    if bool(args.stop_after_corrected_only):
+        # Memory-only path: materialize corrected features split-by-split instead of all jets at once.
+        del const_off, masks_off, budget_merge_true, budget_eff_true
+        gc.collect()
 
-    ds_train_corr = b.JetDataset(feat_corr_all[train_idx], mask_corr_all[train_idx], labels[train_idx])
-    ds_val_corr = b.JetDataset(feat_corr_all[val_idx], mask_corr_all[val_idx], labels[val_idx])
-    ds_test_corr = b.JetDataset(feat_corr_all[test_idx], mask_corr_all[test_idx], labels[test_idx])
-    corr_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
-    dl_train_corr = DataLoader(
-        ds_train_corr,
-        batch_size=bs_cls,
-        shuffle=(corr_sampler is None),
-        sampler=corr_sampler,
-        drop_last=True,
-    )
-    dl_val_corr = DataLoader(ds_val_corr, batch_size=bs_cls, shuffle=False)
-    dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
+        feat_corr_train, mask_corr_train = build_corrected_view_for_split(
+            reconstructor=reconstructor,
+            feat_hlt_std=feat_hlt_std,
+            hlt_mask=hlt_mask,
+            hlt_const=hlt_const,
+            split_idx=train_idx,
+            device=device,
+            batch_size=int(bs_cls),
+            corrected_weight_floor=float(args.reco_weight_threshold),
+            corrected_use_flags=corrected_use_flags,
+        )
+        feat_corr_val, mask_corr_val = build_corrected_view_for_split(
+            reconstructor=reconstructor,
+            feat_hlt_std=feat_hlt_std,
+            hlt_mask=hlt_mask,
+            hlt_const=hlt_const,
+            split_idx=val_idx,
+            device=device,
+            batch_size=int(bs_cls),
+            corrected_weight_floor=float(args.reco_weight_threshold),
+            corrected_use_flags=corrected_use_flags,
+        )
+        ds_train_corr = b.JetDataset(feat_corr_train, mask_corr_train, labels[train_idx])
+        ds_val_corr = b.JetDataset(feat_corr_val, mask_corr_val, labels[val_idx])
+        corr_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+        dl_train_corr = DataLoader(
+            ds_train_corr,
+            batch_size=bs_cls,
+            shuffle=(corr_sampler is None),
+            sampler=corr_sampler,
+            drop_last=True,
+        )
+        dl_val_corr = DataLoader(ds_val_corr, batch_size=bs_cls, shuffle=False)
 
-    corrected_only = b.ParticleTransformer(input_dim=int(feat_corr_all.shape[-1]), **cfg["model"]).to(device)
-    corrected_only = b.train_single_view_classifier_auc(
-        corrected_only,
-        dl_train_corr,
-        dl_val_corr,
-        device,
-        cfg["training"],
-        name="CorrectedOnly-PostStageA",
-    )
-    auc_corr_val, preds_corr_val, labs_corr_val = b.eval_classifier(corrected_only, dl_val_corr, device)
-    auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
+        corrected_only = b.ParticleTransformer(input_dim=int(feat_corr_train.shape[-1]), **cfg["model"]).to(device)
+        corrected_only = b.train_single_view_classifier_auc(
+            corrected_only,
+            dl_train_corr,
+            dl_val_corr,
+            device,
+            cfg["training"],
+            name="CorrectedOnly-PostStageA",
+        )
+        auc_corr_val, preds_corr_val, labs_corr_val = b.eval_classifier(corrected_only, dl_val_corr, device)
+
+        # Free train/val corrected arrays before building test corrected features.
+        del ds_train_corr, ds_val_corr, dl_train_corr, dl_val_corr
+        del feat_corr_train, mask_corr_train, feat_corr_val, mask_corr_val
+        gc.collect()
+
+        feat_corr_test, mask_corr_test = build_corrected_view_for_split(
+            reconstructor=reconstructor,
+            feat_hlt_std=feat_hlt_std,
+            hlt_mask=hlt_mask,
+            hlt_const=hlt_const,
+            split_idx=test_idx,
+            device=device,
+            batch_size=int(bs_cls),
+            corrected_weight_floor=float(args.reco_weight_threshold),
+            corrected_use_flags=corrected_use_flags,
+        )
+        ds_test_corr = b.JetDataset(feat_corr_test, mask_corr_test, labels[test_idx])
+        dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
+        auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
+        del ds_test_corr, dl_test_corr, feat_corr_test, mask_corr_test
+        gc.collect()
+    else:
+        feat_corr_all, mask_corr_all = b.build_corrected_view_numpy(
+            reconstructor=reconstructor,
+            feat_hlt=feat_hlt_std,
+            mask_hlt=hlt_mask,
+            const_hlt=hlt_const,
+            device=device,
+            batch_size=int(bs_cls),
+            corrected_weight_floor=float(args.reco_weight_threshold),
+            corrected_use_flags=corrected_use_flags,
+        )
+
+        ds_train_corr = b.JetDataset(feat_corr_all[train_idx], mask_corr_all[train_idx], labels[train_idx])
+        ds_val_corr = b.JetDataset(feat_corr_all[val_idx], mask_corr_all[val_idx], labels[val_idx])
+        ds_test_corr = b.JetDataset(feat_corr_all[test_idx], mask_corr_all[test_idx], labels[test_idx])
+        corr_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
+        dl_train_corr = DataLoader(
+            ds_train_corr,
+            batch_size=bs_cls,
+            shuffle=(corr_sampler is None),
+            sampler=corr_sampler,
+            drop_last=True,
+        )
+        dl_val_corr = DataLoader(ds_val_corr, batch_size=bs_cls, shuffle=False)
+        dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
+
+        corrected_only = b.ParticleTransformer(input_dim=int(feat_corr_all.shape[-1]), **cfg["model"]).to(device)
+        corrected_only = b.train_single_view_classifier_auc(
+            corrected_only,
+            dl_train_corr,
+            dl_val_corr,
+            device,
+            cfg["training"],
+            name="CorrectedOnly-PostStageA",
+        )
+        auc_corr_val, preds_corr_val, labs_corr_val = b.eval_classifier(corrected_only, dl_val_corr, device)
+        auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
 
     if bool(args.stop_after_corrected_only):
         fpr_hlt, tpr_hlt, _ = roc_curve(labs_hlt_test, preds_hlt_test)
