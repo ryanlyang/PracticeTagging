@@ -73,6 +73,55 @@ def auc_and_fpr(labels: np.ndarray, scores: np.ndarray, target_tpr: float) -> Tu
     return auc, fpr_t
 
 
+def _sanitize_tensor(x: torch.Tensor) -> Tuple[torch.Tensor, int]:
+    bad = ~torch.isfinite(x)
+    n_bad = int(bad.sum().item())
+    if n_bad > 0:
+        x = torch.nan_to_num(x, nan=0.0, posinf=0.0, neginf=0.0)
+    return x, n_bad
+
+
+def _clip_feature_range(x: torch.Tensor, lo: float = -50.0, hi: float = 50.0) -> torch.Tensor:
+    return torch.clamp(x, min=float(lo), max=float(hi))
+
+
+def _has_nonfinite_grads(module: nn.Module) -> bool:
+    for p in module.parameters():
+        if p.grad is not None and (not torch.isfinite(p.grad).all()):
+            return True
+    return False
+
+
+def _sanitize_module_params(module: nn.Module) -> int:
+    replaced = 0
+    with torch.no_grad():
+        for p in module.parameters():
+            bad = ~torch.isfinite(p)
+            n_bad = int(bad.sum().item())
+            if n_bad > 0:
+                p.copy_(torch.nan_to_num(p, nan=0.0, posinf=0.0, neginf=0.0))
+                replaced += n_bad
+    return replaced
+
+
+def _sanitize_np_features(name: str, feat: np.ndarray, mask: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
+    feat = np.asarray(feat, dtype=np.float32)
+    mask = np.asarray(mask, dtype=bool)
+    bad_feat = ~np.isfinite(feat)
+    bad_mask = ~np.isfinite(mask.astype(np.float32))
+    n_bad_feat = int(bad_feat.sum())
+    n_bad_mask = int(bad_mask.sum())
+    if n_bad_feat > 0:
+        print(f"[{name}] replacing {n_bad_feat} non-finite feature values.")
+        feat = np.nan_to_num(feat, nan=0.0, posinf=0.0, neginf=0.0)
+    if n_bad_mask > 0:
+        print(f"[{name}] replacing {n_bad_mask} non-finite mask values.")
+        mask = np.nan_to_num(mask.astype(np.float32), nan=0.0, posinf=0.0, neginf=0.0) > 0.5
+    feat = np.clip(feat, -50.0, 50.0)
+    feat[~mask] = 0.0
+    return feat.astype(np.float32), mask.astype(bool)
+
+
 def _build_weighted_sampler(sample_weight: np.ndarray | None) -> WeightedRandomSampler | None:
     if sample_weight is None:
         return None
@@ -1131,6 +1180,12 @@ def train_dual_frozen(
         model.train()
         tr_loss = tr_cls = tr_rank = 0.0
         n_tr = 0
+        skipped_bad_batch = 0
+        skipped_bad_grad = 0
+        bad_in_feat = 0
+        bad_in_logits = 0
+        bad_in_loss = 0
+        bad_in_params = 0
 
         for batch in train_loader:
             xa = batch["feat_a"].to(device)
@@ -1139,14 +1194,35 @@ def train_dual_frozen(
             mb = batch["mask_b"].to(device)
             y = batch["label"].to(device)
 
+            xa, n_bad_a = _sanitize_tensor(xa)
+            xb, n_bad_b = _sanitize_tensor(xb)
+            bad_in_feat += int(n_bad_a + n_bad_b)
+            xa = _clip_feature_range(xa)
+            xb = _clip_feature_range(xb)
+            y, _ = _sanitize_tensor(y)
+            y = torch.clamp(y, 0.0, 1.0)
+
             opt.zero_grad()
             logits = model(xa, ma, xb, mb).squeeze(1)
+            if not torch.isfinite(logits).all():
+                bad_in_logits += int((~torch.isfinite(logits)).sum().item())
+                skipped_bad_batch += 1
+                continue
             loss_cls = F.binary_cross_entropy_with_logits(logits, y)
             loss_rank = b.low_fpr_surrogate_loss(logits, y, target_tpr=float(target_tpr), tau=float(rank_tau))
             loss = loss_cls + float(lambda_rank) * loss_rank
+            if not torch.isfinite(loss):
+                bad_in_loss += 1
+                skipped_bad_batch += 1
+                continue
             loss.backward()
+            if _has_nonfinite_grads(model):
+                opt.zero_grad(set_to_none=True)
+                skipped_bad_grad += 1
+                continue
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             opt.step()
+            bad_in_params += _sanitize_module_params(model)
 
             bs = y.size(0)
             tr_loss += float(loss.item()) * bs
@@ -1190,6 +1266,13 @@ def train_dual_frozen(
             print(
                 f"DualFrozen ep {ep+1}: train_loss={tr_loss:.5f} (cls={tr_cls:.5f}, rank={tr_rank:.5f}) | "
                 f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, best_sel={best_sel:.6f}"
+            )
+        if (skipped_bad_batch + skipped_bad_grad) > 0:
+            print(
+                f"[DualFrozen][ep {ep+1}] nonfinite_guard: "
+                f"bad_feat={bad_in_feat}, bad_logits={bad_in_logits}, bad_loss={bad_in_loss}, "
+                f"skipped_batches={skipped_bad_batch}, skipped_grads={skipped_bad_grad}, "
+                f"bad_params={bad_in_params}"
             )
 
         if no_improve >= int(patience):
@@ -1266,6 +1349,7 @@ def eval_dual_joint_dynamic(
 
     preds = []
     labs = []
+    bad_logits_total = 0
     for batch in loader:
         feat_hlt = batch["feat_hlt"].to(device)
         mask_hlt = batch["mask_hlt"].to(device)
@@ -1287,12 +1371,21 @@ def eval_dual_joint_dynamic(
             include_flags=False,
         )
         feat_b = apply_feature_ablation_to_corrected_torch(feat_b, mask_b, str(feature_ablation_mode))
+        feat_a, _ = _sanitize_tensor(feat_a)
+        feat_b, _ = _sanitize_tensor(feat_b)
+        feat_a = _clip_feature_range(feat_a)
+        feat_b = _clip_feature_range(feat_b)
         logits = dual(feat_a, mask_a, feat_b, mask_b).squeeze(1)
+        if not torch.isfinite(logits).all():
+            bad_logits_total += int((~torch.isfinite(logits)).sum().item())
+            logits = torch.nan_to_num(logits, nan=0.0, posinf=0.0, neginf=0.0)
         preds.append(torch.sigmoid(logits).detach().cpu().numpy())
         labs.append(y.detach().cpu().numpy())
 
     preds = np.concatenate(preds).astype(np.float64) if preds else np.zeros(0, dtype=np.float64)
     labs = np.concatenate(labs).astype(np.float32) if labs else np.zeros(0, dtype=np.float32)
+    if bad_logits_total > 0:
+        print(f"[DualJoint-eval] replaced {bad_logits_total} non-finite logits.")
     auc, fpr50 = auc_and_fpr(labs, preds, target_tpr=0.50)
     return auc, preds, labs, fpr50
 
@@ -1381,6 +1474,12 @@ def train_dual_joint_two_reco(
 
         tr_loss = tr_cls = tr_rank = tr_anchor_a = tr_anchor_b = 0.0
         n_tr = 0
+        skipped_bad_batch = 0
+        skipped_bad_grad = 0
+        bad_in_feat = 0
+        bad_in_logits = 0
+        bad_in_loss = 0
+        bad_in_params = 0
 
         for batch in train_loader:
             feat_hlt = batch["feat_hlt"].to(device)
@@ -1397,6 +1496,14 @@ def train_dual_joint_two_reco(
             mask_off_b = batch["mask_off_b"].to(device)
             bmb = batch["budget_merge_b"].to(device)
             beb = batch["budget_eff_b"].to(device)
+
+            feat_hlt, n_bad_feat = _sanitize_tensor(feat_hlt)
+            const_hlt, n_bad_const = _sanitize_tensor(const_hlt)
+            y, _ = _sanitize_tensor(y)
+            y = torch.clamp(y, 0.0, 1.0)
+            bad_in_feat += int(n_bad_feat + n_bad_const)
+            feat_hlt = _clip_feature_range(feat_hlt)
+            const_hlt = _clip_feature_range(const_hlt)
 
             opt.zero_grad()
 
@@ -1416,8 +1523,17 @@ def train_dual_joint_two_reco(
                 include_flags=False,
             )
             feat_b = apply_feature_ablation_to_corrected_torch(feat_b, mask_b, str(feature_ablation_mode))
+            feat_a, n_bad_a = _sanitize_tensor(feat_a)
+            feat_b, n_bad_b = _sanitize_tensor(feat_b)
+            bad_in_feat += int(n_bad_a + n_bad_b)
+            feat_a = _clip_feature_range(feat_a)
+            feat_b = _clip_feature_range(feat_b)
 
             logits = dual(feat_a, mask_a, feat_b, mask_b).squeeze(1)
+            if not torch.isfinite(logits).all():
+                bad_in_logits += int((~torch.isfinite(logits)).sum().item())
+                skipped_bad_batch += 1
+                continue
             loss_cls = F.binary_cross_entropy_with_logits(logits, y)
             loss_rank = b.low_fpr_surrogate_loss(logits, y, target_tpr=0.50, tau=float(rank_tau))
 
@@ -1496,11 +1612,22 @@ def train_dual_joint_two_reco(
                 + float(lambda_anchor_a) * loss_anchor_a
                 + float(lambda_anchor_b) * loss_anchor_b
             )
+            if not torch.isfinite(loss):
+                bad_in_loss += 1
+                skipped_bad_batch += 1
+                continue
             loss.backward()
+            if _has_nonfinite_grads(dual) or _has_nonfinite_grads(reco_a) or _has_nonfinite_grads(reco_b):
+                opt.zero_grad(set_to_none=True)
+                skipped_bad_grad += 1
+                continue
             torch.nn.utils.clip_grad_norm_(dual.parameters(), 1.0)
             torch.nn.utils.clip_grad_norm_(reco_a.parameters(), 1.0)
             torch.nn.utils.clip_grad_norm_(reco_b.parameters(), 1.0)
             opt.step()
+            bad_in_params += _sanitize_module_params(dual)
+            bad_in_params += _sanitize_module_params(reco_a)
+            bad_in_params += _sanitize_module_params(reco_b)
 
             bs = y.size(0)
             tr_loss += float(loss.item()) * bs
@@ -1563,6 +1690,13 @@ def train_dual_joint_two_reco(
                 f"DualJoint ep {ep+1}: train_loss={tr_loss:.5f} (cls={tr_cls:.5f}, rank={tr_rank:.5f}, "
                 f"anchorA={tr_anchor_a:.5f}, anchorB={tr_anchor_b:.5f}) | "
                 f"val_auc={va_auc:.4f}, val_fpr50={va_fpr50:.6f}, best_sel={best_sel:.6f}"
+            )
+        if (skipped_bad_batch + skipped_bad_grad) > 0:
+            print(
+                f"[DualJoint][ep {ep+1}] nonfinite_guard: "
+                f"bad_feat={bad_in_feat}, bad_logits={bad_in_logits}, bad_loss={bad_in_loss}, "
+                f"skipped_batches={skipped_bad_batch}, skipped_grads={skipped_bad_grad}, "
+                f"bad_params={bad_in_params}"
             )
 
         if no_improve >= int(patience):
@@ -2391,6 +2525,8 @@ def main() -> None:
     )
 
     feat_b_train = apply_feature_ablation_to_corrected_np(feat_b_train, mask_b_train, str(feature_ablation_mode))
+    feat_a_train, mask_a_train = _sanitize_np_features("DualFrozen/train/A", feat_a_train, mask_a_train)
+    feat_b_train, mask_b_train = _sanitize_np_features("DualFrozen/train/B", feat_b_train, mask_b_train)
 
     feat_a_val, mask_a_val = b.build_corrected_view_numpy(
         reconstructor=reco_a,
@@ -2414,6 +2550,8 @@ def main() -> None:
     )
 
     feat_b_val = apply_feature_ablation_to_corrected_np(feat_b_val, mask_b_val, str(feature_ablation_mode))
+    feat_a_val, mask_a_val = _sanitize_np_features("DualFrozen/val/A", feat_a_val, mask_a_val)
+    feat_b_val, mask_b_val = _sanitize_np_features("DualFrozen/val/B", feat_b_val, mask_b_val)
 
     feat_a_test, mask_a_test = b.build_corrected_view_numpy(
         reconstructor=reco_a,
@@ -2437,6 +2575,8 @@ def main() -> None:
     )
 
     feat_b_test = apply_feature_ablation_to_corrected_np(feat_b_test, mask_b_test, str(feature_ablation_mode))
+    feat_a_test, mask_a_test = _sanitize_np_features("DualFrozen/test/A", feat_a_test, mask_a_test)
+    feat_b_test, mask_b_test = _sanitize_np_features("DualFrozen/test/B", feat_b_test, mask_b_test)
 
     ds_train_dual = DualViewJetDataset(feat_a_train, mask_a_train, feat_b_train, mask_b_train, labels[train_idx])
     ds_val_dual = DualViewJetDataset(feat_a_val, mask_a_val, feat_b_val, mask_b_val, labels[val_idx])

@@ -33,7 +33,10 @@ CORE12="jetclass_joint_v2attr_200k50k200k_qcdtbqq_m2hlt_hybridops_adaptivegen_co
 OUT_DIR="${OUT_DIR:-${SAVE_DIR}/fusion_reports/twelve_model_200k50k200k_m2hybrid_qcdtbqq_stacked_acc}"
 OPTIMIZE_FOR="${OPTIMIZE_FOR:-acc}"
 
-COMMON_EXPORT="SAVE_DIR=${SAVE_DIR},N_TRAIN_JETS=200000,N_VAL_JETS=50000,N_TEST_JETS=200000,FEATURE_PREPROCESSING=canonical,CLASS_ASSIGNMENT=canonical_labels,INCLUDE_CLASSES=QCD,Tbqq,TARGET_CLASS=Tbqq,BACKGROUND_CLASS=QCD"
+# IMPORTANT: sbatch --export uses comma as separator.
+# Do not pass comma-valued env vars directly here (e.g. INCLUDE_CLASSES=QCD,Tbqq),
+# or they will be split incorrectly. We use ';' and parse it in trainer.
+COMMON_EXPORT="SAVE_DIR=${SAVE_DIR},N_TRAIN_JETS=200000,N_VAL_JETS=50000,N_TEST_JETS=200000,FEATURE_PREPROCESSING=canonical,CLASS_ASSIGNMENT=canonical_labels,INCLUDE_CLASSES=QCD;Tbqq,TARGET_CLASS=Tbqq,BACKGROUND_CLASS=QCD"
 
 submit_train() {
   local job_name="$1"
