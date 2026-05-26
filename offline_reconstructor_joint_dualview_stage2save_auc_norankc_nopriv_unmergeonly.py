@@ -3222,7 +3222,10 @@ def main() -> None:
     train_w_train = train_weight[train_idx].astype(np.float32)
     train_w_val = train_weight[val_idx].astype(np.float32)
     if bool(args.force_m5_step1):
-        print("STEP 1 override: --force_m5_step1 enabled (m5-style weighting path).")
+        print(
+            "STEP 1 override: --force_m5_step1 enabled "
+            "(m5-style unweighted Step-1 loss/metrics, weighted sampling ON)."
+        )
     step1_train_w = np.ones_like(train_w_train, dtype=np.float32) if bool(args.force_m5_step1) else train_w_train
     step1_val_w = np.ones_like(train_w_val, dtype=np.float32) if bool(args.force_m5_step1) else train_w_val
     ds_train_off = WeightedJetDataset(
@@ -3282,8 +3285,9 @@ def main() -> None:
             labels[test_idx],
             sample_weight=test_weight_ref,
         )
-    # Keep STEP-1 truly m5-style when requested: no weighted sampling if force_m5_step1.
-    step1_use_weighted_sampler = bool(args.use_train_weights) and (not bool(args.force_m5_step1))
+    # Match other analyze12 scripts: keep weighted sampling ON in STEP-1 when train weights are enabled.
+    # `force_m5_step1` still controls unweighted Step-1 per-sample loss/metrics via step1_*_w above.
+    step1_use_weighted_sampler = bool(args.use_train_weights)
     off_sampler = _build_weighted_sampler(train_w_train if step1_use_weighted_sampler else None)
     dl_train_off = DataLoader(
         ds_train_off,
