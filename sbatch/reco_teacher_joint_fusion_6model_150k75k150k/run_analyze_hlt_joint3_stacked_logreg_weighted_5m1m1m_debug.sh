@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=an3stk
-#SBATCH --partition=debug
-#SBATCH --time=24:00:00
+#SBATCH --partition=tier3
+#SBATCH --time=6-00:00:00
 #SBATCH --mem=96G
 #SBATCH --cpus-per-task=8
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze3_stacked_weighted_5m1m1m_%j.out
@@ -97,7 +97,7 @@ if [[ -n "${HLT_NPZ}" ]]; then
 fi
 
 echo "============================================================"
-echo "3-Run Stacked-LogReg Fusion (debug 24h)"
+echo "3-Run Stacked-LogReg Fusion (tier3 6d)"
 echo "M4 NPZ:      ${M4_NPZ}"
 echo "M9MID NPZ:   ${M9MID_NPZ}"
 echo "M9HIGH NPZ:  ${M9HIGH_NPZ}"
@@ -113,4 +113,3 @@ echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
 "${CMD[@]}"
-
