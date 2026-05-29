@@ -31,6 +31,8 @@ RECO_PRETRAIN_DIR="${RECO_PRETRAIN_DIR:-checkpoints/reco_teacher_joint_fusion_6m
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-${RECO_PRETRAIN_DIR}}"
 LOAD_RECO_A_CKPT="${LOAD_RECO_A_CKPT:-${RECO_PRETRAIN_DIR}/offline_reconstructor_A_stageA.pt}"
 LOAD_RECO_B_CKPT="${LOAD_RECO_B_CKPT:-${RECO_PRETRAIN_DIR}/offline_reconstructor_B_stageA.pt}"
+RECO_A_PRETRAIN_DIR="${RECO_A_PRETRAIN_DIR:-${RECO_PRETRAIN_DIR/_recoonly/_recoAonly}}"
+RECO_B_PRETRAIN_DIR="${RECO_B_PRETRAIN_DIR:-${RECO_PRETRAIN_DIR/_recoonly/_recoBonly}}"
 
 OFFDROP_PROB_MAX="${OFFDROP_PROB_MAX:-0.0}"
 RATIO_COUNT_UNDER_LAMBDA="${RATIO_COUNT_UNDER_LAMBDA:-1.0}"
@@ -60,6 +62,48 @@ export PYTHONHASHSEED="${SEED}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
 mkdir -p "${SAVE_DIR}"
+
+resolve_existing_file() {
+  for p in "$@"; do
+    if [[ -n "${p}" && -f "${p}" ]]; then
+      echo "${p}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+resolve_step1_dir() {
+  for d in "$@"; do
+    if [[ -n "${d}" && -f "${d}/teacher.pt" && -f "${d}/baseline.pt" ]]; then
+      echo "${d}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Auto-resolve STEP1/checkpoint paths for split recoAonly/recoBonly layout.
+if _d="$(resolve_step1_dir "${STEP1_LOAD_DIR}" "${RECO_PRETRAIN_DIR}" "${RECO_A_PRETRAIN_DIR}" "${RECO_B_PRETRAIN_DIR}")"; then
+  STEP1_LOAD_DIR="${_d}"
+fi
+if _p="$(resolve_existing_file \
+  "${LOAD_RECO_A_CKPT}" \
+  "${RECO_PRETRAIN_DIR}/offline_reconstructor_A_stageA.pt" \
+  "${RECO_A_PRETRAIN_DIR}/offline_reconstructor_A_stageA.pt")"; then
+  LOAD_RECO_A_CKPT="${_p}"
+fi
+if _p="$(resolve_existing_file \
+  "${LOAD_RECO_B_CKPT}" \
+  "${RECO_PRETRAIN_DIR}/offline_reconstructor_B_stageA.pt" \
+  "${RECO_B_PRETRAIN_DIR}/offline_reconstructor_B_stageA.pt")"; then
+  LOAD_RECO_B_CKPT="${_p}"
+fi
+unset _d _p
+
+echo "Resolved STEP1_LOAD_DIR=${STEP1_LOAD_DIR}"
+echo "Resolved LOAD_RECO_A_CKPT=${LOAD_RECO_A_CKPT}"
+echo "Resolved LOAD_RECO_B_CKPT=${LOAD_RECO_B_CKPT}"
 
 if [[ ! -f "${STEP1_LOAD_DIR}/teacher.pt" ]]; then
   echo "ERROR: Missing teacher checkpoint: ${STEP1_LOAD_DIR}/teacher.pt" >&2
