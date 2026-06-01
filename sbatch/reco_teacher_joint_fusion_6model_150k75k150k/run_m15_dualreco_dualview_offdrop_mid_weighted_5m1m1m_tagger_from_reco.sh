@@ -41,8 +41,11 @@ RECO_PRETRAIN_DIR="${RECO_PRETRAIN_DIR:-checkpoints/reco_teacher_joint_fusion_6m
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-${RECO_PRETRAIN_DIR}}"
 LOAD_RECO_A_CKPT="${LOAD_RECO_A_CKPT:-${RECO_PRETRAIN_DIR}/offline_reconstructor_A_stageA.pt}"
 LOAD_RECO_B_CKPT="${LOAD_RECO_B_CKPT:-${RECO_PRETRAIN_DIR}/offline_reconstructor_B_stageA.pt}"
-RECO_A_PRETRAIN_DIR="${RECO_A_PRETRAIN_DIR:-${RECO_PRETRAIN_DIR/_recoonly/_recoAonly}}"
-RECO_B_PRETRAIN_DIR="${RECO_B_PRETRAIN_DIR:-${RECO_PRETRAIN_DIR/_recoonly/_recoBonly}}"
+RECO_A_PRETRAIN_DIR="${RECO_A_PRETRAIN_DIR:-${RECO_PRETRAIN_DIR//_recoonly/_recoAonly}}"
+RECO_B_PRETRAIN_DIR="${RECO_B_PRETRAIN_DIR:-${RECO_PRETRAIN_DIR//_recoonly/_recoBonly}}"
+STEP1_FALLBACK_FROM_RECOONLY="${STEP1_FALLBACK_FROM_RECOONLY:-${RECO_PRETRAIN_DIR//_recoonly/}}"
+STEP1_FALLBACK_FROM_RECOAONLY="${STEP1_FALLBACK_FROM_RECOAONLY:-${RECO_A_PRETRAIN_DIR//_recoAonly/}}"
+STEP1_FALLBACK_FROM_RECOBONLY="${STEP1_FALLBACK_FROM_RECOBONLY:-${RECO_B_PRETRAIN_DIR//_recoBonly/}}"
 
 set +u
 source ~/.bashrc
@@ -80,7 +83,14 @@ resolve_step1_dir() {
 }
 
 # Auto-resolve STEP1/checkpoint paths for split recoAonly/recoBonly layout.
-if _d="$(resolve_step1_dir "${STEP1_LOAD_DIR}" "${RECO_PRETRAIN_DIR}" "${RECO_A_PRETRAIN_DIR}" "${RECO_B_PRETRAIN_DIR}")"; then
+if _d="$(resolve_step1_dir \
+  "${STEP1_LOAD_DIR}" \
+  "${STEP1_FALLBACK_FROM_RECOONLY}" \
+  "${STEP1_FALLBACK_FROM_RECOAONLY}" \
+  "${STEP1_FALLBACK_FROM_RECOBONLY}" \
+  "${RECO_PRETRAIN_DIR}" \
+  "${RECO_A_PRETRAIN_DIR}" \
+  "${RECO_B_PRETRAIN_DIR}")"; then
   STEP1_LOAD_DIR="${_d}"
 fi
 if _p="$(resolve_existing_file \
