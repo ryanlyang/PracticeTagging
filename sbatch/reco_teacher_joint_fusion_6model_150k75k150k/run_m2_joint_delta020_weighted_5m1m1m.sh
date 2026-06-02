@@ -27,6 +27,7 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
+STAGEA_LOAD_RECO_CKPT="${STAGEA_LOAD_RECO_CKPT:-}"
 
 set +u
 source ~/.bashrc
@@ -76,6 +77,10 @@ CMD=(
   --step1_load_dir "${STEP1_LOAD_DIR}"
   --device "${DEVICE}"
 )
+
+if [[ -n "${STAGEA_LOAD_RECO_CKPT}" ]]; then
+  CMD+=(--stageA_load_reco_ckpt "${STAGEA_LOAD_RECO_CKPT}")
+fi
 
 echo "============================================================"
 echo "Model-2 Joint weighted (L_delta=0.20)"

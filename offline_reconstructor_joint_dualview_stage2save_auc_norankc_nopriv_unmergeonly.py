@@ -122,6 +122,19 @@ def _load_checkpoint_model_state(path: str, device: torch.device) -> Dict[str, t
     raise ValueError(f"Unsupported checkpoint format at {path}")
 
 
+def _sanitize_score_array(scores: np.ndarray, context: str) -> np.ndarray:
+    scores = np.asarray(scores, dtype=np.float32)
+    bad = ~np.isfinite(scores)
+    if bool(np.any(bad)):
+        print(
+            f"Warning: NaN/Inf in {context}; replacing "
+            f"{int(bad.sum())}/{int(scores.size)} scores with 0.5."
+        )
+        scores = scores.copy()
+        scores[bad] = 0.5
+    return scores
+
+
 def _weighted_batch_mean(vec: torch.Tensor, sample_weight: torch.Tensor | None) -> torch.Tensor:
     if sample_weight is None:
         return vec.mean()
@@ -1239,6 +1252,7 @@ def eval_joint_model(
     labs = np.concatenate(labs) if labs else np.zeros(0, dtype=np.float32)
     if preds.size == 0:
         return float("nan"), preds, labs, float("nan")
+    preds = _sanitize_score_array(preds, "joint evaluation predictions")
     auc = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else float("nan")
     fpr, tpr, _ = roc_curve(labs, preds)
     fpr50 = fpr_at_target_tpr(fpr, tpr, 0.50)
@@ -1302,11 +1316,14 @@ def eval_joint_model_both_metrics(
             "fpr50_weighted": float("nan"),
         }
 
+    preds = _sanitize_score_array(preds, "joint validation predictions")
     auc_unw = roc_auc_score(labs, preds) if len(np.unique(labs)) > 1 else float("nan")
     fpr_unw, tpr_unw, _ = roc_curve(labs, preds)
     fpr50_unw = fpr_at_target_tpr(fpr_unw, tpr_unw, 0.50)
 
     weights = np.concatenate(w_list).astype(np.float32) if (has_weights and w_list) else np.zeros(0, dtype=np.float32)
+    if weights.size:
+        weights = np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0).astype(np.float32)
     if weights.size == preds.size and float(np.sum(weights)) > 0.0 and len(np.unique(labs)) > 1:
         auc_w = roc_auc_score(labs, preds, sample_weight=weights)
         fpr_w, tpr_w, _ = roc_curve(labs, preds, sample_weight=weights)
@@ -2686,6 +2703,12 @@ def main() -> None:
         help="Disable reloading the best Stage-A validation checkpoint at each stage-scale transition.",
     )
     parser.add_argument(
+        "--stageA_load_reco_ckpt",
+        type=str,
+        default="",
+        help="If set, load this Stage-A reconstructor checkpoint and skip Stage-A training.",
+    )
+    parser.add_argument(
         "--stageA_loss_schedule",
         action="store_true",
         help="Enable Stage-A phase-scheduled reconstruction loss weights.",
@@ -3822,17 +3845,30 @@ def main() -> None:
         f"joint_sampler={'on' if joint_use_weighted_sampler else 'off'}"
     )
 
-    reconstructor, reco_val_metrics = train_reconstructor_weighted(
-        reconstructor,
-        dl_train_reco,
-        dl_val_reco,
-        device,
-        cfg["reconstructor_training"],
-        cfg["loss"],
-        apply_reco_weight=bool(use_reco_weighting_all_stages),
-        use_weighted_val_selection=bool(use_weighted_val_selection_all_stages),
-        reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
-    )
+    stageA_load_reco_ckpt = str(args.stageA_load_reco_ckpt).strip()
+    if stageA_load_reco_ckpt:
+        reconstructor.load_state_dict(_load_checkpoint_model_state(stageA_load_reco_ckpt, device))
+        reco_val_metrics = {
+            "loaded_from_checkpoint": stageA_load_reco_ckpt,
+            "stageA_training_skipped": True,
+        }
+        print(f"Loaded Stage-A reconstructor checkpoint: {stageA_load_reco_ckpt}")
+    else:
+        reconstructor, reco_val_metrics = train_reconstructor_weighted(
+            reconstructor,
+            dl_train_reco,
+            dl_val_reco,
+            device,
+            cfg["reconstructor_training"],
+            cfg["loss"],
+            apply_reco_weight=bool(use_reco_weighting_all_stages),
+            use_weighted_val_selection=bool(use_weighted_val_selection_all_stages),
+            reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
+        )
+
+    if not args.skip_save_models:
+        torch.save({"model": reconstructor.state_dict(), "val": reco_val_metrics}, save_root / "offline_reconstructor_stageA.pt")
+        print(f"Saved Stage-A reconstructor checkpoint to: {save_root / 'offline_reconstructor_stageA.pt'}")
 
     # Joint datasets
     train_pos = {int(j): i for i, j in enumerate(train_idx.tolist())}
