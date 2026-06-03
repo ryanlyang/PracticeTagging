@@ -4006,6 +4006,38 @@ def main() -> None:
         )
         assert np.array_equal(labs.astype(np.float32), labs_stage2_fprsel.astype(np.float32))
 
+    if not args.skip_save_models:
+        try:
+            torch.save(
+                {"model": stage2_reco_state, "val": reco_val_metrics, "stageB": stageB_metrics},
+                save_root / "offline_reconstructor_stage2.pt",
+            )
+            torch.save(
+                {
+                    "model": stage2_dual_state,
+                    "stageB": stageB_metrics,
+                    "auc": float(auc_stage2),
+                },
+                save_root / "dual_joint_stage2.pt",
+            )
+            if stageB_states.get("fpr50", {}).get("reco") is not None:
+                torch.save(
+                    {"model": stageB_states["fpr50"]["reco"], "val": reco_val_metrics, "stageB": stageB_metrics},
+                    save_root / "offline_reconstructor_stage2_bestfpr50.pt",
+                )
+            if stageB_states.get("fpr50", {}).get("dual") is not None:
+                torch.save(
+                    {
+                        "model": stageB_states["fpr50"]["dual"],
+                        "stageB": stageB_metrics,
+                        "auc": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else float("nan"),
+                    },
+                    save_root / "dual_joint_stage2_bestfpr50.pt",
+                )
+            print(f"Saved early Stage-B checkpoints to: {save_root}")
+        except Exception as exc:
+            print(f"[warn] Failed to save early Stage-B checkpoints: {exc}")
+
     # Restore Stage-B selected state before entering Stage C.
     reconstructor.load_state_dict(stage2_reco_state)
     dual_joint.load_state_dict(stage2_dual_state)
@@ -4087,6 +4119,30 @@ def main() -> None:
         reconstructor.load_state_dict(stageC_states["selected"]["reco"])
     if stageC_states.get("selected", {}).get("dual") is not None:
         dual_joint.load_state_dict(stageC_states["selected"]["dual"])
+
+    if not args.skip_save_models:
+        try:
+            torch.save(
+                {"model": reconstructor.state_dict(), "val": reco_val_metrics, "stageC": stageC_metrics},
+                save_root / "offline_reconstructor_stageC_selected_pre_diagnostics.pt",
+            )
+            torch.save(
+                {"model": dual_joint.state_dict(), "stageC": stageC_metrics},
+                save_root / "dual_joint_stageC_selected_pre_diagnostics.pt",
+            )
+            if stageC_states.get("fpr50", {}).get("reco") is not None:
+                torch.save(
+                    {"model": stageC_states["fpr50"]["reco"], "val": reco_val_metrics, "stageC": stageC_metrics},
+                    save_root / "offline_reconstructor_stageC_bestfpr50_pre_diagnostics.pt",
+                )
+            if stageC_states.get("fpr50", {}).get("dual") is not None:
+                torch.save(
+                    {"model": stageC_states["fpr50"]["dual"], "stageC": stageC_metrics},
+                    save_root / "dual_joint_stageC_bestfpr50_pre_diagnostics.pt",
+                )
+            print(f"Saved early Stage-C checkpoints before diagnostics to: {save_root}")
+        except Exception as exc:
+            print(f"[warn] Failed to save early Stage-C checkpoints: {exc}")
 
     # Build hard reconstructed view for diagnostics.
     print("\n" + "=" * 70)
@@ -4329,8 +4385,12 @@ def main() -> None:
 
     if bool(args.save_fusion_scores):
         print("Saving val/test score arrays for fusion analysis...")
-        auc_teacher_val, preds_teacher_val, labs_teacher_val = eval_classifier(teacher, dl_val_off, device)
-        auc_baseline_val, preds_baseline_val, labs_baseline_val = eval_classifier(baseline, dl_val_hlt, device)
+        # STEP-1 validation loaders are intentionally deleted before Stage-A to reduce RAM.
+        # Reuse the cached val scores computed during STEP 1.
+        preds_teacher_val = np.asarray(preds_teacher_val, dtype=np.float64)
+        labs_teacher_val = np.asarray(labs_teacher_val, dtype=np.float32)
+        preds_baseline_val = np.asarray(preds_baseline_val, dtype=np.float64)
+        labs_baseline_val = np.asarray(labs_baseline_val, dtype=np.float32)
         # Export pre-joint (Stage-B selected) val/test scores as separate heads.
         auc_stage2_val = float("nan")
         preds_stage2_val = np.zeros(0, dtype=np.float64)
