@@ -8,7 +8,8 @@ set -euo pipefail
 # filename-derived JetClass labels to avoid the slow canonical label-branch scan.
 
 PARTITION="${PARTITION:-tier3}"
-TIME_LIMIT="${TIME_LIMIT:-5-00:00:00}"
+TRAIN_TIME_LIMIT="${TRAIN_TIME_LIMIT:-${TIME_LIMIT:-4-00:00:00}}"
+FUSION_TIME_LIMIT="${FUSION_TIME_LIMIT:-2-00:00:00}"
 TRAIN_MEM="${TRAIN_MEM:-256G}"
 FUSION_MEM="${FUSION_MEM:-160G}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/jetclass_joint_dualview}"
@@ -50,7 +51,7 @@ submit_train() {
   sbatch --parsable \
     --job-name="${job_name}" \
     --partition="${PARTITION}" \
-    --time="${TIME_LIMIT}" \
+    --time="${TRAIN_TIME_LIMIT}" \
     "${mem_args[@]}" \
     --export="ALL,${COMMON_EXPORT},${export_kv}" \
     "${RUNNER_TRAIN}"
@@ -66,14 +67,16 @@ submit_fusion() {
   sbatch --parsable \
     --job-name="jc12F1MF" \
     --partition="${PARTITION}" \
-    --time="${TIME_LIMIT}" \
+    --time="${FUSION_TIME_LIMIT}" \
     "${mem_args[@]}" \
     --dependency="${dep}" \
     --export="ALL,${export_kv}" \
     "${RUNNER_FUSION}"
 }
 
-echo "Submitting fixed-HLT JetClass 12-runner m2-hybrid 1M/250k/1M pipeline on ${PARTITION} (time=${TIME_LIMIT})"
+echo "Submitting fixed-HLT JetClass 12-runner m2-hybrid 1M/250k/1M pipeline on ${PARTITION}"
+echo "Train time: ${TRAIN_TIME_LIMIT}"
+echo "Fusion time: ${FUSION_TIME_LIMIT}"
 echo "Fixed HLT: pt_thr=1.30 merge=1.35 reassign=1.00 smear=1.00 eff=0.99/0.97 turnon=1.40 width=0.20"
 echo "Labels:    filename"
 echo "Seed:      52"
@@ -137,7 +140,8 @@ echo "  FUSION ${jfuse} twelve-model stacked metafuser"
 echo "============================================================"
 echo "Queued fixed-HLT JetClass 12-runner m2-hybrid 1M/250k/1M pipeline"
 echo "Partition:   ${PARTITION}"
-echo "Time limit:  ${TIME_LIMIT}"
+echo "Train time:  ${TRAIN_TIME_LIMIT}"
+echo "Fusion time: ${FUSION_TIME_LIMIT}"
 echo "Train mem:   ${TRAIN_MEM:-runner-default}"
 echo "Fusion mem:  ${FUSION_MEM:-runner-default}"
 echo "Fusion job:  ${jfuse}"
