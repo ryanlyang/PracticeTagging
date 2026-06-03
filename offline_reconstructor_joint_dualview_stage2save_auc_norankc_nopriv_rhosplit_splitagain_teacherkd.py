@@ -102,6 +102,20 @@ def _clamp_target_scale(x: float) -> float:
     return float(min(max(float(x), 0.0), 1.0))
 
 
+def _load_model_state_from_checkpoint(path: str | Path, device: torch.device) -> tuple[Dict[str, torch.Tensor], Dict[str, object]]:
+    checkpoint_path = Path(path).expanduser()
+    pack = torch.load(checkpoint_path, map_location=device)
+    if isinstance(pack, dict) and "model" in pack:
+        state = pack["model"]
+        meta = {str(key): value for key, value in pack.items() if key != "model"}
+    else:
+        state = pack
+        meta = {}
+    if not isinstance(state, dict):
+        raise RuntimeError(f"Checkpoint does not contain a state_dict: {checkpoint_path}")
+    return state, meta
+
+
 def load_raw_constituents_labels_weights_from_h5(
     files: list[Path],
     max_jets: int,
@@ -2494,6 +2508,12 @@ def main() -> None:
     # Stage A (reconstructor pretrain)
     parser.add_argument("--stageA_epochs", type=int, default=90)
     parser.add_argument("--stageA_patience", type=int, default=18)
+    parser.add_argument(
+        "--stageA_load_reco_ckpt",
+        type=str,
+        default="",
+        help="If set, load this Stage-A reconstructor checkpoint and skip Stage-A training.",
+    )
     parser.add_argument("--stageA_kd_temp", type=float, default=2.5)
     parser.add_argument("--stageA_lambda_kd", type=float, default=1.0)
     parser.add_argument("--stageA_lambda_emb", type=float, default=1.2)
@@ -3483,39 +3503,52 @@ def main() -> None:
         pin_memory=torch.cuda.is_available(),
     )
 
-    reconstructor = OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
     BASE_CONFIG["loss"] = cfg["loss"]
-    reconstructor, reco_val_metrics = train_reconstructor_teacher_guided(
-        model=reconstructor,
-        train_loader=dl_train_reco,
-        val_loader=dl_val_reco,
-        device=device,
-        train_cfg=cfg["reconstructor_training"],
-        loss_cfg=cfg["loss"],
-        teacher_model=stagea_teacher_model,
-        feat_means=means.astype(np.float32),
-        feat_stds=stds.astype(np.float32),
-        kd_temperature=float(args.stageA_kd_temp),
-        lambda_kd=float(args.stageA_lambda_kd),
-        lambda_emb=float(args.stageA_lambda_emb),
-        lambda_tok=float(args.stageA_lambda_tok),
-        lambda_phys=float(args.stageA_lambda_phys),
-        lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
-        budget_eps=float(args.stageA_budget_eps),
-        budget_weight_floor=float(args.stageA_budget_weight_floor),
-        target_tpr_for_fpr=float(args.stageA_target_tpr),
-        normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
-        loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
-        loss_norm_eps=float(args.stageA_loss_norm_eps),
-        reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
-        stagea_fused_adv_weight=float(args.stageA_fused_adv_weight),
-        stagea_fused_adv_power=float(args.stageA_fused_adv_power),
-        stagea_fused_uncert_weight=float(args.stageA_fused_uncert_weight),
-        stagea_fused_adv_use_abs=bool(args.stageA_fused_adv_use_abs),
-        stagea_fused_kd_w_min=float(args.stageA_fused_kd_w_min),
-        stagea_fused_kd_w_max=float(args.stageA_fused_kd_w_max),
-        stagea_lambda_delta_aux=float(args.stageA_lambda_delta_aux),
-    )
+    reconstructor = OfflineReconstructor(input_dim=7, **cfg["reconstructor_model"]).to(device)
+    stagea_load_reco_ckpt = str(getattr(args, "stageA_load_reco_ckpt", "")).strip()
+    if stagea_load_reco_ckpt:
+        reco_state, reco_meta = _load_model_state_from_checkpoint(stagea_load_reco_ckpt, device)
+        reconstructor.load_state_dict(reco_state, strict=True)
+        reco_val_metrics = dict(reco_meta.get("val", {})) if isinstance(reco_meta.get("val", {}), dict) else {}
+        reco_val_metrics.update(
+            {
+                "loaded_from_checkpoint": str(Path(stagea_load_reco_ckpt).expanduser()),
+                "stageA_training_skipped": True,
+            }
+        )
+        print(f"STEP 2: loaded Stage-A reconstructor checkpoint from {stagea_load_reco_ckpt}")
+    else:
+        reconstructor, reco_val_metrics = train_reconstructor_teacher_guided(
+            model=reconstructor,
+            train_loader=dl_train_reco,
+            val_loader=dl_val_reco,
+            device=device,
+            train_cfg=cfg["reconstructor_training"],
+            loss_cfg=cfg["loss"],
+            teacher_model=stagea_teacher_model,
+            feat_means=means.astype(np.float32),
+            feat_stds=stds.astype(np.float32),
+            kd_temperature=float(args.stageA_kd_temp),
+            lambda_kd=float(args.stageA_lambda_kd),
+            lambda_emb=float(args.stageA_lambda_emb),
+            lambda_tok=float(args.stageA_lambda_tok),
+            lambda_phys=float(args.stageA_lambda_phys),
+            lambda_budget_hinge=float(args.stageA_lambda_budget_hinge),
+            budget_eps=float(args.stageA_budget_eps),
+            budget_weight_floor=float(args.stageA_budget_weight_floor),
+            target_tpr_for_fpr=float(args.stageA_target_tpr),
+            normalize_loss_terms=not bool(args.disable_stageA_loss_normalization),
+            loss_norm_ema_decay=float(args.stageA_loss_norm_ema_decay),
+            loss_norm_eps=float(args.stageA_loss_norm_eps),
+            reload_best_at_stage_transition=not bool(args.disable_stageA_stagewise_best_reload),
+            stagea_fused_adv_weight=float(args.stageA_fused_adv_weight),
+            stagea_fused_adv_power=float(args.stageA_fused_adv_power),
+            stagea_fused_uncert_weight=float(args.stageA_fused_uncert_weight),
+            stagea_fused_adv_use_abs=bool(args.stageA_fused_adv_use_abs),
+            stagea_fused_kd_w_min=float(args.stageA_fused_kd_w_min),
+            stagea_fused_kd_w_max=float(args.stageA_fused_kd_w_max),
+            stagea_lambda_delta_aux=float(args.stageA_lambda_delta_aux),
+        )
 
     # Crash-safety: persist STEP-1/STEP-2 artifacts immediately after Stage-A finishes.
     if not args.skip_save_models:
@@ -3768,6 +3801,38 @@ def main() -> None:
         )
         assert np.array_equal(labs.astype(np.float32), labs_stage2_fprsel.astype(np.float32))
 
+    if not args.skip_save_models:
+        try:
+            torch.save(
+                {"model": stage2_reco_state, "val": reco_val_metrics, "stageB": stageB_metrics},
+                save_root / "offline_reconstructor_stage2.pt",
+            )
+            torch.save(
+                {
+                    "model": stage2_dual_state,
+                    "stageB": stageB_metrics,
+                    "auc": float(auc_stage2),
+                },
+                save_root / "dual_joint_stage2.pt",
+            )
+            if stageB_states.get("fpr50", {}).get("reco") is not None:
+                torch.save(
+                    {"model": stageB_states["fpr50"]["reco"], "val": reco_val_metrics, "stageB": stageB_metrics},
+                    save_root / "offline_reconstructor_stage2_bestfpr50.pt",
+                )
+            if stageB_states.get("fpr50", {}).get("dual") is not None:
+                torch.save(
+                    {
+                        "model": stageB_states["fpr50"]["dual"],
+                        "stageB": stageB_metrics,
+                        "auc": float(auc_stage2_fprsel) if preds_stage2_fprsel is not None else float("nan"),
+                    },
+                    save_root / "dual_joint_stage2_bestfpr50.pt",
+                )
+            print(f"Saved early Stage-B checkpoints to: {save_root}")
+        except Exception as exc:
+            print(f"[warn] Failed to save early Stage-B checkpoints: {exc}")
+
     # Restore Stage-B selected state before entering Stage C.
     reconstructor.load_state_dict(stage2_reco_state)
     dual_joint.load_state_dict(stage2_dual_state)
@@ -3826,6 +3891,30 @@ def main() -> None:
         joint_fused_kd_w_min=float(args.joint_fused_kd_w_min),
         joint_fused_kd_w_max=float(args.joint_fused_kd_w_max),
     )
+
+    if not args.skip_save_models:
+        try:
+            torch.save(
+                {"model": reconstructor.state_dict(), "val": reco_val_metrics, "stageC": stageC_metrics},
+                save_root / "offline_reconstructor_stageC_selected_pre_eval.pt",
+            )
+            torch.save(
+                {"model": dual_joint.state_dict(), "stageC": stageC_metrics},
+                save_root / "dual_joint_stageC_selected_pre_eval.pt",
+            )
+            if stageC_states.get("fpr50", {}).get("reco") is not None:
+                torch.save(
+                    {"model": stageC_states["fpr50"]["reco"], "val": reco_val_metrics, "stageC": stageC_metrics},
+                    save_root / "offline_reconstructor_stageC_bestfpr50_pre_eval.pt",
+                )
+            if stageC_states.get("fpr50", {}).get("dual") is not None:
+                torch.save(
+                    {"model": stageC_states["fpr50"]["dual"], "stageC": stageC_metrics},
+                    save_root / "dual_joint_stageC_bestfpr50_pre_eval.pt",
+                )
+            print(f"Saved early Stage-C checkpoints before final eval to: {save_root}")
+        except Exception as exc:
+            print(f"[warn] Failed to save early Stage-C checkpoints: {exc}")
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
         reconstructor,

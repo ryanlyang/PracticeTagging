@@ -28,6 +28,13 @@ N_TEST_SPLIT="${N_TEST_SPLIT:-1000000}"
 OFFSET_JETS="${OFFSET_JETS:-0}"
 MAX_CONSTITS="${MAX_CONSTITS:-100}"
 STEP1_LOAD_DIR="${STEP1_LOAD_DIR:-}"
+STAGEA_LOAD_RECO_CKPT="${STAGEA_LOAD_RECO_CKPT:-}"
+STAGEB_EPOCHS="${STAGEB_EPOCHS:-45}"
+STAGEB_PATIENCE="${STAGEB_PATIENCE:-12}"
+STAGEB_MIN_EPOCHS="${STAGEB_MIN_EPOCHS:-12}"
+STAGEC_EPOCHS="${STAGEC_EPOCHS:-65}"
+STAGEC_PATIENCE="${STAGEC_PATIENCE:-14}"
+STAGEC_MIN_EPOCHS="${STAGEC_MIN_EPOCHS:-25}"
 
 set +u
 source ~/.bashrc
@@ -74,6 +81,12 @@ CMD=(
   --stageA_loss_norm_eps 1e-6
   --stageB_lambda_rank 0.0
   --stageB_lambda_cons 0.0
+  --stageB_epochs "${STAGEB_EPOCHS}"
+  --stageB_patience "${STAGEB_PATIENCE}"
+  --stageB_min_epochs "${STAGEB_MIN_EPOCHS}"
+  --stageC_epochs "${STAGEC_EPOCHS}"
+  --stageC_patience "${STAGEC_PATIENCE}"
+  --stageC_min_epochs "${STAGEC_MIN_EPOCHS}"
   --stageC_lr_dual 1e-5
   --stageC_lr_reco 5e-6
   --lambda_reco 0.4
@@ -86,11 +99,18 @@ CMD=(
   --device "${DEVICE}"
 )
 
+if [[ -n "${STAGEA_LOAD_RECO_CKPT}" ]]; then
+  CMD+=(--stageA_load_reco_ckpt "${STAGEA_LOAD_RECO_CKPT}")
+fi
+
 echo "============================================================"
 echo "Model-5 Joint dual-view full run (s01 StageA, weighted)"
 echo "Run: ${SAVE_DIR}/${RUN_NAME}"
 echo "Train path: ${TRAIN_PATH}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
+echo "Stage-A load reco ckpt: ${STAGEA_LOAD_RECO_CKPT:-<none>}"
+echo "StageB: epochs=${STAGEB_EPOCHS}, patience=${STAGEB_PATIENCE}, min_epochs=${STAGEB_MIN_EPOCHS}"
+echo "StageC: epochs=${STAGEC_EPOCHS}, patience=${STAGEC_PATIENCE}, min_epochs=${STAGEC_MIN_EPOCHS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
