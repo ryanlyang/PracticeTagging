@@ -2772,6 +2772,11 @@ def main() -> None:
     )
 
     # Stage C (joint finetune)
+    parser.add_argument(
+        "--skip_stageC_joint",
+        action="store_true",
+        help="Skip Stage-C joint finetuning; export the Stage-B selected dual-view model as the final joint head.",
+    )
     parser.add_argument("--stageC_epochs", type=int, default=65)
     parser.add_argument("--stageC_patience", type=int, default=14)
     parser.add_argument("--stageC_min_epochs", type=int, default=25)
@@ -4042,51 +4047,68 @@ def main() -> None:
     reconstructor.load_state_dict(stage2_reco_state)
     dual_joint.load_state_dict(stage2_dual_state)
 
-    print("\n" + "=" * 70)
-    print("STEP 4: STAGE C (JOINT FINETUNE)")
-    print("=" * 70)
-    reconstructor, dual_joint, stageC_metrics, stageC_states = train_joint_dual(
-        reconstructor=reconstructor,
-        dual_model=dual_joint,
-        train_loader=dl_train_joint,
-        val_loader=dl_val_joint,
-        device=device,
-        stage_name="StageC-Joint",
-        freeze_reconstructor=False,
-        epochs=int(args.stageC_epochs),
-        patience=int(args.stageC_patience),
-        lr_dual=float(args.stageC_lr_dual),
-        lr_reco=float(args.stageC_lr_reco),
-        weight_decay=float(cfg["training"]["weight_decay"]),
-        warmup_epochs=int(cfg["training"]["warmup_epochs"]),
-        lambda_reco=float(args.lambda_reco),
-        lambda_rank=0.0,
-        lambda_cons=float(args.lambda_cons),
-        corrected_weight_floor=float(args.corrected_weight_floor),
-        corrected_use_flags=bool(args.use_corrected_flags),
-        min_epochs=int(args.stageC_min_epochs),
-        select_metric=selection_metric,
-        apply_cls_weight=bool(use_cls_weighting_all_stages),
-        apply_reco_weight=bool(use_reco_weighting_all_stages),
-        val_weight_key="sample_weight_cls",
-        use_weighted_val_selection=bool(use_weighted_val_selection_all_stages),
-        lambda_delta_cls=float(args.stageC_lambda_delta),
-        delta_tau=float(args.stageC_delta_tau),
-        delta_lambda_fp=float(args.stageC_delta_lambda_fp),
-        delta_hlt_model=baseline,
-        delta_hlt_threshold_prob=float(hlt_delta_thr_prob),
-        delta_warmup_epochs=int(args.stageC_delta_warmup_epochs),
-        progressive_unfreeze=bool(args.stageC_progressive_unfreeze),
-        unfreeze_phase1_epochs=int(args.stageC_unfreeze_phase1_epochs),
-        unfreeze_phase2_epochs=int(args.stageC_unfreeze_phase2_epochs),
-        unfreeze_last_n_encoder_layers=int(args.stageC_unfreeze_last_n_encoder_layers),
-        alternate_freeze=bool(args.stageC_alternate_freeze),
-        alternate_reco_only_epochs=int(args.stageC_alternate_reco_only_epochs),
-        alternate_dual_only_epochs=int(args.stageC_alternate_dual_only_epochs),
-        lambda_param_anchor=float(args.stageC_lambda_param_anchor),
-        lambda_output_anchor=float(args.stageC_lambda_output_anchor),
-        anchor_decay=float(args.stageC_anchor_decay),
-    )
+    if bool(args.skip_stageC_joint):
+        print("\n" + "=" * 70)
+        print("STEP 4: STAGE C (JOINT FINETUNE)")
+        print("=" * 70)
+        print("STEP 4: skipped due to --skip_stageC_joint; using Stage-B selected model as final joint head.")
+        stageC_metrics = {
+            "enabled": False,
+            "skipped": True,
+            "reason": "--skip_stageC_joint",
+            "source": "stageB_selected",
+        }
+        stageC_states = {
+            "selected": {"dual": stage2_dual_state, "reco": stage2_reco_state},
+            "auc": {"dual": None, "reco": None},
+            "fpr50": {"dual": None, "reco": None},
+        }
+    else:
+        print("\n" + "=" * 70)
+        print("STEP 4: STAGE C (JOINT FINETUNE)")
+        print("=" * 70)
+        reconstructor, dual_joint, stageC_metrics, stageC_states = train_joint_dual(
+            reconstructor=reconstructor,
+            dual_model=dual_joint,
+            train_loader=dl_train_joint,
+            val_loader=dl_val_joint,
+            device=device,
+            stage_name="StageC-Joint",
+            freeze_reconstructor=False,
+            epochs=int(args.stageC_epochs),
+            patience=int(args.stageC_patience),
+            lr_dual=float(args.stageC_lr_dual),
+            lr_reco=float(args.stageC_lr_reco),
+            weight_decay=float(cfg["training"]["weight_decay"]),
+            warmup_epochs=int(cfg["training"]["warmup_epochs"]),
+            lambda_reco=float(args.lambda_reco),
+            lambda_rank=0.0,
+            lambda_cons=float(args.lambda_cons),
+            corrected_weight_floor=float(args.corrected_weight_floor),
+            corrected_use_flags=bool(args.use_corrected_flags),
+            min_epochs=int(args.stageC_min_epochs),
+            select_metric=selection_metric,
+            apply_cls_weight=bool(use_cls_weighting_all_stages),
+            apply_reco_weight=bool(use_reco_weighting_all_stages),
+            val_weight_key="sample_weight_cls",
+            use_weighted_val_selection=bool(use_weighted_val_selection_all_stages),
+            lambda_delta_cls=float(args.stageC_lambda_delta),
+            delta_tau=float(args.stageC_delta_tau),
+            delta_lambda_fp=float(args.stageC_delta_lambda_fp),
+            delta_hlt_model=baseline,
+            delta_hlt_threshold_prob=float(hlt_delta_thr_prob),
+            delta_warmup_epochs=int(args.stageC_delta_warmup_epochs),
+            progressive_unfreeze=bool(args.stageC_progressive_unfreeze),
+            unfreeze_phase1_epochs=int(args.stageC_unfreeze_phase1_epochs),
+            unfreeze_phase2_epochs=int(args.stageC_unfreeze_phase2_epochs),
+            unfreeze_last_n_encoder_layers=int(args.stageC_unfreeze_last_n_encoder_layers),
+            alternate_freeze=bool(args.stageC_alternate_freeze),
+            alternate_reco_only_epochs=int(args.stageC_alternate_reco_only_epochs),
+            alternate_dual_only_epochs=int(args.stageC_alternate_dual_only_epochs),
+            lambda_param_anchor=float(args.stageC_lambda_param_anchor),
+            lambda_output_anchor=float(args.stageC_lambda_output_anchor),
+            anchor_decay=float(args.stageC_anchor_decay),
+        )
 
     auc_joint, preds_joint, labs_joint, _ = eval_joint_model(
         reconstructor,

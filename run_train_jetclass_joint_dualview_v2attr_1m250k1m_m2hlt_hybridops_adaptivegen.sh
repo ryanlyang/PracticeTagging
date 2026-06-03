@@ -23,7 +23,9 @@ N_TEST_JETS="${N_TEST_JETS:-1000000}"
 MAX_CONSTITS="${MAX_CONSTITS:-128}"
 FEATURE_MODE="${FEATURE_MODE:-full}"
 FEATURE_PREPROCESSING="${FEATURE_PREPROCESSING:-canonical}"
-CLASS_ASSIGNMENT="${CLASS_ASSIGNMENT:-canonical_labels}"
+# JetClass ROOT files are class-specific in the standard part0 layout, so filename
+# labels avoid the expensive canonical label-branch scan unless explicitly needed.
+CLASS_ASSIGNMENT="${CLASS_ASSIGNMENT:-filename}"
 TARGET_CLASS="${TARGET_CLASS:-Hbb}"
 BACKGROUND_CLASS="${BACKGROUND_CLASS:-QCD}"
 

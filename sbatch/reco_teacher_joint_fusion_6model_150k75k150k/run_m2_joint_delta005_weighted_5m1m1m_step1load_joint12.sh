@@ -37,6 +37,7 @@ STAGEB_MIN_EPOCHS="${STAGEB_MIN_EPOCHS:-12}"
 STAGEC_EPOCHS="${STAGEC_EPOCHS:-12}"
 STAGEC_PATIENCE="${STAGEC_PATIENCE:-12}"
 STAGEC_MIN_EPOCHS="${STAGEC_MIN_EPOCHS:-12}"
+SKIP_STAGEC_JOINT="${SKIP_STAGEC_JOINT:-0}"
 
 set +u
 source ~/.bashrc
@@ -111,6 +112,9 @@ CMD=(
 if [[ -n "${STAGEA_LOAD_RECO_CKPT}" ]]; then
   CMD+=(--stageA_load_reco_ckpt "${STAGEA_LOAD_RECO_CKPT}")
 fi
+if [[ "${SKIP_STAGEC_JOINT}" == "1" ]]; then
+  CMD+=(--skip_stageC_joint)
+fi
 
 echo "============================================================"
 echo "Model-2 Joint weighted (L_delta=0.05), Step-1 loaded, 12-epoch StageC"
@@ -120,7 +124,7 @@ echo "Train path: ${TRAIN_PATH}"
 echo "Split: train=${N_TRAIN_SPLIT}, val=${N_VAL_SPLIT}, test=${N_TEST_SPLIT}, n_train_jets=${N_TRAIN_JETS}"
 echo "StageA: epochs=${STAGEA_EPOCHS}, patience=${STAGEA_PATIENCE}, load=${STAGEA_LOAD_RECO_CKPT:-<none>}"
 echo "StageB: epochs=${STAGEB_EPOCHS}, patience=${STAGEB_PATIENCE}, min_epochs=${STAGEB_MIN_EPOCHS}"
-echo "StageC: epochs=${STAGEC_EPOCHS}, patience=${STAGEC_PATIENCE}, min_epochs=${STAGEC_MIN_EPOCHS}"
+echo "StageC: skip=${SKIP_STAGEC_JOINT}, epochs=${STAGEC_EPOCHS}, patience=${STAGEC_PATIENCE}, min_epochs=${STAGEC_MIN_EPOCHS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
