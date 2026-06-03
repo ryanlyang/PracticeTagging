@@ -1,26 +1,28 @@
 #!/usr/bin/env bash
-#SBATCH --job-name=jc12Resp
+#SBATCH --job-name=jc12Axis
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --time=3:00:00
-#SBATCH --output=offline_reconstructor_logs/jetclass_twelve_model_jet_response_1m250k1m_m2hybrid_%j.out
-#SBATCH --error=offline_reconstructor_logs/jetclass_twelve_model_jet_response_1m250k1m_m2hybrid_%j.err
+#SBATCH --time=12:00:00
+#SBATCH --output=offline_reconstructor_logs/jetclass_twelve_model_jet_axis_1m250k1m_m2hybrid_%j.out
+#SBATCH --error=offline_reconstructor_logs/jetclass_twelve_model_jet_axis_1m250k1m_m2hybrid_%j.err
 
 set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 SAVE_ROOT="${SAVE_ROOT:-checkpoints/jetclass_joint_dualview}"
-OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/response_reports/twelve_model_1m250k1m_m2hybrid_pt_response_fast100k}"
+OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/axis_reports/twelve_model_1m250k1m_m2hybrid_jet_axis}"
 DEVICE="${DEVICE:-cuda}"
-BATCH_SIZE="${BATCH_SIZE:-512}"
+BATCH_SIZE="${BATCH_SIZE:-256}"
+MAX_TEST_JETS="${MAX_TEST_JETS:-200000}"
 RESPONSE_N_BINS="${RESPONSE_N_BINS:-8}"
 RESPONSE_MIN_COUNT="${RESPONSE_MIN_COUNT:-300}"
 CORRECTED_WEIGHT_FLOOR="${CORRECTED_WEIGHT_FLOOR:-1e-4}"
-SCORE_BIAS_WEIGHT="${SCORE_BIAS_WEIGHT:-1.0}"
-SCORE_RESOLUTION_WEIGHT="${SCORE_RESOLUTION_WEIGHT:-1.0}"
-MAX_TEST_JETS="${MAX_TEST_JETS:-100000}"
+SCORE_MEAN_WEIGHT="${SCORE_MEAN_WEIGHT:-1.0}"
+SCORE_STD_WEIGHT="${SCORE_STD_WEIGHT:-1.0}"
+SCATTER_MAX_POINTS="${SCATTER_MAX_POINTS:-50000}"
+SCATTER_SEED="${SCATTER_SEED:-52}"
 
 MODEL_01_SPEC="${MODEL_01_SPEC:-m2_base:stage2:${SAVE_ROOT}/jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_core01_base}"
 MODEL_02_SPEC="${MODEL_02_SPEC:-m2_consstrong:stage2:${SAVE_ROOT}/jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_core02_consstrong}"
@@ -52,7 +54,7 @@ export MPLBACKEND=Agg
 export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-${USER:-user}}"
 
 CMD=(
-  python -u analyze_jetclass_twelve_model_jet_response.py
+  python -u analyze_jetclass_twelve_model_jet_axis.py
   --model "${MODEL_01_SPEC}"
   --model "${MODEL_02_SPEC}"
   --model "${MODEL_03_SPEC}"
@@ -69,25 +71,24 @@ CMD=(
   --out_dir "${OUT_DIR}"
   --device "${DEVICE}"
   --batch_size "${BATCH_SIZE}"
+  --max_test_jets "${MAX_TEST_JETS}"
   --response_n_bins "${RESPONSE_N_BINS}"
   --response_min_count "${RESPONSE_MIN_COUNT}"
   --corrected_weight_floor "${CORRECTED_WEIGHT_FLOOR}"
-  --score_bias_weight "${SCORE_BIAS_WEIGHT}"
-  --score_resolution_weight "${SCORE_RESOLUTION_WEIGHT}"
+  --score_mean_weight "${SCORE_MEAN_WEIGHT}"
+  --score_std_weight "${SCORE_STD_WEIGHT}"
+  --scatter_max_points "${SCATTER_MAX_POINTS}"
+  --scatter_seed "${SCATTER_SEED}"
 )
 
-if [ "${MAX_TEST_JETS}" != "0" ]; then
-  CMD+=(--max_test_jets "${MAX_TEST_JETS}")
-fi
-
 echo "============================================================"
-echo "JetClass Twelve-Model pT Response/Resolution (1m/250k/1m m2-hybrid)"
+echo "JetClass Twelve-Model Jet-Axis Recovery (1m/250k/1m m2-hybrid)"
 echo "Job ID: ${SLURM_JOB_ID:-N/A}"
 echo "Node: ${SLURMD_NODENAME:-N/A}"
-echo "Data dir: ${DATA_DIR}"
-echo "Out dir:  ${OUT_DIR}"
+echo "Data dir:      ${DATA_DIR}"
+echo "Out dir:       ${OUT_DIR}"
 echo "Max test jets: ${MAX_TEST_JETS}"
-echo "Bins/min count: ${RESPONSE_N_BINS}/${RESPONSE_MIN_COUNT}"
+echo "Selection:     one global best reconstructor by mean(deltaR)+std(deltaR)"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
