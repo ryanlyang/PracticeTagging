@@ -29,8 +29,8 @@ CORE05="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core05
 CORE06="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core06_splitstrong"
 CORE07="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core07_splitlight"
 CORE08="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core08_physstrong"
-CORE09="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core09_budgetstrong"
-CORE10="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core10_sparsehigh"
+CORE09="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core09_offdropmid"
+CORE10="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core10_offdrophigh"
 CORE11="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core11_topk60ish"
 CORE12="jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_${TAG}_core12_antioverlap"
 
@@ -102,10 +102,10 @@ echo "  CORE07 ${j07} ${CORE07}"
 j08=$(submit_train "jcFHA08" "RUN_NAME=${CORE08},LOSS_W_PT_RATIO=0.22,LOSS_W_M_RATIO=0.05,LOSS_W_E_RATIO=0.05")
 echo "  CORE08 ${j08} ${CORE08}"
 
-j09=$(submit_train "jcFHA09" "RUN_NAME=${CORE09},LOSS_W_BUDGET=0.90,LOSS_W_PT_RATIO=0.16,LOSS_W_SPARSE=0.010")
+j09=$(submit_train "jcFHA09" "RUN_NAME=${CORE09},TARGET_DROP_PROB_MAX=0.50,TARGET_DROP_WARMUP_EPOCHS=20,TARGET_DROP_NUM_BANKS=3,TARGET_DROP_BANK_CYCLE_EPOCHS=1")
 echo "  CORE09 ${j09} ${CORE09}"
 
-j10=$(submit_train "jcFHA10" "RUN_NAME=${CORE10},LOSS_W_SPARSE=0.018,LOSS_W_BUDGET=0.70")
+j10=$(submit_train "jcFHA10" "RUN_NAME=${CORE10},TARGET_DROP_PROB_MAX=0.70,TARGET_DROP_WARMUP_EPOCHS=20,TARGET_DROP_NUM_BANKS=3,TARGET_DROP_BANK_CYCLE_EPOCHS=1")
 echo "  CORE10 ${j10} ${CORE10}"
 
 j11=$(submit_train "jcFHA11" "RUN_NAME=${CORE11},RECO_MAX_GENERATED_TOKENS=60,LOSS_W_BUDGET=0.75,LOSS_W_SPARSE=0.009")
@@ -124,8 +124,8 @@ MODEL_05_SPEC="m2_genhigh:stage2:${SAVE_DIR}/${CORE05}"
 MODEL_06_SPEC="m2_splitstrong:stage2:${SAVE_DIR}/${CORE06}"
 MODEL_07_SPEC="m2_splitlight:stage2:${SAVE_DIR}/${CORE07}"
 MODEL_08_SPEC="m2_physstrong:stage2:${SAVE_DIR}/${CORE08}"
-MODEL_09_SPEC="m2_budgetstrong:stage2:${SAVE_DIR}/${CORE09}"
-MODEL_10_SPEC="m2_sparsehigh:stage2:${SAVE_DIR}/${CORE10}"
+MODEL_09_SPEC="m2_offdropmid:stage2:${SAVE_DIR}/${CORE09}"
+MODEL_10_SPEC="m2_offdrophigh:stage2:${SAVE_DIR}/${CORE10}"
 MODEL_11_SPEC="m2_topk60ish:stage2:${SAVE_DIR}/${CORE11}"
 MODEL_12_SPEC="m2_antioverlap:stage2:${SAVE_DIR}/${CORE12}"
 

@@ -17,6 +17,7 @@ This wrapper avoids modifying existing PracticeTagging scripts.
 from __future__ import annotations
 
 import importlib
+import argparse
 import math
 import sys
 from pathlib import Path
@@ -25,7 +26,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader, Dataset, Subset
 from tqdm import tqdm
 
 
@@ -98,8 +99,24 @@ def main() -> None:
     MERGE_MODE_CH_NH = int(getattr(v2, "MERGE_MODE_CH_NH", 3))
     _stagea_aux_queue: List[Dict[str, np.ndarray]] = []
 
+    # Parse wrapper-only knobs first; the imported V2 parser rejects unknown args.
+    wrapper_parser = argparse.ArgumentParser(add_help=False)
+    wrapper_parser.add_argument("--target_drop_prob_max", type=float, default=0.0)
+    wrapper_parser.add_argument("--target_drop_warmup_epochs", type=int, default=20)
+    wrapper_parser.add_argument("--target_drop_mode", type=str, default="deterministic_bank")
+    wrapper_parser.add_argument("--target_drop_num_banks", type=int, default=3)
+    wrapper_parser.add_argument("--target_drop_bank_cycle_epochs", type=int, default=1)
+    wrapper_args, remaining_argv = wrapper_parser.parse_known_args()
+    sys.argv = [sys.argv[0], *remaining_argv]
+
     # Parse once so patched Stage-A trainer can use the exact run-time knobs.
     args = v2.parse_args()
+    args.target_drop_prob_max = float(wrapper_args.target_drop_prob_max)
+    args.target_drop_warmup_epochs = int(wrapper_args.target_drop_warmup_epochs)
+    args.target_drop_mode = str(wrapper_args.target_drop_mode)
+    args.target_drop_num_banks = int(wrapper_args.target_drop_num_banks)
+    args.target_drop_bank_cycle_epochs = int(wrapper_args.target_drop_bank_cycle_epochs)
+
     stagea_attr_lam_mode = float(args.lambda_attr_mode)
     stagea_attr_lam_type = float(args.lambda_attr_type)
     stagea_attr_lam_charge = float(args.lambda_attr_charge)
@@ -112,6 +129,12 @@ def main() -> None:
     stagea_anchor_type = float(args.lambda_attr_type)
     stagea_anchor_charge = float(args.lambda_attr_charge)
     stagea_anchor_track = float(args.lambda_attr_track)
+    target_drop_prob_max = float(max(0.0, min(1.0, args.target_drop_prob_max)))
+    target_drop_warmup_epochs = int(max(1, args.target_drop_warmup_epochs))
+    target_drop_mode = str(args.target_drop_mode)
+    target_drop_num_banks = int(max(1, args.target_drop_num_banks))
+    target_drop_bank_cycle_epochs = int(max(1, args.target_drop_bank_cycle_epochs))
+    added_target_scale = float(max(0.0, min(1.0, args.added_target_scale)))
 
     def _infer_type_id(token: np.ndarray) -> int:
         pid = token[IDX_PID0:IDX_PID4 + 1]
@@ -476,6 +499,8 @@ def main() -> None:
             self.mask_off = torch.tensor(mask_off, dtype=torch.bool)
             self.budget_merge_true = torch.tensor(budget_merge_true, dtype=torch.float32)
             self.budget_eff_true = torch.tensor(budget_eff_true, dtype=torch.float32)
+            self.target_drop_prob = 0.0
+            self.target_drop_bank = 0
 
             n = int(feat_hlt.shape[0])
             if sample_weight_reco is None:
@@ -536,14 +561,67 @@ def main() -> None:
         def __len__(self) -> int:
             return int(self.feat_hlt.shape[0])
 
+        def set_target_drop_state(self, prob: float, bank: int = 0) -> None:
+            self.target_drop_prob = float(np.clip(prob, 0.0, 1.0))
+            self.target_drop_bank = int(bank) % int(max(1, target_drop_num_banks))
+
+        def _deterministic_keep_extra(self, n_extra: int, idx: int) -> np.ndarray:
+            key = (
+                (int(args.seed) * 1315423911)
+                ^ (int(self.target_drop_bank) * 2654435761)
+                ^ (int(idx) * 2246822519)
+            ) & 0xFFFFFFFF
+            rng = np.random.default_rng(np.uint64(key))
+            return rng.random(int(n_extra)) >= float(self.target_drop_prob)
+
+        def _target_dropped_mask_and_budget(self, i: int) -> Tuple[torch.Tensor, torch.Tensor]:
+            mask = self.mask_off[i]
+            if target_drop_prob_max <= 0.0 or self.target_drop_prob <= 0.0:
+                return mask, self.budget_merge_true[i]
+
+            valid = torch.nonzero(mask, as_tuple=False).flatten()
+            n_off = int(valid.numel())
+            if n_off <= 1:
+                return mask, self.budget_merge_true[i]
+
+            # JetClass HLT tokens are sorted/rebuilt, not index-aligned to offline tokens.
+            # Preserve the leading pT-ranked offline core up to the HLT count and apply
+            # offdrop only to the extra reconstruction target budget.
+            n_hlt = int(self.mask_hlt[i].sum().item())
+            n_preserve = int(min(max(n_hlt, 1), n_off))
+            extra = valid[n_preserve:]
+            if int(extra.numel()) <= 0:
+                return mask, self.budget_merge_true[i]
+
+            if target_drop_mode == "deterministic_bank":
+                keep_extra = self._deterministic_keep_extra(int(extra.numel()), int(i))
+            else:
+                rng = np.random.default_rng(np.uint64((int(args.seed) + int(i) * 1000003) & 0xFFFFFFFF))
+                keep_extra = rng.random(int(extra.numel())) >= float(self.target_drop_prob)
+
+            out = mask.clone()
+            drop_extra = extra[torch.from_numpy(~keep_extra).to(extra.device)]
+            if int(drop_extra.numel()) > 0:
+                out[drop_extra] = False
+            if not bool(out.any()):
+                out[valid[0]] = True
+
+            n_target = int(out.sum().item())
+            budget = torch.tensor(
+                added_target_scale * max(float(n_target - n_hlt), 0.0),
+                dtype=self.budget_merge_true.dtype,
+            )
+            return out, budget
+
         def __getitem__(self, i: int) -> Dict[str, torch.Tensor]:
+            mask_off_i, budget_merge_i = self._target_dropped_mask_and_budget(i)
             return {
                 "feat_hlt": self.feat_hlt[i],
                 "mask_hlt": self.mask_hlt[i],
                 "const_hlt": self.const_hlt[i],
                 "const_off": self.const_off[i],
-                "mask_off": self.mask_off[i],
-                "budget_merge_true": self.budget_merge_true[i],
+                "mask_off": mask_off_i,
+                "budget_merge_true": budget_merge_i,
                 "budget_eff_true": self.budget_eff_true[i],
                 "sample_weight_reco": self.sample_weight_reco[i],
                 "split_target_mask": self.split_target_mask[i],
@@ -558,6 +636,12 @@ def main() -> None:
                 "parent_charge_target": self.parent_charge_target[i],
                 "parent_track_target": self.parent_track_target[i],
             }
+
+    def _set_target_drop_state(dataset: Dataset, prob: float, bank: int) -> None:
+        if hasattr(dataset, "set_target_drop_state"):
+            dataset.set_target_drop_state(prob, bank)  # type: ignore[attr-defined]
+        elif isinstance(dataset, Subset):
+            _set_target_drop_state(dataset.dataset, prob, bank)
 
     def _compose_stagea_fullinfo_losses(
         reco_out: Dict[str, torch.Tensor],
@@ -673,6 +757,14 @@ def main() -> None:
         min_stop_epoch = int(train_cfg.get("stage2_epochs", 0)) + int(train_cfg.get("min_full_scale_epochs", 5))
 
         for ep in tqdm(range(int(train_cfg["epochs"])), desc="Reconstructor"):
+            drop_prob = target_drop_prob_max * min(1.0, float(ep + 1) / float(target_drop_warmup_epochs))
+            if target_drop_mode == "deterministic_bank":
+                drop_bank = (int(ep) // int(target_drop_bank_cycle_epochs)) % int(max(1, target_drop_num_banks))
+            else:
+                drop_bank = 0
+            _set_target_drop_state(train_loader.dataset, drop_prob, drop_bank)
+            _set_target_drop_state(val_loader.dataset, drop_prob, drop_bank)
+
             model.train()
             sc = reco_joint.stage_scale_local(ep, train_cfg)
             tr_total = tr_set = tr_budget = tr_pt = tr_local = tr_attr = tr_anchor = 0.0
@@ -782,7 +874,7 @@ def main() -> None:
                     f"anchor_unw={va_anchor_u:.4f}, budget_unw={va_budget_u:.4f}, "
                     f"w_set={float(loss_cfg.get('w_set', 0.0)):.3f}, w_budget={float(loss_cfg.get('w_budget', 0.0)):.3f}, "
                     f"w_pt={float(loss_cfg.get('w_pt_ratio', 0.0)):.3f}, w_local={float(loss_cfg.get('w_local', 0.0)):.3f}, "
-                    f"stage_scale={sc:.2f}"
+                    f"stage_scale={sc:.2f}, target_drop={drop_prob:.3f}, bank={drop_bank}"
                 )
 
             if no_improve >= int(train_cfg["patience"]) and (ep + 1) >= int(max(min_stop_epoch, 1)):
