@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=jc12Resp
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --time=3:00:00
+#SBATCH --time=2:55:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_twelve_model_jet_response_1m250k1m_m2hybrid_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_twelve_model_jet_response_1m250k1m_m2hybrid_%j.err
 
@@ -12,7 +12,7 @@ set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 SAVE_ROOT="${SAVE_ROOT:-checkpoints/jetclass_joint_dualview}"
-OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/response_reports/twelve_model_1m250k1m_m2hybrid_pt_response_fast100k}"
+OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/response_reports/twelve_model_1m250k1m_m2hybrid_pt_response_fast75k}"
 DEVICE="${DEVICE:-cuda}"
 BATCH_SIZE="${BATCH_SIZE:-512}"
 RESPONSE_N_BINS="${RESPONSE_N_BINS:-8}"
@@ -20,7 +20,7 @@ RESPONSE_MIN_COUNT="${RESPONSE_MIN_COUNT:-300}"
 CORRECTED_WEIGHT_FLOOR="${CORRECTED_WEIGHT_FLOOR:-1e-4}"
 SCORE_BIAS_WEIGHT="${SCORE_BIAS_WEIGHT:-1.0}"
 SCORE_RESOLUTION_WEIGHT="${SCORE_RESOLUTION_WEIGHT:-1.0}"
-MAX_TEST_JETS="${MAX_TEST_JETS:-100000}"
+MAX_TEST_JETS="${MAX_TEST_JETS:-75000}"
 
 MODEL_01_SPEC="${MODEL_01_SPEC:-m2_base:stage2:${SAVE_ROOT}/jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_core01_base}"
 MODEL_02_SPEC="${MODEL_02_SPEC:-m2_consstrong:stage2:${SAVE_ROOT}/jetclass_joint_v2attr_1m250k1m_m2hlt_hybridops_adaptivegen_core02_consstrong}"

@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=jc12Axis
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
-#SBATCH --time=12:00:00
+#SBATCH --time=2:55:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_twelve_model_jet_axis_1m250k1m_m2hybrid_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_twelve_model_jet_axis_1m250k1m_m2hybrid_%j.err
 
@@ -12,10 +12,10 @@ set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
 SAVE_ROOT="${SAVE_ROOT:-checkpoints/jetclass_joint_dualview}"
-OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/axis_reports/twelve_model_1m250k1m_m2hybrid_jet_axis}"
+OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/axis_reports/twelve_model_1m250k1m_m2hybrid_jet_axis_fast100k}"
 DEVICE="${DEVICE:-cuda}"
-BATCH_SIZE="${BATCH_SIZE:-256}"
-MAX_TEST_JETS="${MAX_TEST_JETS:-200000}"
+BATCH_SIZE="${BATCH_SIZE:-512}"
+MAX_TEST_JETS="${MAX_TEST_JETS:-100000}"
 RESPONSE_N_BINS="${RESPONSE_N_BINS:-8}"
 RESPONSE_MIN_COUNT="${RESPONSE_MIN_COUNT:-300}"
 CORRECTED_WEIGHT_FLOOR="${CORRECTED_WEIGHT_FLOOR:-1e-4}"

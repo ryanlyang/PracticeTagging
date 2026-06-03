@@ -14,6 +14,7 @@ import copy
 import json
 import math
 import os
+import re
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Sequence, Tuple
@@ -230,11 +231,14 @@ def _plot_response_resolution(
     reco_records: Sequence[Dict[str, float]],
     reco_label: str,
     out_path: Path,
+    title: str | None = None,
 ) -> None:
     def arr(records: Sequence[Dict[str, float]], key: str) -> np.ndarray:
         return np.asarray([float(r[key]) for r in records], dtype=np.float64)
 
     plt.figure(figsize=(10, 4.2))
+    if title:
+        plt.suptitle(title)
     plt.subplot(1, 2, 1)
     if hlt_records:
         plt.plot(arr(hlt_records, "pt_center"), arr(hlt_records, "response"), "o-", label="HLT", color="steelblue")
@@ -344,6 +348,125 @@ def _jsonable_records(records: Sequence[Dict[str, float]]) -> List[Dict[str, obj
     for r in records:
         out.append({k: (int(v) if k == "count" else float(v)) for k, v in r.items()})
     return out
+
+
+def _slug(s: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "_", str(s)).strip("_").lower()
+
+
+def _quantile_bins(values: np.ndarray, names: Sequence[str]) -> List[Tuple[str, str, np.ndarray]]:
+    valid = np.isfinite(values)
+    if not valid.any():
+        return []
+    edges = np.quantile(values[valid], np.linspace(0.0, 1.0, len(names) + 1))
+    out: List[Tuple[str, str, np.ndarray]] = []
+    for i, name in enumerate(names):
+        lo = float(edges[i])
+        hi = float(edges[i + 1])
+        if i == len(names) - 1:
+            mask = valid & (values >= lo) & (values <= hi)
+            label = f"{name}: [{lo:.1f}, {hi:.1f}]"
+        else:
+            mask = valid & (values >= lo) & (values < hi)
+            label = f"{name}: [{lo:.1f}, {hi:.1f})"
+        out.append((str(name), label, mask))
+    return out
+
+
+def _build_conditional_bins(
+    class_names: Sequence[str],
+    y: np.ndarray,
+    offline_counts: np.ndarray,
+    pt_truth: np.ndarray,
+    max_bins: int = 10,
+) -> List[Tuple[str, str, np.ndarray]]:
+    bins: List[Tuple[str, str, np.ndarray]] = []
+    class_to_idx = {str(c): i for i, c in enumerate(class_names)}
+
+    # Four representative classes, then count and pT regions.
+    preferred_classes = ["QCD", "Hbb", "Wqq", "Tbqq", "Zqq", "Hcc", "Hgg", "H4q", "Hqql", "Tbl"]
+    for cls in preferred_classes:
+        if cls not in class_to_idx:
+            continue
+        mask = y == int(class_to_idx[cls])
+        if mask.any():
+            bins.append((f"class_{cls}", f"class = {cls}", mask))
+        if len(bins) >= 4:
+            break
+
+    bins.extend(
+        _quantile_bins(
+            offline_counts.astype(np.float64),
+            ["const_count_low", "const_count_mid", "const_count_high"],
+        )
+    )
+    bins.extend(_quantile_bins(pt_truth.astype(np.float64), ["pt_low", "pt_mid", "pt_high"]))
+
+    if len(bins) < int(max_bins):
+        used = {key for key, _, _ in bins}
+        for cls in class_names:
+            key = f"class_{cls}"
+            if key in used:
+                continue
+            mask = y == int(class_to_idx[str(cls)])
+            if mask.any():
+                bins.append((key, f"class = {cls}", mask))
+            if len(bins) >= int(max_bins):
+                break
+    return bins[: int(max_bins)]
+
+
+def _make_conditional_response_plots(
+    pt_truth: np.ndarray,
+    pt_hlt: np.ndarray,
+    pt_reco: np.ndarray,
+    class_names: Sequence[str],
+    y: np.ndarray,
+    offline_counts: np.ndarray,
+    out_dir: Path,
+    best_name: str,
+    response_n_bins: int,
+    response_min_count: int,
+    score_bias_weight: float,
+    score_resolution_weight: float,
+) -> List[Dict[str, object]]:
+    cond_dir = out_dir / "conditional_response_plots"
+    cond_dir.mkdir(parents=True, exist_ok=True)
+    bins = _build_conditional_bins(class_names, y, offline_counts, pt_truth, max_bins=10)
+
+    reports: List[Dict[str, object]] = []
+    for key, label, mask in bins:
+        n = int(mask.sum())
+        if n < max(int(response_min_count), 10):
+            print(f"[conditional-skip] {label}: only {n} jets")
+            continue
+        edges = _build_pt_edges(pt_truth[mask], int(response_n_bins))
+        hlt_records = _response_records(pt_truth[mask], pt_hlt[mask], edges, int(response_min_count))
+        reco_records = _response_records(pt_truth[mask], pt_reco[mask], edges, int(response_min_count))
+        hlt_score = _score_records(hlt_records, float(score_bias_weight), float(score_resolution_weight))
+        reco_score = _score_records(reco_records, float(score_bias_weight), float(score_resolution_weight))
+        out_path = cond_dir / f"jet_pt_response_{_slug(key)}.png"
+        _plot_response_resolution(
+            hlt_records,
+            reco_records,
+            f"Best reco ({best_name})",
+            out_path,
+            title=f"JetClass pT response: {label} (N={n})",
+        )
+        reports.append(
+            {
+                "key": key,
+                "label": label,
+                "n_jets": n,
+                "plot": str(out_path),
+                "hlt_score": float(hlt_score),
+                "best_reco_score": float(reco_score),
+                "improvement_vs_hlt_score": float(hlt_score - reco_score),
+                "hlt_records": _jsonable_records(hlt_records),
+                "best_reco_records": _jsonable_records(reco_records),
+            }
+        )
+    return reports
 
 
 def main() -> None:
@@ -467,6 +590,20 @@ def main() -> None:
         out_dir / "jet_pt_response_resolution_best.png",
     )
     _plot_model_score_bars(model_reports, hlt_score, out_dir / "jet_pt_response_recovery_ranking.png")
+    conditional_reports = _make_conditional_response_plots(
+        pt_truth=pt_truth,
+        pt_hlt=pt_hlt,
+        pt_reco=best_pt_reco,
+        class_names=class_names,
+        y=te_y,
+        offline_counts=te_off_mask.sum(axis=1),
+        out_dir=out_dir,
+        best_name=best_name,
+        response_n_bins=int(args.response_n_bins),
+        response_min_count=int(args.response_min_count),
+        score_bias_weight=float(args.score_bias_weight),
+        score_resolution_weight=float(args.score_resolution_weight),
+    )
 
     summary = {
         "target": "offline_jetclass_constituents",
@@ -495,9 +632,11 @@ def main() -> None:
             "improvement_vs_hlt_score": float(hlt_score - best_score),
         },
         "models": model_reports,
+        "conditional_response_bins": conditional_reports,
         "outputs": {
             "best_plot": str(out_dir / "jet_pt_response_resolution_best.png"),
             "ranking_plot": str(out_dir / "jet_pt_response_recovery_ranking.png"),
+            "conditional_plot_dir": str(out_dir / "conditional_response_plots"),
             "summary_json": str(out_dir / "jet_pt_response_summary.json"),
             "arrays_npz": str(out_dir / "jet_pt_response_best_arrays.npz"),
         },
@@ -517,6 +656,7 @@ def main() -> None:
     print(f"  Best model:      {best_name}")
     print(f"  Best reco score: {best_score:.6f}")
     print(f"  Improvement:     {hlt_score - best_score:.6f}")
+    print(f"  Conditional plots: {len(conditional_reports)}")
     print(f"Saved summary:     {out_dir / 'jet_pt_response_summary.json'}")
     print(f"Saved best plot:   {out_dir / 'jet_pt_response_resolution_best.png'}")
     print(f"Saved ranking:     {out_dir / 'jet_pt_response_recovery_ranking.png'}")
