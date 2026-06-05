@@ -49,6 +49,11 @@ LOSS_W_M_RATIO="${LOSS_W_M_RATIO:-0.02}"
 LOSS_W_E_RATIO="${LOSS_W_E_RATIO:-0.02}"
 LOSS_W_PHYS="${LOSS_W_PHYS:-0.00}"
 ADDED_TARGET_SCALE="${ADDED_TARGET_SCALE:-0.90}"
+TARGET_DROP_PROB_MAX="${TARGET_DROP_PROB_MAX:-0.0}"
+TARGET_DROP_WARMUP_EPOCHS="${TARGET_DROP_WARMUP_EPOCHS:-20}"
+TARGET_DROP_MODE="${TARGET_DROP_MODE:-deterministic_bank}"
+TARGET_DROP_NUM_BANKS="${TARGET_DROP_NUM_BANKS:-3}"
+TARGET_DROP_BANK_CYCLE_EPOCHS="${TARGET_DROP_BANK_CYCLE_EPOCHS:-1}"
 
 # Joint-training knobs.
 LAMBDA_RECO="${LAMBDA_RECO:-0.4}"
@@ -185,6 +190,11 @@ CMD=(
   --lambda_attr_type "${LAMBDA_ATTR_TYPE}"
   --lambda_attr_charge "${LAMBDA_ATTR_CHARGE}"
   --lambda_attr_track "${LAMBDA_ATTR_TRACK}"
+  --target_drop_prob_max "${TARGET_DROP_PROB_MAX}"
+  --target_drop_warmup_epochs "${TARGET_DROP_WARMUP_EPOCHS}"
+  --target_drop_mode "${TARGET_DROP_MODE}"
+  --target_drop_num_banks "${TARGET_DROP_NUM_BANKS}"
+  --target_drop_bank_cycle_epochs "${TARGET_DROP_BANK_CYCLE_EPOCHS}"
 )
 
 echo "============================================================"
@@ -196,6 +206,7 @@ echo "Split: train=${N_TRAIN_JETS}, val=${N_VAL_JETS}, test=${N_TEST_JETS}"
 echo "Class assignment: ${CLASS_ASSIGNMENT}"
 echo "Feature preprocessing: ${FEATURE_PREPROCESSING}"
 echo "Target/background: ${TARGET_CLASS} vs ${BACKGROUND_CLASS}"
+echo "Target drop: max=${TARGET_DROP_PROB_MAX}, warmup=${TARGET_DROP_WARMUP_EPOCHS}, mode=${TARGET_DROP_MODE}, banks=${TARGET_DROP_NUM_BANKS}"
 echo "============================================================"
 printf ' %q' "${CMD[@]}"
 echo
