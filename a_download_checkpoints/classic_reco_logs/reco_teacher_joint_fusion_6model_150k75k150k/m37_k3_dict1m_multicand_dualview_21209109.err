@@ -1,37 +1,0 @@
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
-  warnings.warn(
-Teacher:   0%|          | 0/60 [00:00<?, ?it/s]Teacher:   2%|▏         | 1/60 [00:35<35:08, 35.73s/it]Teacher:   3%|▎         | 2/60 [01:11<34:22, 35.56s/it]Teacher:   5%|▌         | 3/60 [01:53<36:47, 38.72s/it]Teacher:   7%|▋         | 4/60 [02:29<34:56, 37.44s/it]Teacher:   8%|▊         | 5/60 [03:04<33:41, 36.75s/it]Teacher:  10%|█         | 6/60 [03:40<32:43, 36.36s/it]Teacher:  12%|█▏        | 7/60 [04:15<31:51, 36.06s/it]Teacher:  13%|█▎        | 8/60 [04:51<31:04, 35.85s/it]Teacher:  15%|█▌        | 9/60 [05:28<30:45, 36.18s/it]Teacher:  17%|█▋        | 10/60 [06:03<29:57, 35.94s/it]Teacher:  18%|█▊        | 11/60 [06:38<29:13, 35.79s/it]Teacher:  20%|██        | 12/60 [07:14<28:35, 35.73s/it]Teacher:  22%|██▏       | 13/60 [07:49<27:55, 35.66s/it]Teacher:  23%|██▎       | 14/60 [08:26<27:31, 35.91s/it]Teacher:  25%|██▌       | 15/60 [09:01<26:50, 35.78s/it]Teacher:  27%|██▋       | 16/60 [09:37<26:11, 35.70s/it]Teacher:  28%|██▊       | 17/60 [10:12<25:32, 35.65s/it]Teacher:  30%|███       | 18/60 [10:48<24:55, 35.60s/it]Teacher:  32%|███▏      | 19/60 [11:26<24:48, 36.31s/it]Teacher:  33%|███▎      | 20/60 [12:01<24:03, 36.09s/it]Teacher:  35%|███▌      | 21/60 [12:37<23:20, 35.92s/it]Teacher:  37%|███▋      | 22/60 [13:13<22:40, 35.81s/it]Teacher:  38%|███▊      | 23/60 [13:48<22:02, 35.73s/it]Teacher:  40%|████      | 24/60 [14:24<21:24, 35.67s/it]Teacher:  42%|████▏     | 25/60 [14:59<20:46, 35.62s/it]Teacher:  43%|████▎     | 26/60 [15:35<20:09, 35.57s/it]Teacher:  45%|████▌     | 27/60 [16:10<19:32, 35.54s/it]Teacher:  47%|████▋     | 28/60 [16:46<18:57, 35.54s/it]Teacher:  48%|████▊     | 29/60 [17:23<18:40, 36.15s/it]Teacher:  50%|█████     | 30/60 [17:59<17:58, 35.96s/it]Teacher:  52%|█████▏    | 31/60 [18:34<17:18, 35.82s/it]Teacher:  53%|█████▎    | 32/60 [19:10<16:40, 35.73s/it]Teacher:  55%|█████▌    | 33/60 [19:45<16:03, 35.67s/it]Teacher:  57%|█████▋    | 34/60 [20:21<15:25, 35.62s/it]Teacher:  57%|█████▋    | 34/60 [20:56<16:01, 36.96s/it]
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
-  warnings.warn(
-Baseline:   0%|          | 0/60 [00:00<?, ?it/s]Baseline:   2%|▏         | 1/60 [00:35<35:01, 35.62s/it]Baseline:   3%|▎         | 2/60 [01:15<36:42, 37.97s/it]Baseline:   5%|▌         | 3/60 [01:50<35:01, 36.87s/it]Baseline:   7%|▋         | 4/60 [02:26<33:56, 36.37s/it]Baseline:   8%|▊         | 5/60 [03:02<33:05, 36.10s/it]Baseline:  10%|█         | 6/60 [03:37<32:21, 35.96s/it]Baseline:  12%|█▏        | 7/60 [04:13<31:38, 35.83s/it]Baseline:  13%|█▎        | 8/60 [04:48<30:59, 35.76s/it]Baseline:  15%|█▌        | 9/60 [05:24<30:19, 35.68s/it]Baseline:  17%|█▋        | 10/60 [05:59<29:42, 35.66s/it]Baseline:  18%|█▊        | 11/60 [06:35<29:05, 35.62s/it]Baseline:  20%|██        | 12/60 [07:11<28:28, 35.59s/it]Baseline:  22%|██▏       | 13/60 [07:46<27:51, 35.57s/it]Baseline:  23%|██▎       | 14/60 [08:22<27:15, 35.56s/it]Baseline:  25%|██▌       | 15/60 [08:57<26:39, 35.54s/it]Baseline:  27%|██▋       | 16/60 [09:33<26:03, 35.55s/it]Baseline:  28%|██▊       | 17/60 [10:08<25:28, 35.54s/it]Baseline:  30%|███       | 18/60 [10:44<24:52, 35.53s/it]Baseline:  32%|███▏      | 19/60 [11:19<24:16, 35.53s/it]Baseline:  33%|███▎      | 20/60 [11:55<23:42, 35.55s/it]Baseline:  35%|███▌      | 21/60 [12:30<23:05, 35.54s/it]Baseline:  37%|███▋      | 22/60 [13:06<22:30, 35.53s/it]Baseline:  38%|███▊      | 23/60 [13:42<21:56, 35.58s/it]Baseline:  40%|████      | 24/60 [14:20<21:54, 36.51s/it]Baseline:  42%|████▏     | 25/60 [14:56<21:09, 36.26s/it]Baseline:  43%|████▎     | 26/60 [15:31<20:25, 36.04s/it]Baseline:  45%|████▌     | 27/60 [16:08<19:57, 36.29s/it]Baseline:  47%|████▋     | 28/60 [16:44<19:13, 36.06s/it]Baseline:  48%|████▊     | 29/60 [17:20<18:39, 36.13s/it]Baseline:  50%|█████     | 30/60 [17:56<17:58, 35.96s/it]Baseline:  52%|█████▏    | 31/60 [18:31<17:19, 35.84s/it]Baseline:  53%|█████▎    | 32/60 [19:07<16:46, 35.94s/it]Baseline:  55%|█████▌    | 33/60 [19:44<16:16, 36.15s/it]Baseline:  55%|█████▌    | 33/60 [20:21<16:39, 37.01s/it]
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
-  warnings.warn(
-Traceback (most recent call last):
-  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m37_multicand_dualview.py", line 2031, in <module>
-    main()
-  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m37_multicand_dualview.py", line 1773, in main
-    m37_nogate, m37_nogate_metrics = _train_m37_model(
-  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m37_multicand_dualview.py", line 425, in _train_m37_model
-    for batch in train_loader:
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 701, in __next__
-    data = self._next_data()
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1465, in _next_data
-    return self._process_data(data)
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py", line 1491, in _process_data
-    data.reraise()
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/_utils.py", line 715, in reraise
-    raise exception
-IndexError: Caught IndexError in DataLoader worker process 0.
-Original Traceback (most recent call last):
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/_utils/worker.py", line 351, in _worker_loop
-    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 52, in fetch
-    data = [self.dataset[idx] for idx in possibly_batched_index]
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/_utils/fetch.py", line 52, in <listcomp>
-    data = [self.dataset[idx] for idx in possibly_batched_index]
-  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m37_multicand_dualview.py", line 102, in __getitem__
-    "cand_meta": self.cand_meta[i],
-IndexError: index 61857 is out of bounds for dimension 0 with size 1
-

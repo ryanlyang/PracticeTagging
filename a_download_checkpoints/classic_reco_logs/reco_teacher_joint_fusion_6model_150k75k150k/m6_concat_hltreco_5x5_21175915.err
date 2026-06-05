@@ -1,488 +1,0 @@
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
-  warnings.warn(
-Baseline-HLT:   0%|          | 0/60 [00:00<?, ?it/s]Baseline-HLT:   2%|▏         | 1/60 [00:27<26:38, 27.10s/it]Baseline-HLT:   3%|▎         | 2/60 [00:53<26:04, 26.98s/it]Baseline-HLT:   5%|▌         | 3/60 [01:21<25:43, 27.08s/it]Baseline-HLT:   7%|▋         | 4/60 [01:55<27:57, 29.96s/it]Baseline-HLT:   8%|▊         | 5/60 [02:22<26:34, 28.98s/it]Baseline-HLT:  10%|█         | 6/60 [02:50<25:33, 28.40s/it]Baseline-HLT:  12%|█▏        | 7/60 [03:17<24:46, 28.05s/it]Baseline-HLT:  13%|█▎        | 8/60 [03:58<27:55, 32.23s/it]Baseline-HLT:  15%|█▌        | 9/60 [04:25<26:04, 30.68s/it]Baseline-HLT:  17%|█▋        | 10/60 [04:53<24:41, 29.64s/it]Baseline-HLT:  18%|█▊        | 11/60 [05:20<23:37, 28.93s/it]Baseline-HLT:  20%|██        | 12/60 [05:47<22:44, 28.43s/it]Baseline-HLT:  22%|██▏       | 13/60 [06:15<21:59, 28.08s/it]Baseline-HLT:  23%|██▎       | 14/60 [06:42<21:20, 27.85s/it]Baseline-HLT:  25%|██▌       | 15/60 [07:09<20:45, 27.68s/it]Baseline-HLT:  27%|██▋       | 16/60 [07:56<24:26, 33.34s/it]Baseline-HLT:  28%|██▊       | 17/60 [08:27<23:32, 32.86s/it]Baseline-HLT:  30%|███       | 18/60 [08:59<22:40, 32.39s/it]Baseline-HLT:  32%|███▏      | 19/60 [09:26<21:05, 30.86s/it]Baseline-HLT:  33%|███▎      | 20/60 [09:53<19:51, 29.79s/it]Baseline-HLT:  35%|███▌      | 21/60 [10:26<19:57, 30.70s/it]Baseline-HLT:  37%|███▋      | 22/60 [10:54<18:49, 29.73s/it]Baseline-HLT:  38%|███▊      | 23/60 [11:21<17:52, 29.00s/it]Baseline-HLT:  40%|████      | 24/60 [11:59<19:05, 31.83s/it]Baseline-HLT:  42%|████▏     | 25/60 [12:27<17:46, 30.48s/it]Baseline-HLT:  43%|████▎     | 26/60 [12:54<16:44, 29.54s/it]Baseline-HLT:  45%|████▌     | 27/60 [13:21<15:50, 28.82s/it]Baseline-HLT:  47%|████▋     | 28/60 [13:49<15:09, 28.42s/it]Baseline-HLT:  48%|████▊     | 29/60 [14:16<14:30, 28.07s/it]Baseline-HLT:  50%|█████     | 30/60 [14:43<13:55, 27.83s/it]Baseline-HLT:  52%|█████▏    | 31/60 [15:10<13:22, 27.68s/it]Baseline-HLT:  53%|█████▎    | 32/60 [15:38<12:51, 27.57s/it]Baseline-HLT:  55%|█████▌    | 33/60 [16:05<12:20, 27.43s/it]Baseline-HLT:  57%|█████▋    | 34/60 [16:41<13:02, 30.10s/it]Baseline-HLT:  58%|█████▊    | 35/60 [17:08<12:11, 29.27s/it]Baseline-HLT:  60%|██████    | 36/60 [17:37<11:39, 29.14s/it]Baseline-HLT:  60%|██████    | 36/60 [18:07<12:04, 30.20s/it]
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
-  warnings.warn(
-ConcatTeacher:   0%|          | 0/60 [00:00<?, ?it/s]ConcatTeacher:   2%|▏         | 1/60 [01:04<1:03:41, 64.77s/it]ConcatTeacher:   3%|▎         | 2/60 [02:09<1:02:23, 64.55s/it]ConcatTeacher:   5%|▌         | 3/60 [03:25<1:06:27, 69.95s/it]ConcatTeacher:   7%|▋         | 4/60 [04:30<1:03:17, 67.82s/it]ConcatTeacher:   8%|▊         | 5/60 [05:34<1:01:04, 66.63s/it]ConcatTeacher:  10%|█         | 6/60 [06:39<59:20, 65.93s/it]  ConcatTeacher:  12%|█▏        | 7/60 [07:43<57:50, 65.48s/it]ConcatTeacher:  13%|█▎        | 8/60 [08:48<56:29, 65.18s/it]ConcatTeacher:  15%|█▌        | 9/60 [09:52<55:13, 64.96s/it]ConcatTeacher:  17%|█▋        | 10/60 [10:57<53:58, 64.78s/it]ConcatTeacher:  18%|█▊        | 11/60 [12:14<56:05, 68.68s/it]ConcatTeacher:  20%|██        | 12/60 [13:19<53:55, 67.40s/it]ConcatTeacher:  22%|██▏       | 13/60 [14:23<52:05, 66.51s/it]ConcatTeacher:  23%|██▎       | 14/60 [15:33<51:40, 67.40s/it]ConcatTeacher:  25%|██▌       | 15/60 [17:33<1:02:37, 83.49s/it]ConcatTeacher:  27%|██▋       | 16/60 [18:38<57:02, 77.79s/it]  ConcatTeacher:  28%|██▊       | 17/60 [19:42<52:54, 73.81s/it]ConcatTeacher:  30%|███       | 18/60 [20:47<49:43, 71.03s/it]ConcatTeacher:  32%|███▏      | 19/60 [21:51<47:11, 69.07s/it]ConcatTeacher:  33%|███▎      | 20/60 [22:56<45:05, 67.65s/it]ConcatTeacher:  35%|███▌      | 21/60 [24:01<43:23, 66.76s/it]ConcatTeacher:  37%|███▋      | 22/60 [25:05<41:50, 66.08s/it]ConcatTeacher:  38%|███▊      | 23/60 [26:09<40:27, 65.60s/it]ConcatTeacher:  40%|████      | 24/60 [27:14<39:09, 65.27s/it]ConcatTeacher:  42%|████▏     | 25/60 [28:18<37:56, 65.03s/it]ConcatTeacher:  43%|████▎     | 26/60 [29:23<36:44, 64.83s/it]ConcatTeacher:  45%|████▌     | 27/60 [30:28<35:38, 64.79s/it]ConcatTeacher:  47%|████▋     | 28/60 [31:32<34:30, 64.70s/it]ConcatTeacher:  48%|████▊     | 29/60 [32:37<33:23, 64.64s/it]ConcatTeacher:  50%|█████     | 30/60 [33:41<32:18, 64.61s/it]ConcatTeacher:  52%|█████▏    | 31/60 [34:46<31:12, 64.58s/it]ConcatTeacher:  53%|█████▎    | 32/60 [35:50<30:06, 64.50s/it]ConcatTeacher:  55%|█████▌    | 33/60 [36:55<29:02, 64.55s/it]ConcatTeacher:  57%|█████▋    | 34/60 [37:59<27:58, 64.55s/it]ConcatTeacher:  58%|█████▊    | 35/60 [39:04<26:53, 64.54s/it]ConcatTeacher:  60%|██████    | 36/60 [40:08<25:49, 64.54s/it]ConcatTeacher:  62%|██████▏   | 37/60 [41:13<24:44, 64.54s/it]ConcatTeacher:  63%|██████▎   | 38/60 [42:17<23:38, 64.49s/it]ConcatTeacher:  65%|██████▌   | 39/60 [43:22<22:35, 64.55s/it]ConcatTeacher:  67%|██████▋   | 40/60 [44:26<21:30, 64.54s/it]ConcatTeacher:  67%|██████▋   | 40/60 [45:31<22:45, 68.28s/it]
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/modules/transformer.py:379: UserWarning: enable_nested_tensor is True, but self.use_nested_tensor is False because encoder_layer.norm_first was True
-  warnings.warn(
-ConcatHLTReco-PostStageA:   0%|          | 0/60 [00:00<?, ?it/s]ConcatHLTReco-PostStageA:   2%|▏         | 1/60 [01:04<1:03:26, 64.51s/it]ConcatHLTReco-PostStageA:   3%|▎         | 2/60 [02:09<1:02:21, 64.50s/it]ConcatHLTReco-PostStageA:   5%|▌         | 3/60 [03:13<1:01:13, 64.45s/it]ConcatHLTReco-PostStageA:   7%|▋         | 4/60 [04:17<1:00:02, 64.32s/it]ConcatHLTReco-PostStageA:   8%|▊         | 5/60 [05:21<58:46, 64.11s/it]  ConcatHLTReco-PostStageA:  10%|█         | 6/60 [06:25<57:39, 64.06s/it]ConcatHLTReco-PostStageA:  12%|█▏        | 7/60 [07:28<56:29, 63.95s/it]ConcatHLTReco-PostStageA:  13%|█▎        | 8/60 [08:32<55:21, 63.88s/it]ConcatHLTReco-PostStageA:  15%|█▌        | 9/60 [09:36<54:15, 63.83s/it]ConcatHLTReco-PostStageA:  17%|█▋        | 10/60 [10:40<53:12, 63.85s/it]ConcatHLTReco-PostStageA:  18%|█▊        | 11/60 [11:44<52:06, 63.81s/it]ConcatHLTReco-PostStageA:  20%|██        | 12/60 [12:48<51:07, 63.90s/it]ConcatHLTReco-PostStageA:  22%|██▏       | 13/60 [13:51<50:03, 63.90s/it]ConcatHLTReco-PostStageA:  23%|██▎       | 14/60 [14:55<48:59, 63.91s/it]ConcatHLTReco-PostStageA:  25%|██▌       | 15/60 [15:59<47:56, 63.91s/it]ConcatHLTReco-PostStageA:  27%|██▋       | 16/60 [17:03<46:52, 63.92s/it]ConcatHLTReco-PostStageA:  28%|██▊       | 17/60 [18:07<45:46, 63.87s/it]ConcatHLTReco-PostStageA:  30%|███       | 18/60 [19:11<44:45, 63.94s/it]ConcatHLTReco-PostStageA:  32%|███▏      | 19/60 [20:15<43:41, 63.94s/it]ConcatHLTReco-PostStageA:  33%|███▎      | 20/60 [21:19<42:37, 63.94s/it]ConcatHLTReco-PostStageA:  35%|███▌      | 21/60 [22:23<41:33, 63.94s/it]ConcatHLTReco-PostStageA:  37%|███▋      | 22/60 [23:27<40:30, 63.95s/it]ConcatHLTReco-PostStageA:  38%|███▊      | 23/60 [24:31<39:24, 63.89s/it]ConcatHLTReco-PostStageA:  40%|████      | 24/60 [25:35<38:23, 63.98s/it]ConcatHLTReco-PostStageA:  42%|████▏     | 25/60 [26:39<37:18, 63.95s/it]ConcatHLTReco-PostStageA:  43%|████▎     | 26/60 [27:43<36:14, 63.95s/it]ConcatHLTReco-PostStageA:  45%|████▌     | 27/60 [28:47<35:10, 63.96s/it]ConcatHLTReco-PostStageA:  47%|████▋     | 28/60 [29:51<34:06, 63.95s/it]ConcatHLTReco-PostStageA:  48%|████▊     | 29/60 [30:54<33:00, 63.89s/it]ConcatHLTReco-PostStageA:  50%|█████     | 30/60 [31:59<31:59, 63.97s/it]ConcatHLTReco-PostStageA:  52%|█████▏    | 31/60 [33:02<30:54, 63.96s/it]ConcatHLTReco-PostStageA:  53%|█████▎    | 32/60 [34:06<29:50, 63.96s/it]ConcatHLTReco-PostStageA:  53%|█████▎    | 32/60 [35:10<30:47, 65.97s/it]
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/utils/data/dataloader.py:617: UserWarning: This DataLoader will create 6 worker processes in total. Our suggested max number of worker in current system is 1, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
-  warnings.warn(
-/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/site-packages/torch/nn/functional.py:5849: UserWarning: Support for mismatched key_padding_mask and attn_mask is deprecated. Use same type for both instead.
-  warnings.warn(
-[2026-04-08T09:39:53.026] error: *** JOB 21175915 ON skl-a-60 CANCELLED AT 2026-04-08T09:39:53 DUE TO TIME LIMIT ***

@@ -1,5 +1,0 @@
-============================================================
-Model-32 Feasibility Pipeline (K0=64 -> top8 shortlist)
-Run: checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility/model32_k6_feasibility_150k75k150k_seed0
-============================================================
- python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly_m32_feasibility.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_150k75k150k/model32_feasibility --run_name model32_k6_feasibility_150k75k150k_seed0 --n_train_jets 375000 --n_train_split 100000 --n_val_split 75000 --n_test_split 150000 --offset_jets 0 --max_constits 100 --batch_size 80 --num_workers 6 --seed 0 --device cuda --save_fusion_scores --proposer_k0_train 64 --proposer_top_m_train 8 --k0_infer 64 --top_m_infer 8

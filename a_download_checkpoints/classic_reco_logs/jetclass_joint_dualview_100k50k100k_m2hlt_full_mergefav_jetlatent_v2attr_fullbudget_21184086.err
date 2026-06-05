@@ -1,8 +1,0 @@
-Traceback (most recent call last):
-  File "/home/ryreu/atlas/PracticeTagging/train_jetclass_joint_dualview_stage2_unmergeonly_m2hlt_jetlatent_set2set_v2_attr.py", line 84, in <module>
-    main()
-  File "/home/ryreu/atlas/PracticeTagging/train_jetclass_joint_dualview_stage2_unmergeonly_m2hlt_jetlatent_set2set_v2_attr.py", line 80, in main
-    v2.run(args)
-  File "/home/ryreu/atlas/PracticeTagging/train_jetclass_joint_dualview_stage2_unmergeonly_v2_attr.py", line 945, in run
-    tr_hlt_tok_raw, tr_hlt_mask_raw, tr_hlt_diag, tr_hlt_prov = build_hlt_view(
-TypeError: _build_hlt_view_m2style() got an unexpected keyword argument 'return_provenance'
