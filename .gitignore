@@ -13,3 +13,5 @@ joint_50k_80c/
 download_checkpoints/
 
 offline_reconstructor_logs/
+
+a_download_checkpoints/
