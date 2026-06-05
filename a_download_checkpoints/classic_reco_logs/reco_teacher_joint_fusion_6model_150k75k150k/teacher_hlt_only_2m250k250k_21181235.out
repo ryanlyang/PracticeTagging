@@ -1,9 +1,0 @@
-============================================================
-Teacher + HLT Baseline Only (2M/250k/250k split)
-Run: checkpoints/reco_teacher_joint_fusion_6model_2m250k250k/teacher_hlt_only/teacher_hlt_only_2m250k250k_seed0
-Data: n_train_jets=2500000, split=2000000/250000/250000, offset=0
-============================================================
- python offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_unmergeonly.py --save_dir checkpoints/reco_teacher_joint_fusion_6model_2m250k250k/teacher_hlt_only --run_name teacher_hlt_only_2m250k250k_seed0 --n_train_jets 2500000 --n_train_split 2000000 --n_val_split 250000 --n_test_split 250000 --offset_jets 0 --max_constits 100 --num_workers 6 --seed 0 --selection_metric auc --step1_only --device cuda
-Device: cuda
-Save dir: checkpoints/reco_teacher_joint_fusion_6model_2m250k250k/teacher_hlt_only/teacher_hlt_only_2m250k250k_seed0
-Loading offline constituents...

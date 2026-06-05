@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint31_rolling_chunk_greedy.py", line 640, in <module>
-    main()
-  File "/home/ryreu/atlas/PracticeTagging/analyze_hlt_joint31_rolling_chunk_greedy.py", line 226, in main
-    raise RuntimeError(
-RuntimeError: Requested val pool offset+size = 0+1000000 exceeds available validation jets = 75000. Use a larger score artifact or reduce --val_pool_size.

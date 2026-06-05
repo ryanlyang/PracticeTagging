@@ -1,5 +1,0 @@
-Traceback (most recent call last):
-  File "<stdin>", line 5, in <module>
-  File "/home/ryreu/miniconda3/envs/atlas_kd/lib/python3.10/os.py", line 680, in __getitem__
-    raise KeyError(key) from None
-KeyError: 'OUT_DIR'

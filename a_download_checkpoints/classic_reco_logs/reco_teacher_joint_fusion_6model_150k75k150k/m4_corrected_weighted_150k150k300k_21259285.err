@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/home/ryreu/atlas/PracticeTagging/reco_teacher_stageA_only_delta_curriculum.py", line 1410, in <module>
-    main()
-  File "/home/ryreu/atlas/PracticeTagging/reco_teacher_stageA_only_delta_curriculum.py", line 813, in main
-    all_const_full, all_labels_full, all_train_w_full = b.load_raw_constituents_labels_weights_from_h5(
-AttributeError: module 'offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd' has no attribute 'load_raw_constituents_labels_weights_from_h5'

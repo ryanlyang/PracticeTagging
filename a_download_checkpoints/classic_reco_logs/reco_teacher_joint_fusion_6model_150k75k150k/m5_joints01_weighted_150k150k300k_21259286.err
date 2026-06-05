@@ -1,6 +1,0 @@
-Traceback (most recent call last):
-  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd.py", line 3387, in <module>
-    main()
-  File "/home/ryreu/atlas/PracticeTagging/offline_reconstructor_joint_dualview_stage2save_auc_norankc_nopriv_rhosplit_splitagain_teacherkd.py", line 2303, in main
-    all_const_full, all_labels_full, all_train_w_full = load_raw_constituents_labels_weights_from_h5(
-NameError: name 'load_raw_constituents_labels_weights_from_h5' is not defined
