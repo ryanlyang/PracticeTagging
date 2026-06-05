@@ -4,21 +4,21 @@
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=192G
-#SBATCH --time=1-00:00:00
-#SBATCH --output=offline_reconstructor_logs/jetclass_level1_calibrator_1m250k1m_fixedhlt_filename_%j.out
-#SBATCH --error=offline_reconstructor_logs/jetclass_level1_calibrator_1m250k1m_fixedhlt_filename_%j.err
+#SBATCH --time=12:00:00
+#SBATCH --output=offline_reconstructor_logs/jetclass_level1_calibrator_500k250k1m_fixedhlt_filename_%j.out
+#SBATCH --error=offline_reconstructor_logs/jetclass_level1_calibrator_500k250k1m_fixedhlt_filename_%j.err
 
 set -euo pipefail
 
 DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
-OUT_DIR="${OUT_DIR:-checkpoints/jetclass_level1_calibrator/level1_1m250k1m_fixedhlt_filename}"
+OUT_DIR="${OUT_DIR:-checkpoints/jetclass_level1_calibrator/level1_500k250k1m_fixedhlt_filename}"
 SCRIPT="${SCRIPT:-$(pwd)/train_jetclass_level1_jet_calibrator.py}"
 
 SEED="${SEED:-52}"
 DEVICE="${DEVICE:-cuda}"
 NUM_WORKERS="${NUM_WORKERS:-0}"
 
-N_TRAIN_JETS="${N_TRAIN_JETS:-1000000}"
+N_TRAIN_JETS="${N_TRAIN_JETS:-500000}"
 N_VAL_JETS="${N_VAL_JETS:-250000}"
 N_TEST_JETS="${N_TEST_JETS:-1000000}"
 MAX_CONSTITS="${MAX_CONSTITS:-128}"
@@ -106,4 +106,3 @@ CMD=(
 
 echo " ${CMD[*]}"
 "${CMD[@]}"
-
