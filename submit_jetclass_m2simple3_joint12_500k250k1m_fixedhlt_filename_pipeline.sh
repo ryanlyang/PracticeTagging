@@ -10,8 +10,8 @@ set -euo pipefail
 PARTITION="${PARTITION:-tier3}"
 TRAIN_TIME_LIMIT="${TRAIN_TIME_LIMIT:-${TIME_LIMIT:-2-00:00:00}}"
 FUSION_TIME_LIMIT="${FUSION_TIME_LIMIT:-12:00:00}"
-TRAIN_MEM="${TRAIN_MEM:-128G}"
-FUSION_MEM="${FUSION_MEM:-96G}"
+TRAIN_MEM="${TRAIN_MEM:-256G}"
+FUSION_MEM="${FUSION_MEM:-128G}"
 SAVE_DIR="${SAVE_DIR:-checkpoints/jetclass_joint_dualview}"
 
 RUNNER_TRAIN="${RUNNER_TRAIN:-run_train_jetclass_joint_dualview_v2attr_500k250k1m_m2hlt_simple3ops.sh}"

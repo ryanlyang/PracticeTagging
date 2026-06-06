@@ -3,7 +3,7 @@
 #SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=128G
+#SBATCH --mem=256G
 #SBATCH --time=2-00:00:00
 #SBATCH --output=offline_reconstructor_logs/jetclass_joint_dualview_v2attr_500k250k1m_m2hlt_simple3ops_%j.out
 #SBATCH --error=offline_reconstructor_logs/jetclass_joint_dualview_v2attr_500k250k1m_m2hlt_simple3ops_%j.err
