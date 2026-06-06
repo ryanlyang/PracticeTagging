@@ -8,7 +8,7 @@ set -euo pipefail
 # filename-derived JetClass labels to avoid the slow canonical label-branch scan.
 
 PARTITION="${PARTITION:-tier3}"
-TRAIN_TIME_LIMIT="${TRAIN_TIME_LIMIT:-${TIME_LIMIT:-3-00:00:00}}"
+TRAIN_TIME_LIMIT="${TRAIN_TIME_LIMIT:-${TIME_LIMIT:-2-00:00:00}}"
 FUSION_TIME_LIMIT="${FUSION_TIME_LIMIT:-1-00:00:00}"
 TRAIN_MEM="${TRAIN_MEM:-256G}"
 FUSION_MEM="${FUSION_MEM:-128G}"
