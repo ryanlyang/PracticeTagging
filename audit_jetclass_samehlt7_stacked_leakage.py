@@ -236,10 +236,9 @@ def _split_file_audit(ref_args: SimpleNamespace, data_dir: Path) -> Dict:
 
     ftr, fva, fte = flat(tr), flat(va), flat(te)
     all_used = ftr | fva | fte
-    all_files = flat(source_files)
     unused_by_class = {
-        c: [str(as_path(p)) for p in source_files[c] if str(as_path(p)) not in all_used]
-        for c in class_names
+        c: [str(as_path(p)) for p in xs if str(as_path(p)) not in all_used]
+        for c, xs in source_files.items()
     }
     return {
         "pass": not (ftr & fva or ftr & fte or fva & fte),
