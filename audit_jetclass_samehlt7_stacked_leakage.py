@@ -224,14 +224,21 @@ def _split_file_audit(ref_args: SimpleNamespace, data_dir: Path) -> Dict:
         seed=int(ref_args.seed),
     )
 
+    def as_path(x) -> Path:
+        # collect_files_by_class stores (file_index, Path), while split_files_by_class
+        # returns bare Paths. Normalize both forms before overlap checks.
+        if isinstance(x, tuple):
+            x = x[-1]
+        return Path(x).resolve()
+
     def flat(d):
-        return {str(p.resolve()) for xs in d.values() for p in xs}
+        return {str(as_path(p)) for xs in d.values() for p in xs}
 
     ftr, fva, fte = flat(tr), flat(va), flat(te)
     all_used = ftr | fva | fte
     all_files = flat(source_files)
     unused_by_class = {
-        c: [str(p.resolve()) for p in source_files[c] if str(p.resolve()) not in all_used]
+        c: [str(as_path(p)) for p in source_files[c] if str(as_path(p)) not in all_used]
         for c in class_names
     }
     return {
