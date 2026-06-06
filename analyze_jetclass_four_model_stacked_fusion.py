@@ -364,6 +364,15 @@ def _build_reconstructor_with_attrs(
     )
 
     if str(reco_family) == "hybrid_ops":
+        reco_cfg["reconstructor_model"]["edit_delta_scale"] = float(
+            _get_attr(run_args, "specialist_edit_delta_scale", 1.0)
+        )
+        reco_cfg["reconstructor_model"]["split_weight_scale"] = float(
+            _get_attr(run_args, "specialist_split_weight_scale", 1.0)
+        )
+        reco_cfg["reconstructor_model"]["gen_weight_scale"] = float(
+            _get_attr(run_args, "specialist_gen_weight_scale", 1.0)
+        )
         base_reco = hybrid_ops.OfflineReconstructorHybridOps(
             input_dim=int(input_dim),
             **reco_cfg["reconstructor_model"],

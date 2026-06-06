@@ -106,6 +106,13 @@ def main() -> None:
     wrapper_parser.add_argument("--target_drop_mode", type=str, default="deterministic_bank")
     wrapper_parser.add_argument("--target_drop_num_banks", type=int, default=3)
     wrapper_parser.add_argument("--target_drop_bank_cycle_epochs", type=int, default=1)
+    wrapper_parser.add_argument("--specialist_edit_delta_scale", type=float, default=1.0)
+    wrapper_parser.add_argument("--specialist_split_weight_scale", type=float, default=1.0)
+    wrapper_parser.add_argument("--specialist_gen_weight_scale", type=float, default=1.0)
+    wrapper_parser.add_argument("--specialist_loss_w_axis", type=float, default=0.0)
+    wrapper_parser.add_argument("--specialist_loss_w_split_sparse", type=float, default=0.0)
+    wrapper_parser.add_argument("--specialist_loss_w_gen_sparse", type=float, default=0.0)
+    wrapper_parser.add_argument("--specialist_loss_w_radial_profile", type=float, default=0.0)
     wrapper_args, remaining_argv = wrapper_parser.parse_known_args()
     sys.argv = [sys.argv[0], *remaining_argv]
 
@@ -116,6 +123,13 @@ def main() -> None:
     args.target_drop_mode = str(wrapper_args.target_drop_mode)
     args.target_drop_num_banks = int(wrapper_args.target_drop_num_banks)
     args.target_drop_bank_cycle_epochs = int(wrapper_args.target_drop_bank_cycle_epochs)
+    args.specialist_edit_delta_scale = float(wrapper_args.specialist_edit_delta_scale)
+    args.specialist_split_weight_scale = float(wrapper_args.specialist_split_weight_scale)
+    args.specialist_gen_weight_scale = float(wrapper_args.specialist_gen_weight_scale)
+    args.specialist_loss_w_axis = float(wrapper_args.specialist_loss_w_axis)
+    args.specialist_loss_w_split_sparse = float(wrapper_args.specialist_loss_w_split_sparse)
+    args.specialist_loss_w_gen_sparse = float(wrapper_args.specialist_loss_w_gen_sparse)
+    args.specialist_loss_w_radial_profile = float(wrapper_args.specialist_loss_w_radial_profile)
 
     stagea_attr_lam_mode = float(args.lambda_attr_mode)
     stagea_attr_lam_type = float(args.lambda_attr_type)
@@ -135,6 +149,36 @@ def main() -> None:
     target_drop_num_banks = int(max(1, args.target_drop_num_banks))
     target_drop_bank_cycle_epochs = int(max(1, args.target_drop_bank_cycle_epochs))
     added_target_scale = float(max(0.0, min(1.0, args.added_target_scale)))
+    specialist_edit_delta_scale = float(max(0.0, wrapper_args.specialist_edit_delta_scale))
+    specialist_split_weight_scale = float(max(0.0, wrapper_args.specialist_split_weight_scale))
+    specialist_gen_weight_scale = float(max(0.0, wrapper_args.specialist_gen_weight_scale))
+    specialist_loss_extra = {
+        "w_axis": float(max(0.0, wrapper_args.specialist_loss_w_axis)),
+        "w_split_sparse": float(max(0.0, wrapper_args.specialist_loss_w_split_sparse)),
+        "w_gen_sparse": float(max(0.0, wrapper_args.specialist_loss_w_gen_sparse)),
+        "w_radial_profile": float(max(0.0, wrapper_args.specialist_loss_w_radial_profile)),
+    }
+
+    class SpecialistHybridOps(jetlatent.OfflineReconstructorHybridOps):
+        def __init__(self, *model_args, **model_kwargs):
+            model_kwargs.setdefault("edit_delta_scale", specialist_edit_delta_scale)
+            model_kwargs.setdefault("split_weight_scale", specialist_split_weight_scale)
+            model_kwargs.setdefault("gen_weight_scale", specialist_gen_weight_scale)
+            super().__init__(*model_args, **model_kwargs)
+
+    def _with_specialist_loss_cfg(loss_cfg: Dict) -> Dict:
+        cfg = dict(loss_cfg)
+        cfg.update(specialist_loss_extra)
+        return cfg
+
+    def _compute_reconstruction_losses_specialist(*loss_args, **loss_kwargs):
+        if len(loss_args) >= 8:
+            loss_args = list(loss_args)
+            loss_args[7] = _with_specialist_loss_cfg(loss_args[7])
+            loss_args = tuple(loss_args)
+        elif "loss_cfg" in loss_kwargs:
+            loss_kwargs["loss_cfg"] = _with_specialist_loss_cfg(loss_kwargs["loss_cfg"])
+        return jetlatent.compute_reconstruction_losses_weighted_hybrid_ops(*loss_args, **loss_kwargs)
 
     def _infer_type_id(token: np.ndarray) -> int:
         pid = token[IDX_PID0:IDX_PID4 + 1]
@@ -651,7 +695,7 @@ def main() -> None:
         sample_weight: torch.Tensor | None,
     ) -> Dict[str, torch.Tensor]:
         device = reco_out["cand_tokens"].device
-        losses_reco = jetlatent.compute_reconstruction_losses_weighted_hybrid_ops(
+        losses_reco = _compute_reconstruction_losses_specialist(
             reco_out,
             batch["const_hlt"].to(device),
             batch["mask_hlt"].to(device),
@@ -889,15 +933,15 @@ def main() -> None:
     v2.build_hlt_view = _build_hlt_view_m2style_with_provenance
 
     # Reconstructor/loss/corrected-view: hybrid ops + full-info Stage-A dataset/trainer.
-    v2.OfflineReconstructor = jetlatent.OfflineReconstructorHybridOps
-    v2.compute_reconstruction_losses_weighted = jetlatent.compute_reconstruction_losses_weighted_hybrid_ops
+    v2.OfflineReconstructor = SpecialistHybridOps
+    v2.compute_reconstruction_losses_weighted = _compute_reconstruction_losses_specialist
     v2.build_soft_corrected_view = jetlatent.build_soft_corrected_view_hybrid_ops
     v2.wrap_reconstructor_unmerge_only = _identity_wrap
     v2.WeightedReconstructionDataset = _WeightedReconstructionDatasetFullInfo
     v2.train_reconstructor_weighted = _train_reconstructor_weighted_fullinfo
 
     # Stage-A trainer calls globals from reco_joint; patch there too.
-    reco_joint.compute_reconstruction_losses_weighted = jetlatent.compute_reconstruction_losses_weighted_hybrid_ops
+    reco_joint.compute_reconstruction_losses_weighted = _compute_reconstruction_losses_specialist
     reco_joint.enforce_unmerge_only_output = _identity_enforce
     reco_joint.wrap_reconstructor_unmerge_only = _identity_wrap
     reco_joint.WeightedReconstructionDataset = _WeightedReconstructionDatasetFullInfo

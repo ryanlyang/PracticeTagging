@@ -59,12 +59,18 @@ class OfflineReconstructorHybridOps(nn.Module):
         dropout: float = 0.1,
         max_split_children: int = 2,
         max_generated_tokens: int = 48,
+        edit_delta_scale: float = 1.0,
+        split_weight_scale: float = 1.0,
+        gen_weight_scale: float = 1.0,
     ):
         super().__init__()
         self.max_split_children = int(max(1, max_split_children))
         self.max_generated_tokens = int(max_generated_tokens)
         self.num_heads = int(num_heads)
         self.embed_dim = int(embed_dim)
+        self.edit_delta_scale = float(max(0.0, edit_delta_scale))
+        self.split_weight_scale = float(max(0.0, split_weight_scale))
+        self.gen_weight_scale = float(max(0.0, gen_weight_scale))
 
         self.input_proj = nn.Sequential(
             nn.Linear(input_dim, embed_dim),
@@ -177,10 +183,11 @@ class OfflineReconstructorHybridOps(nn.Module):
         base_delta = self.unsmear_head(x)
         base_ang = 0.28 * torch.tanh(self.reassign_head(x))
 
-        d_logpt = float(stage_scale) * 0.65 * torch.tanh(base_delta[..., 0])
-        d_eta = float(stage_scale) * (0.45 * torch.tanh(base_delta[..., 1]) + base_ang[..., 0])
-        d_phi = float(stage_scale) * (0.45 * torch.tanh(base_delta[..., 2]) + base_ang[..., 1])
-        d_logE = float(stage_scale) * 0.65 * torch.tanh(base_delta[..., 3])
+        edit_scale = float(stage_scale) * self.edit_delta_scale
+        d_logpt = edit_scale * 0.65 * torch.tanh(base_delta[..., 0])
+        d_eta = edit_scale * (0.45 * torch.tanh(base_delta[..., 1]) + base_ang[..., 0])
+        d_phi = edit_scale * (0.45 * torch.tanh(base_delta[..., 2]) + base_ang[..., 1])
+        d_logE = edit_scale * 0.65 * torch.tanh(base_delta[..., 3])
 
         tok_pt = torch.exp(torch.clamp(torch.log(pt) + d_logpt, min=-9.0, max=9.0))
         tok_eta = (eta + d_eta).clamp(min=-5.0, max=5.0)
@@ -194,7 +201,11 @@ class OfflineReconstructorHybridOps(nn.Module):
         # -------------------------------------------------------------
         # Split branch (merge-product parents)
         # -------------------------------------------------------------
-        p_split = torch.sigmoid(self.split_exist_head(x).squeeze(-1)) * mask_hlt.float()
+        p_split = (
+            torch.sigmoid(self.split_exist_head(x).squeeze(-1))
+            * mask_hlt.float()
+            * self.split_weight_scale
+        ).clamp(0.0, 1.0)
 
         # Keep branch weight is reduced when split probability is high.
         tok_w_raw = (tok_exist * (1.0 - p_split)).clamp(0.0, 1.0)
@@ -279,7 +290,7 @@ class OfflineReconstructorHybridOps(nn.Module):
         total_scale = (budget_total.unsqueeze(1) / pred_count_raw.clamp(min=eps)).clamp(min=0.25, max=4.0)
         tok_w = (tok_w_raw * total_scale).clamp(0.0, 1.0)
         split_w = (split_w_flat * total_scale).clamp(0.0, 1.0)
-        gen_w = (gen_w_raw * total_scale).clamp(0.0, 1.0)
+        gen_w = (gen_w_raw * total_scale * self.gen_weight_scale).clamp(0.0, 1.0)
 
         # Generator -> base assignment for corrected-view augmentation.
         assign_logits = torch.einsum("bgd,bld->bgl", gen_dec, x) / math.sqrt(float(self.embed_dim))
@@ -416,6 +427,14 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
     pt_ratio = pred_pt / (true_pt + eps)
     loss_pt_ratio_vec = F.smooth_l1_loss(pt_ratio, torch.ones_like(pt_ratio), reduction="none")
 
+    pred_axis_eta = torch.asinh(pred_pz / (pred_pt + eps))
+    true_axis_eta = torch.asinh(true_pz / (true_pt + eps))
+    pred_axis_phi = torch.atan2(pred_py, pred_px)
+    true_axis_phi = torch.atan2(true_py, true_px)
+    axis_deta = pred_axis_eta - true_axis_eta
+    axis_dphi = torch.atan2(torch.sin(pred_axis_phi - true_axis_phi), torch.cos(pred_axis_phi - true_axis_phi))
+    loss_axis_vec = torch.sqrt(axis_deta.pow(2) + axis_dphi.pow(2) + eps)
+
     pred_p = torch.sqrt(pred_px.pow(2) + pred_py.pow(2) + pred_pz.pow(2) + eps)
     true_p = torch.sqrt(true_px.pow(2) + true_py.pow(2) + true_pz.pow(2) + eps)
     pred_m2 = torch.clamp(pred_E.pow(2) - pred_p.pow(2), min=eps)
@@ -498,6 +517,8 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
         loss_sparse_vec = gen_w.mean(dim=1)
     else:
         loss_sparse_vec = torch.zeros_like(true_added)
+    loss_split_sparse_vec = split_w.mean(dim=1) if split_w is not None else torch.zeros_like(true_added)
+    loss_gen_sparse_vec = gen_w.mean(dim=1) if gen_w is not None else torch.zeros_like(true_added)
 
     # Locality: penalize predictions far from HLT support.
     h_eta = const_hlt[:, :, 1]
@@ -523,11 +544,14 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
         float(loss_cfg.get("w_set", 1.0)) * loss_set_vec
         + float(loss_cfg.get("w_phys", 0.0)) * loss_phys_vec
         + float(loss_cfg.get("w_pt_ratio", 0.0)) * loss_pt_ratio_vec
+        + float(loss_cfg.get("w_axis", 0.0)) * loss_axis_vec
         + float(loss_cfg.get("w_m_ratio", 0.0)) * loss_m_ratio_vec
         + float(loss_cfg.get("w_e_ratio", 0.0)) * loss_e_ratio_vec
         + float(loss_cfg.get("w_radial_profile", 0.0)) * loss_radial_profile_vec
         + float(loss_cfg.get("w_budget", 0.0)) * loss_budget_vec
         + float(loss_cfg.get("w_sparse", 0.0)) * loss_sparse_vec
+        + float(loss_cfg.get("w_split_sparse", 0.0)) * loss_split_sparse_vec
+        + float(loss_cfg.get("w_gen_sparse", 0.0)) * loss_gen_sparse_vec
         + float(loss_cfg.get("w_local", 0.0)) * loss_local_vec
         + float(loss_cfg.get("w_fp_mass", 0.0)) * loss_fp_mass_vec
     )
@@ -537,11 +561,14 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
         "set": base._weighted_batch_mean(loss_set_vec, sw),
         "phys": base._weighted_batch_mean(loss_phys_vec, sw),
         "pt_ratio": base._weighted_batch_mean(loss_pt_ratio_vec, sw),
+        "axis": base._weighted_batch_mean(loss_axis_vec, sw),
         "m_ratio": base._weighted_batch_mean(loss_m_ratio_vec, sw),
         "e_ratio": base._weighted_batch_mean(loss_e_ratio_vec, sw),
         "radial_profile": base._weighted_batch_mean(loss_radial_profile_vec, sw),
         "budget": base._weighted_batch_mean(loss_budget_vec, sw),
         "sparse": base._weighted_batch_mean(loss_sparse_vec, sw),
+        "split_sparse": base._weighted_batch_mean(loss_split_sparse_vec, sw),
+        "gen_sparse": base._weighted_batch_mean(loss_gen_sparse_vec, sw),
         "local": base._weighted_batch_mean(loss_local_vec, sw),
         "fp_mass": base._weighted_batch_mean(loss_fp_mass_vec, sw),
     }
