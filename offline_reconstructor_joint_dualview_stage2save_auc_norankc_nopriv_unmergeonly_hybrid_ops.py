@@ -356,19 +356,33 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
     eps = 1e-8
     sw = None if sample_weight is None else sample_weight.float().clamp(min=0.0)
 
-    pred = out["cand_tokens"]
-    w = out["cand_weights"].clamp(0.0, 1.0)
+    # Specialist variants can occasionally push one branch into non-finite
+    # candidate kinematics late in Stage-A.  Keep the loss numerically safe and
+    # make invalid candidates unattractive rather than letting SciPy crash.
+    invalid_cost = float(loss_cfg.get("invalid_cost", 1.0e6))
+    pred_raw = out["cand_tokens"]
+    w_raw = out["cand_weights"]
+    pred_finite = torch.isfinite(pred_raw).all(dim=-1)
+    target_finite = torch.isfinite(const_off).all(dim=-1) & mask_off.bool()
 
-    cost = reco_base._token_cost_matrix(pred, const_off)
-    valid_tgt = mask_off.unsqueeze(1)
-    cost = torch.where(valid_tgt, cost, torch.full_like(cost, 1e4))
+    pred = torch.nan_to_num(pred_raw, nan=0.0, posinf=0.0, neginf=0.0)
+    const_off_safe = torch.nan_to_num(const_off, nan=0.0, posinf=0.0, neginf=0.0)
+    w = torch.nan_to_num(w_raw, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    w = torch.where(pred_finite, w, torch.zeros_like(w))
+    loss_nonfinite_vec = (~pred_finite).float().mean(dim=1)
+
+    cost = reco_base._token_cost_matrix(pred, const_off_safe)
+    cost = torch.nan_to_num(cost, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    valid_pair = pred_finite.unsqueeze(-1) & target_finite.unsqueeze(1)
+    cost = torch.where(valid_pair, cost, torch.full_like(cost, invalid_cost))
+    cost = torch.nan_to_num(cost, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
 
     def _loss_set_chamfer_vec() -> torch.Tensor:
         pred_to_tgt = cost.min(dim=2).values
         loss_pred_to_tgt = (w * pred_to_tgt).sum(dim=1) / (w.sum(dim=1) + eps)
         penalty = float(loss_cfg.get("unselected_penalty", 0.0)) * (1.0 - w).unsqueeze(2)
         tgt_to_pred = (cost + penalty).min(dim=1).values
-        tgt_w = mask_off.float()
+        tgt_w = target_finite.float()
         loss_tgt_to_pred = (tgt_to_pred * tgt_w).sum(dim=1) / (tgt_w.sum(dim=1) + eps)
         return loss_pred_to_tgt + loss_tgt_to_pred
 
@@ -385,7 +399,12 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
             if n_tgt <= 0:
                 loss_list.append(torch.zeros((), device=cost.device, dtype=cost.dtype))
                 continue
-            c_bt = cost[bi, :, :n_tgt]
+            c_bt = torch.nan_to_num(
+                cost[bi, :, :n_tgt],
+                nan=invalid_cost,
+                posinf=invalid_cost,
+                neginf=invalid_cost,
+            )
             c_np = c_bt.detach().cpu().numpy()
             row_ind, col_ind = linear_sum_assignment(c_np)  # type: ignore[misc]
             row_t = torch.as_tensor(row_ind, device=cost.device, dtype=torch.long)
@@ -420,7 +439,7 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
         raise ValueError(f"Unsupported set_loss_mode in hybrid ops: {set_mode}")
 
     pred_px, pred_py, pred_pz, pred_E = reco_base._weighted_fourvec_sums(pred, w)
-    true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off, mask_off.float())
+    true_px, true_py, true_pz, true_E = reco_base._weighted_fourvec_sums(const_off_safe, target_finite.float())
 
     pred_pt = torch.sqrt(pred_px.pow(2) + pred_py.pow(2) + eps)
     true_pt = torch.sqrt(true_px.pow(2) + true_py.pow(2) + eps)
@@ -464,9 +483,9 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
     pred_tok_pt = pred[:, :, 0].clamp(min=0.0) * w
     pred_tok_eta = pred[:, :, 1]
     pred_tok_phi = pred[:, :, 2]
-    tgt_tok_pt = const_off[:, :, 0].clamp(min=0.0) * mask_off.float()
-    tgt_tok_eta = const_off[:, :, 1]
-    tgt_tok_phi = const_off[:, :, 2]
+    tgt_tok_pt = const_off_safe[:, :, 0].clamp(min=0.0) * target_finite.float()
+    tgt_tok_eta = const_off_safe[:, :, 1]
+    tgt_tok_phi = const_off_safe[:, :, 2]
 
     def _delta_r(tok_eta: torch.Tensor, tok_phi: torch.Tensor) -> torch.Tensor:
         d_eta = tok_eta - axis_eta.unsqueeze(1)
@@ -496,8 +515,8 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
 
     pred_count = w.sum(dim=1)
     pred_added_from_count = (pred_count - hlt_count).clamp(min=0.0)
-    pred_added_head = out["budget_merge"]
-    pred_total_head = out["budget_total"]
+    pred_added_head = torch.nan_to_num(out["budget_merge"], nan=0.0, posinf=1.0e4, neginf=0.0)
+    pred_total_head = torch.nan_to_num(out["budget_total"], nan=0.0, posinf=1.0e4, neginf=0.0)
 
     loss_budget_vec = (
         F.smooth_l1_loss(pred_added_from_count, true_added, reduction="none")
@@ -508,6 +527,10 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
     # Sparsity over all added branches.
     split_w = out.get("child_weight", None)
     gen_w = out.get("gen_weight", None)
+    if split_w is not None:
+        split_w = torch.nan_to_num(split_w, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
+    if gen_w is not None:
+        gen_w = torch.nan_to_num(gen_w, nan=0.0, posinf=1.0, neginf=0.0).clamp(0.0, 1.0)
     if split_w is not None and gen_w is not None:
         all_added_w = torch.cat([split_w, gen_w], dim=1)
         loss_sparse_vec = all_added_w.mean(dim=1)
@@ -540,6 +563,20 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
     unmatched_soft = torch.sigmoid((min_pred_cost - fp_cost_thresh) / fp_cost_tau)
     loss_fp_mass_vec = (w * unmatched_soft).sum(dim=1) / (w.sum(dim=1) + eps)
 
+    loss_set_vec = torch.nan_to_num(loss_set_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_phys_vec = torch.nan_to_num(loss_phys_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_pt_ratio_vec = torch.nan_to_num(loss_pt_ratio_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_axis_vec = torch.nan_to_num(loss_axis_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_m_ratio_vec = torch.nan_to_num(loss_m_ratio_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_e_ratio_vec = torch.nan_to_num(loss_e_ratio_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_radial_profile_vec = torch.nan_to_num(loss_radial_profile_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_budget_vec = torch.nan_to_num(loss_budget_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_sparse_vec = torch.nan_to_num(loss_sparse_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_split_sparse_vec = torch.nan_to_num(loss_split_sparse_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_gen_sparse_vec = torch.nan_to_num(loss_gen_sparse_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_local_vec = torch.nan_to_num(loss_local_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+    loss_fp_mass_vec = torch.nan_to_num(loss_fp_mass_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
+
     total_vec = (
         float(loss_cfg.get("w_set", 1.0)) * loss_set_vec
         + float(loss_cfg.get("w_phys", 0.0)) * loss_phys_vec
@@ -554,7 +591,9 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
         + float(loss_cfg.get("w_gen_sparse", 0.0)) * loss_gen_sparse_vec
         + float(loss_cfg.get("w_local", 0.0)) * loss_local_vec
         + float(loss_cfg.get("w_fp_mass", 0.0)) * loss_fp_mass_vec
+        + float(loss_cfg.get("w_nonfinite", 1.0)) * loss_nonfinite_vec
     )
+    total_vec = torch.nan_to_num(total_vec, nan=invalid_cost, posinf=invalid_cost, neginf=invalid_cost)
 
     return {
         "total": base._weighted_batch_mean(total_vec, sw),
@@ -571,6 +610,7 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
         "gen_sparse": base._weighted_batch_mean(loss_gen_sparse_vec, sw),
         "local": base._weighted_batch_mean(loss_local_vec, sw),
         "fp_mass": base._weighted_batch_mean(loss_fp_mass_vec, sw),
+        "nonfinite": base._weighted_batch_mean(loss_nonfinite_vec, sw),
     }
 
 
