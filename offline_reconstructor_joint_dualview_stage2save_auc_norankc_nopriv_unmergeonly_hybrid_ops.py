@@ -20,6 +20,7 @@ from __future__ import annotations
 import math
 from typing import Dict, Tuple
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -405,12 +406,25 @@ def compute_reconstruction_losses_weighted_hybrid_ops(
                 posinf=invalid_cost,
                 neginf=invalid_cost,
             )
-            c_np = c_bt.detach().cpu().numpy()
+            c_np = np.asarray(c_bt.detach().cpu().numpy(), dtype=np.float64)
+            if not np.isfinite(c_np).all():
+                c_np = np.nan_to_num(
+                    c_np,
+                    nan=invalid_cost,
+                    posinf=invalid_cost,
+                    neginf=invalid_cost,
+                )
+            if c_np.size == 0:
+                loss_list.append(torch.zeros((), device=cost.device, dtype=cost.dtype))
+                continue
             row_ind, col_ind = linear_sum_assignment(c_np)  # type: ignore[misc]
             row_t = torch.as_tensor(row_ind, device=cost.device, dtype=torch.long)
             col_t = torch.as_tensor(col_ind, device=cost.device, dtype=torch.long)
 
             matched_cost = c_bt[row_t, col_t]
+            if matched_cost.numel() == 0:
+                loss_list.append(torch.zeros((), device=cost.device, dtype=cost.dtype))
+                continue
             l_cov = matched_cost.mean()
 
             wb = w[bi]
