@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=jcG4Axis
-#SBATCH --partition=debug
+#SBATCH --partition=tier3
 #SBATCH --gres=gpu:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
