@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=jcFrSm
-#SBATCH --partition=tier3
+#SBATCH --partition=debug
 #SBATCH --time=9:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
