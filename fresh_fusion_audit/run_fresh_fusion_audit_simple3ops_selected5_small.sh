@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=jcS3FrS
 #SBATCH --partition=debug
-#SBATCH --time=7:00:00
+#SBATCH --time=6:00:00
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
