@@ -523,7 +523,7 @@ def _soft_corrected_view(family: str, reco_out: Dict[str, torch.Tensor], weight_
 
 def _load_source(
     spec: SourceSpec,
-    ref: SimpleNamespace,
+    source_args: SimpleNamespace,
     input_dim: int,
     n_classes: int,
     device: torch.device,
@@ -531,7 +531,7 @@ def _load_source(
 ) -> LoadedSource:
     run_dir = spec.run_dir
     if spec.kind == "baseline_hlt":
-        model = _make_single_view(ref, input_dim, n_classes, device)
+        model = _make_single_view(source_args, input_dim, n_classes, device)
         sd, ckpt = _load_state_dict(run_dir, ("baseline_hlt_best.pt", "baseline_best.pt", "baseline.pt"))
         model.load_state_dict(sd, strict=True)
         model.eval()
@@ -542,7 +542,7 @@ def _load_source(
         return LoadedSource(spec.name, spec.kind, run_dir, {"model_ckpt": str(ckpt)}, predict)
 
     if spec.kind == "offline_teacher":
-        model = _make_single_view(ref, input_dim, n_classes, device)
+        model = _make_single_view(source_args, input_dim, n_classes, device)
         sd, ckpt = _load_state_dict(run_dir, ("teacher_offline_best.pt", "teacher.pt"))
         model.load_state_dict(sd, strict=True)
         model.eval()
@@ -555,7 +555,7 @@ def _load_source(
     if spec.kind in {"stage2", "joint", "reco_only_stagea"}:
         reco_sd, reco_ckpt = _load_state_dict(run_dir, ("offline_reconstructor_stage2.pt", "offline_reconstructor.pt"))
         family = _detect_reco_family(reco_sd)
-        reco = _build_reco(ref, input_dim, device, family)
+        reco = _build_reco(source_args, input_dim, device, family)
         try:
             reco.load_state_dict(reco_sd, strict=True)
         except RuntimeError as exc:
@@ -564,7 +564,7 @@ def _load_source(
         reco.eval()
 
         if spec.kind == "reco_only_stagea":
-            clf = _make_single_view(ref, 10, n_classes, device)
+            clf = _make_single_view(source_args, 10, n_classes, device)
             clf_sd, clf_ckpt = _load_state_dict(run_dir, ("reco_only_corrected_stageA_best.pt", "reco_only_corrected_stageA.pt"))
             clf.load_state_dict(clf_sd, strict=True)
             clf.eval()
@@ -585,7 +585,7 @@ def _load_source(
                 predict,
             )
 
-        dual = _build_dual(ref, input_dim, n_classes, device)
+        dual = _build_dual(source_args, input_dim, n_classes, device)
         dual_names = ("dual_joint_stage2.pt", "dual_joint.pt") if spec.kind == "stage2" else ("dual_joint.pt", "dual_joint_stage2.pt")
         dual_sd, dual_ckpt = _load_state_dict(run_dir, dual_names)
         dual.load_state_dict(dual_sd, strict=True)
@@ -965,7 +965,7 @@ def main() -> None:
     loaded: List[LoadedSource] = []
     for spec in specs:
         print(f"Loading source {spec.name} ({spec.kind}) from {spec.run_dir}")
-        loaded.append(_load_source(spec, ref, input_dim, n_classes, device, float(args.corrected_weight_floor)))
+        loaded.append(_load_source(spec, run_args[spec.name], input_dim, n_classes, device, float(args.corrected_weight_floor)))
 
     logits_by_source: Dict[str, np.ndarray] = {}
     y_ref = None
