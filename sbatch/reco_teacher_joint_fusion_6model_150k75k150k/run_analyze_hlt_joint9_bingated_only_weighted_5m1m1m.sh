@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=an9bg
 #SBATCH --partition=tier3
-#SBATCH --time=6-00:00:00
+#SBATCH --time=08:00:00
 #SBATCH --mem=160G
 #SBATCH --cpus-per-task=8
 #SBATCH --output=offline_reconstructor_logs/reco_teacher_joint_fusion_6model_150k75k150k/analyze9_bingated_only_weighted_5m1m1m_%j.out
