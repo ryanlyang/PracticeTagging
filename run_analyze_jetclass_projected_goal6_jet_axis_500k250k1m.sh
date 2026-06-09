@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+#SBATCH --job-name=jcPG6Axis
+#SBATCH --partition=tier3
+#SBATCH --gres=gpu:1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=96G
+#SBATCH --time=2:55:00
+#SBATCH --output=offline_reconstructor_logs/jetclass_projected_goal6_jet_axis_500k250k1m_%j.out
+#SBATCH --error=offline_reconstructor_logs/jetclass_projected_goal6_jet_axis_500k250k1m_%j.err
+
+set -euo pipefail
+
+DATA_DIR="${DATA_DIR:-/home/ryreu/atlas/PracticeTagging/data/jetclass_part0}"
+SAVE_ROOT="${SAVE_ROOT:-checkpoints/jetclass_joint_dualview}"
+OUT_DIR="${OUT_DIR:-${SAVE_ROOT}/axis_reports/projected_goal6_500k250k1m_jet_axis_fast100k}"
+DEVICE="${DEVICE:-cuda}"
+BATCH_SIZE="${BATCH_SIZE:-512}"
+MAX_TEST_JETS="${MAX_TEST_JETS:-100000}"
+RESPONSE_N_BINS="${RESPONSE_N_BINS:-8}"
+RESPONSE_MIN_COUNT="${RESPONSE_MIN_COUNT:-300}"
+CORRECTED_WEIGHT_FLOOR="${CORRECTED_WEIGHT_FLOOR:-1e-4}"
+SCORE_MEAN_WEIGHT="${SCORE_MEAN_WEIGHT:-1.0}"
+SCORE_STD_WEIGHT="${SCORE_STD_WEIGHT:-1.0}"
+SCATTER_MAX_POINTS="${SCATTER_MAX_POINTS:-50000}"
+SCATTER_SEED="${SCATTER_SEED:-52}"
+TAG="${TAG:-fixedhlt}"
+PREFIX="${PREFIX:-${SAVE_ROOT}/jetclass_joint_v2attr_500k250k1m_m2hlt_hybridops_projected_goal_${TAG}}"
+
+MODEL_01_SPEC="${MODEL_01_SPEC:-projected_antioverlap:stage2:${PREFIX}_core12_antioverlap}"
+MODEL_02_SPEC="${MODEL_02_SPEC:-projected_budgetlite:stage2:${PREFIX}_core03_budgetlite}"
+MODEL_03_SPEC="${MODEL_03_SPEC:-projected_offdrophigh:stage2:${PREFIX}_core10_offdrophigh}"
+MODEL_04_SPEC="${MODEL_04_SPEC:-projected_reassignstrong:stage2:${PREFIX}_core08_reassignstrong}"
+MODEL_05_SPEC="${MODEL_05_SPEC:-projected_splitlight:stage2:${PREFIX}_core07_splitlight}"
+MODEL_06_SPEC="${MODEL_06_SPEC:-projected_topk60ish:stage2:${PREFIX}_core11_topk60ish}"
+
+set +u
+source ~/.bashrc
+set -u
+conda activate atlas_kd
+
+cd "${SLURM_SUBMIT_DIR:-$(pwd)}"
+mkdir -p offline_reconstructor_logs
+mkdir -p "${OUT_DIR}"
+
+export OMP_NUM_THREADS=1
+export MKL_NUM_THREADS=1
+export OPENBLAS_NUM_THREADS=1
+export NUMEXPR_NUM_THREADS=1
+export MPLBACKEND=Agg
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib-${USER:-user}}"
+
+CMD=(
+  python -u analyze_jetclass_twelve_model_jet_axis_m2hlt_projected_goal.py
+  --model "${MODEL_01_SPEC}"
+  --model "${MODEL_02_SPEC}"
+  --model "${MODEL_03_SPEC}"
+  --model "${MODEL_04_SPEC}"
+  --model "${MODEL_05_SPEC}"
+  --model "${MODEL_06_SPEC}"
+  --data_dir "${DATA_DIR}"
+  --out_dir "${OUT_DIR}"
+  --device "${DEVICE}"
+  --batch_size "${BATCH_SIZE}"
+  --max_test_jets "${MAX_TEST_JETS}"
+  --response_n_bins "${RESPONSE_N_BINS}"
+  --response_min_count "${RESPONSE_MIN_COUNT}"
+  --corrected_weight_floor "${CORRECTED_WEIGHT_FLOOR}"
+  --score_mean_weight "${SCORE_MEAN_WEIGHT}"
+  --score_std_weight "${SCORE_STD_WEIGHT}"
+  --scatter_max_points "${SCATTER_MAX_POINTS}"
+  --scatter_seed "${SCATTER_SEED}"
+  --plot_all_models
+)
+
+echo "============================================================"
+echo "JetClass projected-goal selected6 Jet-Axis Recovery (500k/250k/1m)"
+echo "Job ID: ${SLURM_JOB_ID:-N/A}"
+echo "Node: ${SLURMD_NODENAME:-N/A}"
+echo "Data dir:      ${DATA_DIR}"
+echo "Out dir:       ${OUT_DIR}"
+echo "Max test jets: ${MAX_TEST_JETS}"
+echo "Models: selected six projected-goal variants"
+echo "Selection: one global best reconstructor by mean(deltaR)+std(deltaR); per-model PNGs also saved"
+echo "============================================================"
+printf ' %q' "${CMD[@]}"
+echo
+"${CMD[@]}"
+echo "Done: ${OUT_DIR}"

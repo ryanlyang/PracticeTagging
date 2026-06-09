@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import inspect
 import json
 import math
 from dataclasses import dataclass
@@ -373,7 +374,21 @@ def _build_reconstructor_with_attrs(
         reco_cfg["reconstructor_model"]["gen_weight_scale"] = float(
             _get_attr(run_args, "specialist_gen_weight_scale", 1.0)
         )
-        base_reco = hybrid_ops.OfflineReconstructorHybridOps(
+        base_cls = hybrid_ops.OfflineReconstructorHybridOps
+        try:
+            sig = inspect.signature(base_cls)
+        except (TypeError, ValueError):
+            sig = None
+        if sig is not None:
+            for name, default in (
+                ("goal_apply_scale", 1.0),
+                ("goal_max_dlogpt", 1.25),
+                ("goal_max_deta", 0.55),
+                ("goal_max_dphi", 0.55),
+            ):
+                if name in sig.parameters:
+                    reco_cfg["reconstructor_model"][name] = float(_get_attr(run_args, name, default))
+        base_reco = base_cls(
             input_dim=int(input_dim),
             **reco_cfg["reconstructor_model"],
         ).to(device)
