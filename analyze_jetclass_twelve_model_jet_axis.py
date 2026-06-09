@@ -340,6 +340,11 @@ def main() -> None:
     ap.add_argument("--max_test_jets", type=int, default=200000)
     ap.add_argument("--scatter_max_points", type=int, default=50000)
     ap.add_argument("--scatter_seed", type=int, default=52)
+    ap.add_argument(
+        "--plot_all_models",
+        action="store_true",
+        help="Also save HLT-vs-reco jet-axis PNGs for each supplied model.",
+    )
     args = ap.parse_args()
 
     if fusion._IMPORT_ERROR is not None:
@@ -393,8 +398,12 @@ def main() -> None:
     hlt_metrics = _metrics(hlt_errors)
     hlt_score = _score(hlt_metrics, float(args.score_mean_weight), float(args.score_std_weight))
     pt_edges = response._build_pt_edges(pt_truth, int(args.response_n_bins))
+    hlt_bins = _binned_stats(pt_truth, hlt_errors["delta_R"], pt_edges, int(args.response_min_count))
 
     model_reports: Dict[str, Dict[str, object]] = {}
+    all_model_plot_dir = out_dir / "all_model_axis_plots"
+    if bool(args.plot_all_models):
+        all_model_plot_dir.mkdir(parents=True, exist_ok=True)
     best_name = ""
     best_score = float("inf")
     best_errors: Dict[str, np.ndarray] | None = None
@@ -423,6 +432,32 @@ def main() -> None:
         metrics = _metrics(reco_errors)
         score = _score(metrics, float(args.score_mean_weight), float(args.score_std_weight))
         frac_improved = float(np.mean(reco_errors["delta_R"] < hlt_errors["delta_R"]))
+        plot_paths: Dict[str, str] = {}
+        if bool(args.plot_all_models):
+            safe_name = response._slug(spec.name)
+            label = f"Reco ({spec.name})"
+            reco_bins_i = _binned_stats(pt_truth, reco_errors["delta_R"], pt_edges, int(args.response_min_count))
+            hist_path = all_model_plot_dir / f"jet_axis_deltaR_hist_cdf_{safe_name}.png"
+            vspt_path = all_model_plot_dir / f"jet_axis_deltaR_vs_pt_{safe_name}.png"
+            scatter_path = all_model_plot_dir / f"jet_axis_deltaR_scatter_{safe_name}.png"
+            etaphi_path = all_model_plot_dir / f"jet_axis_delta_eta_phi_{safe_name}.png"
+            _plot_deltaR_hist_cdf(hlt_errors["delta_R"], reco_errors["delta_R"], label, hist_path)
+            _plot_deltaR_vs_pt(hlt_bins, reco_bins_i, label, vspt_path)
+            _plot_scatter(
+                hlt_errors["delta_R"],
+                reco_errors["delta_R"],
+                label,
+                int(args.scatter_max_points),
+                int(args.scatter_seed),
+                scatter_path,
+            )
+            _plot_delta_eta_phi(hlt_errors, reco_errors, label, etaphi_path)
+            plot_paths = {
+                "deltaR_hist_cdf": str(hist_path),
+                "deltaR_vs_pt": str(vspt_path),
+                "deltaR_scatter": str(scatter_path),
+                "delta_eta_phi": str(etaphi_path),
+            }
         model_reports[spec.name] = {
             "kind": spec.kind,
             "run_dir": str(spec.run_dir),
@@ -430,6 +465,7 @@ def main() -> None:
             "score": float(score),
             "fraction_improved_vs_hlt": frac_improved,
             "metrics": metrics,
+            "plots": plot_paths,
         }
         print(f"  score={score:.6f} meanDR={metrics['mean_deltaR']:.6f} stdDR={metrics['std_deltaR']:.6f} improved={frac_improved:.4f}")
         if score < best_score:
@@ -445,7 +481,6 @@ def main() -> None:
         raise RuntimeError("No model produced axis metrics.")
 
     best_label = f"Best reco ({best_name})"
-    hlt_bins = _binned_stats(pt_truth, hlt_errors["delta_R"], pt_edges, int(args.response_min_count))
     reco_bins = _binned_stats(pt_truth, best_errors["delta_R"], pt_edges, int(args.response_min_count))
     _plot_deltaR_hist_cdf(hlt_errors["delta_R"], best_errors["delta_R"], best_label, out_dir / "jet_axis_deltaR_hist_cdf_best.png")
     _plot_deltaR_vs_pt(hlt_bins, reco_bins, best_label, out_dir / "jet_axis_deltaR_vs_pt_best.png")
@@ -488,6 +523,7 @@ def main() -> None:
             "deltaR_vs_pt": str(out_dir / "jet_axis_deltaR_vs_pt_best.png"),
             "deltaR_scatter": str(out_dir / "jet_axis_deltaR_scatter_best.png"),
             "delta_eta_phi": str(out_dir / "jet_axis_delta_eta_phi_best.png"),
+            "all_model_plot_dir": str(all_model_plot_dir) if bool(args.plot_all_models) else None,
             "summary_json": str(out_dir / "jet_axis_summary.json"),
             "arrays_npz": str(out_dir / "jet_axis_best_arrays.npz"),
         },
@@ -519,6 +555,8 @@ def main() -> None:
     print(f"  Improvement:     {hlt_score - best_score:.6f}")
     print(f"  Fraction improved vs HLT: {float(model_reports[best_name]['fraction_improved_vs_hlt']):.4f}")
     print(f"Saved summary:     {out_dir / 'jet_axis_summary.json'}")
+    if bool(args.plot_all_models):
+        print(f"Saved per-model plots: {all_model_plot_dir}")
 
 
 if __name__ == "__main__":

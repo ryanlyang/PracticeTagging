@@ -492,6 +492,11 @@ def main() -> None:
         default=0,
         help="Optional cap for quick debugging. Default 0 uses the full test split from args.json.",
     )
+    ap.add_argument(
+        "--plot_all_models",
+        action="store_true",
+        help="Also save one HLT-vs-reco pT response PNG for each supplied model.",
+    )
     args = ap.parse_args()
 
     if fusion._IMPORT_ERROR is not None:
@@ -542,6 +547,9 @@ def main() -> None:
     hlt_score = _score_records(hlt_records, float(args.score_bias_weight), float(args.score_resolution_weight))
 
     model_reports: Dict[str, Dict[str, object]] = {}
+    all_model_plot_dir = out_dir / "all_model_response_plots"
+    if bool(args.plot_all_models):
+        all_model_plot_dir.mkdir(parents=True, exist_ok=True)
     best_name = ""
     best_score = float("inf")
     best_records: List[Dict[str, float]] = []
@@ -562,6 +570,16 @@ def main() -> None:
         records = _response_records(pt_truth, pt_reco, pt_edges, int(args.response_min_count))
         score = _score_records(records, float(args.score_bias_weight), float(args.score_resolution_weight))
         mean_ratio = float(np.nanmean(pt_reco / np.clip(pt_truth, 1e-8, np.inf)))
+        plot_path = None
+        if bool(args.plot_all_models):
+            plot_path = all_model_plot_dir / f"jet_pt_response_resolution_{_slug(spec.name)}.png"
+            _plot_response_resolution(
+                hlt_records,
+                records,
+                f"Reco ({spec.name})",
+                plot_path,
+                title=f"JetClass pT response: {spec.name}",
+            )
         model_reports[spec.name] = {
             "kind": spec.kind,
             "run_dir": str(spec.run_dir),
@@ -569,6 +587,7 @@ def main() -> None:
             "score": float(score),
             "mean_response_unbinned": mean_ratio,
             "records": _jsonable_records(records),
+            "plot": str(plot_path) if plot_path is not None else None,
         }
         print(f"  score={score:.6f} mean_response={mean_ratio:.6f}")
         if score < best_score:
@@ -636,6 +655,7 @@ def main() -> None:
         "outputs": {
             "best_plot": str(out_dir / "jet_pt_response_resolution_best.png"),
             "ranking_plot": str(out_dir / "jet_pt_response_recovery_ranking.png"),
+            "all_model_plot_dir": str(all_model_plot_dir) if bool(args.plot_all_models) else None,
             "conditional_plot_dir": str(out_dir / "conditional_response_plots"),
             "summary_json": str(out_dir / "jet_pt_response_summary.json"),
             "arrays_npz": str(out_dir / "jet_pt_response_best_arrays.npz"),
@@ -660,6 +680,8 @@ def main() -> None:
     print(f"Saved summary:     {out_dir / 'jet_pt_response_summary.json'}")
     print(f"Saved best plot:   {out_dir / 'jet_pt_response_resolution_best.png'}")
     print(f"Saved ranking:     {out_dir / 'jet_pt_response_recovery_ranking.png'}")
+    if bool(args.plot_all_models):
+        print(f"Saved per-model plots: {all_model_plot_dir}")
 
 
 if __name__ == "__main__":
