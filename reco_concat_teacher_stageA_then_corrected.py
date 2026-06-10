@@ -23,7 +23,6 @@ import gc
 import json
 from pathlib import Path
 from typing import Dict, List, Tuple
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -95,6 +94,49 @@ def build_concat_constituents(
     # `const_cat` is already materialized by concatenate/pad; avoid an extra full copy.
     const_cat[~mask_cat] = 0.0
     return const_cat.astype(np.float32, copy=False), mask_cat.astype(bool, copy=False)
+
+
+def make_stratified_split_indices(
+    labels: np.ndarray,
+    n_train_split: int,
+    n_val_split: int,
+    n_test_split: int,
+    seed: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    labels = np.asarray(labels, dtype=np.int64)
+    idx = np.arange(len(labels), dtype=np.int64)
+    total_need = int(n_train_split + n_val_split + n_test_split)
+    if total_need > len(idx):
+        raise ValueError(f"Requested split counts exceed available jets: {total_need} > {len(idx)}")
+
+    if total_need < len(idx):
+        idx_use, _ = train_test_split(
+            idx,
+            train_size=total_need,
+            random_state=int(seed),
+            stratify=labels[idx],
+        )
+    else:
+        idx_use = idx
+
+    train_idx, rem_idx = train_test_split(
+        idx_use,
+        train_size=int(n_train_split),
+        random_state=int(seed),
+        stratify=labels[idx_use],
+    )
+    val_idx, test_idx = train_test_split(
+        rem_idx,
+        train_size=int(n_val_split),
+        test_size=int(n_test_split),
+        random_state=int(seed),
+        stratify=labels[rem_idx],
+    )
+    return (
+        np.asarray(train_idx, dtype=np.int64),
+        np.asarray(val_idx, dtype=np.int64),
+        np.asarray(test_idx, dtype=np.int64),
+    )
 
 
 class StageAConcatTeacherDataset(Dataset):
@@ -1256,7 +1298,17 @@ def main() -> None:
         action="store_true",
         help="Stop after Stage-4 corrected-only evaluation and skip corrected-joint/dual-joint finetuning.",
     )
+    ap.add_argument(
+        "--defer_test_load",
+        action="store_true",
+        help=(
+            "For --stop_after_corrected_only runs, hold only train+val in memory during training "
+            "and reload the original test split only for final evaluation."
+        ),
+    )
     args = ap.parse_args()
+    if bool(args.defer_test_load) and not bool(args.stop_after_corrected_only):
+        raise ValueError("--defer_test_load is currently supported only with --stop_after_corrected_only.")
 
     b.set_seed(int(args.seed))
 
@@ -1318,6 +1370,37 @@ def main() -> None:
     sample_weight = np.nan_to_num(sample_weight, nan=0.0, posinf=0.0, neginf=0.0)
     sample_weight = np.clip(sample_weight, 0.0, None)
 
+    train_idx_orig, val_idx_orig, test_idx_orig = make_stratified_split_indices(
+        labels=labels,
+        n_train_split=int(args.n_train_split),
+        n_val_split=int(args.n_val_split),
+        n_test_split=int(args.n_test_split),
+        seed=int(args.seed),
+    )
+    print(
+        f"Split sizes: Train={len(train_idx_orig)}, Val={len(val_idx_orig)}, "
+        f"Test={len(test_idx_orig)} (custom_counts=True)"
+    )
+
+    split_train_idx_to_save = train_idx_orig.copy()
+    split_val_idx_to_save = val_idx_orig.copy()
+    split_test_idx_to_save = test_idx_orig.copy()
+    deferred_test_idx_orig = test_idx_orig.copy()
+    deferred_test_load = bool(args.defer_test_load)
+    work_idx = np.concatenate([train_idx_orig, val_idx_orig]).astype(np.int64, copy=False)
+
+    if deferred_test_load:
+        print(
+            "Deferred-test mode: will keep only train+val feature tensors resident "
+            f"({len(work_idx)} jets); test split will be regenerated for final evaluation."
+        )
+        sw_test = sample_weight[test_idx_orig].astype(np.float32)
+    else:
+        train_idx = train_idx_orig
+        val_idx = val_idx_orig
+        test_idx = test_idx_orig
+        sw_test = sample_weight[test_idx].astype(np.float32)
+
     raw_mask = const_raw[:, :, 0] > 0.0
     masks_off = raw_mask & (const_raw[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"]))
     const_off = const_raw.copy()
@@ -1340,13 +1423,35 @@ def main() -> None:
     rho = b._clamp_target_scale(float(args.added_target_scale))
     budget_merge_true = (rho * true_added_raw).astype(np.float32)
     budget_eff_true = ((1.0 - rho) * true_added_raw).astype(np.float32)
+    mean_true_added_raw = float(true_added_raw.mean())
+    mean_target_merge = float(budget_merge_true.mean())
+    mean_target_eff = float(budget_eff_true.mean())
 
     print(
         f"Non-priv rho split setup: rho={rho:.3f}, "
-        f"mean_true_added_raw={float(true_added_raw.mean()):.3f}, "
-        f"mean_target_merge={float(budget_merge_true.mean()):.3f}, "
-        f"mean_target_eff={float(budget_eff_true.mean()):.3f}"
+        f"mean_true_added_raw={mean_true_added_raw:.3f}, "
+        f"mean_target_merge={mean_target_merge:.3f}, "
+        f"mean_target_eff={mean_target_eff:.3f}"
     )
+
+    if deferred_test_load:
+        print("Deferred-test mode: compacting low-level resident arrays to train+val before feature building...")
+        const_off = np.ascontiguousarray(const_off[work_idx])
+        masks_off = np.ascontiguousarray(masks_off[work_idx])
+        hlt_const = np.ascontiguousarray(hlt_const[work_idx])
+        hlt_mask = np.ascontiguousarray(hlt_mask[work_idx])
+        budget_merge_true = budget_merge_true[work_idx].astype(np.float32, copy=False)
+        budget_eff_true = budget_eff_true[work_idx].astype(np.float32, copy=False)
+        labels = labels[work_idx].astype(np.int64, copy=False)
+        sample_weight = sample_weight[work_idx].astype(np.float32, copy=False)
+        train_idx = np.arange(len(train_idx_orig), dtype=np.int64)
+        val_idx = np.arange(len(train_idx_orig), len(work_idx), dtype=np.int64)
+        test_idx = np.zeros((0,), dtype=np.int64)
+        del true_added_raw
+        gc.collect()
+
+    sw_train = sample_weight[train_idx].astype(np.float32)
+    sw_val = sample_weight[val_idx].astype(np.float32)
 
     print("Computing features...")
     feat_off = b.compute_features(const_off, masks_off)
@@ -1363,39 +1468,6 @@ def main() -> None:
         max_concat_constits=max_concat_constits,
     )
     feat_concat = b.compute_features(const_concat, mask_concat)
-
-    idx = np.arange(len(labels))
-    total_need = int(args.n_train_split + args.n_val_split + args.n_test_split)
-    if total_need > len(idx):
-        raise ValueError(f"Requested split counts exceed available jets: {total_need} > {len(idx)}")
-
-    if total_need < len(idx):
-        idx_use, _ = train_test_split(
-            idx,
-            train_size=total_need,
-            random_state=int(args.seed),
-            stratify=labels[idx],
-        )
-    else:
-        idx_use = idx
-
-    train_idx, rem_idx = train_test_split(
-        idx_use,
-        train_size=int(args.n_train_split),
-        random_state=int(args.seed),
-        stratify=labels[idx_use],
-    )
-    val_idx, test_idx = train_test_split(
-        rem_idx,
-        train_size=int(args.n_val_split),
-        test_size=int(args.n_test_split),
-        random_state=int(args.seed),
-        stratify=labels[rem_idx],
-    )
-    print(f"Split sizes: Train={len(train_idx)}, Val={len(val_idx)}, Test={len(test_idx)} (custom_counts=True)")
-    sw_train = sample_weight[train_idx].astype(np.float32)
-    sw_val = sample_weight[val_idx].astype(np.float32)
-    sw_test = sample_weight[test_idx].astype(np.float32)
 
     means_off, stds_off = b.get_stats(feat_off, masks_off, train_idx)
     feat_off_std = b.standardize(feat_off, masks_off, means_off, stds_off)
@@ -1416,26 +1488,28 @@ def main() -> None:
         "max_concat_constits": int(max_concat_constits),
         "seed": int(args.seed),
         "use_train_weights": bool(args.use_train_weights),
+        "defer_test_load": bool(deferred_test_load),
+        "resident_split_mode": "train_val_only" if bool(deferred_test_load) else "train_val_test",
         "split": {
             "mode": "custom_counts",
-            "n_train_split": int(len(train_idx)),
-            "n_val_split": int(len(val_idx)),
-            "n_test_split": int(len(test_idx)),
+            "n_train_split": int(len(split_train_idx_to_save)),
+            "n_val_split": int(len(split_val_idx_to_save)),
+            "n_test_split": int(len(split_test_idx_to_save)),
         },
         "hlt_effects": cfg["hlt_effects"],
         "variant": "concat_teacher_stageA_then_corrected",
         "rho": float(rho),
-        "mean_true_added_raw": float(true_added_raw.mean()),
-        "mean_target_merge": float(budget_merge_true.mean()),
-        "mean_target_eff": float(budget_eff_true.mean()),
+        "mean_true_added_raw": float(mean_true_added_raw),
+        "mean_target_merge": float(mean_target_merge),
+        "mean_target_eff": float(mean_target_eff),
     }
     with open(save_root / "data_setup.json", "w", encoding="utf-8") as f:
         json.dump(data_setup, f, indent=2)
     np.savez_compressed(
         save_root / "data_splits.npz",
-        train_idx=train_idx.astype(np.int64),
-        val_idx=val_idx.astype(np.int64),
-        test_idx=test_idx.astype(np.int64),
+        train_idx=split_train_idx_to_save.astype(np.int64),
+        val_idx=split_val_idx_to_save.astype(np.int64),
+        test_idx=split_test_idx_to_save.astype(np.int64),
         means_off=means_off.astype(np.float32),
         stds_off=stds_off.astype(np.float32),
         means_concat=means_concat.astype(np.float32),
@@ -1452,7 +1526,9 @@ def main() -> None:
 
     ds_train_hlt = IndexedJetDataset(feat_hlt_std, hlt_mask, labels, train_idx)
     ds_val_hlt = IndexedJetDataset(feat_hlt_std, hlt_mask, labels, val_idx)
-    ds_test_hlt = IndexedJetDataset(feat_hlt_std, hlt_mask, labels, test_idx)
+    ds_test_hlt = None
+    if not deferred_test_load:
+        ds_test_hlt = IndexedJetDataset(feat_hlt_std, hlt_mask, labels, test_idx)
     hlt_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_hlt = DataLoader(
         ds_train_hlt,
@@ -1462,7 +1538,7 @@ def main() -> None:
         drop_last=True,
     )
     dl_val_hlt = DataLoader(ds_val_hlt, batch_size=bs_cls, shuffle=False)
-    dl_test_hlt = DataLoader(ds_test_hlt, batch_size=bs_cls, shuffle=False)
+    dl_test_hlt = DataLoader(ds_test_hlt, batch_size=bs_cls, shuffle=False) if ds_test_hlt is not None else None
 
     step1_load_dir = str(getattr(args, "step1_load_dir", "")).strip()
     step1_baseline_ckpt = None
@@ -1485,13 +1561,20 @@ def main() -> None:
             cfg["training"],
             name="Baseline-HLT",
         )
-    auc_hlt_test, preds_hlt_test, labs_hlt_test = b.eval_classifier(baseline, dl_test_hlt, device)
     auc_hlt_val, preds_hlt_val, labs_hlt_val = b.eval_classifier(baseline, dl_val_hlt, device)
+    if dl_test_hlt is not None:
+        auc_hlt_test, preds_hlt_test, labs_hlt_test = b.eval_classifier(baseline, dl_test_hlt, device)
+    else:
+        auc_hlt_test = float("nan")
+        preds_hlt_test = np.zeros((0,), dtype=np.float64)
+        labs_hlt_test = np.zeros((0,), dtype=np.float32)
 
     if bool(args.force_m5_step1):
         ds_train_off = IndexedJetDataset(feat_off_std, masks_off, labels, train_idx)
         ds_val_off = IndexedJetDataset(feat_off_std, masks_off, labels, val_idx)
-        ds_test_off = IndexedJetDataset(feat_off_std, masks_off, labels, test_idx)
+        ds_test_off = None
+        if not deferred_test_load:
+            ds_test_off = IndexedJetDataset(feat_off_std, masks_off, labels, test_idx)
         off_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
         dl_train_off = DataLoader(
             ds_train_off,
@@ -1501,7 +1584,7 @@ def main() -> None:
             drop_last=True,
         )
         dl_val_off = DataLoader(ds_val_off, batch_size=bs_cls, shuffle=False)
-        dl_test_off = DataLoader(ds_test_off, batch_size=bs_cls, shuffle=False)
+        dl_test_off = DataLoader(ds_test_off, batch_size=bs_cls, shuffle=False) if ds_test_off is not None else None
         teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
         teacher = b.train_single_view_classifier_auc(
             teacher,
@@ -1511,18 +1594,23 @@ def main() -> None:
             cfg["training"],
             name="Teacher",
         )
-        auc_teacher_test, _, labs_teacher_test = b.eval_classifier(teacher, dl_test_off, device)
         auc_teacher_val, _, labs_teacher_val = b.eval_classifier(teacher, dl_val_off, device)
         assert np.array_equal(labs_hlt_val.astype(np.float32), labs_teacher_val.astype(np.float32))
-        assert np.array_equal(labs_hlt_test.astype(np.float32), labs_teacher_test.astype(np.float32))
-        print(
-            "m5-aligned Teacher AUC "
-            f"(val/test): {float(auc_teacher_val):.4f} / {float(auc_teacher_test):.4f}"
-        )
+        if dl_test_off is not None:
+            auc_teacher_test, _, labs_teacher_test = b.eval_classifier(teacher, dl_test_off, device)
+            assert np.array_equal(labs_hlt_test.astype(np.float32), labs_teacher_test.astype(np.float32))
+            print(
+                "m5-aligned Teacher AUC "
+                f"(val/test): {float(auc_teacher_val):.4f} / {float(auc_teacher_test):.4f}"
+            )
+        else:
+            print(f"m5-aligned Teacher AUC (val/test): {float(auc_teacher_val):.4f} / deferred")
 
     ds_train_concat = IndexedJetDataset(feat_concat_std, mask_concat, labels, train_idx)
     ds_val_concat = IndexedJetDataset(feat_concat_std, mask_concat, labels, val_idx)
-    ds_test_concat = IndexedJetDataset(feat_concat_std, mask_concat, labels, test_idx)
+    ds_test_concat = None
+    if not deferred_test_load:
+        ds_test_concat = IndexedJetDataset(feat_concat_std, mask_concat, labels, test_idx)
     concat_sampler = _build_weighted_sampler(sw_train if bool(args.use_train_weights) else None)
     dl_train_concat = DataLoader(
         ds_train_concat,
@@ -1532,7 +1620,9 @@ def main() -> None:
         drop_last=True,
     )
     dl_val_concat = DataLoader(ds_val_concat, batch_size=bs_cls, shuffle=False)
-    dl_test_concat = DataLoader(ds_test_concat, batch_size=bs_cls, shuffle=False)
+    dl_test_concat = (
+        DataLoader(ds_test_concat, batch_size=bs_cls, shuffle=False) if ds_test_concat is not None else None
+    )
 
     concat_teacher = b.ParticleTransformer(input_dim=7, **cfg["model"]).to(device)
     concat_teacher = b.train_single_view_classifier_auc(
@@ -1543,11 +1633,17 @@ def main() -> None:
         cfg["training"],
         name="ConcatTeacher",
     )
-    auc_concat_test, preds_concat_test, labs_concat_test = b.eval_classifier(concat_teacher, dl_test_concat, device)
     auc_concat_val, preds_concat_val, labs_concat_val = b.eval_classifier(concat_teacher, dl_val_concat, device)
+    if dl_test_concat is not None:
+        auc_concat_test, preds_concat_test, labs_concat_test = b.eval_classifier(concat_teacher, dl_test_concat, device)
+    else:
+        auc_concat_test = float("nan")
+        preds_concat_test = np.zeros((0,), dtype=np.float64)
+        labs_concat_test = np.zeros((0,), dtype=np.float32)
 
     assert np.array_equal(labs_hlt_val.astype(np.float32), labs_concat_val.astype(np.float32))
-    assert np.array_equal(labs_hlt_test.astype(np.float32), labs_concat_test.astype(np.float32))
+    if not deferred_test_load:
+        assert np.array_equal(labs_hlt_test.astype(np.float32), labs_concat_test.astype(np.float32))
 
     hlt_thr_prob, hlt_thr_tpr, hlt_thr_fpr = threshold_at_target_tpr(
         labs_hlt_val.astype(np.float32),
@@ -1671,21 +1767,27 @@ def main() -> None:
         weight_floor=float(args.reco_weight_threshold),
         target_tpr=float(args.report_target_tpr),
     )
-    auc_reco_teacher_test, preds_reco_teacher_test, labs_reco_test, fpr50_reco_teacher_test = eval_teacher_on_soft_reco_split(
-        reconstructor=reconstructor,
-        teacher=concat_teacher,
-        feat_hlt_std=feat_hlt_std,
-        hlt_mask=hlt_mask,
-        hlt_const=hlt_const,
-        labels=labels,
-        split_idx=test_idx,
-        means=means_concat,
-        stds=stds_concat,
-        device=device,
-        batch_size=int(args.reco_eval_batch_size),
-        weight_floor=float(args.reco_weight_threshold),
-        target_tpr=float(args.report_target_tpr),
-    )
+    if not deferred_test_load:
+        auc_reco_teacher_test, preds_reco_teacher_test, labs_reco_test, fpr50_reco_teacher_test = eval_teacher_on_soft_reco_split(
+            reconstructor=reconstructor,
+            teacher=concat_teacher,
+            feat_hlt_std=feat_hlt_std,
+            hlt_mask=hlt_mask,
+            hlt_const=hlt_const,
+            labels=labels,
+            split_idx=test_idx,
+            means=means_concat,
+            stds=stds_concat,
+            device=device,
+            batch_size=int(args.reco_eval_batch_size),
+            weight_floor=float(args.reco_weight_threshold),
+            target_tpr=float(args.report_target_tpr),
+        )
+    else:
+        auc_reco_teacher_test = float("nan")
+        preds_reco_teacher_test = np.zeros((0,), dtype=np.float64)
+        labs_reco_test = np.zeros((0,), dtype=np.float32)
+        fpr50_reco_teacher_test = float("nan")
     # Stage-A dataloaders/datasets are no longer needed after soft-reco evaluation.
     del ds_train_reco, ds_val_reco, dl_train_reco, dl_val_reco
     gc.collect()
@@ -1750,22 +1852,169 @@ def main() -> None:
         del feat_corr_train, mask_corr_train, feat_corr_val, mask_corr_val
         gc.collect()
 
-        feat_corr_test, mask_corr_test = build_corrected_view_for_split(
-            reconstructor=reconstructor,
-            feat_hlt_std=feat_hlt_std,
-            hlt_mask=hlt_mask,
-            hlt_const=hlt_const,
-            split_idx=test_idx,
-            device=device,
-            batch_size=int(bs_cls),
-            corrected_weight_floor=float(args.reco_weight_threshold),
-            corrected_use_flags=corrected_use_flags,
-        )
-        ds_test_corr = b.JetDataset(feat_corr_test, mask_corr_test, labels[test_idx])
-        dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
-        auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
-        del ds_test_corr, dl_test_corr, feat_corr_test, mask_corr_test
-        gc.collect()
+        if deferred_test_load:
+            print("Deferred-test mode: loading held-out test split for final evaluation...")
+            del feat_hlt_std, hlt_mask, hlt_const
+            gc.collect()
+
+            print(
+                "Deferred-test mode: regenerating pseudo-HLT over the original full window "
+                "so test scores use the same stochastic stream as the non-deferred path."
+            )
+            if bool(args.use_train_weights):
+                all_const_test_full, all_labels_test_full, all_weights_test_full = (
+                    m2mod.load_raw_constituents_labels_weights_from_h5(
+                        train_files,
+                        max_jets=max_jets_needed,
+                        max_constits=args.max_constits,
+                        use_train_weights=True,
+                    )
+                )
+            else:
+                all_const_test_full, all_labels_test_full = b.load_raw_constituents_from_h5(
+                    train_files,
+                    max_jets=max_jets_needed,
+                    max_constits=args.max_constits,
+                )
+                all_weights_test_full = np.ones((all_const_test_full.shape[0],), dtype=np.float32)
+            if all_const_test_full.shape[0] < max_jets_needed:
+                raise RuntimeError(
+                    f"Not enough jets for deferred test reload: requested {max_jets_needed}, "
+                    f"got {all_const_test_full.shape[0]}"
+                )
+
+            const_raw_full = all_const_test_full[args.offset_jets: args.offset_jets + args.n_train_jets]
+            labels_full = all_labels_test_full[args.offset_jets: args.offset_jets + args.n_train_jets].astype(np.int64)
+            sample_weight_full = np.asarray(
+                all_weights_test_full[args.offset_jets: args.offset_jets + args.n_train_jets],
+                dtype=np.float32,
+            )
+            sample_weight_full = np.nan_to_num(sample_weight_full, nan=0.0, posinf=0.0, neginf=0.0)
+            sample_weight_full = np.clip(sample_weight_full, 0.0, None)
+
+            raw_mask_full = const_raw_full[:, :, 0] > 0.0
+            masks_off_full = raw_mask_full & (
+                const_raw_full[:, :, 0] >= float(cfg["hlt_effects"]["pt_threshold_offline"])
+            )
+            const_off_full = const_raw_full.copy()
+            const_off_full[~masks_off_full] = 0.0
+            del all_const_test_full, all_labels_test_full, all_weights_test_full, const_raw_full, raw_mask_full
+            gc.collect()
+
+            hlt_const_full, hlt_mask_full, hlt_stats_test, _ = b.apply_hlt_effects_realistic_nomap(
+                const_off_full,
+                masks_off_full,
+                cfg,
+                seed=int(args.seed),
+            )
+            if isinstance(hlt_stats, dict):
+                hlt_stats = dict(hlt_stats)
+                hlt_stats["deferred_test"] = hlt_stats_test
+
+            const_off_test = np.ascontiguousarray(const_off_full[deferred_test_idx_orig])
+            masks_off_test = np.ascontiguousarray(masks_off_full[deferred_test_idx_orig])
+            hlt_const_test = np.ascontiguousarray(hlt_const_full[deferred_test_idx_orig])
+            hlt_mask_test = np.ascontiguousarray(hlt_mask_full[deferred_test_idx_orig])
+            labels_test = labels_full[deferred_test_idx_orig].astype(np.int64, copy=False)
+            sw_test = sample_weight_full[deferred_test_idx_orig].astype(np.float32, copy=False)
+            del const_off_full, masks_off_full, hlt_const_full, hlt_mask_full, labels_full, sample_weight_full
+            gc.collect()
+
+            feat_hlt_test = b.compute_features(hlt_const_test, hlt_mask_test)
+            feat_hlt_test_std = b.standardize(feat_hlt_test, hlt_mask_test, means_off, stds_off)
+            del feat_hlt_test
+            gc.collect()
+
+            const_concat_test, mask_concat_test = build_concat_constituents(
+                const_off=const_off_test,
+                mask_off=masks_off_test,
+                const_hlt=hlt_const_test,
+                mask_hlt=hlt_mask_test,
+                max_concat_constits=max_concat_constits,
+            )
+            feat_concat_test = b.compute_features(const_concat_test, mask_concat_test)
+            feat_concat_test_std = b.standardize(feat_concat_test, mask_concat_test, means_concat, stds_concat)
+            del feat_concat_test
+            gc.collect()
+
+            test_local_idx = np.arange(len(labels_test), dtype=np.int64)
+            ds_test_hlt = IndexedJetDataset(feat_hlt_test_std, hlt_mask_test, labels_test, test_local_idx)
+            dl_test_hlt = DataLoader(ds_test_hlt, batch_size=bs_cls, shuffle=False)
+            auc_hlt_test, preds_hlt_test, labs_hlt_test = b.eval_classifier(baseline, dl_test_hlt, device)
+            del ds_test_hlt, dl_test_hlt
+            gc.collect()
+
+            ds_test_concat = IndexedJetDataset(
+                feat_concat_test_std,
+                mask_concat_test,
+                labels_test,
+                test_local_idx,
+            )
+            dl_test_concat = DataLoader(ds_test_concat, batch_size=bs_cls, shuffle=False)
+            auc_concat_test, preds_concat_test, labs_concat_test = b.eval_classifier(
+                concat_teacher,
+                dl_test_concat,
+                device,
+            )
+            assert np.array_equal(labs_hlt_test.astype(np.float32), labs_concat_test.astype(np.float32))
+            del ds_test_concat, dl_test_concat, feat_concat_test_std, const_concat_test, mask_concat_test
+            gc.collect()
+
+            auc_reco_teacher_test, preds_reco_teacher_test, labs_reco_test, fpr50_reco_teacher_test = (
+                eval_teacher_on_soft_reco_split(
+                    reconstructor=reconstructor,
+                    teacher=concat_teacher,
+                    feat_hlt_std=feat_hlt_test_std,
+                    hlt_mask=hlt_mask_test,
+                    hlt_const=hlt_const_test,
+                    labels=labels_test,
+                    split_idx=test_local_idx,
+                    means=means_concat,
+                    stds=stds_concat,
+                    device=device,
+                    batch_size=int(args.reco_eval_batch_size),
+                    weight_floor=float(args.reco_weight_threshold),
+                    target_tpr=float(args.report_target_tpr),
+                )
+            )
+            assert np.array_equal(labs_hlt_test.astype(np.float32), labs_reco_test.astype(np.float32))
+
+            feat_corr_test, mask_corr_test = build_corrected_view_for_split(
+                reconstructor=reconstructor,
+                feat_hlt_std=feat_hlt_test_std,
+                hlt_mask=hlt_mask_test,
+                hlt_const=hlt_const_test,
+                split_idx=test_local_idx,
+                device=device,
+                batch_size=int(bs_cls),
+                corrected_weight_floor=float(args.reco_weight_threshold),
+                corrected_use_flags=corrected_use_flags,
+            )
+            ds_test_corr = b.JetDataset(feat_corr_test, mask_corr_test, labels_test)
+            dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
+            auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
+            assert np.array_equal(labs_hlt_test.astype(np.float32), labs_corr_test.astype(np.float32))
+
+            del ds_test_corr, dl_test_corr, feat_corr_test, mask_corr_test
+            del feat_hlt_test_std, hlt_const_test, hlt_mask_test, const_off_test, masks_off_test, labels_test
+            gc.collect()
+        else:
+            feat_corr_test, mask_corr_test = build_corrected_view_for_split(
+                reconstructor=reconstructor,
+                feat_hlt_std=feat_hlt_std,
+                hlt_mask=hlt_mask,
+                hlt_const=hlt_const,
+                split_idx=test_idx,
+                device=device,
+                batch_size=int(bs_cls),
+                corrected_weight_floor=float(args.reco_weight_threshold),
+                corrected_use_flags=corrected_use_flags,
+            )
+            ds_test_corr = b.JetDataset(feat_corr_test, mask_corr_test, labels[test_idx])
+            dl_test_corr = DataLoader(ds_test_corr, batch_size=bs_cls, shuffle=False)
+            auc_corr_test, preds_corr_test, labs_corr_test = b.eval_classifier(corrected_only, dl_test_corr, device)
+            del ds_test_corr, dl_test_corr, feat_corr_test, mask_corr_test
+            gc.collect()
     else:
         feat_corr_all, mask_corr_all = b.build_corrected_view_numpy(
             reconstructor=reconstructor,

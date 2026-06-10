@@ -96,6 +96,7 @@ CMD=(
   --stageC_lambda_rank 0.0
   --stageC_lambda_cons 0.06
   --stop_after_corrected_only
+  --defer_test_load
   --step1_load_dir "${STEP1_LOAD_DIR}"
   --device "${DEVICE}"
 )
