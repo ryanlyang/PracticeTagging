@@ -9,7 +9,15 @@
 
 set -euo pipefail
 
-DATA_DIR="${DATA_DIR:-/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/data/jetclass_part0}"
+if [[ -z "${DATA_DIR:-}" ]]; then
+  if [[ -d /home/ryreu/atlas/PracticeTagging/data/jetclass_part0 ]]; then
+    DATA_DIR="/home/ryreu/atlas/PracticeTagging/data/jetclass_part0"
+  elif [[ -d /home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/data/jetclass_part0 ]]; then
+    DATA_DIR="/home/ryan/ComputerScience/ATLAS/HLT_Reco/ATLAS-top-tagging-open-data/data/jetclass_part0"
+  else
+    DATA_DIR="data/jetclass_part0"
+  fi
+fi
 OUT_ROOT="${OUT_ROOT:-plots/jetclass_pt_decile_bins}"
 RUN_TAG="${RUN_TAG:-100k_${PT_MODE:-jet_pt}_${SAMPLING:-class_balanced}}"
 OUT_DIR="${OUT_DIR:-${OUT_ROOT}/${RUN_TAG}_job${SLURM_JOB_ID:-manual}}"
